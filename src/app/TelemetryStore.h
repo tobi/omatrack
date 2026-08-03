@@ -76,6 +76,12 @@ public:
     QString driver() const { return driver_; }
     QString vehicle() const { return vehicle_; }
     QString venue() const { return venue_; }
+    QString carNumber() const { return carNumber_; }
+    QString carClass() const { return carClass_; }
+    QString driverMappingKey() const {
+        return carNumber_ + QStringLiteral("|") +
+               carClass_ + QStringLiteral("|") + driverId_;
+    }
 
 private:
     void ensureSource();
@@ -90,6 +96,8 @@ private:
     QString track_;
     QString date_;
     bool summaryLoaded_ = false;
+    QString carNumber_;
+    QString carClass_;
     QString driver_;
     QString vehicle_;
     QString venue_;
@@ -138,6 +146,7 @@ public:
     Q_INVOKABLE void selectLap(const QString& sessionKey, int lapId);
     Q_INVOKABLE void compareLap(const QString& sessionKey, int lapId);
     Q_INVOKABLE void clearCompare();
+    Q_INVOKABLE void clearPrimary();
     Q_INVOKABLE QVariantList lapsForSession(const QString& sessionKey) const;
 
     // ── navigation ─────────────────────────────────────────────────
@@ -170,6 +179,11 @@ public:
     // ── driver aliases / user preferences ─────────────────────────
     Q_INVOKABLE QVariantList driverAliases() const;
     Q_INVOKABLE void setDriverAlias(const QString& detected, const QString& display);
+    Q_INVOKABLE QVariantList driverMappings() const;
+    Q_INVOKABLE void setDriverMapping(const QString& key,
+                                      const QString& display);
+    Q_INVOKABLE QString driverDisplayName(
+        const QString& sessionKey) const;
 
     // ── data access for the trace canvas ───────────────────────────
     const racecraft::UnifiedLap* primaryUnified() const;
@@ -222,6 +236,7 @@ signals:
     void viewChanged();
     void sessionsChanged();
     void cornersChanged();
+    void driverMappingsChanged();
     void channelHeightChanged();
     void channelConfigChanged();
     void referenceAlignmentChanged();
@@ -233,6 +248,7 @@ private:
     void setCompare(SessionHandle* session, int lapId);
     void scanDirectory(const QString& dir);
     void loadPreferences();
+    QString driverDisplay(const SessionHandle* session) const;
     void savePreferences();
     void loadChannelsConfig();
 
@@ -243,6 +259,13 @@ private:
     void updateTrackAtlas(bool force);
     QString trackAtlasCachePath() const;
     QStringList sessionDirs_;
+    QSet<QString> scannedSessionPaths_;
+    QSet<QString> scannedSessionIdentities_;
+    QHash<QString, QString> driverMappings_;
+    QString lastPrimaryKey_;
+    QString lastCompareKey_;
+    int lastPrimaryLap_ = -1;
+    int lastCompareLap_ = -1;
     std::vector<std::unique_ptr<SessionHandle>> sessions_;
     SessionHandle* primarySession_ = nullptr;
     SessionHandle* compareSession_ = nullptr;

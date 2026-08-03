@@ -72,6 +72,7 @@ ApplicationWindow {
     property var channelRows: []
     property var cornerRows: []
     property var aliasRows: []
+    property var mappingRows: []
     property var filmstripSessions: []
     property var alignmentRows: ({})
     readonly property var colorChoices: ["#a7c080", "#7fbbb3", "#e67e80",
@@ -93,6 +94,7 @@ ApplicationWindow {
     }
     function refreshCornerRows() { cornerRows = store.cornerComparison() }
     function refreshAliasRows() { aliasRows = store.driverAliases() }
+    function refreshMappingRows() { mappingRows = store.driverMappings() }
     function refreshDirectoryRows() { directoryRows = store.sessionDirectories() }
     function sessionNameForKey(key) {
         for (let i = 0; i < treeModel.count; ++i) {
@@ -309,9 +311,14 @@ ApplicationWindow {
                         stem: session.stem,
                         driver: session.driver,
                         driverId: session.driverId,
+                        mappingKey: session.mappingKey,
+                        carNumber: session.carNumber,
+                        carClass: session.carClass,
                         sessionTime: session.sessionTime,
                         bestTime: session.bestTime,
                         bestTimeMs: session.bestTimeMs,
+                        isDriverBest: session.isDriverBest,
+                        isDayBest: session.isDayBest,
                         indent: 2,
                         key: session.key,
                         expanded: false
@@ -326,6 +333,7 @@ ApplicationWindow {
             rebuildTree()
             refreshLapStrip()
             refreshAliasRows()
+            refreshMappingRows()
             refreshDirectoryRows()
         })
         store.selectionChanged.connect(() => {
@@ -336,9 +344,14 @@ ApplicationWindow {
         })
         store.channelConfigChanged.connect(refreshChannelRows)
         store.cornersChanged.connect(refreshCornerRows)
+        store.driverMappingsChanged.connect(() => {
+            refreshMappingRows()
+            rebuildTree()
+        })
         refreshChannelRows()
         refreshCornerRows()
         refreshAliasRows()
+        refreshMappingRows()
         refreshDirectoryRows()
         refreshLapStrip()
         refreshAlignmentData()
@@ -498,7 +511,8 @@ ApplicationWindow {
             MenuItem {
                 text: "Preferences"
                 onTriggered: {
-                    refreshAliasRows()
+                    refreshMappingRows()
+                    refreshDirectoryRows()
                     settingsWindow.show()
                     settingsWindow.raise()
                 }
@@ -1104,15 +1118,17 @@ ApplicationWindow {
     ApplicationWindow {
         id: settingsWindow
         objectName: "settingsWindow"
-        width: 680
-        height: 540
-        minimumWidth: 580
-        minimumHeight: 440
+        width: 820
+        height: 680
+        minimumWidth: 700
+        minimumHeight: 560
         visible: false
         title: "Racecraft Preferences"
         color: root.backgroundColor
         font.family: root.uiFontFamily
         font.pixelSize: 11
+        property string mappingEditKey: ""
+        property string mappingEditName: ""
         Material.theme: Material.Dark
         Material.primary: root.surfaceColor
         Material.accent: root.accentColor
@@ -1167,12 +1183,13 @@ ApplicationWindow {
             ListView {
                 id: settingsDirectories
                 Layout.fillWidth: true
-                Layout.preferredHeight: 100
+                Layout.preferredHeight: Math.min(
+                    160, Math.max(40, directoryRows.length * 38))
                 clip: true
                 model: directoryRows
                 delegate: RowLayout {
                     width: settingsDirectories.width
-                    height: 28
+                    height: 38
                     Label {
                         text: modelData
                         elide: Text.ElideMiddle
@@ -1182,6 +1199,7 @@ ApplicationWindow {
                     }
                     Button {
                         text: "Remove"
+                        Layout.preferredHeight: 30
                         onClicked: {
                             store.removeSessionDirectory(modelData)
                             refreshDirectoryRows()
@@ -1189,50 +1207,114 @@ ApplicationWindow {
                     }
                 }
             }
-            Label { text: "Driver display names"; font.bold: true; color: root.accentColor }
+            Label {
+                text: "Driver mappings"
+                font.bold: true
+                color: root.accentColor
+            }
+            Label {
+                text: "Names apply to the same car number, class, and driver ID across sessions."
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                font.pixelSize: 9
+                color: root.mutedTextColor
+            }
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 6
                 TextField {
-                    id: detectedDriver
+                    id: mappingNameField
                     Layout.fillWidth: true
-                    placeholderText: "Detected name"
-                }
-                TextField {
-                    id: displayDriver
-                    Layout.fillWidth: true
-                    placeholderText: "Display name"
+                    text: settingsWindow.mappingEditName
+                    placeholderText: "Select a mapping or edit a driver name"
+                    onTextChanged: {
+                        if (activeFocus)
+                            settingsWindow.mappingEditName = text
+                    }
                 }
                 Button {
                     text: "Save"
+                    enabled: settingsWindow.mappingEditKey !== "" &&
+                             mappingNameField.text.trim() !== ""
                     onClicked: {
-                        store.setDriverAlias(detectedDriver.text, displayDriver.text)
-                        detectedDriver.text = ""
-                        displayDriver.text = ""
-                        refreshAliasRows()
+                        store.setDriverMapping(
+                            settingsWindow.mappingEditKey,
+                            mappingNameField.text)
+                        settingsWindow.mappingEditKey = ""
+                        settingsWindow.mappingEditName = ""
+                        refreshMappingRows()
                     }
                 }
             }
             ListView {
-                id: aliasListView
+                id: mappingListView
                 Layout.fillWidth: true
-                Layout.fillHeight: true
+                Layout.preferredHeight: 250
                 clip: true
-                model: aliasRows
+                model: mappingRows
                 delegate: RowLayout {
-                    width: aliasListView.width
-                    height: 28
-                    Label { text: modelData.detected; Layout.fillWidth: true }
+                    width: mappingListView.width
+                    height: 38
+                    spacing: 6
                     Label {
-                        text: "→ " + modelData.display
-                        Layout.fillWidth: true
+                        Layout.preferredWidth: 92
+                        text: "Car " + modelData.carNumber
+                        font.family: "Geist Mono"
+                        font.pixelSize: 9
+                        color: root.foregroundColor
+                    }
+                    Label {
+                        Layout.preferredWidth: 88
+                        text: modelData.carClass || "Unknown class"
+                        font.family: "Geist Mono"
+                        font.pixelSize: 9
                         color: root.mutedTextColor
                     }
-                    Button {
-                        text: "Remove"
+                    Label {
+                        Layout.preferredWidth: 72
+                        text: "ID " + (modelData.driverId || "—")
+                        font.family: "Geist Mono"
+                        font.pixelSize: 9
+                        color: root.mutedTextColor
+                    }
+                    Label {
+                        visible: settingsWindow.mappingEditKey !== modelData.key
+                        Layout.fillWidth: true
+                        text: modelData.display
+                        elide: Text.ElideRight
+                        color: root.accentColor
+                    }
+                    TextField {
+                        visible: settingsWindow.mappingEditKey === modelData.key
+                        Layout.fillWidth: true
+                        text: settingsWindow.mappingEditName
+                        onTextChanged: {
+                            if (activeFocus)
+                                settingsWindow.mappingEditName = text
+                        }
+                    }
+                    ToolButton {
+                        text: settingsWindow.mappingEditKey === modelData.key
+                               ? "✓" : "✎"
                         onClicked: {
-                            store.setDriverAlias(modelData.detected, "")
-                            refreshAliasRows()
+                            if (settingsWindow.mappingEditKey === modelData.key) {
+                                store.setDriverMapping(
+                                    modelData.key,
+                                    settingsWindow.mappingEditName)
+                                settingsWindow.mappingEditKey = ""
+                                settingsWindow.mappingEditName = ""
+                                refreshMappingRows()
+                            } else {
+                                settingsWindow.mappingEditKey = modelData.key
+                                settingsWindow.mappingEditName = modelData.display
+                            }
+                        }
+                    }
+                    ToolButton {
+                        text: "×"
+                        onClicked: {
+                            store.setDriverMapping(modelData.key, "")
+                            refreshMappingRows()
                         }
                     }
                 }
@@ -1252,12 +1334,13 @@ ApplicationWindow {
 
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: visible ? filmstripSessions.length * 30 : 0
+            Layout.preferredHeight:
+                visible ? filmstripSessions.length * 30 + 12 : 0
             visible: filmstripSessions.length > 0
             color: root.darkBackgroundColor
-            border.color: root.borderColor
             Column {
                 anchors.fill: parent
+                anchors.margins: 6
                 spacing: 0
                 Repeater {
                     model: filmstripSessions
@@ -1277,7 +1360,7 @@ ApplicationWindow {
                             anchors.rightMargin: 4
                             spacing: 5
                             Label {
-                                Layout.preferredWidth: 170
+                                Layout.preferredWidth: 190
                                 text: (strip.reference ? "⇄ REF  " : "RUN  ") +
                                       strip.sessionName
                                 elide: Text.ElideMiddle
@@ -1288,13 +1371,16 @@ ApplicationWindow {
                                        ? root.orangeColor : root.accentColor
                             }
                             ToolButton {
-                                visible: strip.reference
                                 Layout.preferredWidth: 24
                                 Layout.preferredHeight: 24
                                 text: "×"
-                                onClicked: store.clearCompare()
+                                onClicked: strip.reference
+                                          ? store.clearCompare()
+                                          : store.clearPrimary()
                                 ToolTip.visible: hovered
-                                ToolTip.text: "Remove reference session"
+                                ToolTip.text: strip.reference
+                                               ? "Remove reference session"
+                                               : "Clear active session"
                             }
                             Item {
                                 id: proportionalLapLane
@@ -1725,7 +1811,11 @@ ApplicationWindow {
                         elide: Text.ElideMiddle
                         font.family: "Geist Mono"
                         font.pixelSize: 8
-                        color: root.mutedTextColor
+                        color: model.isDayBest
+                               ? root.magentaColor
+                               : model.isDriverBest
+                                 ? root.greenColor
+                                 : root.mutedTextColor
                     }
                     Label {
                         visible: model.role !== "session"
@@ -1738,6 +1828,21 @@ ApplicationWindow {
                         color: model.role === "track"
                                ? root.foregroundColor : root.mutedTextColor
                     }
+                }
+                ToolButton {
+                    visible: model.role === "session"
+                    Layout.preferredWidth: 22
+                    Layout.preferredHeight: 22
+                    text: "✎"
+                    font.pixelSize: 12
+                    onClicked: {
+                        settingsWindow.mappingEditKey = model.mappingKey || ""
+                        settingsWindow.mappingEditName = model.driver || ""
+                        settingsWindow.show()
+                        settingsWindow.raise()
+                    }
+                    ToolTip.visible: hovered
+                    ToolTip.text: "Edit driver name mapping"
                 }
                 Label {
                     visible: activeSession || referenceSession

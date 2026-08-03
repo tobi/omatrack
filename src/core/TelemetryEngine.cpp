@@ -533,7 +533,8 @@ std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
     const int lapTimeId = firstId({"lap time"});
     const int previousLapTimeId = firstId({"previous lap time"});
     const int driverIdChannel =
-        firstId({"driver_id", "driver id", "driverid"});
+        firstId({"driver_id", "driver id", "driverid",
+                 "activeDriverId", "X2LNK_driverID"});
 
     auto [driverValues, driverFreq] = decode(driverIdChannel);
     (void)driverFreq;

@@ -99,6 +99,26 @@ SessionHandle::SessionHandle(const QString& path) : path_(path) {
     vehicle_ = QString::fromStdString(meta.vehicleId);
     time_ = QString::fromStdString(meta.time);
     driverId_ = QString::fromStdString(meta.driverTag);
+    driver_ = QStringLiteral("Driver id %1").arg(driverId_);
+    const QString stem = fi.completeBaseName();
+    QRegularExpression carPattern(
+        QStringLiteral("(?:^|[_ ])Car(\\d+)"),
+        QRegularExpression::CaseInsensitiveOption);
+    QRegularExpressionMatch carMatch = carPattern.match(stem);
+    if (carMatch.hasMatch()) {
+        carNumber_ = carMatch.captured(1);
+    } else {
+        QRegularExpression hashPattern(QStringLiteral("#(\\d+)"));
+        const QRegularExpressionMatch hashMatch = hashPattern.match(stem);
+        if (hashMatch.hasMatch()) carNumber_ = hashMatch.captured(1);
+    }
+    QRegularExpression classPattern(
+        QStringLiteral("(LMP\\d+|GT[0-9A-Z]+)"),
+        QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpressionMatch classMatch = classPattern.match(stem);
+    carClass_ = classMatch.hasMatch()
+                    ? classMatch.captured(1).toUpper()
+                    : vehicle_;
 
     // Track: prefer bundled venue knowledge; fall back to a folder name token.
     track_ = venue_;
@@ -153,10 +173,11 @@ void SessionHandle::populateLaps(const std::vector<Lap>& detected) {
 void SessionHandle::ensureLapSummary() {
     if (summaryLoaded_) return;
     int eventDriverId = 0;
-    populateLaps(detectLapsLightweight(path_.toStdString(), &eventDriverId));
+    populateLaps(
+        detectLapsLightweight(path_.toStdString(), &eventDriverId));
     if (eventDriverId > 0) {
         driverId_ = QString::number(eventDriverId);
-        driver_ = driverNameForEventId(eventDriverId, driver_);
+        driver_ = QStringLiteral("Driver id %1").arg(driverId_);
     }
 }
 
@@ -235,9 +256,17 @@ void TelemetryStore::loadPreferences() {
         if (!sessionDirs_.contains(d)) sessionDirs_.append(d);
     }
     channelHeight_ = s.value("channelHeight", 110).toInt();
+    lastPrimaryKey_ = s.value("lastPrimaryKey").toString();
+    lastPrimaryLap_ = s.value("lastPrimaryLap", -1).toInt();
+    lastCompareKey_ = s.value("lastCompareKey").toString();
+    lastCompareLap_ = s.value("lastCompareLap", -1).toInt();
     s.beginGroup("driverAliases");
     for (const QString& key : s.childKeys())
         driverAliases_.insert(key, s.value(key).toString());
+    s.endGroup();
+    s.beginGroup("driverMappings");
+    for (const QString& key : s.childKeys())
+        driverMappings_.insert(key, s.value(key).toString());
     s.endGroup();
 }
 
@@ -245,6 +274,10 @@ void TelemetryStore::savePreferences() {
     QSettings s;
     s.setValue("sessionDirs", sessionDirs_);
     s.setValue("channelHeight", channelHeight_);
+    s.setValue("lastPrimaryKey", lastPrimaryKey_);
+    s.setValue("lastPrimaryLap", lastPrimaryLap_);
+    s.setValue("lastCompareKey", lastCompareKey_);
+    s.setValue("lastCompareLap", lastCompareLap_);
 
     s.beginGroup("driverAliases");
     s.remove(QString());
@@ -252,6 +285,12 @@ void TelemetryStore::savePreferences() {
         s.setValue(it.key(), it.value());
     s.endGroup();
 
+    s.beginGroup("driverMappings");
+    s.remove(QString());
+    for (auto it = driverMappings_.cbegin();
+         it != driverMappings_.cend(); ++it)
+        s.setValue(it.key(), it.value());
+    s.endGroup();
     s.beginGroup("channels");
     s.setValue("_paletteSchema", 3);
     for (const QString& key : channelOrder_) {
@@ -342,12 +381,6 @@ void TelemetryStore::refreshTrackAtlas() {
 
 void TelemetryStore::updateTrackAtlas(bool force) {
     const QFileInfo cache(trackAtlasCachePath());
-    if (!force && cache.exists() &&
-        cache.lastModified().secsTo(QDateTime::currentDateTime()) <
-            kTrackAtlasMaxAgeSeconds) {
-        if (atlasTracks_.isEmpty()) loadTrackAtlasCache();
-        return;
-    }
 
     trackAtlasStatus_ = QStringLiteral("Updating track-atlas…");
     emit trackAtlasChanged();
@@ -383,8 +416,32 @@ void TelemetryStore::updateTrackAtlas(bool force) {
 
 void TelemetryStore::scan() {
     closedTracks_.clear();
+    scannedSessionPaths_.clear();
+    scannedSessionIdentities_.clear();
     clearSessions();
     for (const QString& dir : sessionDirs_) scanDirectory(dir);
+    if (!lastPrimaryKey_.isEmpty()) {
+        SessionHandle* saved = findSession(lastPrimaryKey_);
+        if (saved) {
+            for (const LapEntry& lap : saved->laps()) {
+                if (lap.lapId == lastPrimaryLap_) {
+                    setPrimary(saved, lastPrimaryLap_);
+                    break;
+                }
+            }
+        }
+    }
+    if (!lastCompareKey_.isEmpty() && primarySession_) {
+        SessionHandle* saved = findSession(lastCompareKey_);
+        if (saved) {
+            for (const LapEntry& lap : saved->laps()) {
+                if (lap.lapId == lastCompareLap_) {
+                    setCompare(saved, lastCompareLap_);
+                    break;
+                }
+            }
+        }
+    }
     ready_ = true;
     emit readyChanged();
     emit sessionsChanged();
@@ -406,7 +463,17 @@ void TelemetryStore::scanDirectory(const QString& dir) {
             if (!QFileInfo::exists(companion)) continue;
             path = companion;
         }
-        if (!paths.contains(path)) paths.append(path);
+        const QFileInfo resolved(path);
+        const QString canonical = resolved.canonicalFilePath().isEmpty()
+                                       ? resolved.absoluteFilePath()
+                                       : resolved.canonicalFilePath();
+        QString identity = resolved.completeBaseName().toLower();
+        identity.remove(QRegularExpression(QStringLiteral("-\\d+$")));
+        if (scannedSessionIdentities_.contains(identity)) continue;
+        scannedSessionIdentities_.insert(identity);
+        if (scannedSessionPaths_.contains(canonical)) continue;
+        scannedSessionPaths_.insert(canonical);
+        if (!paths.contains(canonical)) paths.append(canonical);
     }
     std::sort(paths.begin(), paths.end());
     for (const QString& path : paths) {
@@ -488,6 +555,13 @@ void TelemetryStore::closeTrack(const QString& trackName) {
     emit sessionsChanged();
 }
 
+QString TelemetryStore::driverDisplay(const SessionHandle* session) const {
+    if (!session) return QStringLiteral("Unknown driver");
+    const QString mapped = driverMappings_.value(
+        session->driverMappingKey()).trimmed();
+    return mapped.isEmpty() ? session->driver() : mapped;
+}
+
 QVariantList TelemetryStore::trackGroups() const {
     QVariantList tracks;
     QStringList trackNames;
@@ -511,7 +585,13 @@ QVariantList TelemetryStore::trackGroups() const {
         QVariantList dates;
         QStringList dateNames = dateSessions[trackName].keys();
         std::sort(dateNames.begin(), dateNames.end(),
-                  std::greater<QString>());
+                  [](const QString& a, const QString& b) {
+                      const QDate da = QDate::fromString(a, "dd/MM/yyyy");
+                      const QDate db = QDate::fromString(b, "dd/MM/yyyy");
+                      if (da.isValid() && db.isValid() && da != db)
+                          return da > db;
+                      return a > b;
+                  });
         for (const QString& dateName : dateNames) {
             QVector<QVariantMap> sessionMaps;
             for (const QString& pair : dateSessions[trackName][dateName]) {
@@ -520,33 +600,59 @@ QVariantList TelemetryStore::trackGroups() const {
                 const QString key = pair.mid(separator + 1);
                 SessionHandle* session = findSession(key);
                 if (!session) continue;
+                const double bestTimeMs = session->bestLapMs();
                 sessionMaps.append(QVariantMap{
                     {"stem", stem},
                     {"key", key},
-                    {"driver", session->driver()},
+                    {"mappingKey", session->driverMappingKey()},
+                    {"driver", driverDisplay(session)},
                     {"driverId", session->driverId()},
+                    {"carNumber", session->carNumber()},
+                    {"carClass", session->carClass()},
                     {"vehicle", session->vehicle()},
                     {"sessionTime", session->sessionTime()},
                     {"bestTime", session->bestLapTime()},
-                    {"bestTimeMs", session->bestLapMs()}});
+                    {"bestTimeMs", bestTimeMs}});
             }
             std::sort(sessionMaps.begin(), sessionMaps.end(),
                       [](const QVariantMap& a, const QVariantMap& b) {
-                          const QString at =
-                              a.value("sessionTime").toString();
-                          const QString bt =
-                              b.value("sessionTime").toString();
-                          if (at != bt) {
-                              if (at.isEmpty()) return false;
-                              if (bt.isEmpty()) return true;
+                          const QTime at =
+                              QTime::fromString(a.value("sessionTime").toString(),
+                                                "HH:mm:ss");
+                          const QTime bt =
+                              QTime::fromString(b.value("sessionTime").toString(),
+                                                "HH:mm:ss");
+                          if (at.isValid() && bt.isValid() && at != bt)
                               return at < bt;
-                          }
+                          if (at.isValid() != bt.isValid()) return at.isValid();
                           return a.value("stem").toString() <
                                  b.value("stem").toString();
                       });
+            QHash<QString, double> driverBest;
+            double dayBest = std::numeric_limits<double>::max();
+            for (const QVariantMap& row : sessionMaps) {
+                const double best = row.value("bestTimeMs").toDouble();
+                if (best <= 0.0) continue;
+                driverBest[row.value("mappingKey").toString()] =
+                    std::min(driverBest.value(
+                                 row.value("mappingKey").toString(),
+                                 std::numeric_limits<double>::max()),
+                             best);
+                dayBest = std::min(dayBest, best);
+            }
             QVariantList sessions;
-            for (const QVariantMap& session : sessionMaps)
-                sessions.append(session);
+            for (QVariantMap row : sessionMaps) {
+                const QString mappingKey = row.value("mappingKey").toString();
+                const double best = row.value("bestTimeMs").toDouble();
+                row.insert("isDriverBest",
+                           best > 0.0 &&
+                               qFuzzyCompare(best + 1.0,
+                                             driverBest.value(mappingKey) + 1.0));
+                row.insert("isDayBest",
+                           best > 0.0 &&
+                               qFuzzyCompare(best + 1.0, dayBest + 1.0));
+                sessions.append(row);
+            }
             dates.append(QVariantMap{{"date", dateName},
                                      {"sessions", sessions}});
         }
@@ -780,6 +886,9 @@ void TelemetryStore::setPrimary(SessionHandle* session, int lapId) {
     primarySession_ = session;
     primaryLap_ = lapId;
     deltaCacheValid_ = false;
+    lastPrimaryKey_ = session ? session->sessionKey() : QString();
+    lastPrimaryLap_ = session ? lapId : -1;
+    savePreferences();
     extraChannelCache_.clear();
     if (sessionChanged) setReferenceAlignment(0.0);
     cursorFrac_ = 0.0;
@@ -790,6 +899,9 @@ void TelemetryStore::setPrimary(SessionHandle* session, int lapId) {
 
 void TelemetryStore::setCompare(SessionHandle* session, int lapId) {
     const bool sessionChanged = compareSession_ != session;
+    lastCompareKey_ = session ? session->sessionKey() : QString();
+    lastCompareLap_ = session ? lapId : -1;
+    savePreferences();
     compareSession_ = session;
     compareLap_ = lapId;
     deltaCacheValid_ = false;
@@ -814,9 +926,28 @@ void TelemetryStore::compareLap(const QString& sessionKey, int lapId) {
 void TelemetryStore::clearCompare() {
     compareSession_ = nullptr;
     compareLap_ = -1;
+    lastCompareKey_.clear();
+    lastCompareLap_ = -1;
     deltaCacheValid_ = false;
     setReferenceAlignment(0.0);
+    savePreferences();
     emit selectionChanged();
+}
+
+void TelemetryStore::clearPrimary() {
+    primarySession_ = nullptr;
+    primaryLap_ = -1;
+    compareSession_ = nullptr;
+    compareLap_ = -1;
+    lastPrimaryKey_.clear();
+    lastPrimaryLap_ = -1;
+    lastCompareKey_.clear();
+    lastCompareLap_ = -1;
+    deltaCacheValid_ = false;
+    corners_.clear();
+    savePreferences();
+    emit selectionChanged();
+    emit cornersChanged();
 }
 
 QVariantList TelemetryStore::lapsForSession(const QString& sessionKey) const {
@@ -1771,6 +1902,49 @@ void TelemetryStore::setChannelWeight(const QString& key, double weight) {
 
 QStringList TelemetryStore::channelOrder() const { return channelOrder_; }
 
+QVariantList TelemetryStore::driverMappings() const {
+    QVariantList out;
+    QHash<QString, QString> all = driverMappings_;
+    for (const auto& session : sessions_) {
+        session->bestLapMs();
+        const QString key = session->driverMappingKey();
+        if (!key.isEmpty() && !all.contains(key))
+            all.insert(key, session->driver());
+    }
+    QStringList keys = all.keys();
+    std::sort(keys.begin(), keys.end());
+    for (const QString& key : keys) {
+        const QStringList parts = key.split('|');
+        out.append(QVariantMap{
+            {"key", key},
+            {"carNumber", parts.value(0)},
+            {"carClass", parts.value(1)},
+            {"driverId", parts.value(2)},
+            {"display", all.value(key)}});
+    }
+    return out;
+}
+
+void TelemetryStore::setDriverMapping(const QString& key,
+                                      const QString& display) {
+    const QString cleanKey = key.trimmed();
+    if (cleanKey.isEmpty()) return;
+    if (display.trimmed().isEmpty())
+        driverMappings_.remove(cleanKey);
+    else
+        driverMappings_[cleanKey] = display.trimmed();
+    savePreferences();
+    emit driverMappingsChanged();
+    emit sessionsChanged();
+}
+
+QString TelemetryStore::driverDisplayName(const QString& sessionKey) const {
+    SessionHandle* session = findSession(sessionKey);
+    if (!session) return QString();
+    session->bestLapMs();
+    return driverDisplay(session);
+}
+
 QVariantList TelemetryStore::driverAliases() const {
     QVariantList out;
     for (auto it = driverAliases_.cbegin(); it != driverAliases_.cend(); ++it)
@@ -1895,7 +2069,7 @@ QString TelemetryStore::primaryLabel() const {
 
 QString TelemetryStore::primaryDetail() const {
     if (!primarySession_) return QString();
-    QString s = driverAliases_.value(primarySession_->driver(), primarySession_->driver());
+    QString s = driverDisplay(primarySession_);
     if (primaryLap_ >= 0) {
         for (const auto& l : primarySession_->laps())
             if (l.lapId == primaryLap_) {
@@ -1908,7 +2082,7 @@ QString TelemetryStore::primaryDetail() const {
 
 QString TelemetryStore::compareLabel() const {
     if (!compareSession_) return QString();
-    QString s = driverAliases_.value(compareSession_->driver(), compareSession_->driver());
+    QString s = driverDisplay(compareSession_);
     for (const auto& l : compareSession_->laps())
         if (l.lapId == compareLap_) {
             s += " " + l.timeText;
