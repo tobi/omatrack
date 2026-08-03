@@ -533,19 +533,36 @@ std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
     const int lapTimeId = firstId({"lap time"});
     const int previousLapTimeId = firstId({"previous lap time"});
     const int driverIdChannel =
-        firstId({"driver_id", "driver id", "driverid",
+        firstId({"DriverID", "driver_id", "driver id", "driverid",
                  "activeDriverId", "X2LNK_driverID"});
 
     auto [driverValues, driverFreq] = decode(driverIdChannel);
     (void)driverFreq;
     if (driverId && !driverValues.empty()) {
-        for (double value : driverValues) {
-            const int candidate = int(std::llround(value));
-            if (candidate > 0) {
-                *driverId = candidate;
-                break;
+        std::map<int, std::pair<size_t, size_t>> counts;
+        for (size_t index = 0; index < driverValues.size(); ++index) {
+            const int candidate =
+                int(std::llround(driverValues[index]));
+            if (candidate <= 0) continue;
+            auto& entry = counts[candidate];
+            ++entry.first;
+            if (entry.first == 1) entry.second = index;
+        }
+        int bestId = 0;
+        size_t bestCount = 0;
+        size_t bestFirst = std::numeric_limits<size_t>::max();
+        for (const auto& [candidate, count] : counts) {
+            if (count.first > bestCount ||
+                (count.first == bestCount && count.second < bestFirst)) {
+                bestId = candidate;
+                bestCount = count.first;
+                bestFirst = count.second;
             }
         }
+        if (bestId >= 1 && bestId <= 4)
+            *driverId = bestId;
+        else if (bestId > 0)
+            *driverId = -1;
     }
     auto [beacon, beaconFreq] = decode(beaconId);
     auto [lapNumber, numberFreq] = decode(lapNumberId);
