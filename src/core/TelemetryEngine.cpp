@@ -559,10 +559,7 @@ std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
                 bestFirst = count.second;
             }
         }
-        if (bestId >= 1 && bestId <= 4)
-            *driverId = bestId;
-        else if (bestId > 0)
-            *driverId = -1;
+        if (bestId > 0) *driverId = bestId;
     }
     auto [beacon, beaconFreq] = decode(beaconId);
     auto [lapNumber, numberFreq] = decode(lapNumberId);

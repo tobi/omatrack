@@ -12,6 +12,8 @@ endif()
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS
   Core Gui Quick QuickControls2 Widgets Qml Network)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LIBMPV REQUIRED IMPORTED_TARGET mpv)
 
 # ── Rust parsing bridge (vendored duckdb_motorsport_telemetry) ──────
 set(RUST_WORKSPACE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/motorsport-telemetry)
@@ -53,9 +55,10 @@ target_include_directories(racecraft-cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
 # ── Qt app ──────────────────────────────────────────────────────────
 qt_add_executable(racecraft
   src/main.cpp
+  src/app/MpvVideoItem.cpp
   src/app/TelemetryStore.cpp
   src/app/TraceView.cpp
   src/qml/application.qrc
 )
-target_link_libraries(racecraft PRIVATE racecraft_core Qt6::Quick Qt6::QuickControls2 Qt6::Widgets Qt6::Qml Qt6::Network)
+target_link_libraries(racecraft PRIVATE racecraft_core PkgConfig::LIBMPV Qt6::Quick Qt6::QuickControls2 Qt6::Widgets Qt6::Qml Qt6::Network)
 target_include_directories(racecraft PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)

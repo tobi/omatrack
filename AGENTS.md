@@ -6,6 +6,14 @@ Racecraft is a native racing-telemetry workstation. Its primary target is Linux 
 
 This is not a single-format file viewer or a generic chart demo. The product direction is a full telemetry system that can ingest every major race format through one analysis pipeline. The current parser bridge supports Pi/Cosworth `.pds`, MoTeC `.ld` (with `.ldx` treated as a companion), and Racelogic `.vbo`; that is the starting set, not the intended limit.
 
+## Product goal
+
+Build a generic telemetry workstation that happens to work exceptionally well
+for an LMP2 IMSA team. Do not overfit the implementation to that team: paths,
+driver names, car numbers, classes, event assumptions, and other team-specific
+values must not be hardcoded in the codebase. Make those values easy to
+configure, persist, and override through the application model and preferences.
+
 ## Product philosophy
 
 ### Racing concepts first

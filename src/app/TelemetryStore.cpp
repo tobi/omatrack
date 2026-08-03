@@ -178,10 +178,7 @@ void SessionHandle::ensureLapSummary() {
     if (eventDriverId > 0) {
         driverId_ = QString::number(eventDriverId);
         driver_ = QStringLiteral("Driver id %1").arg(driverId_);
-    } else if (eventDriverId < 0) {
-        driverId_ = QStringLiteral("?");
-        driver_ = QStringLiteral("Unknown driver");
-    }
+}
 }
 
 void SessionHandle::ensureSource() {

@@ -8,6 +8,7 @@
 #include <QQmlError>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QSGRendererInterface>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QImage>
@@ -23,6 +24,7 @@
 #include <QUrl>
 #include <QVariantList>
 #include <cmath>
+#include <clocale>
 #include <QVariantMap>
 
 QVariantMap loadOmarchyColors() {
@@ -54,11 +56,14 @@ QVariantMap loadOmarchyColors() {
     return colors;
 }
 
+#include "app/MpvVideoItem.h"
 #include "app/TelemetryStore.h"
 #include "app/TraceView.h"
 
 int main(int argc, char** argv) {
+    QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
     QGuiApplication app(argc, argv);
+    std::setlocale(LC_NUMERIC, "C");
     const bool autotest = !qgetenv("RACECRAFT_AUTOTEST").isEmpty();
     QCoreApplication::setOrganizationName(autotest ? "racecraft-autotest" : "racecraft");
     QCoreApplication::setApplicationName("racecraft-qt");
@@ -76,6 +81,7 @@ int main(int argc, char** argv) {
     qmlRegisterType<TraceView>("Racecraft", 1, 0, "TraceView");
     qmlRegisterType<TraceCursorOverlay>(
         "Racecraft", 1, 0, "TraceCursorOverlay");
+    qmlRegisterType<MpvVideoItem>("Racecraft", 1, 0, "MpvVideoItem");
 
     TelemetryStore store;
 
@@ -99,6 +105,13 @@ int main(int argc, char** argv) {
         "omarchyColors", loadOmarchyColors());
     const bool autotestWindows = !qgetenv("RACECRAFT_AUTOTEST_WINDOWS").isEmpty();
     engine.rootContext()->setContextProperty("autotestWindows", autotestWindows);
+    const QString startupVideoPath =
+        qEnvironmentVariable("RACECRAFT_VIDEO");
+    engine.rootContext()->setContextProperty(
+        "startupVideo",
+        startupVideoPath.isEmpty()
+            ? QUrl()
+            : QUrl::fromLocalFile(startupVideoPath));
     engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
     if (engine.rootObjects().isEmpty()) {
         return -1;

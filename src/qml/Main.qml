@@ -79,6 +79,7 @@ ApplicationWindow {
                                          "#dbbc7f", "#d699b6", "#e09d7f",
                                          "#d3c6aa", "#9da9a0"]
     property var directoryRows: []
+    property bool videoVisible: false
 
     ListModel { id: treeModel }
     property var expandedTracks: ({})
@@ -283,6 +284,18 @@ ApplicationWindow {
         if (lap) store.compareLap(key, lap.lapId)
     }
     function dateKey(trackName, dateName) { return trackName + "|" + dateName }
+    function formatMediaTime(seconds) {
+        if (!isFinite(seconds) || seconds < 0) seconds = 0
+        const total = Math.floor(seconds)
+        const hours = Math.floor(total / 3600)
+        const minutes = Math.floor((total % 3600) / 60)
+        const secs = total % 60
+        const paddedMinutes = (hours > 0 && minutes < 10 ? "0" : "") + minutes
+        const paddedSeconds = (secs < 10 ? "0" : "") + secs
+        return hours > 0
+               ? hours + ":" + paddedMinutes + ":" + paddedSeconds
+               : minutes + ":" + paddedSeconds
+    }
 
     function rebuildTree() {
         if (!store.ready) return
@@ -357,6 +370,11 @@ ApplicationWindow {
         refreshAlignmentData()
         readout.refresh()
         rebuildTree()
+        if (typeof startupVideo !== "undefined" &&
+            startupVideo.toString() !== "") {
+            videoVisible = true
+            Qt.callLater(() => videoPlayer.openMedia(startupVideo))
+        }
         if (typeof autotestWindows !== "undefined" && autotestWindows) {
             cornerWindow.show()
             channelsWindow.show()
@@ -475,6 +493,10 @@ ApplicationWindow {
             MenuItem {
                 text: "Open telemetry…"
                 onTriggered: drawer.open()
+            }
+            MenuItem {
+                text: "Open video…"
+                onTriggered: videoFileDialog.open()
             }
             MenuSeparator {}
             MenuItem {
@@ -599,6 +621,20 @@ ApplicationWindow {
             store.openFile(fileDialog.file.toLocalFile())
             refreshCornerRows()
             rebuildTree()
+        }
+    }
+
+    Platform.FileDialog {
+        id: videoFileDialog
+        title: "Open onboard video"
+        fileMode: Platform.FileDialog.OpenFile
+        nameFilters: [
+            "Video (*.mp4 *.MP4 *.mov *.MOV *.mkv *.MKV *.avi *.AVI *.m4v *.webm)",
+            "All files (*)"
+        ]
+        onAccepted: {
+            videoVisible = true
+            Qt.callLater(() => videoPlayer.openMedia(videoFileDialog.file))
         }
     }
 
@@ -1592,6 +1628,244 @@ ApplicationWindow {
                     }
                     ToolTip.visible: hovered
                     ToolTip.text: "Add or hide source channels"
+                }
+            }
+
+            Rectangle {
+                id: videoPane
+                objectName: "videoPane"
+                visible: videoVisible
+                SplitView.preferredWidth:
+                    visible ? Math.min(620, Math.max(380, root.width * 0.42)) : 0
+                SplitView.minimumWidth: visible ? 320 : 0
+                SplitView.maximumWidth: visible ? root.width * 0.68 : 0
+                SplitView.fillHeight: true
+                color: root.traceBackgroundColor
+                border.width: 1
+                border.color: root.borderColor
+                focus: visible
+
+                Keys.onPressed: (event) => {
+                    if (!videoPlayer.loaded) return
+                    if (event.key === Qt.Key_Space) {
+                        videoPlayer.togglePaused()
+                        event.accepted = true
+                    } else if (event.key === Qt.Key_Left) {
+                        videoPlayer.seekRelative(-5)
+                        event.accepted = true
+                    } else if (event.key === Qt.Key_Right) {
+                        videoPlayer.seekRelative(5)
+                        event.accepted = true
+                    } else if (event.key === Qt.Key_Period) {
+                        videoPlayer.frameStep()
+                        event.accepted = true
+                    }
+                }
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: 0
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 34
+                        color: root.surfaceColor
+                        border.color: root.borderColor
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 8
+                            anchors.rightMargin: 4
+                            spacing: 6
+                            Label {
+                                text: "VIDEO"
+                                font.family: "Geist Mono"
+                                font.pixelSize: 9
+                                font.bold: true
+                                font.letterSpacing: 0.8
+                                color: root.accentColor
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: videoPlayer.title || "No video loaded"
+                                elide: Text.ElideMiddle
+                                font.pixelSize: 10
+                                color: root.foregroundColor
+                            }
+                            Label {
+                                text: videoPlayer.seeking
+                                      ? "SEEK"
+                                      : videoPlayer.loaded
+                                        ? (videoPlayer.paused ? "PAUSED" : "PLAYING")
+                                        : ""
+                                font.family: "Geist Mono"
+                                font.pixelSize: 8
+                                color: videoPlayer.seeking
+                                       ? root.yellowColor : root.mutedTextColor
+                            }
+                            ToolButton {
+                                text: "Open"
+                                onClicked: videoFileDialog.open()
+                                ToolTip.visible: hovered
+                                ToolTip.text: "Open another video"
+                            }
+                            ToolButton {
+                                text: "×"
+                                onClicked: {
+                                    videoPlayer.closeMedia()
+                                    videoVisible = false
+                                }
+                                ToolTip.visible: hovered
+                                ToolTip.text: "Close video"
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        id: videoSurface
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        color: "#000000"
+                        clip: true
+
+                        MpvVideoItem {
+                            id: videoPlayer
+                            objectName: "videoPlayer"
+                            anchors.fill: parent
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: videoPlayer.loaded
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                videoPane.forceActiveFocus()
+                                videoPlayer.togglePaused()
+                            }
+                        }
+
+                        Column {
+                            anchors.centerIn: parent
+                            width: Math.min(parent.width - 32, 360)
+                            spacing: 8
+                            visible: videoPlayer.errorString !== "" ||
+                                     !videoPlayer.loaded
+                            Label {
+                                width: parent.width
+                                horizontalAlignment: Text.AlignHCenter
+                                wrapMode: Text.Wrap
+                                text: videoPlayer.errorString !== ""
+                                      ? videoPlayer.errorString
+                                      : videoPlayer.ready
+                                        ? "Loading video…"
+                                        : "Preparing video renderer…"
+                                color: videoPlayer.errorString !== ""
+                                       ? root.redColor : root.mutedTextColor
+                                font.family: "Geist Mono"
+                                font.pixelSize: 10
+                            }
+                            Button {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                visible: videoPlayer.source.toString() === ""
+                                text: "Open video"
+                                onClicked: videoFileDialog.open()
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 64
+                        color: root.surfaceColor
+                        border.color: root.borderColor
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 6
+                            anchors.rightMargin: 6
+                            spacing: 0
+                            Slider {
+                                id: videoSeekSlider
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 24
+                                from: 0
+                                to: Math.max(0.001, videoPlayer.duration)
+                                enabled: videoPlayer.loaded &&
+                                         videoPlayer.duration > 0
+                                property real pendingValue: 0
+                                onMoved: pendingValue = value
+                                onPressedChanged: {
+                                    if (pressed)
+                                        pendingValue = value
+                                    else if (enabled)
+                                        videoPlayer.seek(pendingValue)
+                                }
+                                Binding {
+                                    target: videoSeekSlider
+                                    property: "value"
+                                    value: videoPlayer.position
+                                    when: !videoSeekSlider.pressed
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                spacing: 3
+                                ToolButton {
+                                    Layout.preferredWidth: 50
+                                    text: videoPlayer.paused ? "Play" : "Pause"
+                                    enabled: videoPlayer.loaded
+                                    onClicked: videoPlayer.togglePaused()
+                                }
+                                ToolButton {
+                                    Layout.preferredWidth: 34
+                                    text: "−5s"
+                                    enabled: videoPlayer.loaded
+                                    onClicked: videoPlayer.seekRelative(-5)
+                                    ToolTip.visible: hovered
+                                    ToolTip.text: "Seek backward five seconds"
+                                }
+                                ToolButton {
+                                    Layout.preferredWidth: 34
+                                    text: "+5s"
+                                    enabled: videoPlayer.loaded
+                                    onClicked: videoPlayer.seekRelative(5)
+                                    ToolTip.visible: hovered
+                                    ToolTip.text: "Seek forward five seconds"
+                                }
+                                ToolButton {
+                                    Layout.preferredWidth: 40
+                                    text: "Step"
+                                    enabled: videoPlayer.loaded
+                                    onClicked: videoPlayer.frameStep()
+                                    ToolTip.visible: hovered
+                                    ToolTip.text: "Advance one frame"
+                                }
+                                Item { Layout.fillWidth: true }
+                                Label {
+                                    Layout.preferredWidth: 78
+                                    horizontalAlignment: Text.AlignRight
+                                    text: root.formatMediaTime(
+                                              videoSeekSlider.pressed
+                                              ? videoSeekSlider.pendingValue
+                                              : videoPlayer.position) +
+                                          "/" +
+                                          root.formatMediaTime(videoPlayer.duration)
+                                    font.family: "Geist Mono"
+                                    font.pixelSize: 8
+                                    color: root.mutedTextColor
+                                }
+                                ToolButton {
+                                    Layout.preferredWidth: 50
+                                    text: videoPlayer.muted ? "Muted" : "Sound"
+                                    enabled: videoPlayer.loaded
+                                    onClicked:
+                                        videoPlayer.muted = !videoPlayer.muted
+                                    ToolTip.visible: hovered
+                                    ToolTip.text: videoPlayer.muted
+                                                  ? "Enable audio" : "Mute audio"
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
