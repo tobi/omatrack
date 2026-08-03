@@ -1,0 +1,16 @@
+[package]
+name = "racecraft-bridge"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "C ABI bridge exposing duckdb_motorsport_telemetry parsers to the racecraft-qt C++/Qt app"
+
+[lib]
+name = "racecraft_bridge"
+crate-type = ["staticlib"]
+
+[dependencies]
+motorsport-telemetry-core.workspace = true
+cosworth-telemetry.workspace = true
+motec-telemetry.workspace = true
+vbo-telemetry.workspace = true

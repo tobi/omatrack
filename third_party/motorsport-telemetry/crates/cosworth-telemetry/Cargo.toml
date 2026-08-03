@@ -1,0 +1,19 @@
+[package]
+name = "cosworth-telemetry"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Standalone Rust parser for Pi/Cosworth PDS telemetry"
+
+[lib]
+name = "cosworth_telemetry"
+
+[dependencies]
+motorsport-telemetry-core.workspace = true
+memmap2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

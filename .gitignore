@@ -1,0 +1,4 @@
+build/
+third_party/motorsport-telemetry/target/
+*.user
+*.autosave

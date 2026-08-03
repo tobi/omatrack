@@ -1,0 +1,11 @@
+[package]
+name = "motorsport-telemetry-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared zero-copy model for motorsport telemetry parsers"
+
+[lib]
+name = "motorsport_telemetry_core"

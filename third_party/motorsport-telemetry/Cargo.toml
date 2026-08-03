@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/telemetry-core",
+    "crates/cosworth-telemetry",
+    "crates/motec-telemetry",
+    "crates/vbo-telemetry",
+    "bridge",
+]
+
+[workspace.package]
+version = "0.6.1"
+edition = "2021"
+rust-version = "1.84"
+license = "MIT"
+repository = "https://github.com/tobi/duckdb_motorsport_telemetry"
+
+[workspace.dependencies]
+motorsport-telemetry-core = { version = "0.6.1", path = "crates/telemetry-core" }
+cosworth-telemetry = { version = "0.6.1", path = "crates/cosworth-telemetry" }
+motec-telemetry = { version = "0.6.1", path = "crates/motec-telemetry" }
+vbo-telemetry = { version = "0.6.1", path = "crates/vbo-telemetry" }
+memmap2 = "0.9"
+thiserror = "2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
