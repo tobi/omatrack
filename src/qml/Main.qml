@@ -80,6 +80,9 @@ ApplicationWindow {
                                          "#d3c6aa", "#9da9a0"]
     property var directoryRows: []
     property bool videoVisible: false
+    onWidthChanged: {
+        if (videoVisible && width < 1000) sidebarVisible = false
+    }
 
     ListModel { id: treeModel }
     property var expandedTracks: ({})
@@ -296,6 +299,11 @@ ApplicationWindow {
                ? hours + ":" + paddedMinutes + ":" + paddedSeconds
                : minutes + ":" + paddedSeconds
     }
+    function showVideo(source) {
+        videoVisible = true
+        if (root.width < 1000) sidebarVisible = false
+        Qt.callLater(() => videoPlayer.openMedia(source))
+    }
 
     function rebuildTree() {
         if (!store.ready) return
@@ -371,10 +379,8 @@ ApplicationWindow {
         readout.refresh()
         rebuildTree()
         if (typeof startupVideo !== "undefined" &&
-            startupVideo.toString() !== "") {
-            videoVisible = true
-            Qt.callLater(() => videoPlayer.openMedia(startupVideo))
-        }
+            startupVideo.toString() !== "")
+            showVideo(startupVideo)
         if (typeof autotestWindows !== "undefined" && autotestWindows) {
             cornerWindow.show()
             channelsWindow.show()
@@ -632,10 +638,7 @@ ApplicationWindow {
             "Video (*.mp4 *.MP4 *.mov *.MOV *.mkv *.MKV *.avi *.AVI *.m4v *.webm)",
             "All files (*)"
         ]
-        onAccepted: {
-            videoVisible = true
-            Qt.callLater(() => videoPlayer.openMedia(videoFileDialog.file))
-        }
+        onAccepted: showVideo(videoFileDialog.file)
     }
 
     // ══ corner inspector (separate Material window) ════════════════
@@ -1686,12 +1689,16 @@ ApplicationWindow {
                             }
                             Label {
                                 Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                Layout.preferredWidth: 1
+                                clip: true
                                 text: videoPlayer.title || "No video loaded"
                                 elide: Text.ElideMiddle
                                 font.pixelSize: 10
                                 color: root.foregroundColor
                             }
                             Label {
+                                visible: videoPane.width >= 470
                                 text: videoPlayer.seeking
                                       ? "SEEK"
                                       : videoPlayer.loaded
@@ -1703,12 +1710,17 @@ ApplicationWindow {
                                        ? root.yellowColor : root.mutedTextColor
                             }
                             ToolButton {
+                                visible: videoPane.width >= 410
                                 text: "Open"
                                 onClicked: videoFileDialog.open()
                                 ToolTip.visible: hovered
                                 ToolTip.text: "Open another video"
                             }
                             ToolButton {
+                                implicitWidth: 28
+                                Layout.preferredWidth: 28
+                                leftPadding: 2
+                                rightPadding: 2
                                 text: "×"
                                 onClicked: {
                                     videoPlayer.closeMedia()
@@ -1811,12 +1823,19 @@ ApplicationWindow {
                                 spacing: 3
                                 ToolButton {
                                     Layout.preferredWidth: 50
+                                    implicitWidth: 50
+                                    leftPadding: 2
+                                    rightPadding: 2
                                     text: videoPlayer.paused ? "Play" : "Pause"
                                     enabled: videoPlayer.loaded
                                     onClicked: videoPlayer.togglePaused()
                                 }
                                 ToolButton {
                                     Layout.preferredWidth: 34
+                                    visible: videoPane.width >= 440
+                                    implicitWidth: 34
+                                    leftPadding: 2
+                                    rightPadding: 2
                                     text: "−5s"
                                     enabled: videoPlayer.loaded
                                     onClicked: videoPlayer.seekRelative(-5)
@@ -1825,6 +1844,10 @@ ApplicationWindow {
                                 }
                                 ToolButton {
                                     Layout.preferredWidth: 34
+                                    visible: videoPane.width >= 440
+                                    implicitWidth: 34
+                                    leftPadding: 2
+                                    rightPadding: 2
                                     text: "+5s"
                                     enabled: videoPlayer.loaded
                                     onClicked: videoPlayer.seekRelative(5)
@@ -1833,6 +1856,10 @@ ApplicationWindow {
                                 }
                                 ToolButton {
                                     Layout.preferredWidth: 40
+                                    visible: videoPane.width >= 390
+                                    implicitWidth: 40
+                                    leftPadding: 2
+                                    rightPadding: 2
                                     text: "Step"
                                     enabled: videoPlayer.loaded
                                     onClicked: videoPlayer.frameStep()
@@ -1841,7 +1868,7 @@ ApplicationWindow {
                                 }
                                 Item { Layout.fillWidth: true }
                                 Label {
-                                    Layout.preferredWidth: 78
+                                    Layout.preferredWidth: 74
                                     horizontalAlignment: Text.AlignRight
                                     text: root.formatMediaTime(
                                               videoSeekSlider.pressed
@@ -1855,6 +1882,10 @@ ApplicationWindow {
                                 }
                                 ToolButton {
                                     Layout.preferredWidth: 50
+                                    visible: videoPane.width >= 450
+                                    implicitWidth: 50
+                                    leftPadding: 2
+                                    rightPadding: 2
                                     text: videoPlayer.muted ? "Muted" : "Sound"
                                     enabled: videoPlayer.loaded
                                     onClicked:

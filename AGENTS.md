@@ -51,7 +51,7 @@ Use Qt Quick Material for application chrome and C++/Qt rendering for hot paths.
 
 ### Preserve source truth
 
-Telemetry inputs are immutable evidence. Never rewrite, rename, or delete source telemetry. Normalization, aliases, corner edits, caches, and exported analysis are separate state. Be especially careful with event data outside this source tree.
+Telemetry and onboard-video inputs are immutable evidence. Never rewrite, rename, or delete source files. Normalization, aliases, corner edits, caches, and exported analysis are separate state. Be especially careful with event data outside this source tree.
 
 ### Track Atlas is authoritative
 
@@ -96,6 +96,15 @@ Native lap distance is unwrapped across start-line resets and rejected when jump
 - Keep corner/complex ranges visible without obscuring the data.
 - Allow manual reference alignment for signals such as damper traces without changing the underlying lap data.
 
+### Embedded video playback
+
+- Open MP4, MOV, MKV, AVI, M4V, and WebM files inside the main analysis workspace.
+- Render through libmpv's OpenGL Render API in `MpvVideoItem`; never spawn the mpv CLI or embed a foreign native window.
+- Keep playback controls compact: play/pause, exact seek, five-second steps, single-frame advance, and mute.
+- Treat video files as read-only. Playback must not parse or rewrite embedded telemetry.
+- Qt Quick must use the OpenGL graphics API before the first window because `QQuickFramebufferObject` and libmpv share that context.
+- `RACECRAFT_VIDEO=/path/to/video` opens a startup video and is also used by the GUI acceptance harness.
+
 ### Corner intelligence
 
 - Resolve track and layout against Track Atlas aliases, external IDs, series, and lap length.
@@ -132,16 +141,16 @@ src/core/TelemetryEngine                      Qt-free normalization + laps
 cli/main.cpp                       src/app/TelemetryStore
 headless acceptance                sessions, state, cache, Track Atlas
                                            |
-                                  +--------+---------+
-                                  |                  |
-                                  v                  v
-                           src/app/TraceView    src/qml/Main.qml
-                           hot rendering/input  Material layout/windows
+                                  +--------+-----------+---------+
+                                  |                    |         |
+                                  v                    v         v
+                           src/app/TraceView  src/app/MpvVideoItem  src/qml/Main.qml
+                           telemetry canvas  libmpv rendering      Material UI
 ```
 
 ### Build graph
 
-CMake builds the vendored Rust workspace into `libracecraft_bridge.a`, links it into the static `racecraft_core`, then links that core into both `racecraft-cli` and the Qt application. `src/qml/application.qrc` embeds QML, Geist fonts, and compatibility corner CSVs.
+CMake builds the vendored Rust workspace into `libracecraft_bridge.a`, links it into the static `racecraft_core`, then links that core into both `racecraft-cli` and the Qt application. The Qt application also links libmpv through `pkg-config`. `src/qml/application.qrc` embeds QML, Geist fonts, and compatibility corner CSVs.
 
 ### Layer responsibilities
 
@@ -152,6 +161,7 @@ CMake builds the vendored Rust workspace into `libracecraft_bridge.a`, links it 
 | Core | `src/core/TelemetryEngine.*` | Channel mapping, units, lap detection, resampling, `UnifiedLap` | Qt types, QML, settings, network access |
 | Session/store | `src/app/TelemetryStore.*` | Lazy session handles, selection, comparison, viewport, caches, preferences, Track Atlas, corner analysis | Pixel-level paint loops or vendor byte parsing |
 | Renderer | `src/app/TraceView.*` | Frame-budget-sensitive painting and direct trace interaction | Parsing, network access, persistent product state |
+| Video renderer | `src/app/MpvVideoItem.*` | libmpv lifecycle, OpenGL FBO rendering, playback state, exact seek and frame-step | Telemetry extraction, session association, or QML layout policy |
 | QML UI | `src/qml/Main.qml` | Material windows, layout, delegates, controls, high-level orchestration | Full telemetry loops, duplicated analysis, format branches |
 | Bootstrap | `src/main.cpp` | Qt startup, type registration, theme bridge, automation harness | Product analysis |
 | CLI | `cli/main.cpp` | Reproducible headless acceptance and inspection | A second analysis implementation |
@@ -193,13 +203,14 @@ Do not fix parser ambiguity with filename-specific UI conditionals. Do not copy 
 
 ## Build and run
 
-Requirements: CMake 3.21+, a C++17 compiler, Qt 6.5+ (`Core`, `Gui`, `Quick`, `QuickControls2`, `Widgets`, `Qml`, `Network`), and Rust/Cargo 1.84+.
+Requirements: CMake 3.21+, `pkg-config`, libmpv development files, a C++17 compiler, Qt 6.5+ (`Core`, `Gui`, `Quick`, `QuickControls2`, `Widgets`, `Qml`, `Network`), and Rust/Cargo 1.84+.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 
 ./build/racecraft /path/to/telemetry-directory
+RACECRAFT_VIDEO=/path/to/onboard.mp4 ./build/racecraft /path/to/telemetry-directory
 ./build/racecraft-cli parse /path/to/copied-session.pds
 ./build/racecraft-cli unify /path/to/copied-session.pds
 ```
@@ -249,10 +260,13 @@ Add feature flags as needed:
 - `RACECRAFT_AUTOTEST_CORNER=1`
 - `RACECRAFT_AUTOTEST_HOVER=1`
 - `RACECRAFT_AUTOTEST_ZOOM=1`
+- `RACECRAFT_VIDEO=/path/to/onboard.mp4`
 
 `HOVER` and `ZOOM` print average paint time. Treat 16.67 ms as the hard 60 fps ceiling and 8.33 ms as the design target for continuous interaction. Inspect the screenshot as well; timing alone cannot catch illegible density, overlap, incorrect colors, or stale comparison state.
 
 For visual work, also run the app in the target Linux/Omarchy desktop. Offscreen output does not verify native palette integration, font rendering, window behavior, pointer feel, or high-refresh animation.
+
+Embedded libmpv playback must be verified on the native Linux/Omarchy OpenGL scene graph. The offscreen platform can capture the surrounding QML but does not establish the shared `QQuickFramebufferObject` render context. When `RACECRAFT_VIDEO` is set, the native autotest exits non-zero unless the player is ready, the file is loaded, and duration is available.
 
 ## Current boundaries to keep explicit
 
@@ -261,6 +275,7 @@ For visual work, also run the app in the target Linux/Omarchy desktop. Offscreen
 - The app currently consumes Track Atlas `corner_ranges`; first-class complexes and geometry are not wired through yet.
 - `sessionStartUnixTime()`/`hasGlobalTime()` do not currently provide global session time.
 - The GUI is file-based post-session analysis today. Future live or database-backed work must preserve the same normalized core instead of bypassing it.
+- The app currently embeds one video with manual playback controls. It does not yet extract `aimd` telemetry, persist session/video associations, or align multiple videos.
 
 ## Definition of done
 

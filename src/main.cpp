@@ -134,9 +134,10 @@ int main(int argc, char** argv) {
         const QString shotPath = QString::fromUtf8(autotestShot);
         QTimer::singleShot(
             200, &engine,
-            [&store, &engine, shotPath, autotestCompare,
-             autotestWindows, autotestHover, autotestSelection,
-             autotestAlignment, autotestZoom, autotestCorner]() {
+            [&store, &engine, shotPath, startupVideoPath,
+             autotestCompare, autotestWindows, autotestHover,
+             autotestSelection, autotestAlignment, autotestZoom,
+             autotestCorner]() {
             const QVariantList groups = store.trackGroups();
             for (const QVariant& gv : groups) {
                 const QVariantMap g = gv.toMap();
@@ -337,8 +338,10 @@ int main(int argc, char** argv) {
                                     store.setViewEnd(1.0);
                                 }
                             }
-                            QTimer::singleShot(1200, &engine,
-                                               [&engine, shotPath, autotestWindows]() {
+                            QTimer::singleShot(
+                                1200, &engine,
+                                [&engine, shotPath, startupVideoPath,
+                                 autotestWindows]() {
                                 QList<QQuickWindow*> windows;
                                 for (QObject* root : engine.rootObjects()) {
                                     if (auto* window = qobject_cast<QQuickWindow*>(root))
@@ -347,6 +350,26 @@ int main(int argc, char** argv) {
                                         for (QQuickWindow* child : root->findChildren<QQuickWindow*>())
                                             if (!windows.contains(child)) windows.append(child);
                                     }
+                                }
+                                bool videoReady =
+                                    startupVideoPath.isEmpty();
+                                if (!videoReady) {
+                                    for (QObject* root :
+                                         engine.rootObjects()) {
+                                        auto* video =
+                                            root->findChild<MpvVideoItem*>(
+                                                QStringLiteral(
+                                                    "videoPlayer"));
+                                        if (video && video->ready() &&
+                                            video->loaded() &&
+                                            video->duration() > 0.0) {
+                                            videoReady = true;
+                                            break;
+                                        }
+                                    }
+                                    if (!videoReady)
+                                        qWarning()
+                                            << "AUTOTEST video failed to load";
                                 }
                                 if (windows.isEmpty())
                                     qWarning() << "AUTOTEST found no QQuickWindow";
@@ -370,7 +393,7 @@ int main(int argc, char** argv) {
                                     else
                                         qWarning() << "AUTOTEST save failed:" << output;
                                 }
-                                qApp->exit(0);
+                                qApp->exit(videoReady ? 0 : 2);
                             });
                             return;
                         }
