@@ -40,6 +40,13 @@ public:
 
     void paint(QPainter* painter) override;
 
+    // Context-menu actions, driven by the QML Material menus.
+    Q_INVOKABLE int addCornerAt(double fraction);
+    Q_INVOKABLE void toggleSticky(const QString& key);
+    Q_INVOKABLE void unpinAllChannels();
+    Q_INVOKABLE void hideChannel(const QString& key);
+    Q_INVOKABLE void showAllStandardChannels();
+
 protected:
     void mouseDoubleClickEvent(QMouseEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
@@ -55,6 +62,11 @@ signals:
     void cursorChangedFromCanvas();
     void cornerActivated(int index);
     void cornerEdited();
+    void cornerRenameRequested(int index);
+    void cornerMenuRequested(int cornerIndex, const QString& cornerName,
+                             double fraction, qreal x, qreal y);
+    void channelMenuRequested(const QString& key, const QString& title,
+                              bool pinned, qreal x, qreal y);
     void overlayChanged();
     void channelsRequested();
 
@@ -120,6 +132,7 @@ private:
     double fracForX(double x) const;
     int channelIndexAt(const QPointF& position) const;
     void showChannelMenu(const QPointF& position);
+    void showCornerMenu(const QPointF& position);
     bool isSticky(const QString& key) const;
     double rowHeightFor(const ChannelSpec& spec) const;
     const std::vector<double>* fieldFor(const racecraft::UnifiedLap& lap,

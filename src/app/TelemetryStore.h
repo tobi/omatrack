@@ -14,6 +14,7 @@
 #include <QHash>
 #include <QJsonObject>
 #include <QVector>
+#include <QUrl>
 #include <QVariantList>
 
 #include <memory>
@@ -66,6 +67,10 @@ public:
     const QVector<LapEntry>& laps();
     std::shared_ptr<const racecraft::UnifiedLap> unifiedLap(int lapId);
     QString sessionKey() const;
+    bool isVideo() const {
+        return path_.endsWith(QStringLiteral(".mp4"),
+                              Qt::CaseInsensitive);
+    }
 
     QString track() const { return track_; }
     QString sessionTime() const { return time_; }
@@ -86,6 +91,7 @@ public:
 private:
     void ensureSource();
     void ensureLapSummary();
+    void applyEventDriverId(int eventDriverId);
     void populateLaps(const std::vector<racecraft::Lap>& detected);
     QString path_;
     std::unique_ptr<racecraft::TelemetrySource> src_;
@@ -96,6 +102,7 @@ private:
     QString track_;
     QString date_;
     bool summaryLoaded_ = false;
+    bool driverIdResolved_ = false;
     QString carNumber_;
     QString carClass_;
     QString driver_;
@@ -112,11 +119,14 @@ class TelemetryStore : public QObject {
     Q_PROPERTY(bool comparing READ comparing NOTIFY selectionChanged)
     Q_PROPERTY(bool editingCorners READ editingCorners WRITE setEditingCorners NOTIFY editingCornersChanged)
     Q_PROPERTY(double cursorFrac READ cursorFrac WRITE setCursorFrac NOTIFY cursorFracChanged)
+    Q_PROPERTY(bool hasGpsData READ hasGpsData NOTIFY selectionChanged)
     Q_PROPERTY(double viewStart READ viewStart WRITE setViewStart NOTIFY viewChanged)
     Q_PROPERTY(double viewEnd READ viewEnd WRITE setViewEnd NOTIFY viewChanged)
     Q_PROPERTY(int channelHeight READ channelHeight WRITE setChannelHeight NOTIFY channelHeightChanged)
     Q_PROPERTY(QString primaryLabel READ primaryLabel NOTIFY selectionChanged)
     Q_PROPERTY(QString primaryDetail READ primaryDetail NOTIFY selectionChanged)
+    Q_PROPERTY(QString primaryDriverName READ primaryDriverName NOTIFY selectionChanged)
+    Q_PROPERTY(QString primaryDriverMappingKey READ primaryDriverMappingKey NOTIFY selectionChanged)
     Q_PROPERTY(QString compareLabel READ compareLabel NOTIFY selectionChanged)
     Q_PROPERTY(QString roomName READ roomName NOTIFY selectionChanged)
     Q_PROPERTY(QString primarySessionKey READ primarySessionKey NOTIFY selectionChanged)
@@ -126,6 +136,8 @@ class TelemetryStore : public QObject {
     Q_PROPERTY(double referenceAlignment READ referenceAlignment WRITE setReferenceAlignment NOTIFY referenceAlignmentChanged)
     Q_PROPERTY(bool trackAtlasReady READ trackAtlasReady NOTIFY trackAtlasChanged)
     Q_PROPERTY(QString trackAtlasStatus READ trackAtlasStatus NOTIFY trackAtlasChanged)
+    Q_PROPERTY(QUrl primaryVideoSource READ primaryVideoSource NOTIFY selectionChanged)
+    Q_PROPERTY(double primaryVideoTime READ primaryVideoTime NOTIFY videoTimeChanged)
 public:
     explicit TelemetryStore(QObject* parent = nullptr);
     ~TelemetryStore() override;
@@ -136,6 +148,8 @@ public:
     Q_INVOKABLE void scan();
     Q_INVOKABLE void addSessionDirectory(const QString& dirPath);
     Q_INVOKABLE void openFile(const QString& filePath);
+    Q_INVOKABLE bool directoryExists(const QString& dirPath) const;
+    Q_INVOKABLE QString configFilePath() const;
     Q_INVOKABLE void removeSessionDirectory(const QString& dirPath);
     Q_INVOKABLE QStringList sessionDirectories() const;
     Q_INVOKABLE void clearSessions();
@@ -153,6 +167,8 @@ public:
     Q_INVOKABLE void zoomAt(double anchorFrac, double factor);
     Q_INVOKABLE void pan(double deltaFrac);
     Q_INVOKABLE void moveCursorSteps(int steps);
+    Q_INVOKABLE void seekCursorSeconds(double seconds);
+    Q_INVOKABLE void setCursorFromVideoTime(double mediaTime);
     Q_INVOKABLE void jumpToFraction(double frac);
     Q_INVOKABLE QVariantMap alignmentData(int points = 360) const;
     Q_INVOKABLE double referenceAlignmentSeconds() const;
@@ -161,9 +177,14 @@ public:
     // ── corners ────────────────────────────────────────────────────
     Q_INVOKABLE void autoGenerateCorners();
     Q_INVOKABLE void saveCorners();
+    static QStringList cornerConfigPath(const QString& track);
+    static void migrateLegacyCorners(const QString& track);
     Q_INVOKABLE QVariantList cornerList() const;
+    Q_INVOKABLE void setCornerName(int index, const QString& name);
     Q_INVOKABLE QVariantList cornerComparison() const;
     Q_INVOKABLE void updateCorner(int index, double start, double end);
+    Q_INVOKABLE int addCorner(double start, double end);
+    Q_INVOKABLE void deleteCorner(int index);
     Q_INVOKABLE void setEditingCorners(bool editing);
 
     // ── channel config ─────────────────────────────────────────────
@@ -222,10 +243,15 @@ public:
     void setChannelHeight(int v);
     QString primaryLabel() const;
     QString primaryDetail() const;
+    QString primaryDriverName() const;
+    QString primaryDriverMappingKey() const;
+    bool hasGpsData() const;
     QString compareLabel() const;
     QString roomName() const;
     QString primarySessionKey() const;
     QString compareSessionKey() const;
+    QUrl primaryVideoSource() const;
+    double primaryVideoTime() const;
     QStringList sessionDirectoriesList() const { return sessionDirs_; }
 
 signals:
@@ -241,6 +267,7 @@ signals:
     void channelConfigChanged();
     void referenceAlignmentChanged();
     void trackAtlasChanged();
+    void videoTimeChanged();
 
 private:
     SessionHandle* findSession(const QString& key) const;

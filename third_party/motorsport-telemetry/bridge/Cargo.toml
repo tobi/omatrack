@@ -12,5 +12,6 @@ crate-type = ["staticlib"]
 [dependencies]
 motorsport-telemetry-core.workspace = true
 cosworth-telemetry.workspace = true
+aim-telemetry.workspace = true
 motec-telemetry.workspace = true
 vbo-telemetry.workspace = true

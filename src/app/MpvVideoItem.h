@@ -90,7 +90,7 @@ private:
     QString errorString_;
     double position_ = 0.0;
     double duration_ = 0.0;
-    double volume_ = 80.0;
+    double volume_ = 75.0;
     bool ready_ = false;
     bool loaded_ = false;
     bool paused_ = true;

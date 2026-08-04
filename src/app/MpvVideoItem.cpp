@@ -196,6 +196,7 @@ MpvVideoItem::MpvVideoItem(QQuickItem* parent)
     setOption(state_->handle, "keep-open", "yes");
     setOption(state_->handle, "pause", "yes");
     setOption(state_->handle, "audio-client-name", "Racecraft");
+    setOption(state_->handle, "volume", "75");
 
     const int result = mpv_initialize(state_->handle);
     if (result < 0) {

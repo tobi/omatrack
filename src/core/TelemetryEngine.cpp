@@ -20,6 +20,7 @@ void* rc_open(const char* path);
 void rc_close(void* handle);
 const char* rc_last_error();
 const char* rc_format(void* handle);
+int rc_media_time_offset_ns(void* handle, int64_t* out);
 size_t rc_channel_count(void* handle);
 const char* rc_channel_name(void* handle, size_t index);
 const char* rc_channel_unit(void* handle, size_t index);
@@ -49,7 +50,7 @@ const AliasTable& channelMappings() {
                    "vehrefspeed", "speed_wspd_app", "uspeed", "speed"}},
         {"throttle", {"driver throttle pos", "accel pedal pos", "acc pedal pos", "fbwdrivertps",
                       "pps", "tpsreal", "tps", "aps", "throttle pos"}},
-        {"brake", {"brake pressure f", "brake pressure fr", "p_f_brake"}},
+        {"brake", {"brake pressure f", "brake pressure fr", "p_f_brake", "p_brake_front"}},
         {"clutch", {"clutch pos", "clutch position", "clutch pedal", "clutch"}},
         {"brake_pos", {"brake pos"}},
         {"steering", {"steering angle", "steer"}},
@@ -233,6 +234,38 @@ int scoreChannelMatch(const std::string& channelName, const std::string& alias, 
     return std::numeric_limits<int>::min();
 }
 
+// Driver-ID channel aliases, shared by the loaded-source and lightweight paths.
+const std::vector<std::string>& driverIdAliases() {
+    static const std::vector<std::string> aliases{
+        "DriverID", "driver_id", "driver id", "driverid",
+        "activeDriverId", "X2LNK_driverID"};
+    return aliases;
+}
+
+/// Most frequent positive id in a driver-id series; ties go to the earlier one.
+int dominantDriverId(const std::vector<double>& values) {
+    std::map<int, std::pair<size_t, size_t>> counts;
+    for (size_t index = 0; index < values.size(); ++index) {
+        const int candidate = int(std::llround(values[index]));
+        if (candidate <= 0) continue;
+        auto& entry = counts[candidate];
+        ++entry.first;
+        if (entry.first == 1) entry.second = index;
+    }
+    int bestId = 0;
+    size_t bestCount = 0;
+    size_t bestFirst = std::numeric_limits<size_t>::max();
+    for (const auto& [candidate, count] : counts) {
+        if (count.first > bestCount ||
+            (count.first == bestCount && count.second < bestFirst)) {
+            bestId = candidate;
+            bestCount = count.first;
+            bestFirst = count.second;
+        }
+    }
+    return bestId;
+}
+
 }  // namespace
 
 // ── public helpers ──────────────────────────────────────────────────
@@ -341,6 +374,9 @@ std::unique_ptr<TelemetrySource> TelemetrySource::open(const std::string& path) 
     src->path_ = path;
     const char* fmt = rc_format(handle);
     src->format_ = fmt ? fmt : "";
+    int64_t mediaTimeOffsetNs = 0;
+    if (rc_media_time_offset_ns(handle, &mediaTimeOffsetNs))
+        src->mediaTimeOffsetSec_ = double(mediaTimeOffsetNs) / 1e9;
     size_t n = rc_channel_count(handle);
     src->channels_.reserve(n);
     const std::string lower = [&] {
@@ -404,6 +440,24 @@ std::map<std::string, int> TelemetrySource::mapChannels() const {
     return mapping;
 }
 
+int TelemetrySource::detectDriverId() const {
+    for (const bool exact : {true, false}) {
+        for (const std::string& alias : driverIdAliases()) {
+            const std::string normalized = normalizeChannelName(alias);
+            if (!exact && normalized.size() < 4) continue;
+            for (const RawChannel& channel : channels_) {
+                if (channel.samples.empty()) continue;
+                const std::string name = normalizeChannelName(channel.name);
+                const bool hit =
+                    exact ? name == normalized
+                          : name.find(normalized) != std::string::npos;
+                if (hit) return dominantDriverId(channel.samples);
+            }
+        }
+    }
+    return 0;
+}
+
 std::vector<Lap> TelemetrySource::detectLaps() const {
     // Exact normalized match first, then contains fallback for longer aliases.
     auto firstId = [&](const std::vector<std::string>& aliases) -> int {
@@ -426,12 +480,25 @@ std::vector<Lap> TelemetrySource::detectLaps() const {
         return -1;
     };
 
-    auto series = [&](int id) -> std::pair<const std::vector<double>*, int> {
-        if (id < 0 || id >= int(channels_.size())) return {nullptr, 0};
-        const auto& ch = channels_[id];
-        if (ch.samples.empty()) return {nullptr, 0};
-        int freq = int(std::lround(ch.frequencyHz));
-        return {&ch.samples, std::max(1, freq)};
+    auto series = [&](int id) -> std::pair<std::vector<double>, int> {
+        if (id < 0 || id >= int(channels_.size())) return {};
+        const RawChannel& channel = channels_[id];
+        if (channel.samples.empty() || channel.frequencyHz <= 0.0 ||
+            channel.durationSec <= 0.0)
+            return {};
+        const int frequency =
+            std::max(1, int(std::lround(channel.frequencyHz)));
+        const size_t count = size_t(std::ceil(
+            channel.durationSec * double(frequency)));
+        std::vector<double> values;
+        values.reserve(count);
+        for (size_t index = 0; index < count; ++index) {
+            double value = 0.0;
+            const double time = double(index) / double(frequency);
+            if (!sampleAt(size_t(id), time, &value)) break;
+            values.push_back(value);
+        }
+        return {std::move(values), frequency};
     };
 
     int lapBeaconId = firstId({"lap_beacon_trig", "laptrigger", "lap_beacon"});
@@ -446,35 +513,25 @@ std::vector<Lap> TelemetrySource::detectLaps() const {
     auto [lapTime, timeFreq] = series(lapTimeId);
     auto [prevLapTime, prevFreq] = series(previousLapTimeId);
 
-    // port: `previousLapTimeSeries` was computed from decoded values + freq
-    std::vector<double> prevLapTimeValues;
-    int prevFreqFinal = prevFreq;
-    if (prevLapTime) {
-        prevLapTimeValues = *prevLapTime;
-    }
-
     double maxDuration = 0.0;
-    for (auto& ch : channels_) {
-        double freq = std::max(1.0, ch.frequencyHz);
-        maxDuration = std::max(maxDuration, double(ch.samples.size()) / freq);
-    }
-    if (lapDistance) maxDuration = std::max(maxDuration, double(lapDistance->size()) / std::max(1, distanceFreq));
-    if (lapNumber) maxDuration = std::max(maxDuration, double(lapNumber->size()) / std::max(1, numberFreq));
-    if (lapBeacon) maxDuration = std::max(maxDuration, double(lapBeacon->size()) / std::max(1, beaconFreq));
-    if (lapTime) maxDuration = std::max(maxDuration, double(lapTime->size()) / std::max(1, timeFreq));
-    // port uses maxDuration = max of these and channelData-based durations
+    for (const RawChannel& channel : channels_)
+        maxDuration = std::max(maxDuration, channel.durationSec);
 
     std::vector<double> splitTimes;
-    if (lapBeacon) splitTimes = pdsBeaconSplits(*lapBeacon, beaconFreq);
-    if (splitTimes.size() < 2 && lapTime) splitTimes = pdsLapTimeSplits(*lapTime, timeFreq);
-    if (splitTimes.size() < 2 && lapNumber) splitTimes = pdsLapNumberSplits(*lapNumber, numberFreq);
-    if (splitTimes.size() < 2 && lapDistance) splitTimes = pdsDistanceSplits(*lapDistance, distanceFreq);
+    if (!lapBeacon.empty())
+        splitTimes = pdsBeaconSplits(lapBeacon, beaconFreq);
+    if (splitTimes.size() < 2 && !lapTime.empty())
+        splitTimes = pdsLapTimeSplits(lapTime, timeFreq);
+    if (splitTimes.size() < 2 && !lapNumber.empty())
+        splitTimes = pdsLapNumberSplits(lapNumber, numberFreq);
+    if (splitTimes.size() < 2 && !lapDistance.empty())
+        splitTimes = pdsDistanceSplits(lapDistance, distanceFreq);
 
-    std::vector<Lap> laps = buildLapsFromSplits(splitTimes, maxDuration);
-    if (!prevLapTimeValues.empty()) {
-        (void)prevFreqFinal;
-        laps = pdsApplyPreviousLapTimes(laps, prevLapTimeValues, std::max(1, prevFreq));
-    }
+    std::vector<Lap> laps =
+        buildLapsFromSplits(splitTimes, maxDuration);
+    if (!prevLapTime.empty())
+        laps = pdsApplyPreviousLapTimes(
+            laps, prevLapTime, std::max(1, prevFreq));
     return laps;
 }
 
@@ -506,7 +563,7 @@ std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
         }
         return -1;
     };
-    auto decode = [&](int id) {
+    auto decodeRaw = [&](int id) {
         std::pair<std::vector<double>, int> result;
         if (id < 0) return result;
         const uint64_t count =
@@ -524,6 +581,27 @@ std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
             period > 0 ? std::max(1, int(std::lround(1e9 / period))) : 1;
         return result;
     };
+    auto sampleRegular = [&](int id) {
+        std::pair<std::vector<double>, int> result;
+        if (id < 0) return result;
+        const uint64_t period =
+            rc_chunk_period_ns(handle, size_t(id), 0);
+        result.second =
+            period > 0 ? std::max(1, int(std::lround(1e9 / period))) : 1;
+        const double duration =
+            double(rc_channel_duration_ns(handle, size_t(id))) / 1e9;
+        const size_t count =
+            size_t(std::ceil(duration * double(result.second)));
+        result.first.reserve(count);
+        for (size_t index = 0; index < count; ++index) {
+            double value = 0.0;
+            const uint64_t timeNs = uint64_t(std::llround(
+                double(index) * 1e9 / double(result.second)));
+            if (!rc_sample_at(handle, size_t(id), timeNs, 1, &value)) break;
+            result.first.push_back(value);
+        }
+        return result;
+    };
 
     const int beaconId =
         firstId({"lap_beacon_trig", "laptrigger", "lap_beacon"});
@@ -532,40 +610,20 @@ std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
         firstId({"lap distance corrected", "lap distance"});
     const int lapTimeId = firstId({"lap time"});
     const int previousLapTimeId = firstId({"previous lap time"});
-    const int driverIdChannel =
-        firstId({"DriverID", "driver_id", "driver id", "driverid",
-                 "activeDriverId", "X2LNK_driverID"});
+    const int driverIdChannel = firstId(driverIdAliases());
 
-    auto [driverValues, driverFreq] = decode(driverIdChannel);
+    auto [driverValues, driverFreq] = decodeRaw(driverIdChannel);
     (void)driverFreq;
-    if (driverId && !driverValues.empty()) {
-        std::map<int, std::pair<size_t, size_t>> counts;
-        for (size_t index = 0; index < driverValues.size(); ++index) {
-            const int candidate =
-                int(std::llround(driverValues[index]));
-            if (candidate <= 0) continue;
-            auto& entry = counts[candidate];
-            ++entry.first;
-            if (entry.first == 1) entry.second = index;
-        }
-        int bestId = 0;
-        size_t bestCount = 0;
-        size_t bestFirst = std::numeric_limits<size_t>::max();
-        for (const auto& [candidate, count] : counts) {
-            if (count.first > bestCount ||
-                (count.first == bestCount && count.second < bestFirst)) {
-                bestId = candidate;
-                bestCount = count.first;
-                bestFirst = count.second;
-            }
-        }
-        if (bestId > 0) *driverId = bestId;
+    if (driverId) {
+        const int detected = dominantDriverId(driverValues);
+        if (detected > 0) *driverId = detected;
     }
-    auto [beacon, beaconFreq] = decode(beaconId);
-    auto [lapNumber, numberFreq] = decode(lapNumberId);
-    auto [lapDistance, distanceFreq] = decode(lapDistanceId);
-    auto [lapTime, timeFreq] = decode(lapTimeId);
-    auto [previousLapTime, previousFreq] = decode(previousLapTimeId);
+    auto [beacon, beaconFreq] = sampleRegular(beaconId);
+    auto [lapNumber, numberFreq] = sampleRegular(lapNumberId);
+    auto [lapDistance, distanceFreq] = sampleRegular(lapDistanceId);
+    auto [lapTime, timeFreq] = sampleRegular(lapTimeId);
+    auto [previousLapTime, previousFreq] =
+        sampleRegular(previousLapTimeId);
 
     double maxDuration = 0.0;
     for (size_t i = 0; i < channelCount; ++i)
@@ -606,19 +664,30 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime) const {
     double duration = endTime - startTime;
     int nSamples = int(duration * kDefaultSampleRate) + 1;
 
-    // resample each mapped channel into a 50 Hz grid
+    // Sample each channel on the shared 50 Hz absolute-time grid. Source
+    // chunks may start late or contain acquisition gaps; slicing flattened
+    // arrays by index silently shifts every event after a gap.
     std::map<std::string, std::vector<double>> resampled;
     std::map<std::string, const RawChannel*> resampledCh;
     for (auto& [field, idx] : mapping) {
-        const RawChannel& ch = channels_[idx];
-        double freq = ch.frequencyHz;
-        if (freq <= 0 || ch.samples.empty()) continue;
-        int startSample = std::max(0, int(std::lround(startTime * freq)));
-        int endSample = std::min((int)ch.samples.size() - 1, int(std::lround(endTime * freq)));
-        if (startSample > endSample) continue;
-        std::vector<double> slice(ch.samples.begin() + startSample, ch.samples.begin() + endSample + 1);
-        resampled[field] = resample(slice, freq, kDefaultSampleRate, duration);
-        resampledCh[field] = &ch;
+        const RawChannel& channel = channels_[idx];
+        if (channel.samples.empty()) continue;
+        std::vector<double> values(size_t(nSamples), 0.0);
+        bool sampled = false;
+        for (int sample = 0; sample < nSamples; ++sample) {
+            double value = 0.0;
+            const double time =
+                startTime + double(sample) / double(kDefaultSampleRate);
+            if (sampleAt(size_t(idx), time, &value)) {
+                values[size_t(sample)] = value;
+                sampled = true;
+            } else if (sample > 0) {
+                values[size_t(sample)] = values[size_t(sample - 1)];
+            }
+        }
+        if (!sampled) continue;
+        resampled[field] = std::move(values);
+        resampledCh[field] = &channel;
     }
 
     auto get = [&](const std::string& f, int i) -> double {
@@ -669,7 +738,10 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime) const {
         if (has("speed")) {
             std::string u = unitOf("speed");
             auto su = speedUnits().find(u);
-            double factor = su != speedUnits().end() ? su->second : 3.6;
+            double factor =
+                su != speedUnits().end()
+                    ? su->second
+                    : (format_ == "aimd" ? 1.0 : 3.6);
             unified.speed.push_back(get("speed", i) * factor);
         } else {
             unified.speed.push_back(0);

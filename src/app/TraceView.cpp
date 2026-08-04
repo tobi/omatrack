@@ -10,7 +10,6 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
-#include <QMenu>
 #include <QQuickWindow>
 #include <QWheelEvent>
 
@@ -1130,45 +1129,65 @@ int TraceView::channelIndexAt(const QPointF& position) const {
     return -1;
 }
 
+// Menus are Material popups owned by QML: this is a QGuiApplication, so a
+// QWidget-based QMenu cannot be constructed here.
+void TraceView::showCornerMenu(const QPointF& position) {
+    if (!store_) return;
+    const double fraction = fracForX(position.x());
+    int cornerIndex = -1;
+    for (int index = 0; index < store_->corners().size(); ++index) {
+        const CornerZone& corner = store_->corners()[index];
+        if (corner.start <= fraction && fraction <= corner.end) {
+            cornerIndex = index;
+            break;
+        }
+    }
+    emit cornerMenuRequested(
+        cornerIndex,
+        cornerIndex >= 0 ? store_->corners()[cornerIndex].name : QString(),
+        fraction, position.x(), position.y());
+}
+
 void TraceView::showChannelMenu(const QPointF& position) {
     const int index = channelIndexAt(position);
     if (index < 0 || index >= channelSpecs_.size()) return;
     const ChannelSpec& spec = channelSpecs_[index];
-    QMenu menu;
-    QAction* pin = menu.addAction(
-        isSticky(spec.key) ? QStringLiteral("Unpin channel")
-                           : QStringLiteral("Pin channel to top"));
-    QAction* hide = menu.addAction(QStringLiteral("Hide channel"));
-    menu.addSeparator();
-    QAction* showStandard =
-        menu.addAction(QStringLiteral("Show all standard channels"));
-    QAction* unpinAll = menu.addAction(QStringLiteral("Unpin all channels"));
-    QAction* more = menu.addAction(QStringLiteral("More channels…"));
-    const QPointF windowPosition =
-        mapToItem(window()->contentItem(), position);
-    QAction* chosen =
-        menu.exec(window()->mapToGlobal(windowPosition.toPoint()));
-    if (chosen == pin) {
-        if (isSticky(spec.key))
-            stickyChannels_.remove(spec.key);
-        else
-            stickyChannels_.insert(spec.key);
-        invalidateStaticLayer();
-    } else if (chosen == hide) {
-        stickyChannels_.remove(spec.key);
-        store_->setChannelVisible(spec.key, false);
-    } else if (chosen == showStandard) {
-        for (const ChannelSpec& channel : channelSpecs_) {
-            if (!channel.key.startsWith(QStringLiteral("raw:")))
-                store_->setChannelVisible(channel.key, true);
-        }
-    } else if (chosen == unpinAll) {
-        stickyChannels_.clear();
-        secondaryScroll_ = 0.0;
-        invalidateStaticLayer();
-    } else if (chosen == more) {
-        emit channelsRequested();
-    }
+    emit channelMenuRequested(spec.key, spec.title, isSticky(spec.key),
+                              position.x(), position.y());
+}
+
+int TraceView::addCornerAt(double fraction) {
+    if (!store_) return -1;
+    constexpr double width = 0.04;
+    const double start = qBound(0.0, fraction - width * 0.5, 1.0 - width);
+    return store_->addCorner(start, start + width);
+}
+
+void TraceView::toggleSticky(const QString& key) {
+    if (isSticky(key))
+        stickyChannels_.remove(key);
+    else
+        stickyChannels_.insert(key);
+    invalidateStaticLayer();
+}
+
+void TraceView::unpinAllChannels() {
+    stickyChannels_.clear();
+    secondaryScroll_ = 0.0;
+    invalidateStaticLayer();
+}
+
+void TraceView::hideChannel(const QString& key) {
+    if (!store_) return;
+    stickyChannels_.remove(key);
+    store_->setChannelVisible(key, false);
+}
+
+void TraceView::showAllStandardChannels() {
+    if (!store_) return;
+    for (const ChannelSpec& channel : channelSpecs_)
+        if (!channel.key.startsWith(QStringLiteral("raw:")))
+            store_->setChannelVisible(channel.key, true);
 }
 // ── interaction ─────────────────────────────────────────────────────
 
@@ -1191,7 +1210,10 @@ void TraceView::mousePressEvent(QMouseEvent* event) {
     const double x = event->position().x();
     const double fraction = fracForX(x);
     if (event->button() == Qt::RightButton) {
-        showChannelMenu(event->position());
+        if (store_->editingCorners())
+            showCornerMenu(event->position());
+        else
+            showChannelMenu(event->position());
         event->accept();
         return;
     }

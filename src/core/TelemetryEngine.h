@@ -82,6 +82,7 @@ public:
 
     const std::string& path() const { return path_; }
     const std::string& formatName() const { return format_; }
+    double mediaTimeOffsetSec() const { return mediaTimeOffsetSec_; }
 
     std::vector<RawChannel>& channels() { return channels_; }
     const std::vector<RawChannel>& channels() const { return channels_; }
@@ -96,6 +97,9 @@ public:
     /// Detect laps using the PDS beacon/splits heuristics.
     std::vector<Lap> detectLaps() const;
 
+    /// Dominant positive driver id from a DRIVER_ID-style channel; 0 if absent.
+    int detectDriverId() const;
+
     /// Build a 50 Hz UnifiedLap over [startTime, endTime].
     UnifiedLap unifyLap(double startTime, double endTime) const;
 
@@ -104,6 +108,7 @@ private:
     void* handle_ = nullptr;
     std::string path_;
     std::string format_;
+    double mediaTimeOffsetSec_ = 0.0;
     std::vector<RawChannel> channels_;
 };
 

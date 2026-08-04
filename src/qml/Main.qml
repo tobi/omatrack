@@ -71,6 +71,7 @@ ApplicationWindow {
     property var expandedDates: ({})
     property var channelRows: []
     property var cornerRows: []
+    property var cornerZoneRows: []
     property var aliasRows: []
     property var mappingRows: []
     property var filmstripSessions: []
@@ -80,6 +81,7 @@ ApplicationWindow {
                                          "#d3c6aa", "#9da9a0"]
     property var directoryRows: []
     property bool videoVisible: false
+    property bool telemetryVideoActive: false
     onWidthChanged: {
         if (videoVisible && width < 1000) sidebarVisible = false
     }
@@ -97,15 +99,52 @@ ApplicationWindow {
         channelRows = rows
     }
     function refreshCornerRows() { cornerRows = store.cornerComparison() }
+    function refreshCornerZones() { cornerZoneRows = store.cornerList() }
+    function openCornerRename(index) {
+        const zones = store.cornerList()
+        if (index < 0 || index >= zones.length) return
+        cornerRenameDialog.cornerIndex = index
+        cornerRenameField.text = zones[index].name || ""
+        cornerRenameDialog.open()
+    }
     function refreshAliasRows() { aliasRows = store.driverAliases() }
     function refreshMappingRows() { mappingRows = store.driverMappings() }
     function refreshDirectoryRows() { directoryRows = store.sessionDirectories() }
+    function openDriverRename(mappingKey, displayName) {
+        if (!mappingKey) return
+        driverRenameDialog.mappingKey = mappingKey
+        driverRenameField.text = displayName || ""
+        driverRenameDialog.open()
+    }
+    function dismissCornerPopover() {
+        cornerWindow.hide()
+    }
     function sessionNameForKey(key) {
         for (let i = 0; i < treeModel.count; ++i) {
             const row = treeModel.get(i)
             if (row.role === "session" && row.key === key) return row.name
         }
         return ""
+    }
+    function sessionInfoForKey(key) {
+        if (key === "") return null
+        const groups = store.trackGroups()
+        for (let t = 0; t < groups.length; ++t) {
+            const dates = groups[t].dates
+            for (let d = 0; d < dates.length; ++d) {
+                const sessions = dates[d].sessions
+                for (let s = 0; s < sessions.length; ++s)
+                    if (sessions[s].key === key) return sessions[s]
+            }
+        }
+        return null
+    }
+    function stripBadgeText(strip, lapTime) {
+        let parts = [strip.reference ? "⇄ REF" : "RUN"]
+        if (strip.driverName !== "" && strip.driverName !== "Unknown")
+            parts.push(strip.driverName)
+        if (lapTime !== "") parts.push(lapTime)
+        return parts.join(" · ")
     }
     function bestLapForSession(key) {
         const laps = key !== "" ? store.lapsForSession(key) : []
@@ -121,15 +160,19 @@ ApplicationWindow {
         activeSessionName = sessionNameForKey(activeSessionKey)
         referenceSessionName = sessionNameForKey(referenceSessionKey)
         let strips = []
-        function appendStrip(key, name, reference) {
+        function appendStrip(key, reference) {
             if (key === "") return
             const laps = store.lapsForSession(key)
+            const info = sessionInfoForKey(key)
             let total = 0
             for (let i = 0; i < laps.length; ++i)
                 total += Math.max(1, laps[i].timeMs)
             strips.push({
                 sessionKey: key,
-                sessionName: name,
+                runName: info && info.stem !== "" ? info.stem
+                                                  : sessionNameForKey(key),
+                driverName: store.driverDisplayName(key),
+                bestTime: info ? info.bestTime : "",
                 reference: reference,
                 laps: laps,
                 totalTimeMs: Math.max(1, total)
@@ -137,8 +180,8 @@ ApplicationWindow {
         }
         if (referenceSessionKey !== "" &&
             referenceSessionKey !== activeSessionKey)
-            appendStrip(referenceSessionKey, referenceSessionName, true)
-        appendStrip(activeSessionKey, activeSessionName, false)
+            appendStrip(referenceSessionKey, true)
+        appendStrip(activeSessionKey, false)
         filmstripSessions = strips
     }
     function refreshAlignmentData() { alignmentRows = store.alignmentData() }
@@ -287,22 +330,39 @@ ApplicationWindow {
         if (lap) store.compareLap(key, lap.lapId)
     }
     function dateKey(trackName, dateName) { return trackName + "|" + dateName }
-    function formatMediaTime(seconds) {
-        if (!isFinite(seconds) || seconds < 0) seconds = 0
-        const total = Math.floor(seconds)
-        const hours = Math.floor(total / 3600)
-        const minutes = Math.floor((total % 3600) / 60)
-        const secs = total % 60
-        const paddedMinutes = (hours > 0 && minutes < 10 ? "0" : "") + minutes
-        const paddedSeconds = (secs < 10 ? "0" : "") + secs
-        return hours > 0
-               ? hours + ":" + paddedMinutes + ":" + paddedSeconds
-               : minutes + ":" + paddedSeconds
-    }
-    function showVideo(source) {
+    function showVideo(source, telemetryLinked) {
+        telemetryVideoActive = telemetryLinked === true
         videoVisible = true
         if (root.width < 1000) sidebarVisible = false
         Qt.callLater(() => videoPlayer.openMedia(source))
+    }
+    function seekVideoToTelemetry() {
+        if (!telemetryVideoActive || !videoPlayer.loaded) return
+        const target = store.primaryVideoTime
+        if (Math.abs(videoPlayer.position - target) > 0.025)
+            videoPlayer.seek(target)
+    }
+    function seekVideoRelative(seconds) {
+        if (telemetryVideoActive)
+            store.seekCursorSeconds(seconds)
+        else
+            videoPlayer.seekRelative(seconds)
+    }
+    function syncTelemetryVideo() {
+        const source = store.primaryVideoSource
+        if (source.toString() === "") {
+            if (telemetryVideoActive) {
+                videoPlayer.closeMedia()
+                videoVisible = false
+                telemetryVideoActive = false
+            }
+            return
+        }
+        if (!telemetryVideoActive ||
+            videoPlayer.source.toString() !== source.toString())
+            showVideo(source, true)
+        else
+            seekVideoToTelemetry()
     }
 
     function rebuildTree() {
@@ -340,6 +400,7 @@ ApplicationWindow {
                         bestTimeMs: session.bestTimeMs,
                         isDriverBest: session.isDriverBest,
                         isDayBest: session.isDayBest,
+                        isVideo: session.isVideo === true,
                         indent: 2,
                         key: session.key,
                         expanded: false
@@ -362,15 +423,20 @@ ApplicationWindow {
             refreshCornerRows()
             refreshLapStrip()
             refreshAlignmentData()
+            syncTelemetryVideo()
         })
         store.channelConfigChanged.connect(refreshChannelRows)
-        store.cornersChanged.connect(refreshCornerRows)
+        store.cornersChanged.connect(() => {
+            refreshCornerRows()
+            refreshCornerZones()
+        })
         store.driverMappingsChanged.connect(() => {
             refreshMappingRows()
             rebuildTree()
         })
         refreshChannelRows()
         refreshCornerRows()
+        refreshCornerZones()
         refreshAliasRows()
         refreshMappingRows()
         refreshDirectoryRows()
@@ -378,8 +444,10 @@ ApplicationWindow {
         refreshAlignmentData()
         readout.refresh()
         rebuildTree()
+        syncTelemetryVideo()
         if (typeof startupVideo !== "undefined" &&
-            startupVideo.toString() !== "")
+            startupVideo.toString() !== "" &&
+            store.primaryVideoSource.toString() === "")
             showVideo(startupVideo)
         if (typeof autotestWindows !== "undefined" && autotestWindows) {
             cornerWindow.show()
@@ -391,6 +459,7 @@ ApplicationWindow {
     Connections {
         target: store
         function onCursorFracChanged() { readout.refresh() }
+        function onVideoTimeChanged() { root.seekVideoToTelemetry() }
         function onReferenceAlignmentChanged() {
             referenceDamper.requestPaint()
         }
@@ -450,14 +519,51 @@ ApplicationWindow {
                     font.bold: true
                     color: root.foregroundColor
                 }
-                Label {
+                RowLayout {
                     Layout.fillWidth: true
-                    text: store.primaryDetail +
-                          (store.comparing ? "  ·  vs " + store.compareLabel : "")
-                    visible: text !== ""
-                    elide: Text.ElideRight
-                    font.pixelSize: 10
-                    color: store.comparing ? root.orangeColor : root.mutedTextColor
+                    spacing: 2
+                    Label {
+                        text: store.primaryDriverName
+                        visible: text !== ""
+                        Layout.maximumWidth: Math.min(220, implicitWidth)
+                        elide: Text.ElideRight
+                        font.pixelSize: 10
+                        color: store.comparing
+                               ? root.orangeColor : root.mutedTextColor
+                    }
+                    ToolButton {
+                        id: headerDriverEdit
+                        objectName: "headerDriverEdit"
+                        visible: store.primaryDriverMappingKey !== ""
+                        Layout.preferredWidth: 20
+                        Layout.preferredHeight: 20
+                        text: "✎"
+                        font.pixelSize: 10
+                        onClicked: root.openDriverRename(
+                            store.primaryDriverMappingKey,
+                            store.primaryDriverName)
+                        ToolTip.visible: hovered
+                        ToolTip.text: "Rename driver"
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: {
+                            const driver = store.primaryDriverName
+                            const detail = store.primaryDetail
+                            const suffix = driver !== "" &&
+                                           detail.indexOf(driver) === 0
+                                         ? detail.substring(driver.length)
+                                         : detail
+                            return suffix +
+                                   (store.comparing
+                                    ? "  ·  vs " + store.compareLabel : "")
+                        }
+                        visible: text !== ""
+                        elide: Text.ElideRight
+                        font.pixelSize: 10
+                        color: store.comparing
+                               ? root.orangeColor : root.mutedTextColor
+                    }
                 }
             }
             Label {
@@ -572,7 +678,7 @@ ApplicationWindow {
             anchors.margins: 12
             spacing: 10
             Label { text: "Open session"; font.bold: true; font.pixelSize: 15 }
-            Label { text: "Scan a directory of .pds / .ld / .ldx / .vbo files"; wrapMode: Text.Wrap; color: root.mutedTextColor }
+            Label { text: "Scan a directory of .pds / .ld / .ldx / .vbo / .mp4 files"; wrapMode: Text.Wrap; color: root.mutedTextColor }
             TextField {
                 id: dirField
                 Layout.fillWidth: true
@@ -604,25 +710,39 @@ ApplicationWindow {
         }
     }
 
+    function toLocalPath(value) {
+        const text = value.toString()
+        return text.startsWith("file://")
+               ? decodeURIComponent(text.substring(7)) : text
+    }
+    function defaultTelemetryFolder() {
+        const home = toLocalPath(Platform.StandardPaths.writableLocation(
+            Platform.StandardPaths.HomeLocation))
+        const preferred = home + "/Documents/Telemetry"
+        return "file://" + (store.directoryExists(preferred) ? preferred : home)
+    }
     function addDir(p) {
-        if (p === "") return
-        store.addSessionDirectory(p)
+        const path = toLocalPath(p)
+        if (path === "") return
+        store.addSessionDirectory(path)
         dirField.text = ""
         rebuildTree()
+        refreshDirectoryRows()
     }
 
     Platform.FolderDialog {
         id: folderDialog
         title: "Choose telemetry directory"
         acceptLabel: "Add"
-        onAccepted: addDir(folderDialog.selectedFolder)
+        folder: root.defaultTelemetryFolder()
+        onAccepted: root.addDir(folderDialog.folder)
     }
 
     Platform.FileDialog {
         id: fileDialog
         title: "Open telemetry file"
         fileMode: Platform.FileDialog.OpenFile
-        nameFilters: ["Telemetry (*.pds *.ld *.ldx *.vbo)", "All files (*)"]
+        nameFilters: ["Telemetry (*.pds *.ld *.ldx *.vbo *.mp4 *.MP4)", "All files (*)"]
         onAccepted: {
             store.openFile(fileDialog.file.toLocalFile())
             refreshCornerRows()
@@ -639,6 +759,63 @@ ApplicationWindow {
             "All files (*)"
         ]
         onAccepted: showVideo(videoFileDialog.file)
+    }
+
+    Dialog {
+        id: driverRenameDialog
+        objectName: "driverRenameDialog"
+        parent: Overlay.overlay
+        width: Math.min(360, root.width - 32)
+        x: Math.round((parent.width - width) / 2)
+        y: Math.round((parent.height - height) / 2)
+        modal: true
+        focus: true
+        title: "Rename driver"
+        standardButtons: Dialog.Save | Dialog.Cancel
+        closePolicy: Popup.CloseOnEscape
+        property string mappingKey: ""
+        onOpened: {
+            driverRenameField.forceActiveFocus()
+            driverRenameField.selectAll()
+        }
+        onAccepted: {
+            store.setDriverMapping(mappingKey, driverRenameField.text)
+            refreshMappingRows()
+        }
+        contentItem: TextField {
+            id: driverRenameField
+            objectName: "driverRenameField"
+            placeholderText: "Driver name"
+            selectByMouse: true
+            onAccepted: driverRenameDialog.accept()
+        }
+    }
+
+    Dialog {
+        id: cornerRenameDialog
+        objectName: "cornerRenameDialog"
+        parent: Overlay.overlay
+        width: Math.min(360, root.width - 32)
+        x: Math.round((parent.width - width) / 2)
+        y: Math.round((parent.height - height) / 2)
+        modal: true
+        focus: true
+        title: "Rename corner zone"
+        standardButtons: Dialog.Save | Dialog.Cancel
+        closePolicy: Popup.CloseOnEscape
+        property int cornerIndex: -1
+        onOpened: {
+            cornerRenameField.forceActiveFocus()
+            cornerRenameField.selectAll()
+        }
+        onAccepted: store.setCornerName(cornerIndex, cornerRenameField.text)
+        contentItem: TextField {
+            id: cornerRenameField
+            objectName: "cornerRenameField"
+            placeholderText: "Corner name"
+            selectByMouse: true
+            onAccepted: cornerRenameDialog.accept()
+        }
     }
 
     // ══ corner inspector (separate Material window) ════════════════
@@ -667,6 +844,21 @@ ApplicationWindow {
         property real cornerDamperShift: 0
         onSelectedCornerChanged:
             cornerDamperShift = Number(selectedCorner.damperAlignment || 0)
+        function commitZoneRange(index, startText, endText) {
+            let start = Number(startText) / 100
+            let end = Number(endText) / 100
+            if (!isFinite(start) || !isFinite(end)) return
+            start = Math.max(0, Math.min(1, start))
+            end = Math.max(start + 0.001, Math.min(1, end))
+            store.updateCorner(index, start, end)
+            store.saveCorners()
+        }
+
+        Shortcut {
+            sequence: StandardKey.Cancel
+            context: Qt.ApplicationShortcut
+            onActivated: root.dismissCornerPopover()
+        }
 
         ColumnLayout {
             anchors.fill: parent
@@ -728,6 +920,132 @@ ApplicationWindow {
                     }
                 }
                 ScrollBar.horizontal: ScrollBar {}
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 6
+                Button {
+                    text: store.editingCorners ? "Editing zones" : "Edit zones"
+                    checkable: true
+                    checked: store.editingCorners
+                    onClicked: store.setEditingCorners(checked)
+                }
+                Button {
+                    text: "Add zone"
+                    enabled: store.editingCorners
+                    onClicked: {
+                        store.setEditingCorners(true)
+                        const width = 0.04
+                        const start = Math.max(
+                            0, Math.min(1 - width, store.cursorFrac - width / 2))
+                        const index = store.addCorner(start, start + width)
+                        if (index >= 0) {
+                            cornerWindow.selectedCornerIndex = index
+                            root.openCornerRename(index)
+                        }
+                    }
+                }
+                Button {
+                    text: "Auto-generate"
+                    enabled: store.editingCorners
+                    onClicked: {
+                        store.autoGenerateCorners()
+                        store.saveCorners()
+                    }
+                }
+                Label {
+                    Layout.fillWidth: true
+                    text: store.editingCorners
+                          ? "Drag zone edges on the trace; edits save automatically."
+                          : "Enable editing to add, rename, or delete zones."
+                    elide: Text.ElideRight
+                    font.pixelSize: 10
+                    color: root.mutedTextColor
+                }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: visible ? 158 : 0
+                visible: store.editingCorners
+                radius: 4
+                color: root.darkBackgroundColor
+                border.color: root.borderColor
+                ListView {
+                    id: zoneEditor
+                    anchors.fill: parent
+                    anchors.margins: 5
+                    clip: true
+                    spacing: 3
+                    model: cornerZoneRows
+                    ScrollBar.vertical: ScrollBar {}
+                    delegate: RowLayout {
+                        required property var modelData
+                        required property int index
+                        width: zoneEditor.width - 12
+                        height: 34
+                        spacing: 5
+                        TextField {
+                            id: zoneNameField
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 28
+                            font.pixelSize: 10
+                            text: modelData.name
+                            selectByMouse: true
+                            onEditingFinished: {
+                                store.setCornerName(index, text)
+                                const zones = store.cornerList()
+                                if (index < zones.length)
+                                    text = zones[index].name
+                            }
+                        }
+                        TextField {
+                            id: zoneStartField
+                            Layout.preferredWidth: 74
+                            Layout.preferredHeight: 28
+                            text: (modelData.start * 100).toFixed(2)
+                            selectByMouse: true
+                            horizontalAlignment: Text.AlignRight
+                            font.family: "Geist Mono"
+                            font.pixelSize: 10
+                            validator: DoubleValidator { bottom: 0; top: 100 }
+                            onEditingFinished: cornerWindow.commitZoneRange(
+                                index, zoneStartField.text, zoneEndField.text)
+                        }
+                        Label {
+                            text: "→"
+                            font.pixelSize: 10
+                            color: root.mutedTextColor
+                        }
+                        TextField {
+                            id: zoneEndField
+                            Layout.preferredWidth: 74
+                            Layout.preferredHeight: 28
+                            text: (modelData.end * 100).toFixed(2)
+                            selectByMouse: true
+                            horizontalAlignment: Text.AlignRight
+                            font.family: "Geist Mono"
+                            font.pixelSize: 10
+                            validator: DoubleValidator { bottom: 0; top: 100 }
+                            onEditingFinished: cornerWindow.commitZoneRange(
+                                index, zoneStartField.text, zoneEndField.text)
+                        }
+                        Label {
+                            text: "% lap"
+                            font.family: "Geist Mono"
+                            font.pixelSize: 9
+                            color: root.mutedTextColor
+                        }
+                        ToolButton {
+                            text: "×"
+                            implicitWidth: 28
+                            onClicked: store.deleteCorner(index)
+                            ToolTip.visible: hovered
+                            ToolTip.text: "Delete zone"
+                        }
+                    }
+                }
             }
 
             RowLayout {
@@ -935,6 +1253,36 @@ ApplicationWindow {
                     series(corner.steeringSeries, steeringTop,
                            r[0], r[1], root.yellowColor, 1.7)
 
+                    // Context is visible but recessed; the selected zone keeps
+                    // full contrast between its boundary lines.
+                    const zoneStart = Math.max(
+                        0, Math.min(1, corner.cornerStartPosition !== undefined
+                                       ? corner.cornerStartPosition : 0)) * width
+                    const zoneEnd = Math.max(
+                        0, Math.min(1, corner.cornerEndPosition !== undefined
+                                       ? corner.cornerEndPosition : 1)) * width
+                    ctx.save()
+                    ctx.fillStyle = Qt.rgba(0, 0, 0, 0.58)
+                    if (zoneStart > 0) ctx.fillRect(0, 0, zoneStart, height)
+                    if (zoneEnd < width)
+                        ctx.fillRect(zoneEnd, 0, width - zoneEnd, height)
+                    ctx.strokeStyle = root.accentColor
+                    ctx.globalAlpha = 0.55
+                    ctx.lineWidth = 1
+                    for (const edge of [zoneStart, zoneEnd]) {
+                        ctx.beginPath()
+                        ctx.moveTo(edge, 0)
+                        ctx.lineTo(edge, height)
+                        ctx.stroke()
+                    }
+                    ctx.restore()
+                    ctx.fillStyle = root.mutedTextColor
+                    ctx.font = "9px 'Geist Mono'"
+                    ctx.fillText(
+                        Math.round(corner.contextWindowMeters || 0) + "m window · " +
+                        Math.round(corner.cornerLengthMeters || 0) + "m zone",
+                        7, height - 6)
+
                     annotation(corner.compareTurnInPosition, "",
                                root.dimTextColor, 0, true)
                     annotation(corner.compareApexPosition, "",
@@ -954,7 +1302,8 @@ ApplicationWindow {
                 id: cornerDamperPanel
                 Layout.fillWidth: true
                 Layout.preferredHeight: visible ? 76 : 0
-                visible: !!cornerWindow.selectedCorner.hasCompare &&
+                visible: !store.hasGpsData &&
+                         !!cornerWindow.selectedCorner.hasCompare &&
                          cornerWindow.selectedCorner.damperPrimarySeries !== undefined &&
                          cornerWindow.selectedCorner.damperCompareSeries !== undefined &&
                          cornerWindow.selectedCorner.damperCompareSeries.length > 1
@@ -1174,6 +1523,17 @@ ApplicationWindow {
         Material.background: root.backgroundColor
         Material.foreground: root.foregroundColor
 
+        Platform.FolderDialog {
+            id: settingsFolderDialog
+            title: "Choose telemetry directory"
+            acceptLabel: "Add"
+            folder: root.defaultTelemetryFolder()
+            onAccepted: {
+                root.addDir(settingsFolderDialog.folder)
+                root.refreshDirectoryRows()
+            }
+        }
+
         ColumnLayout {
             anchors.fill: parent
             anchors.margins: 12
@@ -1199,7 +1559,26 @@ ApplicationWindow {
                     onClicked: store.refreshTrackAtlas()
                 }
             }
-            Label { text: "Session directories"; font.bold: true; color: root.accentColor }
+            RowLayout {
+                Layout.fillWidth: true
+                Label {
+                    text: "Telemetry directories"
+                    font.bold: true
+                    color: root.accentColor
+                }
+                Label {
+                    Layout.fillWidth: true
+                    text: "stored in " + store.configFilePath()
+                    elide: Text.ElideMiddle
+                    font.family: "Geist Mono"
+                    font.pixelSize: 9
+                    color: root.mutedTextColor
+                }
+                Button {
+                    text: "Rescan"
+                    onClicked: { store.scan(); root.rebuildTree() }
+                }
+            }
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 6
@@ -1207,15 +1586,20 @@ ApplicationWindow {
                     id: settingsDir
                     Layout.fillWidth: true
                     placeholderText: "/path/to/telemetry"
+                    onAccepted: settingsAddDir.clicked()
                 }
                 Button {
+                    text: "Browse…"
+                    onClicked: settingsFolderDialog.open()
+                }
+                Button {
+                    id: settingsAddDir
                     text: "Add"
+                    enabled: settingsDir.text !== ""
                     onClicked: {
-                        if (settingsDir.text !== "") {
-                            store.addSessionDirectory(settingsDir.text)
-                            settingsDir.text = ""
-                            refreshDirectoryRows()
-                        }
+                        root.addDir(settingsDir.text)
+                        settingsDir.text = ""
+                        root.refreshDirectoryRows()
                     }
                 }
             }
@@ -1227,21 +1611,33 @@ ApplicationWindow {
                 clip: true
                 model: directoryRows
                 delegate: RowLayout {
+                    required property var modelData
                     width: settingsDirectories.width
                     height: 38
+                    spacing: 6
                     Label {
                         text: modelData
                         elide: Text.ElideMiddle
                         Layout.fillWidth: true
                         font.family: "Geist Mono"
                         font.pixelSize: 10
+                        color: store.directoryExists(modelData)
+                               ? root.foregroundColor : root.redColor
+                    }
+                    Label {
+                        visible: !store.directoryExists(modelData)
+                        text: "MISSING"
+                        font.family: "Geist Mono"
+                        font.pixelSize: 9
+                        font.bold: true
+                        color: root.redColor
                     }
                     Button {
                         text: "Remove"
                         Layout.preferredHeight: 30
                         onClicked: {
                             store.removeSessionDirectory(modelData)
-                            refreshDirectoryRows()
+                            root.refreshDirectoryRows()
                         }
                     }
                 }
@@ -1281,7 +1677,7 @@ ApplicationWindow {
                             mappingNameField.text)
                         settingsWindow.mappingEditKey = ""
                         settingsWindow.mappingEditName = ""
-                        refreshMappingRows()
+                        root.refreshMappingRows()
                     }
                 }
             }
@@ -1342,7 +1738,7 @@ ApplicationWindow {
                                     settingsWindow.mappingEditName)
                                 settingsWindow.mappingEditKey = ""
                                 settingsWindow.mappingEditName = ""
-                                refreshMappingRows()
+                                root.refreshMappingRows()
                             } else {
                                 settingsWindow.mappingEditKey = modelData.key
                                 settingsWindow.mappingEditName = modelData.display
@@ -1353,7 +1749,7 @@ ApplicationWindow {
                         text: "×"
                         onClicked: {
                             store.setDriverMapping(modelData.key, "")
-                            refreshMappingRows()
+                            root.refreshMappingRows()
                         }
                     }
                 }
@@ -1374,13 +1770,13 @@ ApplicationWindow {
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight:
-                visible ? filmstripSessions.length * 30 + 12 : 0
+                visible ? filmstripSessions.length * 33 + 9 : 0
             visible: filmstripSessions.length > 0
             color: root.darkBackgroundColor
             Column {
                 anchors.fill: parent
                 anchors.margins: 6
-                spacing: 0
+                spacing: 3
                 Repeater {
                     model: filmstripSessions
                     delegate: Rectangle {
@@ -1389,25 +1785,69 @@ ApplicationWindow {
                         property var strip: modelData
                         width: parent.width
                         height: 30
+                        radius: 4
                         color: strip.reference
                                ? Qt.rgba(224 / 255, 157 / 255, 127 / 255, 0.06)
                                : "transparent"
                         border.color: root.borderColor
+                        property string selectedLapTime: {
+                            const laps = strip.laps
+                            const key = strip.reference
+                                        ? store.compareSessionKey
+                                        : store.primarySessionKey
+                            const idx = strip.reference
+                                        ? store.compareLapIndex
+                                        : store.primaryLapIndex
+                            if (key === strip.sessionKey)
+                                for (let i = 0; i < laps.length; ++i)
+                                    if (laps[i].lapId === idx)
+                                        return laps[i].timeText
+                            return strip.bestTime
+                        }
                         RowLayout {
                             anchors.fill: parent
                             anchors.leftMargin: 6
                             anchors.rightMargin: 4
                             spacing: 5
-                            Label {
-                                Layout.preferredWidth: 190
-                                text: (strip.reference ? "⇄ REF  " : "RUN  ") +
-                                      strip.sessionName
-                                elide: Text.ElideMiddle
-                                font.family: "Geist Mono"
-                                font.pixelSize: 9
-                                font.bold: true
-                                color: strip.reference
-                                       ? root.orangeColor : root.accentColor
+                            RowLayout {
+                                Layout.fillWidth: false
+                                Layout.maximumWidth: 400
+                                Layout.preferredWidth: 400
+                                spacing: 5
+                                Label {
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 60
+                                    text: sessionStrip.strip.runName
+                                    elide: Text.ElideMiddle
+                                    font.family: "Geist Mono"
+                                    font.pixelSize: 9
+                                    font.bold: true
+                                    color: root.foregroundColor
+                                }
+                                Rectangle {
+                                    Layout.preferredWidth:
+                                        stripBadgeLabel.implicitWidth + 10
+                                    Layout.preferredHeight: 16
+                                    radius: 3
+                                    color: "transparent"
+                                    border.width: 1
+                                    border.color: sessionStrip.strip.reference
+                                                  ? root.orangeColor
+                                                  : root.accentColor
+                                    Label {
+                                        id: stripBadgeLabel
+                                        anchors.centerIn: parent
+                                        text: root.stripBadgeText(
+                                                  sessionStrip.strip,
+                                                  sessionStrip.selectedLapTime)
+                                        font.family: "Geist Mono"
+                                        font.pixelSize: 9
+                                        font.bold: true
+                                        color: sessionStrip.strip.reference
+                                               ? root.orangeColor
+                                               : root.accentColor
+                                    }
+                                }
                             }
                             ToolButton {
                                 Layout.preferredWidth: 24
@@ -1427,7 +1867,7 @@ ApplicationWindow {
                                 Layout.fillHeight: true
                                 Row {
                                     anchors.fill: parent
-                                    spacing: 2
+                                    spacing: 3
                                     Repeater {
                                         model: sessionStrip.strip.laps
                                         delegate: Rectangle {
@@ -1449,10 +1889,12 @@ ApplicationWindow {
                                                  Math.max(
                                                      0,
                                                      sessionStrip.strip.laps.length - 1) *
-                                                     2) *
+                                                     3) *
                                                     modelData.timeMs /
                                                     sessionStrip.strip.totalTimeMs)
-                                            height: parent.height
+                                            anchors.verticalCenter:
+                                                parent.verticalCenter
+                                            height: parent.height - 8
                                             radius: 3
                                             color: selectedLap
                                                    ? root.selectionColor
@@ -1577,92 +2019,45 @@ ApplicationWindow {
                 }
             }
 
-            Rectangle {
+            SplitView {
+                id: analysisSplit
                 SplitView.fillWidth: true
                 SplitView.fillHeight: true
-                color: root.traceBackgroundColor
-                clip: true
-                TraceView {
-                    id: trace
-                    objectName: "traceView"
-                    anchors.fill: parent
-                    store: appStore
-                    focus: true
-                    onCornerActivated: (index) => {
-                        refreshCornerRows()
-                        cornerWindow.selectedCornerIndex = index
-                        cornerWindow.show()
-                        cornerWindow.requestActivate()
-                    }
-                    onChannelsRequested: {
-                        refreshChannelRows()
-                        channelsWindow.show()
-                        channelsWindow.raise()
-                    }
-                    Keys.onPressed: (event) => {
-                        if (event.key === Qt.Key_C) {
-                            store.clearCompare()
-                            event.accepted = true
-                        } else if (event.key === Qt.Key_A) {
-                            store.setEditingCorners(!store.editingCorners)
-                            event.accepted = true
-                        }
-                    }
+                orientation: Qt.Vertical
+
+                handle: Rectangle {
+                    implicitHeight: 1
+                    color: root.borderColor
                 }
-                TraceCursorOverlay {
-                    objectName: "traceOverlay"
-                    anchors.fill: parent
-                    trace: trace
-                    z: 1
-                }
-                ToolButton {
-                    anchors.left: parent.left
-                    anchors.bottom: parent.bottom
-                    anchors.leftMargin: 4
-                    anchors.bottomMargin: 4
-                    z: 2
-                    text: "Channels…"
-                    font.family: "Geist Mono"
-                    font.pixelSize: 8
-                    onClicked: {
-                        refreshChannelRows()
-                        channelsWindow.show()
-                        channelsWindow.raise()
-                    }
-                    ToolTip.visible: hovered
-                    ToolTip.text: "Add or hide source channels"
-                }
-            }
 
             Rectangle {
                 id: videoPane
                 objectName: "videoPane"
                 visible: videoVisible
-                SplitView.preferredWidth:
-                    visible ? Math.min(620, Math.max(380, root.width * 0.42)) : 0
-                SplitView.minimumWidth: visible ? 320 : 0
-                SplitView.maximumWidth: visible ? root.width * 0.68 : 0
-                SplitView.fillHeight: true
+                SplitView.fillWidth: true
+                SplitView.preferredHeight:
+                    visible ? Math.min(480, Math.max(220, root.height * 0.42)) : 0
+                SplitView.minimumHeight: visible ? 180 : 0
+                SplitView.maximumHeight: visible ? root.height * 0.72 : 0
                 color: root.traceBackgroundColor
                 border.width: 1
                 border.color: root.borderColor
                 focus: visible
 
-                Keys.onPressed: (event) => {
-                    if (!videoPlayer.loaded) return
-                    if (event.key === Qt.Key_Space) {
-                        videoPlayer.togglePaused()
-                        event.accepted = true
-                    } else if (event.key === Qt.Key_Left) {
-                        videoPlayer.seekRelative(-5)
-                        event.accepted = true
-                    } else if (event.key === Qt.Key_Right) {
-                        videoPlayer.seekRelative(5)
-                        event.accepted = true
-                    } else if (event.key === Qt.Key_Period) {
-                        videoPlayer.frameStep()
-                        event.accepted = true
-                    }
+                Shortcut {
+                    enabled: videoPane.visible && videoPlayer.loaded
+                    sequence: "Space"
+                    onActivated: videoPlayer.togglePaused()
+                }
+                Shortcut {
+                    enabled: videoPane.visible && videoPlayer.loaded
+                    sequence: "Left"
+                    onActivated: root.seekVideoRelative(-5)
+                }
+                Shortcut {
+                    enabled: videoPane.visible && videoPlayer.loaded
+                    sequence: "Right"
+                    onActivated: root.seekVideoRelative(15)
                 }
 
                 ColumnLayout {
@@ -1724,6 +2119,7 @@ ApplicationWindow {
                                 text: "×"
                                 onClicked: {
                                     videoPlayer.closeMedia()
+                                    telemetryVideoActive = false
                                     videoVisible = false
                                 }
                                 ToolTip.visible: hovered
@@ -1743,6 +2139,19 @@ ApplicationWindow {
                             id: videoPlayer
                             objectName: "videoPlayer"
                             anchors.fill: parent
+                            onLoadedChanged: {
+                                if (loaded && root.telemetryVideoActive) {
+                                    Qt.callLater(() => {
+                                        videoPlayer.paused = true
+                                        root.seekVideoToTelemetry()
+                                    })
+                                }
+                            }
+                            onPositionChanged: {
+                                if (root.telemetryVideoActive && loaded &&
+                                    !paused)
+                                    store.setCursorFromVideoTime(position)
+                            }
                         }
 
                         MouseArea {
@@ -1784,126 +2193,155 @@ ApplicationWindow {
                         }
                     }
 
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 64
-                        color: root.surfaceColor
-                        border.color: root.borderColor
-                        ColumnLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 6
-                            anchors.rightMargin: 6
-                            spacing: 0
-                            Slider {
-                                id: videoSeekSlider
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 24
-                                from: 0
-                                to: Math.max(0.001, videoPlayer.duration)
-                                enabled: videoPlayer.loaded &&
-                                         videoPlayer.duration > 0
-                                property real pendingValue: 0
-                                onMoved: pendingValue = value
-                                onPressedChanged: {
-                                    if (pressed)
-                                        pendingValue = value
-                                    else if (enabled)
-                                        videoPlayer.seek(pendingValue)
-                                }
-                                Binding {
-                                    target: videoSeekSlider
-                                    property: "value"
-                                    value: videoPlayer.position
-                                    when: !videoSeekSlider.pressed
-                                }
+                }
+            }
+            Rectangle {
+                SplitView.fillWidth: true
+                SplitView.fillHeight: true
+                color: root.traceBackgroundColor
+                clip: true
+                TraceView {
+                    id: trace
+                    objectName: "traceView"
+                    anchors.fill: parent
+                    store: appStore
+                    focus: true
+                    onCornerActivated: (index) => {
+                        refreshCornerRows()
+                        cornerWindow.selectedCornerIndex = index
+                        cornerWindow.show()
+                        cornerWindow.requestActivate()
+                    }
+                    onCornerRenameRequested: (index) => openCornerRename(index)
+                    onChannelsRequested: {
+                        refreshChannelRows()
+                        channelsWindow.show()
+                        channelsWindow.raise()
+                    }
+                    onCornerMenuRequested: (cornerIndex, cornerName,
+                                            fraction, x, y) => {
+                        cornerMenu.cornerIndex = cornerIndex
+                        cornerMenu.cornerName = cornerName
+                        cornerMenu.fraction = fraction
+                        cornerMenu.popup(trace, x, y)
+                    }
+                    onChannelMenuRequested: (key, title, pinned, x, y) => {
+                        channelMenu.channelKey = key
+                        channelMenu.channelTitle = title
+                        channelMenu.pinned = pinned
+                        channelMenu.popup(trace, x, y)
+                    }
+
+                    Menu {
+                        objectName: "cornerMenu"
+                        id: cornerMenu
+                        property int cornerIndex: -1
+                        property string cornerName: ""
+                        property real fraction: 0
+                        MenuItem {
+                            text: "Add zone here"
+                            onTriggered: {
+                                const index = trace.addCornerAt(
+                                    cornerMenu.fraction)
+                                if (index >= 0) root.openCornerRename(index)
                             }
-                            RowLayout {
-                                Layout.fillWidth: true
-                                Layout.fillHeight: true
-                                spacing: 3
-                                ToolButton {
-                                    Layout.preferredWidth: 50
-                                    implicitWidth: 50
-                                    leftPadding: 2
-                                    rightPadding: 2
-                                    text: videoPlayer.paused ? "Play" : "Pause"
-                                    enabled: videoPlayer.loaded
-                                    onClicked: videoPlayer.togglePaused()
-                                }
-                                ToolButton {
-                                    Layout.preferredWidth: 34
-                                    visible: videoPane.width >= 440
-                                    implicitWidth: 34
-                                    leftPadding: 2
-                                    rightPadding: 2
-                                    text: "−5s"
-                                    enabled: videoPlayer.loaded
-                                    onClicked: videoPlayer.seekRelative(-5)
-                                    ToolTip.visible: hovered
-                                    ToolTip.text: "Seek backward five seconds"
-                                }
-                                ToolButton {
-                                    Layout.preferredWidth: 34
-                                    visible: videoPane.width >= 440
-                                    implicitWidth: 34
-                                    leftPadding: 2
-                                    rightPadding: 2
-                                    text: "+5s"
-                                    enabled: videoPlayer.loaded
-                                    onClicked: videoPlayer.seekRelative(5)
-                                    ToolTip.visible: hovered
-                                    ToolTip.text: "Seek forward five seconds"
-                                }
-                                ToolButton {
-                                    Layout.preferredWidth: 40
-                                    visible: videoPane.width >= 390
-                                    implicitWidth: 40
-                                    leftPadding: 2
-                                    rightPadding: 2
-                                    text: "Step"
-                                    enabled: videoPlayer.loaded
-                                    onClicked: videoPlayer.frameStep()
-                                    ToolTip.visible: hovered
-                                    ToolTip.text: "Advance one frame"
-                                }
-                                Item { Layout.fillWidth: true }
-                                Label {
-                                    Layout.preferredWidth: 74
-                                    horizontalAlignment: Text.AlignRight
-                                    text: root.formatMediaTime(
-                                              videoSeekSlider.pressed
-                                              ? videoSeekSlider.pendingValue
-                                              : videoPlayer.position) +
-                                          "/" +
-                                          root.formatMediaTime(videoPlayer.duration)
-                                    font.family: "Geist Mono"
-                                    font.pixelSize: 8
-                                    color: root.mutedTextColor
-                                }
-                                ToolButton {
-                                    Layout.preferredWidth: 50
-                                    visible: videoPane.width >= 450
-                                    implicitWidth: 50
-                                    leftPadding: 2
-                                    rightPadding: 2
-                                    text: videoPlayer.muted ? "Muted" : "Sound"
-                                    enabled: videoPlayer.loaded
-                                    onClicked:
-                                        videoPlayer.muted = !videoPlayer.muted
-                                    ToolTip.visible: hovered
-                                    ToolTip.text: videoPlayer.muted
-                                                  ? "Enable audio" : "Mute audio"
-                                }
+                        }
+                        MenuItem {
+                            text: "Rename " + cornerMenu.cornerName + "…"
+                            enabled: cornerMenu.cornerIndex >= 0
+                            height: enabled ? implicitHeight : 0
+                            visible: enabled
+                            onTriggered:
+                                root.openCornerRename(cornerMenu.cornerIndex)
+                        }
+                        MenuItem {
+                            text: "Delete " + cornerMenu.cornerName
+                            enabled: cornerMenu.cornerIndex >= 0
+                            height: enabled ? implicitHeight : 0
+                            visible: enabled
+                            onTriggered:
+                                store.deleteCorner(cornerMenu.cornerIndex)
+                        }
+                    }
+
+                    Menu {
+                        id: channelMenu
+                        property string channelKey: ""
+                        property string channelTitle: ""
+                        property bool pinned: false
+                        objectName: "channelMenu"
+                        MenuItem {
+                            text: channelMenu.pinned
+                                  ? "Unpin " + channelMenu.channelTitle
+                                  : "Pin " + channelMenu.channelTitle +
+                                    " to top"
+                            onTriggered:
+                                trace.toggleSticky(channelMenu.channelKey)
+                        }
+                        MenuItem {
+                            text: "Hide " + channelMenu.channelTitle
+                            onTriggered:
+                                trace.hideChannel(channelMenu.channelKey)
+                        }
+                        MenuSeparator {}
+                        MenuItem {
+                            text: "Show all standard channels"
+                            onTriggered: trace.showAllStandardChannels()
+                        }
+                        MenuItem {
+                            text: "Unpin all channels"
+                            onTriggered: trace.unpinAllChannels()
+                        }
+                        MenuItem {
+                            text: "More channels…"
+                            onTriggered: {
+                                root.refreshChannelRows()
+                                channelsWindow.show()
+                                channelsWindow.raise()
                             }
                         }
                     }
+                    Keys.onPressed: (event) => {
+                        if (event.key === Qt.Key_C) {
+                            store.clearCompare()
+                            event.accepted = true
+                        } else if (event.key === Qt.Key_A) {
+                            store.setEditingCorners(!store.editingCorners)
+                            event.accepted = true
+                        }
+                    }
+                }
+                TraceCursorOverlay {
+                    objectName: "traceOverlay"
+                    anchors.fill: parent
+                    trace: trace
+                    z: 1
+                }
+                ToolButton {
+                    anchors.left: parent.left
+                    anchors.bottom: parent.bottom
+                    anchors.leftMargin: 4
+                    anchors.bottomMargin: 4
+                    z: 2
+                    text: "Channels…"
+                    font.family: "Geist Mono"
+                    font.pixelSize: 8
+                    onClicked: {
+                        refreshChannelRows()
+                        channelsWindow.show()
+                        channelsWindow.raise()
+                    }
+                    ToolTip.visible: hovered
+                    ToolTip.text: "Add or hide source channels"
                 }
             }
+            }
+
         }
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: visible ? 64 : 0
-            visible: store.comparing &&
+            visible: !store.hasGpsData && store.comparing &&
                      alignmentRows.primary !== undefined &&
                      alignmentRows.primary.length > 1
             color: root.surfaceColor
@@ -2094,18 +2532,39 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     spacing: 0
-                    Label {
+                    RowLayout {
                         visible: model.role === "session"
-                        text: (model.driver || "Unknown") +
-                              (model.driverId !== "" ? "  ID " + model.driverId : "")
                         Layout.fillWidth: true
-                        elide: Text.ElideRight
-                        font.family: "Geist"
-                        font.pixelSize: 10
-                        font.bold: activeSession
-                        color: activeSession ? root.accentColor
-                               : referenceSession ? root.orangeColor
-                               : root.foregroundColor
+                        spacing: 4
+                        Rectangle {
+                            visible: model.isVideo === true
+                            Layout.preferredWidth: 15
+                            Layout.preferredHeight: 11
+                            radius: 2
+                            color: "transparent"
+                            border.width: 1
+                            border.color: sessionRowLabel.color
+                            Label {
+                                anchors.centerIn: parent
+                                text: "▶"
+                                font.family: "Geist Mono"
+                                font.pixelSize: 6
+                                color: sessionRowLabel.color
+                            }
+                        }
+                        Label {
+                            id: sessionRowLabel
+                            text: (model.driver || "Unknown") +
+                                  (model.driverId !== "" ? "  ID " + model.driverId : "")
+                            Layout.fillWidth: true
+                            elide: Text.ElideRight
+                            font.family: "Geist"
+                            font.pixelSize: 10
+                            font.bold: activeSession
+                            color: activeSession ? root.accentColor
+                                   : referenceSession ? root.orangeColor
+                                   : root.foregroundColor
+                        }
                     }
                     Label {
                         visible: model.role === "session"
@@ -2134,21 +2593,6 @@ ApplicationWindow {
                                ? root.foregroundColor : root.mutedTextColor
                     }
                 }
-                ToolButton {
-                    visible: model.role === "session"
-                    Layout.preferredWidth: 22
-                    Layout.preferredHeight: 22
-                    text: "✎"
-                    font.pixelSize: 12
-                    onClicked: {
-                        settingsWindow.mappingEditKey = model.mappingKey || ""
-                        settingsWindow.mappingEditName = model.driver || ""
-                        settingsWindow.show()
-                        settingsWindow.raise()
-                    }
-                    ToolTip.visible: hovered
-                    ToolTip.text: "Edit driver name mapping"
-                }
                 Label {
                     visible: activeSession || referenceSession
                     text: referenceSession ? "⇄ REF" : "ACTIVE"
@@ -2170,6 +2614,14 @@ ApplicationWindow {
 
             Menu {
                 id: sessionMenu
+                MenuItem {
+                    objectName: "renameDriverMenuItem"
+                    text: "Rename driver"
+                    enabled: (model.mappingKey || "") !== ""
+                    onTriggered: root.openDriverRename(
+                        model.mappingKey || "", model.driver || "")
+                }
+                MenuSeparator {}
                 MenuItem {
                     text: "Set active session (best lap)"
                     onTriggered: setSessionActive(model.key)

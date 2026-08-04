@@ -4,7 +4,7 @@
 
 Racecraft is a native racing-telemetry workstation. Its primary target is Linux under Omarchy, built with Qt 6, Qt Quick, and Material controls. It should turn heterogeneous logger files into a coherent, driver-facing model of sessions, laps, channels, tracks, corners, and corner complexes.
 
-This is not a single-format file viewer or a generic chart demo. The product direction is a full telemetry system that can ingest every major race format through one analysis pipeline. The current parser bridge supports Pi/Cosworth `.pds`, MoTeC `.ld` (with `.ldx` treated as a companion), and Racelogic `.vbo`; that is the starting set, not the intended limit.
+This is not a single-format file viewer or a generic chart demo. The product direction is a full telemetry system that can ingest every major race format through one analysis pipeline. The current parser bridge supports Pi/Cosworth `.pds`, MoTeC `.ld` (with `.ldx` treated as a companion), Racelogic `.vbo`, and AiM `aimd` telemetry embedded in `.mp4`; that is the starting set, not the intended limit.
 
 ## Product goal
 
@@ -59,6 +59,20 @@ Telemetry and onboard-video inputs are immutable evidence. Never rewrite, rename
 
 Network access is an enhancement, not a boot requirement. Cache upstream data, continue to work offline, and fail back cleanly. Bundled corner CSV files are compatibility fallbacks, not the long-term source of truth.
 
+### Configuration lives in racecraft.yml
+
+All user configuration state belongs in `racecraft.yml`
+(`$XDG_CONFIG_HOME/racecraft/racecraft.yml`, else `~/.config/racecraft/racecraft.yml`).
+It is the single source of truth for telemetry directories, channel display,
+driver naming, last selection, and per-track corner overrides, and it is meant
+to be read, diffed, and hand-edited. Never add a second configuration store,
+and never write configuration into telemetry, caches, or `QSettings`.
+
+Upstream data is not configuration. Track Atlas is used as-is by default; the
+moment a user edits corner zones for a track, the whole resulting zone list is
+copied out to `tracks.<track>.corners` in `racecraft.yml` and that override
+wins on load. Caches (Track Atlas snapshot, thumbnails) stay outside the file.
+
 ## Feature model
 
 ### Ingestion and session library
@@ -69,7 +83,7 @@ Network access is an enhancement, not a boot requirement. Cache upstream data, c
 - Group the library as Track → Date → Session → Laps.
 - Detect lap boundaries from the best available beacon, lap-time, lap-number, or lap-distance signal.
 - Mark outlaps and fastest laps and cache parsed/unified laps lazily per session.
-- Persist session directories and user-facing aliases with `QSettings`.
+- Persist telemetry directories and user-facing aliases in `racecraft.yml`; `~/Documents/Telemetry` is the default directory on a fresh install.
 
 ### Normalization and analysis
 
@@ -94,16 +108,17 @@ Native lap distance is unwrapped across start-line resets and rejected when jump
 - Share one cursor/readout across traces.
 - Pan, zoom, select ranges, scroll channels, and navigate with mouse and keyboard.
 - Keep corner/complex ranges visible without obscuring the data.
-- Allow manual reference alignment for signals such as damper traces without changing the underlying lap data.
+- Allow manual reference alignment for signals such as damper traces without changing the underlying lap data. The damper-alignment tool is a fallback for sessions without positional GPS: show it automatically when the active lap has no varying GPS latitude/longitude, and keep it out of the way when GPS is available.
 
 ### Embedded video playback
 
-- Open MP4, MOV, MKV, AVI, M4V, and WebM files inside the main analysis workspace.
+- Open MP4, MOV, MKV, AVI, M4V, and WebM video inside the main analysis workspace; an MP4 containing an AiM `aimd` track is also a telemetry session.
 - Render through libmpv's OpenGL Render API in `MpvVideoItem`; never spawn the mpv CLI or embed a foreign native window.
-- Keep playback controls compact: play/pause, exact seek, five-second steps, single-frame advance, and mute.
-- Treat video files as read-only. Playback must not parse or rewrite embedded telemetry.
+- Place video in the resizable section above the traces. Playback chrome stays minimal: Space toggles playback, Left seeks 5 seconds back, and Right seeks 15 seconds forward.
+- Selecting an AiM video session selects its fastest lap and pauses at the telemetry cursor. Cursor seeks map to media time, and active playback advances the telemetry cursor. Derive the MP4 offset from valid AiM record timestamps and track presentation times; never infer a packet clock from undocumented bytes.
+- Treat video files as read-only. Parsing and playback must never rewrite embedded telemetry or media.
 - Qt Quick must use the OpenGL graphics API before the first window because `QQuickFramebufferObject` and libmpv share that context.
-- `RACECRAFT_VIDEO=/path/to/video` opens a startup video and is also used by the GUI acceptance harness.
+- `RACECRAFT_VIDEO=/path/to/video` first attempts to open a telemetry-bearing MP4 session, falls back to standalone playback, and is also used by the GUI acceptance harness.
 
 ### Corner intelligence
 
@@ -112,8 +127,9 @@ Native lap distance is unwrapped across start-line resets and rejected when jump
 - Treat individual `corner_ranges` and grouped `corner_complexes` as distinct first-class analysis scopes.
 - Preserve complex membership and any Track Atlas landmarks instead of reconstructing them in QML.
 - Provide single-lap and primary/reference summaries: time, entry/apex/exit speed, gear, steering, brake/lift/turn-in/apex/throttle points, deltas, and trace excerpts.
-- Support automatic brake-zone fallback, direct range editing, and local user overrides when authoritative data is unavailable.
-- Keep Track Atlas cache refresh and offline fallback explicit in preferences.
+- Support automatic brake-zone fallback, direct range editing, add/rename/delete of zones, and local user overrides when authoritative data is unavailable.
+- Draw corner traces with surrounding context: at least a 500 m window around the zone, more approach before it and a longer exit after it, with the context dimmed and the selected zone kept at full contrast between its boundaries.
+- Keep Track Atlas cache refresh and offline fallback explicit in preferences; corner edits are copied into `racecraft.yml` as a per-track override.
 
 The current implementation imports `corner_ranges` and exposes a corner inspector. `corner_complexes`, full geometry, and the rest of the Track Atlas range layers are product requirements still to be carried through the application model; extend the model rather than overloading `CornerZone` until it loses meaning.
 
@@ -124,7 +140,7 @@ The current implementation imports `corner_ranges` and exposes a corner inspecto
 ## Architecture
 
 ```text
-.pds / .ld(+.ldx) / .vbo / future race formats
+.pds / .ld(+.ldx) / .vbo / .mp4(aimd) / future race formats
               |
               v
 third_party/motorsport-telemetry/crates/*     Rust, vendor-specific parsing
@@ -161,7 +177,7 @@ CMake builds the vendored Rust workspace into `libracecraft_bridge.a`, links it 
 | Core | `src/core/TelemetryEngine.*` | Channel mapping, units, lap detection, resampling, `UnifiedLap` | Qt types, QML, settings, network access |
 | Session/store | `src/app/TelemetryStore.*` | Lazy session handles, selection, comparison, viewport, caches, preferences, Track Atlas, corner analysis | Pixel-level paint loops or vendor byte parsing |
 | Renderer | `src/app/TraceView.*` | Frame-budget-sensitive painting and direct trace interaction | Parsing, network access, persistent product state |
-| Video renderer | `src/app/MpvVideoItem.*` | libmpv lifecycle, OpenGL FBO rendering, playback state, exact seek and frame-step | Telemetry extraction, session association, or QML layout policy |
+| Video renderer | `src/app/MpvVideoItem.*` | libmpv lifecycle, OpenGL FBO rendering, playback state, and exact seek | Telemetry extraction, session association, or QML layout policy |
 | QML UI | `src/qml/Main.qml` | Material windows, layout, delegates, controls, high-level orchestration | Full telemetry loops, duplicated analysis, format branches |
 | Bootstrap | `src/main.cpp` | Qt startup, type registration, theme bridge, automation harness | Product analysis |
 | CLI | `cli/main.cpp` | Reproducible headless acceptance and inspection | A second analysis implementation |
@@ -179,7 +195,7 @@ CMake builds the vendored Rust workspace into `libracecraft_bridge.a`, links it 
 
 1. `racecraft_core` remains Qt-free and usable by the CLI.
 2. The UI never branches on telemetry format. Add a parser or mapping; do not add `.pds`/`.ld` special cases to QML.
-3. Unified channel arrays share the lap’s 50 Hz time base. Keep their lengths aligned with `time`.
+3. Unified channel arrays share the lap’s 50 Hz absolute-time grid. Keep their lengths aligned with `time`; sample through the source clock so late channel starts, dropped samples, and acquisition gaps cannot shift events.
 4. Unified distance starts at zero and is monotonic.
 5. Comparisons are distance-aligned. Index-aligned or raw-time-aligned deltas are incorrect unless a feature explicitly requires another domain.
 6. The same cached delta feeds both the plotted trace and numeric cursor readout.
@@ -187,13 +203,14 @@ CMake builds the vendored Rust workspace into `libracecraft_bridge.a`, links it 
 8. Track identity and corner metadata come from Track Atlas when available; local edits are overlays, not upstream truth.
 9. Parser errors become explicit failures. No Rust panic, C++ exception, or invalid pointer crosses the ABI boundary.
 10. Optional channels and optional network data degrade gracefully; silent fabrication does not.
+11. A flattened decoded array is not a clock. Lap boundaries, resampling, raw channels, and media synchronization must preserve source chunk time bases.
 
 ## Where changes belong
 
 - New file format or source encoding: add/extend a Rust parser crate and expose only generic capabilities through the bridge.
 - New cross-format channel or unit rule: `TelemetryEngine` and `UnifiedLap`.
 - New lap/corner comparison metric: C++ analysis in the store/core, exposed as compact view data.
-- New persistent user preference: `TelemetryStore`/`QSettings`; never write it into telemetry.
+- New persistent user preference: `TelemetryStore` + `racecraft.yml` through `YamlConfig`; never `QSettings`, and never write it into telemetry.
 - New Material control, inspector, or layout: QML.
 - New high-frequency visual: `TraceView` or another focused C++ Quick item, with measured frame cost.
 - New track metadata: contribute it to Track Atlas. Racecraft should consume the upstream result.
@@ -203,7 +220,7 @@ Do not fix parser ambiguity with filename-specific UI conditionals. Do not copy 
 
 ## Build and run
 
-Requirements: CMake 3.21+, `pkg-config`, libmpv development files, a C++17 compiler, Qt 6.5+ (`Core`, `Gui`, `Quick`, `QuickControls2`, `Widgets`, `Qml`, `Network`), and Rust/Cargo 1.84+.
+Requirements: CMake 3.21+, `pkg-config`, libmpv and libyaml development files, a C++17 compiler, Qt 6.5+ (`Core`, `Gui`, `Quick`, `QuickControls2`, `Widgets`, `Qml`, `Network`), and Rust/Cargo 1.84+.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -260,22 +277,26 @@ Add feature flags as needed:
 - `RACECRAFT_AUTOTEST_CORNER=1`
 - `RACECRAFT_AUTOTEST_HOVER=1`
 - `RACECRAFT_AUTOTEST_ZOOM=1`
+- `RACECRAFT_AUTOTEST_RENAME=1`
+- `RACECRAFT_AUTOTEST_BRAKE_SYNC=1`
+- `RACECRAFT_AUTOTEST_CORNER_EDIT=1`
 - `RACECRAFT_VIDEO=/path/to/onboard.mp4`
 
 `HOVER` and `ZOOM` print average paint time. Treat 16.67 ms as the hard 60 fps ceiling and 8.33 ms as the design target for continuous interaction. Inspect the screenshot as well; timing alone cannot catch illegible density, overlap, incorrect colors, or stale comparison state.
 
 For visual work, also run the app in the target Linux/Omarchy desktop. Offscreen output does not verify native palette integration, font rendering, window behavior, pointer feel, or high-refresh animation.
 
-Embedded libmpv playback must be verified on the native Linux/Omarchy OpenGL scene graph. The offscreen platform can capture the surrounding QML but does not establish the shared `QQuickFramebufferObject` render context. When `RACECRAFT_VIDEO` is set, the native autotest exits non-zero unless the player is ready, the file is loaded, and duration is available.
+Embedded libmpv playback must be verified on the native Linux/Omarchy OpenGL scene graph. The offscreen platform can capture the surrounding QML but does not establish the shared `QQuickFramebufferObject` render context. When `RACECRAFT_VIDEO` is set, the native autotest exits non-zero unless the player is ready, the file is loaded, duration is available, the default volume is 75%, keyboard seeks remain mapped, playback advances the telemetry cursor, and media time stays aligned. `RACECRAFT_AUTOTEST_BRAKE_SYNC=1` pauses on a real heavy-braking sample so the telemetry cursor can be checked against the video's own lap timer and brake graphic. `RACECRAFT_AUTOTEST_RENAME=1` exercises the driver rename dialog and persistence path.
 
 ## Current boundaries to keep explicit
 
-- The bridge currently dispatches only `.pds`, `.ld`, and `.vbo`; `.ldx` resolves to its `.ld` companion and is not parsed independently.
+- The bridge dispatches `.pds`, `.ld`, `.vbo`, and AiM `aimd` `.mp4`; `.ldx` resolves to its `.ld` companion and is not parsed independently. An ordinary MP4 without an `aimd` track remains valid for standalone playback but is not a telemetry session.
 - Session parsing is lazy, but opening a source currently decodes and retains whole channel arrays. Do not describe it as streaming.
 - The app currently consumes Track Atlas `corner_ranges`; first-class complexes and geometry are not wired through yet.
 - `sessionStartUnixTime()`/`hasGlobalTime()` do not currently provide global session time.
 - The GUI is file-based post-session analysis today. Future live or database-backed work must preserve the same normalized core instead of bypassing it.
-- The app currently embeds one video with manual playback controls. It does not yet extract `aimd` telemetry, persist session/video associations, or align multiple videos.
+- The app embeds one video. An `aimd` MP4 self-associates playback with its telemetry and clock offset; persisted associations between separate files and multi-video alignment are not implemented.
+- Configuration migrates from the pre-YAML `QSettings` store and from per-track corner CSVs on first run; the legacy stores are read once and never written again.
 
 ## Definition of done
 

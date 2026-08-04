@@ -161,6 +161,12 @@ pub trait TelemetrySource: Send + Sync {
     fn path(&self) -> &str;
     fn format(&self) -> &'static str;
     fn channels(&self) -> &[Channel];
+
+    /// Media time corresponding to telemetry time zero, when this source is
+    /// embedded in a timed container.
+    fn media_time_offset_ns(&self) -> Option<i64> {
+        None
+    }
     fn decode(&self, channel_index: usize, chunk_index: usize, local_index: u64) -> f64;
 
     fn sample_time_ns(&self, channel_index: usize, chunk_index: usize, local_index: u64) -> u64 {

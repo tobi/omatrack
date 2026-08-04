@@ -14,6 +14,7 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS
   Core Gui Quick QuickControls2 Widgets Qml Network)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBMPV REQUIRED IMPORTED_TARGET mpv)
+pkg_check_modules(LIBYAML REQUIRED IMPORTED_TARGET yaml-0.1)
 
 # ── Rust parsing bridge (vendored duckdb_motorsport_telemetry) ──────
 set(RUST_WORKSPACE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/motorsport-telemetry)
@@ -26,6 +27,8 @@ add_custom_command(
   COMMAND cargo build --release --manifest-path ${RUST_WORKSPACE}/Cargo.toml
   WORKING_DIRECTORY ${RUST_WORKSPACE}
   DEPENDS ${RUST_WORKSPACE}/Cargo.toml
+          ${RUST_WORKSPACE}/crates/aim-telemetry/Cargo.toml
+          ${RUST_WORKSPACE}/crates/aim-telemetry/src/lib.rs
           ${RUST_WORKSPACE}/bridge/src/lib.rs
   COMMENT "Building Rust telemetry parsing bridge (duckdb_motorsport_telemetry)"
   VERBATIM)
@@ -58,7 +61,8 @@ qt_add_executable(racecraft
   src/app/MpvVideoItem.cpp
   src/app/TelemetryStore.cpp
   src/app/TraceView.cpp
+  src/app/YamlConfig.cpp
   src/qml/application.qrc
 )
-target_link_libraries(racecraft PRIVATE racecraft_core PkgConfig::LIBMPV Qt6::Quick Qt6::QuickControls2 Qt6::Widgets Qt6::Qml Qt6::Network)
+target_link_libraries(racecraft PRIVATE racecraft_core PkgConfig::LIBYAML PkgConfig::LIBMPV Qt6::Quick Qt6::QuickControls2 Qt6::Widgets Qt6::Qml Qt6::Network)
 target_include_directories(racecraft PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)

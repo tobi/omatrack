@@ -1,6 +1,7 @@
 #include "TelemetryStore.h"
 
 #include "core/TelemetryEngine.h"
+#include "YamlConfig.h"
 
 #include <QDebug>
 #include <QDateTime>
@@ -82,6 +83,20 @@ QPair<QString, QString> channelMetadata(const QString& key) {
         {"gps_lon", {"GPS longitude", "°"}},
     };
     return metadata.value(key, {key, {}});
+}
+
+/// YAML scalars arrive as strings; QVariant("false").toBool() is true.
+bool yamlBool(const QVariant& value, bool fallback) {
+    if (!value.isValid()) return fallback;
+    if (value.typeId() == QMetaType::Bool) return value.toBool();
+    const QString text = value.toString().trimmed().toLower();
+    if (text == QStringLiteral("true") || text == QStringLiteral("1") ||
+        text == QStringLiteral("yes"))
+        return true;
+    if (text == QStringLiteral("false") || text == QStringLiteral("0") ||
+        text == QStringLiteral("no"))
+        return false;
+    return fallback;
 }
 
 }  // namespace
@@ -170,15 +185,21 @@ void SessionHandle::populateLaps(const std::vector<Lap>& detected) {
     summaryLoaded_ = true;
 }
 
+void SessionHandle::applyEventDriverId(int eventDriverId) {
+    // The lightweight pass reads raw logger values and wins; the loaded source
+    // decodes physical samples and only fills the gap.
+    if (eventDriverId <= 0 || driverIdResolved_) return;
+    driverIdResolved_ = true;
+    driverId_ = QString::number(eventDriverId);
+    driver_ = QStringLiteral("Driver id %1").arg(driverId_);
+}
+
 void SessionHandle::ensureLapSummary() {
     if (summaryLoaded_) return;
     int eventDriverId = 0;
     populateLaps(
         detectLapsLightweight(path_.toStdString(), &eventDriverId));
-    if (eventDriverId > 0) {
-        driverId_ = QString::number(eventDriverId);
-        driver_ = QStringLiteral("Driver id %1").arg(driverId_);
-}
+    applyEventDriverId(eventDriverId);
 }
 
 void SessionHandle::ensureSource() {
@@ -186,6 +207,9 @@ void SessionHandle::ensureSource() {
     src_ = TelemetrySource::open(path_.toStdString());
     if (!src_) return;
     if (!summaryLoaded_) populateLaps(src_->detectLaps());
+    // Formats reached through the loaded source (video-backed sessions are
+    // decoded during the scan) never run the lightweight driver-id pass.
+    applyEventDriverId(src_->detectDriverId());
     loaded_ = true;
 }
 
@@ -234,6 +258,9 @@ std::shared_ptr<const racecraft::UnifiedLap> SessionHandle::unifiedLap(int lapId
 TelemetryStore::TelemetryStore(QObject* parent) : QObject(parent) {
     loadPreferences();
     loadChannelsConfig();
+    // A fresh install gets a real racecraft.yml immediately, so the defaults
+    // are visible and hand-editable instead of implicit.
+    if (YamlConfig::instance().isFresh()) savePreferences();
 
     atlasNetwork_ = new QNetworkAccessManager(this);
     atlasTimer_ = new QTimer(this);
@@ -250,55 +277,90 @@ TelemetryStore::TelemetryStore(QObject* parent) : QObject(parent) {
 TelemetryStore::~TelemetryStore() = default;
 
 void TelemetryStore::loadPreferences() {
+    // racecraft.yml is the source of truth. QSettings is read only to migrate
+    // a pre-YAML install; nothing is written back to it.
+    YamlConfig& config = YamlConfig::instance();
     QSettings s;
-    const QStringList dirs = s.value("sessionDirs").toStringList();
-    for (const QString& d : dirs) {
+    QStringList dirs = config.value(QStringLiteral("telemetry_dirs"))
+                           .toStringList();
+    if (dirs.isEmpty()) dirs = s.value("sessionDirs").toStringList();
+    if (dirs.isEmpty())
+        dirs.append(QDir::homePath() + QStringLiteral("/Documents/Telemetry"));
+    for (const QString& d : dirs)
         if (!sessionDirs_.contains(d)) sessionDirs_.append(d);
+
+    channelHeight_ =
+        config.value(QStringLiteral("view/channel_height"),
+                     s.value("channelHeight", 110))
+            .toInt();
+    const QVariantMap selection = config.map({QStringLiteral("selection")});
+    lastPrimaryKey_ = selection.value(QStringLiteral("primary_key"),
+                                      s.value("lastPrimaryKey")).toString();
+    lastPrimaryLap_ = selection.value(QStringLiteral("primary_lap"),
+                                      s.value("lastPrimaryLap", -1)).toInt();
+    lastCompareKey_ = selection.value(QStringLiteral("compare_key"),
+                                      s.value("lastCompareKey")).toString();
+    lastCompareLap_ = selection.value(QStringLiteral("compare_lap"),
+                                      s.value("lastCompareLap", -1)).toInt();
+
+    const QVariantMap aliases = config.map({QStringLiteral("driver_aliases")});
+    if (aliases.isEmpty()) {
+        s.beginGroup("driverAliases");
+        for (const QString& key : s.childKeys())
+            driverAliases_.insert(key, s.value(key).toString());
+        s.endGroup();
+    } else {
+        for (auto it = aliases.cbegin(); it != aliases.cend(); ++it)
+            driverAliases_.insert(it.key(), it.value().toString());
     }
-    channelHeight_ = s.value("channelHeight", 110).toInt();
-    lastPrimaryKey_ = s.value("lastPrimaryKey").toString();
-    lastPrimaryLap_ = s.value("lastPrimaryLap", -1).toInt();
-    lastCompareKey_ = s.value("lastCompareKey").toString();
-    lastCompareLap_ = s.value("lastCompareLap", -1).toInt();
-    s.beginGroup("driverAliases");
-    for (const QString& key : s.childKeys())
-        driverAliases_.insert(key, s.value(key).toString());
-    s.endGroup();
-    s.beginGroup("driverMappings");
-    for (const QString& key : s.childKeys())
-        driverMappings_.insert(key, s.value(key).toString());
-    s.endGroup();
+
+    const QVariantMap mappings =
+        config.map({QStringLiteral("driver_mappings")});
+    if (mappings.isEmpty()) {
+        s.beginGroup("driverMappings");
+        for (const QString& key : s.childKeys())
+            driverMappings_.insert(key, s.value(key).toString());
+        s.endGroup();
+    } else {
+        for (auto it = mappings.cbegin(); it != mappings.cend(); ++it)
+            driverMappings_.insert(it.key(), it.value().toString());
+    }
 }
 
 void TelemetryStore::savePreferences() {
-    QSettings s;
-    s.setValue("sessionDirs", sessionDirs_);
-    s.setValue("channelHeight", channelHeight_);
-    s.setValue("lastPrimaryKey", lastPrimaryKey_);
-    s.setValue("lastPrimaryLap", lastPrimaryLap_);
-    s.setValue("lastCompareKey", lastCompareKey_);
-    s.setValue("lastCompareLap", lastCompareLap_);
+    YamlConfig& config = YamlConfig::instance();
+    config.setValue(QStringList{QStringLiteral("telemetry_dirs")},
+                    QVariant(sessionDirs_));
+    config.setValue(QStringLiteral("view/channel_height"), channelHeight_);
+    config.setMap({QStringLiteral("selection")},
+                  QVariantMap{
+                      {QStringLiteral("primary_key"), lastPrimaryKey_},
+                      {QStringLiteral("primary_lap"), lastPrimaryLap_},
+                      {QStringLiteral("compare_key"), lastCompareKey_},
+                      {QStringLiteral("compare_lap"), lastCompareLap_}});
 
-    s.beginGroup("driverAliases");
-    s.remove(QString());
+    QVariantMap aliases;
     for (auto it = driverAliases_.cbegin(); it != driverAliases_.cend(); ++it)
-        s.setValue(it.key(), it.value());
-    s.endGroup();
+        aliases.insert(it.key(), it.value());
+    config.setMap({QStringLiteral("driver_aliases")}, aliases);
 
-    s.beginGroup("driverMappings");
-    s.remove(QString());
-    for (auto it = driverMappings_.cbegin();
-         it != driverMappings_.cend(); ++it)
-        s.setValue(it.key(), it.value());
-    s.endGroup();
-    s.beginGroup("channels");
-    s.setValue("_paletteSchema", 3);
-    for (const QString& key : channelOrder_) {
-        s.setValue(key + "/visible", channelVisible_.value(key, key != "delta"));
-        s.setValue(key + "/color", channelColors_.value(key).name(QColor::HexRgb));
-        s.setValue(key + "/weight", channelWeights_.value(key, 1.0));
-    }
-    s.endGroup();
+    QVariantMap mappings;
+    for (auto it = driverMappings_.cbegin(); it != driverMappings_.cend(); ++it)
+        mappings.insert(it.key(), it.value());
+    config.setMap({QStringLiteral("driver_mappings")}, mappings);
+
+    QVariantMap channels = config.map({QStringLiteral("channels")});
+    for (const QString& key : channelOrder_)
+        channels.insert(
+            key,
+            QVariantMap{
+                {QStringLiteral("visible"),
+                 channelVisible_.value(key, key != QStringLiteral("delta"))},
+                {QStringLiteral("color"),
+                 channelColors_.value(key).name(QColor::HexRgb)},
+                {QStringLiteral("weight"), channelWeights_.value(key, 1.0)}});
+    config.setMap({QStringLiteral("channels")}, channels);
+    config.save();
 }
 
 void TelemetryStore::loadChannelsConfig() {
@@ -310,24 +372,24 @@ void TelemetryStore::loadChannelsConfig() {
         "gps_lat", "gps_lon", "delta"};
     channelOrder_ =
         QStringList{order, order + sizeof(order) / sizeof(order[0])};
-    QSettings s;
-    s.beginGroup("channels");
-    const int paletteSchema = s.value("_paletteSchema", 1).toInt();
+    const QVariantMap channels =
+        YamlConfig::instance().map({QStringLiteral("channels")});
     for (const QString& k : channelOrder_) {
         const bool defaultVisible =
             k != "delta" && k != "clutch" &&
             k != "driver_throttle" && k != "gps_lat" &&
             k != "gps_lon";
+        const QVariantMap entry = channels.value(k).toMap();
         channelVisible_[k] =
-            s.value(k + "/visible", defaultVisible).toBool();
-        QColor color = paletteSchema < 3
-                           ? defaultChannelColor(k)
-                           : QColor(s.value(k + "/color", defaultChannelColor(k).name()).toString());
+            yamlBool(entry.value(QStringLiteral("visible")), defaultVisible);
+        const QColor color(
+            entry.value(QStringLiteral("color"),
+                        defaultChannelColor(k).name(QColor::HexRgb))
+                .toString());
         channelColors_[k] = color.isValid() ? color : defaultChannelColor(k);
-        channelWeights_[k] = qBound(0.5, s.value(k + "/weight", 1.0).toDouble(), 2.0);
+        channelWeights_[k] = qBound(
+            0.5, entry.value(QStringLiteral("weight"), 1.0).toDouble(), 2.0);
     }
-    if (paletteSchema < 3) s.setValue("_paletteSchema", 3);
-    s.endGroup();
 }
 
 QString TelemetryStore::trackAtlasCachePath() const {
@@ -449,7 +511,7 @@ void TelemetryStore::scan() {
 
 void TelemetryStore::scanDirectory(const QString& dir) {
     const QStringList filters{"*.pds", "*.PDS", "*.ld", "*.LD", "*.ldx", "*.LDX",
-                              "*.vbo", "*.VBO"};
+                              "*.vbo", "*.VBO", "*.mp4", "*.MP4"};
     QDirIterator it(dir, filters, QDir::Files, QDirIterator::Subdirectories);
     QStringList paths;
     while (it.hasNext()) {
@@ -477,8 +539,9 @@ void TelemetryStore::scanDirectory(const QString& dir) {
     }
     std::sort(paths.begin(), paths.end());
     for (const QString& path : paths) {
-        auto h = std::make_unique<SessionHandle>(path);
-        sessions_.push_back(std::move(h));
+        auto handle = std::make_unique<SessionHandle>(path);
+        if (handle->isVideo() && !handle->source()) continue;
+        sessions_.push_back(std::move(handle));
     }
 }
 
@@ -502,12 +565,11 @@ void TelemetryStore::openFile(const QString& filePath) {
         telemetryPath += "ld";
     }
     if (!QFileInfo::exists(telemetryPath)) return;
-    auto h = std::make_unique<SessionHandle>(telemetryPath);
-    SessionHandle* raw = h.get();
-    sessions_.push_back(std::move(h));
-    // select a fastest lap
-    raw->laps();
+    auto handle = std::make_unique<SessionHandle>(telemetryPath);
+    SessionHandle* raw = handle.get();
     const auto& laps = raw->laps();
+    if (!raw->source() || laps.isEmpty()) return;
+    sessions_.push_back(std::move(handle));
     int bestId = -1;
     double bestMs = 1e18;
     for (const auto& l : laps) {
@@ -536,11 +598,41 @@ void TelemetryStore::clearSessions() {
     setReferenceAlignment(0.0);
     corners_.clear();
     emit selectionChanged();
+    emit videoTimeChanged();
     emit cornersChanged();
 }
 
 QStringList TelemetryStore::sessionDirectories() const {
     return sessionDirs_;
+}
+
+bool TelemetryStore::directoryExists(const QString& dirPath) const {
+    return !dirPath.isEmpty() && QFileInfo(dirPath).isDir();
+}
+
+
+// True when the active lap carries usable GPS: the damper-alignment tool is
+// only the fallback for sessions that cannot be aligned positionally.
+bool TelemetryStore::hasGpsData() const {
+    const racecraft::UnifiedLap* lap = primaryUnified();
+    if (!lap || lap->gpsLat.size() < 2 ||
+        lap->gpsLat.size() != lap->gpsLon.size())
+        return false;
+    double minLat = lap->gpsLat.front();
+    double maxLat = minLat;
+    double minLon = lap->gpsLon.front();
+    double maxLon = minLon;
+    for (size_t i = 1; i < lap->gpsLat.size(); ++i) {
+        minLat = std::min(minLat, lap->gpsLat[i]);
+        maxLat = std::max(maxLat, lap->gpsLat[i]);
+        minLon = std::min(minLon, lap->gpsLon[i]);
+        maxLon = std::max(maxLon, lap->gpsLon[i]);
+    }
+    // A parked or absent receiver reports a constant (often zero) fix.
+    return (maxLat - minLat) > 1e-5 || (maxLon - minLon) > 1e-5;
+}
+QString TelemetryStore::configFilePath() const {
+    return YamlConfig::filePath();
 }
 
 SessionHandle* TelemetryStore::findSession(const QString& key) const {
@@ -612,7 +704,8 @@ QVariantList TelemetryStore::trackGroups() const {
                     {"vehicle", session->vehicle()},
                     {"sessionTime", session->sessionTime()},
                     {"bestTime", session->bestLapTime()},
-                    {"bestTimeMs", bestTimeMs}});
+                    {"bestTimeMs", bestTimeMs},
+                    {"isVideo", session->isVideo()}});
             }
             std::sort(sessionMaps.begin(), sessionMaps.end(),
                       [](const QVariantMap& a, const QVariantMap& b) {
@@ -853,30 +946,27 @@ void TelemetryStore::loadCornersForPrimary() {
         }
     }
 
-    QString safeName = primarySession_->track().toLower();
-    safeName.replace(' ', '_').replace('-', '_');
-    QFile custom(
-        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
-        QStringLiteral("/") + safeName + QStringLiteral(".csv"));
-    if (custom.open(QIODevice::ReadOnly)) {
-        QVector<CornerZone> loaded;
-        const auto lines =
-            QString::fromUtf8(custom.readAll())
-                .split('\n', Qt::SkipEmptyParts);
-        for (int i = 1; i < lines.size(); ++i) {
-            const auto parts = lines[i].split(',');
-            if (parts.size() < 3) continue;
-            CornerZone corner;
-            corner.name = parts[0].trimmed();
-            if (ignoredImportedCorner(corner.name)) continue;
-            corner.start =
-                qBound(0.0, parts[1].trimmed().toDouble(), 1.0);
-            corner.end =
-                qBound(corner.start, parts[2].trimmed().toDouble(), 1.0);
-            loaded.append(corner);
-        }
-        if (!loaded.isEmpty()) corners_ = loaded;
+    migrateLegacyCorners(primarySession_->track());
+    // A local edit wins over Track Atlas: the override lives in racecraft.yml
+    // under the track key and is written the moment the user changes a zone.
+    const QVariantList overrides =
+        YamlConfig::instance()
+            .value(cornerConfigPath(primarySession_->track()))
+            .toList();
+    if (overrides.isEmpty()) return;
+    QVector<CornerZone> loaded;
+    for (const QVariant& entry : overrides) {
+        const QVariantMap zone = entry.toMap();
+        CornerZone corner;
+        corner.name = zone.value(QStringLiteral("name")).toString().trimmed();
+        if (corner.name.isEmpty()) continue;
+        corner.start =
+            qBound(0.0, zone.value(QStringLiteral("start")).toDouble(), 1.0);
+        corner.end = qBound(corner.start,
+                            zone.value(QStringLiteral("end")).toDouble(), 1.0);
+        loaded.append(corner);
     }
+    corners_ = loaded;
 }
 
 // ── selection ───────────────────────────────────────────────────────
@@ -895,6 +985,7 @@ void TelemetryStore::setPrimary(SessionHandle* session, int lapId) {
     loadCornersForPrimary();
     emit selectionChanged();
     emit cornersChanged();
+    emit videoTimeChanged();
 }
 
 void TelemetryStore::setCompare(SessionHandle* session, int lapId) {
@@ -932,6 +1023,7 @@ void TelemetryStore::clearCompare() {
     setReferenceAlignment(0.0);
     savePreferences();
     emit selectionChanged();
+    emit videoTimeChanged();
 }
 
 void TelemetryStore::clearPrimary() {
@@ -947,6 +1039,7 @@ void TelemetryStore::clearPrimary() {
     corners_.clear();
     savePreferences();
     emit selectionChanged();
+    emit videoTimeChanged();
     emit cornersChanged();
 }
 
@@ -973,6 +1066,7 @@ void TelemetryStore::setCursorFrac(double v) {
     if (qFuzzyCompare(v, cursorFrac_)) return;
     cursorFrac_ = v;
     emit cursorFracChanged();
+    emit videoTimeChanged();
 }
 
 void TelemetryStore::setChannelHeight(int v) {
@@ -1014,6 +1108,50 @@ void TelemetryStore::moveCursorSteps(int steps) {
     if (!u || u->size() < 2) return;
     double stepFrac = 1.0 / double(u->size() - 1);
     setCursorFrac(cursorFrac_ + steps * stepFrac);
+}
+
+void TelemetryStore::seekCursorSeconds(double seconds) {
+    const UnifiedLap* lap = primaryUnified();
+    if (!lap || lap->time.empty() || lap->time.back() <= 0.0) return;
+    setCursorFrac(cursorFrac_ + seconds / lap->time.back());
+}
+
+void TelemetryStore::setCursorFromVideoTime(double mediaTime) {
+    if (!std::isfinite(mediaTime) || !primarySession_ ||
+        !primarySession_->isVideo() || primaryLap_ < 0)
+        return;
+    const racecraft::TelemetrySource* source = primarySession_->source();
+    if (!source) return;
+    const UnifiedLap* unified = primaryUnified();
+    if (!unified || unified->time.size() < 2) return;
+    for (const LapEntry& lap : primarySession_->laps()) {
+        if (lap.lapId != primaryLap_) continue;
+        const double relativeTime =
+            mediaTime - source->mediaTimeOffsetSec() - lap.startTime;
+        double fraction = 0.0;
+        if (relativeTime >= unified->time.back()) {
+            fraction = 1.0;
+        } else if (relativeTime > unified->time.front()) {
+            const auto upper = std::lower_bound(
+                unified->time.begin(), unified->time.end(), relativeTime);
+            const size_t high = size_t(upper - unified->time.begin());
+            const size_t low = high - 1;
+            const double span =
+                unified->time[high] - unified->time[low];
+            const double local = span > 0.0
+                                     ? (relativeTime -
+                                        unified->time[low]) /
+                                           span
+                                     : 0.0;
+            fraction =
+                (double(low) + local) /
+                double(unified->time.size() - 1);
+        }
+        if (qFuzzyCompare(fraction, cursorFrac_)) return;
+        cursorFrac_ = fraction;
+        emit cursorFracChanged();
+        return;
+    }
 }
 
 void TelemetryStore::jumpToFraction(double frac) {
@@ -1142,34 +1280,72 @@ void TelemetryStore::autoGenerateCorners() {
     emit cornersChanged();
 }
 
-void TelemetryStore::saveCorners() {
-    if (!primarySession_) return;
-    if (corners_.isEmpty()) return;
-    QString track = primarySession_->track();
+// One-time import of the pre-YAML per-track corner CSV so existing local
+// edits survive the move to racecraft.yml.
+void TelemetryStore::migrateLegacyCorners(const QString& track) {
+    const QStringList path = cornerConfigPath(track);
+    YamlConfig& config = YamlConfig::instance();
+    if (!config.value(path).toList().isEmpty()) return;
     QString safeName = track.toLower();
     safeName.replace(' ', '_').replace('-', '_');
-    QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    QDir().mkpath(dir);
-    QString path = dir + "/" + safeName + ".csv";
-    QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return;
-    QTextStream out(&f);
-    out << "name,start,end\n";
-    auto sorted = corners_;
-    std::sort(sorted.begin(), sorted.end(),
-              [](const CornerZone& a, const CornerZone& b) { return a.start < b.start; });
-    for (const auto& c : sorted)
-        out << c.name << "," << QString::number(c.start, 'f', 6) << ","
-            << QString::number(c.end, 'f', 6) << "\n";
+    QFile legacy(
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+        QStringLiteral("/") + safeName + QStringLiteral(".csv"));
+    if (!legacy.open(QIODevice::ReadOnly)) return;
+    QVariantList zones;
+    const auto lines =
+        QString::fromUtf8(legacy.readAll()).split('\n', Qt::SkipEmptyParts);
+    for (int i = 1; i < lines.size(); ++i) {
+        const auto parts = lines[i].split(',');
+        if (parts.size() < 3) continue;
+        const QString name = parts[0].trimmed();
+        if (name.isEmpty()) continue;
+        zones.append(QVariantMap{
+            {QStringLiteral("name"), name},
+            {QStringLiteral("start"), parts[1].trimmed()},
+            {QStringLiteral("end"), parts[2].trimmed()}});
+    }
+    if (zones.isEmpty()) return;
+    config.setValue(path, zones);
+    config.save();
 }
 
+// racecraft.yml path for one track's corner override.
+QStringList TelemetryStore::cornerConfigPath(const QString& track) {
+    QString key = track.toLower();
+    key.replace(' ', '_').replace('-', '_');
+    key.remove(QRegularExpression(QStringLiteral("[^a-z0-9_]")));
+    if (key.isEmpty()) key = QStringLiteral("unknown");
+    return {QStringLiteral("tracks"), key, QStringLiteral("corners")};
+}
+
+void TelemetryStore::saveCorners() {
+    if (!primarySession_) return;
+    auto sorted = corners_;
+    std::sort(sorted.begin(), sorted.end(),
+              [](const CornerZone& a, const CornerZone& b) {
+                  return a.start < b.start;
+              });
+    QVariantList zones;
+    zones.reserve(sorted.size());
+    for (const CornerZone& corner : sorted)
+        zones.append(QVariantMap{
+            {QStringLiteral("name"), corner.name},
+            {QStringLiteral("start"), QString::number(corner.start, 'f', 6)},
+            {QStringLiteral("end"), QString::number(corner.end, 'f', 6)}});
+    YamlConfig& config = YamlConfig::instance();
+    config.setValue(cornerConfigPath(primarySession_->track()), zones);
+    config.save();
+}
 QVariantList TelemetryStore::cornerList() const {
     QVariantList out;
-    for (const auto& c : corners_) {
-        out.append(QVariantMap{{"name", c.name}, {"start", c.start}, {"end", c.end}});
-    }
+    for (const auto& c : corners_)
+        out.append(QVariantMap{{"name", c.name},
+                               {"start", c.start},
+                               {"end", c.end}});
     return out;
 }
+
 QVariantList TelemetryStore::cornerComparison() const {
     QVariantList out;
     const UnifiedLap* primary = primaryUnified();
@@ -1318,13 +1494,6 @@ QVariantList TelemetryStore::cornerComparison() const {
                 }
             }
         }
-        const double sampleSpan = std::max(1, finish - first);
-        const double turnInPosition =
-            double(turnInIndex - first) / sampleSpan;
-        const double apexPosition =
-            double(apexIndex - first) / sampleSpan;
-        const double throttlePosition =
-            double(throttleIndex - first) / sampleSpan;
         auto distanceFromStart = [&](int index) {
             return index < int(lap.distance.size())
                        ? lap.distance[index] - startDistance
@@ -1334,7 +1503,45 @@ QVariantList TelemetryStore::cornerComparison() const {
         const double apexPoint = distanceFromStart(apexIndex);
         const double throttlePoint = distanceFromStart(throttleIndex);
 
-        constexpr int seriesPoints = 120;
+        // Corner traces are read in context: show at least 500 m around the
+        // zone, with approach ahead of it and a longer exit behind it. The
+        // corner itself stays identifiable through cornerStart/EndPosition.
+        const double lapStart = lap.distance.front();
+        const double lapEnd = lap.distance.back();
+        const double cornerEndDistance =
+            finish < int(lap.distance.size()) ? lap.distance[finish] : lapEnd;
+        const double cornerLength =
+            std::max(1.0, cornerEndDistance - startDistance);
+        const double base = std::max(cornerLength, 500.0);
+        const double windowStart =
+            std::max(lapStart, startDistance - base * 0.35);
+        const double windowEnd =
+            std::min(lapEnd, cornerEndDistance + base * 0.55);
+        const double windowMeters = std::max(1.0, windowEnd - windowStart);
+        auto fractionAt = [&](double distance) {
+            if (lap.distance.size() < 2) return 0.0;
+            if (distance <= lap.distance.front()) return 0.0;
+            if (distance >= lap.distance.back()) return 1.0;
+            const auto it = std::lower_bound(lap.distance.begin(),
+                                             lap.distance.end(), distance);
+            const int hi = int(it - lap.distance.begin());
+            const int lo = std::max(0, hi - 1);
+            const double span = lap.distance[hi] - lap.distance[lo];
+            const double local =
+                span > 0.0 ? (distance - lap.distance[lo]) / span : 0.0;
+            return (lo + local) / double(lap.distance.size() - 1);
+        };
+        auto windowPosition = [&](double distanceFromCornerStart) {
+            return (startDistance + distanceFromCornerStart - windowStart) /
+                   windowMeters;
+        };
+        const double turnInPosition = windowPosition(turnInPoint);
+        const double apexPosition = windowPosition(apexPoint);
+        const double throttlePosition = windowPosition(throttlePoint);
+        const double cornerStartPosition = windowPosition(0.0);
+        const double cornerEndPosition = windowPosition(cornerLength);
+
+        constexpr int seriesPoints = 200;
         QVariantList speeds;
         QVariantList throttles;
         QVariantList brakes;
@@ -1344,10 +1551,9 @@ QVariantList TelemetryStore::cornerComparison() const {
         brakes.reserve(seriesPoints);
         steerings.reserve(seriesPoints);
         for (int i = 0; i < seriesPoints; ++i) {
-            const double fraction =
-                corner.start +
-                (corner.end - corner.start) *
-                    double(i) / double(seriesPoints - 1);
+            const double fraction = fractionAt(
+                windowStart +
+                windowMeters * double(i) / double(seriesPoints - 1));
             speeds.append(sample(lap.speed, fraction));
             throttles.append(sample(lap.throttle, fraction));
             brakes.append(sample(lap.brake, fraction));
@@ -1376,6 +1582,10 @@ QVariantList TelemetryStore::cornerComparison() const {
             {"turnInPoint", turnInPoint},
             {"apexPoint", apexPoint},
             {"throttlePoint", throttlePoint},
+            {"cornerStartPosition", cornerStartPosition},
+            {"cornerEndPosition", cornerEndPosition},
+            {"contextWindowMeters", windowMeters},
+            {"cornerLengthMeters", cornerLength},
             {"speedSeries", speeds},
             {"throttleSeries", throttles},
             {"brakeSeries", brakes},
@@ -1523,6 +1733,14 @@ QVariantList TelemetryStore::cornerComparison() const {
                         {"turnInPoint", primaryStats.value("turnInPoint")},
                         {"apexPoint", primaryStats.value("apexPoint")},
                         {"throttlePoint", primaryStats.value("throttlePoint")},
+                        {"cornerStartPosition",
+                         primaryStats.value("cornerStartPosition")},
+                        {"cornerEndPosition",
+                         primaryStats.value("cornerEndPosition")},
+                        {"contextWindowMeters",
+                         primaryStats.value("contextWindowMeters")},
+                        {"cornerLengthMeters",
+                         primaryStats.value("cornerLengthMeters")},
                         {"speedSeries", primaryStats.value("speedSeries")},
                         {"throttleSeries", primaryStats.value("throttleSeries")},
                         {"brakeSeries", primaryStats.value("brakeSeries")},
@@ -1697,6 +1915,57 @@ QVariantList TelemetryStore::cornerComparison() const {
 }
 
 
+int TelemetryStore::addCorner(double start, double end) {
+    start = qBound(0.0, start, 1.0);
+    end = qBound(start, end, 1.0);
+    if (end - start < 0.001) return -1;
+    int number = 1;
+    while (std::any_of(
+        corners_.cbegin(), corners_.cend(),
+        [number](const CornerZone& corner) {
+            return corner.name.compare(
+                       QStringLiteral("Turn %1").arg(number),
+                       Qt::CaseInsensitive) == 0;
+        }))
+        ++number;
+    CornerZone corner;
+    corner.name = QStringLiteral("Turn %1").arg(number);
+    corner.start = start;
+    corner.end = end;
+    corners_.append(corner);
+    std::sort(corners_.begin(), corners_.end(),
+              [](const CornerZone& a, const CornerZone& b) {
+                  return a.start < b.start;
+              });
+    const int index = int(std::find_if(
+        corners_.cbegin(), corners_.cend(),
+        [&corner](const CornerZone& candidate) {
+            return candidate.name == corner.name;
+        }) - corners_.cbegin());
+    emit cornersChanged();
+    saveCorners();
+    return index;
+}
+
+void TelemetryStore::deleteCorner(int index) {
+    if (index < 0 || index >= corners_.size()) return;
+    corners_.removeAt(index);
+    emit cornersChanged();
+    saveCorners();
+}
+
+void TelemetryStore::setCornerName(int index, const QString& name) {
+    if (index < 0 || index >= corners_.size()) return;
+    const QString trimmed = name.trimmed();
+    if (trimmed.isEmpty() || trimmed == corners_[index].name) return;
+    // The overlay CSV is comma-separated, one corner per line.
+    QString sanitized = trimmed;
+    sanitized.replace(',', ' ').replace('\n', ' ');
+    corners_[index].name = sanitized;
+    emit cornersChanged();
+    saveCorners();
+}
+
 void TelemetryStore::updateCorner(int index, double start, double end) {
     if (index < 0 || index >= corners_.size()) return;
     corners_[index].start = qBound(0.0, start, 1.0);
@@ -1722,11 +1991,10 @@ bool TelemetryStore::channelVisible(const QString& key) const {
     if (channelVisible_.contains(key))
         return channelVisible_.value(key);
     if (key.startsWith(QStringLiteral("raw:"))) {
-        QSettings s;
-        s.beginGroup(QStringLiteral("channels"));
-        const bool visible =
-            s.value(key + QStringLiteral("/visible"), false).toBool();
-        s.endGroup();
+        const bool visible = yamlBool(
+            YamlConfig::instance().value(
+                {QStringLiteral("channels"), key, QStringLiteral("visible")}),
+            false);
         channelVisible_.insert(key, visible);
         return visible;
     }
@@ -1737,10 +2005,11 @@ void TelemetryStore::setChannelVisible(const QString& key, bool visible) {
     if (channelVisible(key) == visible) return;
     channelVisible_[key] = visible;
     if (key.startsWith(QStringLiteral("raw:"))) {
-        QSettings s;
-        s.beginGroup(QStringLiteral("channels"));
-        s.setValue(key + QStringLiteral("/visible"), visible);
-        s.endGroup();
+        YamlConfig& config = YamlConfig::instance();
+        config.setValue(
+            {QStringLiteral("channels"), key, QStringLiteral("visible")},
+            visible);
+        config.save();
     } else {
         savePreferences();
     }
@@ -1764,14 +2033,15 @@ const std::vector<double>* TelemetryStore::extraChannelData(
     const racecraft::TelemetrySource* source = session->source();
     if (!source) return nullptr;
     const QString rawName = key.mid(4);
-    const racecraft::RawChannel* channel = nullptr;
-    for (const racecraft::RawChannel& candidate : source->channels()) {
-        if (QString::fromStdString(candidate.name) == rawName) {
-            channel = &candidate;
+    int channelIndex = -1;
+    const auto& channels = source->channels();
+    for (int index = 0; index < int(channels.size()); ++index) {
+        if (QString::fromStdString(channels[size_t(index)].name) == rawName) {
+            channelIndex = index;
             break;
         }
     }
-    if (!channel || channel->samples.size() < 2) return nullptr;
+    if (channelIndex < 0) return nullptr;
 
     const LapEntry* lap = nullptr;
     for (const LapEntry& candidate : session->laps()) {
@@ -1781,20 +2051,18 @@ const std::vector<double>* TelemetryStore::extraChannelData(
         }
     }
     if (!lap || lap->endTime <= lap->startTime) return nullptr;
-    const double frequency = channel->frequencyHz > 0.0
-                                  ? channel->frequencyHz : 50.0;
-    const int first = std::clamp(
-        int(std::lround(lap->startTime * frequency)), 0,
-        int(channel->samples.size()) - 1);
-    const int last = std::clamp(
-        int(std::lround(lap->endTime * frequency)), first,
-        int(channel->samples.size()) - 1);
-    std::vector<double> slice(
-        channel->samples.begin() + first,
-        channel->samples.begin() + last + 1);
-    auto values = std::make_shared<std::vector<double>>(
-        racecraft::resample(slice, frequency, 50.0,
-                            lap->endTime - lap->startTime));
+    const int sampleCount =
+        int(std::floor((lap->endTime - lap->startTime) * 50.0)) + 1;
+    auto values =
+        std::make_shared<std::vector<double>>(size_t(sampleCount), 0.0);
+    for (int sample = 0; sample < sampleCount; ++sample) {
+        double value = 0.0;
+        const double time = lap->startTime + double(sample) / 50.0;
+        if (source->sampleAt(size_t(channelIndex), time, &value))
+            (*values)[size_t(sample)] = value;
+        else if (sample > 0)
+            (*values)[size_t(sample)] = (*values)[size_t(sample - 1)];
+    }
     auto inserted = extraChannelCache_.insert(cacheKey, std::move(values));
     return inserted.value().get();
 }
@@ -1837,13 +2105,12 @@ QString TelemetryStore::channelColor(const QString& key) const {
     if (channelColors_.contains(key))
         return channelColors_.value(key).name(QColor::HexRgb);
     if (key.startsWith(QStringLiteral("raw:"))) {
-        QSettings s;
-        s.beginGroup(QStringLiteral("channels"));
-        const QString value = s.value(
-            key + QStringLiteral("/color"),
-            defaultChannelColor(key).name(QColor::HexRgb)).toString();
-        s.endGroup();
-        const QColor parsed(value);
+        const QColor parsed(
+            YamlConfig::instance()
+                .value({QStringLiteral("channels"), key,
+                        QStringLiteral("color")},
+                       defaultChannelColor(key).name(QColor::HexRgb))
+                .toString());
         const QColor result = parsed.isValid() ? parsed
                                                : defaultChannelColor(key);
         channelColors_.insert(key, result);
@@ -1858,11 +2125,11 @@ void TelemetryStore::setChannelColor(const QString& key, const QString& color) {
         return;
     channelColors_[key] = parsed;
     if (key.startsWith(QStringLiteral("raw:"))) {
-        QSettings s;
-        s.beginGroup(QStringLiteral("channels"));
-        s.setValue(key + QStringLiteral("/color"),
-                   parsed.name(QColor::HexRgb));
-        s.endGroup();
+        YamlConfig& config = YamlConfig::instance();
+        config.setValue(
+            {QStringLiteral("channels"), key, QStringLiteral("color")},
+            parsed.name(QColor::HexRgb));
+        config.save();
     } else {
         savePreferences();
     }
@@ -1873,12 +2140,14 @@ double TelemetryStore::channelWeight(const QString& key) const {
     if (channelWeights_.contains(key))
         return channelWeights_.value(key);
     if (key.startsWith(QStringLiteral("raw:"))) {
-        QSettings s;
-        s.beginGroup(QStringLiteral("channels"));
         const double value = qBound(
-            0.5, s.value(key + QStringLiteral("/weight"), 1.0).toDouble(),
+            0.5,
+            YamlConfig::instance()
+                .value({QStringLiteral("channels"), key,
+                        QStringLiteral("weight")},
+                       1.0)
+                .toDouble(),
             2.0);
-        s.endGroup();
         channelWeights_.insert(key, value);
         return value;
     }
@@ -1890,10 +2159,11 @@ void TelemetryStore::setChannelWeight(const QString& key, double weight) {
     if (qFuzzyCompare(channelWeight(key), weight)) return;
     channelWeights_[key] = weight;
     if (key.startsWith(QStringLiteral("raw:"))) {
-        QSettings s;
-        s.beginGroup(QStringLiteral("channels"));
-        s.setValue(key + QStringLiteral("/weight"), weight);
-        s.endGroup();
+        YamlConfig& config = YamlConfig::instance();
+        config.setValue(
+            {QStringLiteral("channels"), key, QStringLiteral("weight")},
+            weight);
+        config.save();
     } else {
         savePreferences();
     }
@@ -1936,6 +2206,7 @@ void TelemetryStore::setDriverMapping(const QString& key,
     savePreferences();
     emit driverMappingsChanged();
     emit sessionsChanged();
+    emit selectionChanged();
 }
 
 QString TelemetryStore::driverDisplayName(const QString& sessionKey) const {
@@ -2080,6 +2351,14 @@ QString TelemetryStore::primaryDetail() const {
     return s;
 }
 
+QString TelemetryStore::primaryDriverName() const {
+    return primarySession_ ? driverDisplay(primarySession_) : QString();
+}
+
+QString TelemetryStore::primaryDriverMappingKey() const {
+    return primarySession_ ? primarySession_->driverMappingKey() : QString();
+}
+
 QString TelemetryStore::compareLabel() const {
     if (!compareSession_) return QString();
     QString s = driverDisplay(compareSession_);
@@ -2101,6 +2380,37 @@ QString TelemetryStore::primarySessionKey() const {
 
 QString TelemetryStore::compareSessionKey() const {
     return compareSession_ ? compareSession_->sessionKey() : QString();
+}
+
+QUrl TelemetryStore::primaryVideoSource() const {
+    if (!primarySession_ || !primarySession_->isVideo()) return {};
+    return QUrl::fromLocalFile(primarySession_->path());
+}
+
+double TelemetryStore::primaryVideoTime() const {
+    if (!primarySession_ || !primarySession_->isVideo() ||
+        primaryLap_ < 0)
+        return 0.0;
+    auto* session = const_cast<SessionHandle*>(primarySession_);
+    const racecraft::TelemetrySource* source = session->source();
+    const UnifiedLap* unified = primaryUnified();
+    if (!source || !unified || unified->time.empty()) return 0.0;
+    const double position =
+        qBound(0.0, cursorFrac_, 1.0) *
+        double(unified->time.size() - 1);
+    const size_t low = size_t(std::floor(position));
+    const size_t high =
+        std::min(low + 1, unified->time.size() - 1);
+    const double relativeTime =
+        unified->time[low] +
+        (unified->time[high] - unified->time[low]) *
+            (position - double(low));
+    for (const LapEntry& lap : session->laps()) {
+        if (lap.lapId == primaryLap_)
+            return source->mediaTimeOffsetSec() + lap.startTime +
+                   relativeTime;
+    }
+    return 0.0;
 }
 double TelemetryStore::sessionStartUnixTime() const {
     return 0.0;

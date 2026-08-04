@@ -1,5 +1,5 @@
 //! C ABI bridge exposing the vendored duckdb_motorsport_telemetry parsers
-//! (cosworth/pi PDS, motec LD, vbo) to the racecraft-qt C++/Qt application.
+//! (AiM aimd MP4, Cosworth/Pi PDS, MoTeC LD, VBO) to racecraft-qt.
 //!
 //! Design notes (bulk-first):
 //! - `rc_decode_range` pulls a contiguous run of decoded samples across one
@@ -59,6 +59,9 @@ fn parse_path(open_path: &Path) -> Result<Box<dyn TelemetrySource>, String> {
         .unwrap_or_default();
     let path = open_path.to_string_lossy().into_owned();
     match ext.as_str() {
+        "mp4" => aim_telemetry::AimFile::open(&path)
+            .map(|f| Box::new(f) as Box<dyn TelemetrySource>)
+            .map_err(|e| e.to_string()),
         "pds" => cosworth_telemetry::CosworthFile::open(&path)
             .map(|f| Box::new(f) as Box<dyn TelemetrySource>)
             .map_err(|e| e.to_string()),
@@ -132,11 +135,13 @@ pub extern "C" fn rc_last_error() -> *const c_char {
 pub extern "C" fn rc_format(handle: *mut c_void) -> *const c_char {
     match as_file(handle) {
         Some(f) => {
+            static AIMD: &[u8] = b"aimd\0";
             static PDS: &[u8] = b"pds\0";
             static LD: &[u8] = b"ld\0";
             static VBO: &[u8] = b"vbo\0";
             let fmt = f.src.format();
             let bytes: &[u8] = match fmt {
+                "aimd" => AIMD,
                 "pds" => PDS,
                 "ld" => LD,
                 "vbo" => VBO,
@@ -145,6 +150,23 @@ pub extern "C" fn rc_format(handle: *mut c_void) -> *const c_char {
             bytes.as_ptr() as *const c_char
         }
         None => std::ptr::null(),
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rc_media_time_offset_ns(
+    handle: *mut c_void,
+    out: *mut i64,
+) -> std::os::raw::c_int {
+    if out.is_null() {
+        return 0;
+    }
+    match as_file(handle).and_then(|file| file.src.media_time_offset_ns()) {
+        Some(value) => {
+            *out = value;
+            1
+        }
+        None => 0,
     }
 }
 
@@ -193,7 +215,12 @@ pub extern "C" fn rc_channel_type_code(handle: *mut c_void, index: usize) -> u32
 #[no_mangle]
 pub extern "C" fn rc_channel_duration_ns(handle: *mut c_void, index: usize) -> u64 {
     match as_file(handle) {
-        Some(f) => f.src.channels().get(index).map(|c| c.duration_ns).unwrap_or(0),
+        Some(f) => f
+            .src
+            .channels()
+            .get(index)
+            .map(|c| c.duration_ns)
+            .unwrap_or(0),
         None => 0,
     }
 }
@@ -201,7 +228,12 @@ pub extern "C" fn rc_channel_duration_ns(handle: *mut c_void, index: usize) -> u
 #[no_mangle]
 pub extern "C" fn rc_channel_sample_count(handle: *mut c_void, index: usize) -> u64 {
     match as_file(handle) {
-        Some(f) => f.src.channels().get(index).map(|c| c.sample_count).unwrap_or(0),
+        Some(f) => f
+            .src
+            .channels()
+            .get(index)
+            .map(|c| c.sample_count)
+            .unwrap_or(0),
         None => 0,
     }
 }
@@ -275,7 +307,9 @@ pub unsafe extern "C" fn rc_decode_range(
     n: usize,
     out: *mut f64,
 ) -> usize {
-    let Some(file) = as_file(handle) else { return 0 };
+    let Some(file) = as_file(handle) else {
+        return 0;
+    };
     if out.is_null() {
         return 0;
     }
@@ -307,7 +341,9 @@ pub unsafe extern "C" fn rc_channel_decode_all(
     out: *mut f64,
     capacity: usize,
 ) -> usize {
-    let Some(file) = as_file(handle) else { return 0 };
+    let Some(file) = as_file(handle) else {
+        return 0;
+    };
     if out.is_null() {
         return 0;
     }
@@ -341,7 +377,9 @@ pub unsafe extern "C" fn rc_sample_at(
     linear: bool,
     out: *mut f64,
 ) -> std::os::raw::c_int {
-    let Some(file) = as_file(handle) else { return 0 };
+    let Some(file) = as_file(handle) else {
+        return 0;
+    };
     if out.is_null() {
         return 0;
     }
@@ -378,4 +416,3 @@ mod tests {
         assert!(as_file(std::ptr::null_mut()).is_none());
     }
 }
-

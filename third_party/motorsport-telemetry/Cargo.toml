@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/telemetry-core",
     "crates/cosworth-telemetry",
+    "crates/aim-telemetry",
     "crates/motec-telemetry",
     "crates/vbo-telemetry",
     "bridge",
@@ -18,6 +19,7 @@ repository = "https://github.com/tobi/duckdb_motorsport_telemetry"
 [workspace.dependencies]
 motorsport-telemetry-core = { version = "0.6.1", path = "crates/telemetry-core" }
 cosworth-telemetry = { version = "0.6.1", path = "crates/cosworth-telemetry" }
+aim-telemetry = { version = "0.6.1", path = "crates/aim-telemetry" }
 motec-telemetry = { version = "0.6.1", path = "crates/motec-telemetry" }
 vbo-telemetry = { version = "0.6.1", path = "crates/vbo-telemetry" }
 memmap2 = "0.9"
