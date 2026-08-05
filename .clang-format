@@ -1,0 +1,25 @@
+---
+Language: Cpp
+BasedOnStyle: Google
+IndentWidth: 4
+ColumnLimit: 80
+AccessModifierOffset: -4
+DerivePointerAlignment: false
+PointerAlignment: Left
+ReferenceAlignment: Left
+AllowShortFunctionsOnASingleLine: All
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: true
+AllowShortCaseLabelsOnASingleLine: true
+BreakBeforeBraces: Attach
+Cpp11BracedListStyle: true
+FixNamespaceComments: true
+IncludeBlocks: Preserve
+SortIncludes: false
+SpaceBeforeCpp11BracedList: false
+SpacesBeforeTrailingComments: 2
+StatementMacros:
+  - Q_OBJECT
+  - QML_ELEMENT
+  - QML_SINGLETON
+  - QML_NAMED_ELEMENT
