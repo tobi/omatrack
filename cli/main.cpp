@@ -110,6 +110,9 @@ static int cmdUnify(const std::string& path) {
     nonEmpty("steering", u.steering.size());
     nonEmpty("gear", u.gear.size());
     nonEmpty("distance", u.distance.size());
+    printf("  distance source: %s\n", u.distanceSource == DistanceSource::Native
+                                          ? "native"
+                                          : "speed-fused");
 
     // sanity: sample speed should be plausible for a racing lap
     double peak = 0;
@@ -129,12 +132,16 @@ static int cmdUnify(const std::string& path) {
     }
     fprintf(f,
             "time,speed,throttle,driverThrottle,brake,clutch,steering,gear,"
-            "distance,gForceLong\n");
+            "distance,gForceLong,gpsLat,gpsLon,gpsPositionAccuracy,"
+            "gpsSpeedAccuracy\n");
     for (size_t i = 0; i < u.size(); ++i) {
-        fprintf(f, "%.3f,%.3f,%.4f,%.4f,%.3f,%.4f,%.3f,%d,%.2f,%.4f\n",
+        fprintf(f,
+                "%.3f,%.3f,%.4f,%.4f,%.3f,%.4f,%.3f,%d,%.2f,%.4f,"
+                "%.8f,%.8f,%.3f,%.3f\n",
                 u.time[i], u.speed[i], u.throttle[i], u.driverThrottle[i],
                 u.brake[i], u.clutch[i], u.steering[i], u.gear[i],
-                u.distance[i], u.gForceLong[i]);
+                u.distance[i], u.gForceLong[i], u.gpsLat[i], u.gpsLon[i],
+                u.gpsPositionAccuracy[i], u.gpsSpeedAccuracy[i]);
     }
     fclose(f);
     printf("wrote %s\n", csvPath.c_str());

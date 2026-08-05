@@ -33,6 +33,11 @@ ApplicationWindow {
     property url pendingVideoSource: ""
     property string referenceSessionKey: ""
     property string referenceSessionName: ""
+    property real referenceSyncBaseRate: 1
+    property real referenceSyncError: 0
+    property real referenceSyncLastPrimary: -1
+    property real referenceSyncLastTarget: -1
+    property string referenceSyncState: "WAIT"
     property bool sidebarVisible: true
     required property url startupVideo
     property bool telemetryVideoActive: false
@@ -269,7 +274,7 @@ ApplicationWindow {
             parts.push(lapTime);
         return parts.join(" · ");
     }
-    function syncReferenceSource() {
+    function syncReferenceSource(): void {
         const ref = videoReference();
         if (!ref)
             return;
@@ -284,15 +289,67 @@ ApplicationWindow {
         else
             syncReferenceVideo(true);
     }
-    function syncReferenceVideo(force) {
+    function syncReferenceVideo(force: bool): void {
         const ref = videoReference();
-        if (!ref || !ref.loaded)
+        if (!ref || !ref.loaded) {
+            referenceSyncState = "WAIT";
             return;
+        }
         const target = Store.compareVideoTime;
-        if (target <= 0)
+        if (target <= 0) {
+            ref.playbackRate = 1;
+            referenceSyncState = "NO MAP";
             return;
-        if (force || Math.abs(ref.position - target) > 0.2)
+        }
+
+        const error = target - ref.position;
+        const primaryDelta = videoPlayer.position - referenceSyncLastPrimary;
+        referenceSyncError = error;
+        if (force) {
+            ref.playbackRate = Store.comparisonVideoRate;
+            if (Math.abs(error) > 0.025)
+                ref.seek(target);
+            referenceSyncError = 0;
+            referenceSyncBaseRate = Store.comparisonVideoRate;
+            referenceSyncLastPrimary = videoPlayer.position;
+            referenceSyncLastTarget = target;
+            referenceSyncState = "LOCKED";
+            return;
+        }
+        if (videoPlayer.paused) {
+            ref.playbackRate = 1;
+            if (Math.abs(error) > 0.025)
+                ref.seek(target);
+            referenceSyncError = 0;
+            referenceSyncLastPrimary = videoPlayer.position;
+            referenceSyncLastTarget = target;
+            referenceSyncState = "LOCKED";
+            return;
+        }
+        if (Math.abs(primaryDelta) > 0.5) {
+            // Follow an explicit primary seek exactly. This is navigation, not
+            // the periodic correction that previously made playback jump.
+            referenceSyncBaseRate = Store.comparisonVideoRate;
+            ref.playbackRate = referenceSyncBaseRate;
             ref.seek(target);
+            referenceSyncError = 0;
+            referenceSyncLastPrimary = videoPlayer.position;
+            referenceSyncLastTarget = target;
+            referenceSyncState = "LOCKED";
+            return;
+        }
+        if (primaryDelta > 0.02) {
+            const mappedRate = Store.comparisonVideoRate;
+            referenceSyncBaseRate = mappedRate;
+            referenceSyncLastPrimary = videoPlayer.position;
+            referenceSyncLastTarget = target;
+        }
+
+        // Feed forward the track-map rate, then trim residual clock error.
+        // No periodic seeks: continuous playback remains visually continuous.
+        const correction = Math.max(-0.3, Math.min(0.3, error * 0.8));
+        ref.playbackRate = Math.max(0.5, Math.min(2, referenceSyncBaseRate + correction));
+        referenceSyncState = Math.abs(error) < 0.08 ? "LOCKED" : "TRIMMING";
     }
     function syncTelemetryVideo() {
         const source = Store.primaryVideoSource;
@@ -334,11 +391,10 @@ ApplicationWindow {
         return decodeURIComponent(text.substring(text.lastIndexOf("/") + 1));
     }
     // ── reference recording ─────────────────────────────────────────
-    // The reference video is driven by the telemetry cursor, distance aligned
-    // against the primary lap. While playing, both recordings run in real time
-    // and drift is corrected periodically; while paused every cursor move
-    // seeks it exactly.
-    function videoReference() {
+    // The reference video is driven by the telemetry cursor and a cached,
+    // monotonic track-position map. GPS fixes remove slow distance drift;
+    // bounded playback-rate trim removes clock drift without periodic seeks.
+    function videoReference(): MpvVideoItem {
         return videoReferenceLoader.player;
     }
     function videoSetFullscreen(on) {
@@ -447,7 +503,7 @@ ApplicationWindow {
             id: videoStageHover
         }
         Timer {
-            interval: 500
+            interval: 100
             repeat: true
             running: root.dualVideo && videoPlayer.loaded && !videoPlayer.paused
 
@@ -569,8 +625,7 @@ ApplicationWindow {
                         if (!ref || !ref.loaded)
                             return;
                         ref.paused = videoPlayer.paused;
-                        if (!videoPlayer.paused)
-                            root.syncReferenceVideo(true);
+                        root.syncReferenceVideo(!videoPlayer.paused);
                     }
 
                     target: videoPlayer
@@ -588,6 +643,24 @@ ApplicationWindow {
                     rightPadding: 4
                     text: "⇄ REFERENCE  " + root.videoFileName(Store.compareVideoSource)
                     topPadding: 2
+
+                    background: Rectangle {
+                        color: Qt.rgba(0, 0, 0, 0.55)
+                    }
+                }
+                Label {
+                    anchors.margins: 6
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    bottomPadding: 2
+                    color: root.referenceSyncState === "LOCKED" && Store.comparisonAlignmentConfidence !== "LOW" ? Style.greenColor : Style.yellowColor
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: 8
+                    leftPadding: 4
+                    rightPadding: 4
+                    text: (Store.comparisonGpsAnchors > 0 ? "GPS×" + Store.comparisonGpsAnchors : "SPEED") + " " + Store.comparisonAlignmentConfidence + " · " + root.referenceSyncState + " · " + Math.round(Math.abs(root.referenceSyncError) * 1000) + "ms" + " · ×" + (videoReferenceLoader.player !== null ? videoReferenceLoader.player.playbackRate.toFixed(2) : "1.00")
+                    topPadding: 2
+                    visible: videoReferenceLoader.player !== null
 
                     background: Rectangle {
                         color: Qt.rgba(0, 0, 0, 0.55)
@@ -748,7 +821,7 @@ ApplicationWindow {
                 text: "Scan a directory of .pds / .ld / .ldx / .vbo / .mp4 files"
                 wrapMode: Text.Wrap
             }
-            TextField {
+            CompactTextField {
                 id: dirField
 
                 Layout.fillWidth: true
@@ -856,12 +929,11 @@ ApplicationWindow {
         x: Math.round((parent.width - width) / 2)
         y: Math.round((parent.height - height) / 2)
 
-        contentItem: TextField {
+        contentItem: CompactTextField {
             id: driverRenameField
 
             objectName: "driverRenameField"
             placeholderText: "Driver name"
-            selectByMouse: true
 
             onAccepted: driverRenameDialog.accept()
         }
@@ -891,12 +963,11 @@ ApplicationWindow {
         x: Math.round((parent.width - width) / 2)
         y: Math.round((parent.height - height) / 2)
 
-        contentItem: TextField {
+        contentItem: CompactTextField {
             id: cornerRenameField
 
             objectName: "cornerRenameField"
             placeholderText: "Corner name"
-            selectByMouse: true
 
             onAccepted: cornerRenameDialog.accept()
         }
@@ -1161,7 +1232,7 @@ ApplicationWindow {
                         clip: true
                         model: treeModel
 
-                        ScrollBar.vertical: ScrollBar {
+                        ScrollBar.vertical: ThinScrollBar {
                         }
                         delegate: SessionTreeDelegate {
                             activeSessionKey: root.activeSessionKey

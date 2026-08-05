@@ -25,6 +25,8 @@ class MpvVideoItem : public QQuickFramebufferObject {
     Q_PROPERTY(double position READ position NOTIFY positionChanged)
     Q_PROPERTY(double duration READ duration NOTIFY durationChanged)
     Q_PROPERTY(double volume READ volume WRITE setVolume NOTIFY volumeChanged)
+    Q_PROPERTY(double playbackRate READ playbackRate WRITE setPlaybackRate
+                   NOTIFY playbackRateChanged)
     Q_PROPERTY(QString title READ title NOTIFY titleChanged)
     Q_PROPERTY(QString errorString READ errorString NOTIFY errorStringChanged)
     Q_PROPERTY(QUrl source READ source NOTIFY sourceChanged)
@@ -43,6 +45,8 @@ public:
     double position() const { return position_; }
     double duration() const { return duration_; }
     double volume() const { return volume_; }
+    double playbackRate() const { return playbackRate_; }
+    int exactSeekCount() const { return exactSeekCount_; }
     const QString& title() const { return title_; }
     const QString& errorString() const { return errorString_; }
     const QUrl& source() const { return source_; }
@@ -50,6 +54,7 @@ public:
     void setPaused(bool paused);
     void setMuted(bool muted);
     void setVolume(double volume);
+    void setPlaybackRate(double rate);
 
     Q_INVOKABLE void openMedia(const QUrl& source);
     Q_INVOKABLE void closeMedia();
@@ -67,6 +72,7 @@ signals:
     void positionChanged();
     void durationChanged();
     void volumeChanged();
+    void playbackRateChanged();
     void titleChanged();
     void errorStringChanged();
     void sourceChanged();
@@ -93,6 +99,8 @@ private:
     double position_ = 0.0;
     double duration_ = 0.0;
     double volume_ = 75.0;
+    double playbackRate_ = 1.0;
+    int exactSeekCount_ = 0;
     bool ready_ = false;
     bool loaded_ = false;
     bool paused_ = true;

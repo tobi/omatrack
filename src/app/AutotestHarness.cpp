@@ -419,7 +419,7 @@ bool racecraft::autotest::install(QQmlApplicationEngine& engine,
                             }
                             if (!startupVideoPath.isEmpty() &&
                                 !store.primaryVideoSource().isEmpty() &&
-                                !autotestBrakeSync) {
+                                !autotestBrakeSync && !autotestDualVideo) {
                                 auto* keyTimer = new QTimer(&engine);
                                 keyTimer->setInterval(50);
                                 QObject::connect(
@@ -457,6 +457,58 @@ bool racecraft::autotest::install(QQmlApplicationEngine& engine,
                                 keyTimer->start();
                             }
                             if (autotestDualVideo) {
+                                auto* playbackTimer = new QTimer(&engine);
+                                playbackTimer->setInterval(50);
+                                QObject::connect(
+                                    playbackTimer, &QTimer::timeout, &engine,
+                                    [playbackTimer, &engine, &store]() {
+                                        if (engine.rootObjects().isEmpty())
+                                            return;
+                                        QObject* root =
+                                            engine.rootObjects().first();
+                                        auto* primary =
+                                            root->findChild<MpvVideoItem*>(
+                                                QStringLiteral("videoPlayer"));
+                                        auto* reference =
+                                            root->findChild<MpvVideoItem*>(
+                                                QStringLiteral(
+                                                    "videoPlayerReference"));
+                                        if (!primary || !reference ||
+                                            !primary->loaded() ||
+                                            !reference->loaded())
+                                            return;
+                                        root->setProperty("dualCursorBaseline",
+                                                          store.cursorFrac());
+                                        if (primary->paused())
+                                            QMetaObject::invokeMethod(
+                                                root, "videoTogglePaused");
+                                        playbackTimer->stop();
+                                        playbackTimer->deleteLater();
+                                        QTimer::singleShot(
+                                            500, &engine, [&engine]() {
+                                                if (engine.rootObjects()
+                                                        .isEmpty())
+                                                    return;
+                                                QObject* root =
+                                                    engine.rootObjects()
+                                                        .first();
+                                                auto* reference =
+                                                    root->findChild<
+                                                        MpvVideoItem*>(
+                                                        QStringLiteral(
+                                                            "videoPlayerReferen"
+                                                            "c"
+                                                            "e"));
+                                                if (reference)
+                                                    root->setProperty(
+                                                        "dualReferenceSeekBasel"
+                                                        "i"
+                                                        "ne",
+                                                        reference
+                                                            ->exactSeekCount());
+                                            });
+                                    });
+                                playbackTimer->start();
                                 // Reparent the live OpenGL video stage into
                                 // fullscreen and back before final assertions.
                                 QTimer::singleShot(4000, &engine, [&engine]() {
@@ -559,11 +611,22 @@ bool racecraft::autotest::install(QQmlApplicationEngine& engine,
                                                     videoReady = videoReady &&
                                                                  brakeReady;
                                                 } else {
+                                                    const double baseline =
+                                                        autotestDualVideo
+                                                            ? root->property(
+                                                                      "dualCurs"
+                                                                      "or"
+                                                                      "Baselin"
+                                                                      "e")
+                                                                  .toDouble()
+                                                            : 0.5;
                                                     const double playbackStart =
                                                         lap && !lap->time
                                                                     .empty()
-                                                            ? 0.5 +
-                                                                  10.0 /
+                                                            ? baseline +
+                                                                  (autotestDualVideo
+                                                                       ? 2.0
+                                                                       : 10.0) /
                                                                       lap->time
                                                                           .back()
                                                             : 1.0;
@@ -656,6 +719,17 @@ bool racecraft::autotest::install(QQmlApplicationEngine& engine,
                                             controls->findChild<QQuickItem*>(
                                                 QStringLiteral(
                                                     "videoFullscreenButton"));
+                                        const int seekBaseline =
+                                            root ? root->property(
+                                                           "dualReferenceSeekBa"
+                                                           "se"
+                                                           "line")
+                                                       .toInt()
+                                                 : -1;
+                                        const bool continuousPlayback =
+                                            reference && seekBaseline >= 0 &&
+                                            reference->exactSeekCount() ==
+                                                seekBaseline;
                                         dualVideoReady =
                                             root &&
                                             root->property("dualVideo")
@@ -669,9 +743,12 @@ bool racecraft::autotest::install(QQmlApplicationEngine& engine,
                                             primary->source() !=
                                                 reference->source() &&
                                             reference->muted() &&
-                                            primary->paused() ==
-                                                reference->paused() &&
-                                            error <= 0.5 &&
+                                            !primary->paused() &&
+                                            !reference->paused() &&
+                                            error <= 0.15 &&
+                                            continuousPlayback &&
+                                            !store.comparisonAlignmentBasis()
+                                                 .isEmpty() &&
                                             fullscreenRestored && chromeReady &&
                                             sequentialVideoReady;
                                         qWarning()
@@ -704,6 +781,21 @@ bool racecraft::autotest::install(QQmlApplicationEngine& engine,
                                                    .fileName()
                                             << store.compareVideoSource()
                                                    .fileName();
+                                        qWarning()
+                                            << "AUTOTEST dual sync model:"
+                                            << store.comparisonAlignmentBasis()
+                                            << "gps anchors"
+                                            << store.comparisonGpsAnchors()
+                                            << "rate"
+                                            << (reference
+                                                    ? reference->playbackRate()
+                                                    : -1.0)
+                                            << "seeks during playback"
+                                            << (reference && seekBaseline >= 0
+                                                    ? reference
+                                                              ->exactSeekCount() -
+                                                          seekBaseline
+                                                    : -1);
                                     }
                                     bool cornerMutationReady = true;
                                     bool cornerEscapeReady = true;

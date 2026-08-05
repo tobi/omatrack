@@ -26,7 +26,7 @@ A corner is an individual turn/apex and its analysis range. A corner complex is 
 
 Every format feeds the same cross-format model. Standard channels, units, lap bounds, monotonic distance, and comparison semantics must not depend on the source vendor. Format-specific decoding belongs in Rust; cross-format racing analysis belongs in the Qt-free C++ core.
 
-The current canonical lap is a 50 Hz `UnifiedLap`. Primary/reference traces, cursor values, delta, and corner analysis must derive from the same normalized arrays so two views cannot disagree.
+The current canonical lap is a 50 Hz `UnifiedLap`. Primary/reference traces, cursor values, delta, and synchronized video must derive from the same cached track-station alignment so two views cannot disagree.
 
 ### Dense, calm, expert UX
 
@@ -96,14 +96,14 @@ wins on load. Caches (Track Atlas snapshot, thumbnails) stay outside the file.
 - steering in degrees
 - integer gear
 - monotonic cumulative distance in metres
-- longitudinal acceleration, four dampers, and GPS latitude/longitude
+- longitudinal acceleration, four dampers, GPS latitude/longitude, and reported GPS position/speed accuracy
 
-Native lap distance is unwrapped across start-line resets and rejected when jumps are implausible; speed integration is the fallback. Missing optional channels remain representable and must not make an otherwise useful lap unloadable.
+Native lap distance is accepted only when its continuity and total agree with independently integrated velocity. Otherwise wheel/vehicle speed provides short-term propagation, accuracy-weighted GPS speed removes velocity drift, and good positional GPS fixes anchor the cross-lap track-station map. Poor GPS must not inject position jitter; missing optional channels must not make an otherwise useful lap unloadable.
 
 ### Trace workspace
 
 - Overlay an active lap and optional reference lap.
-- Show a distance-aligned cumulative delta that starts at zero.
+- Show a track-station-aligned cumulative delta that starts at zero. The same GPS/speed alignment maps every reference trace and synchronized video frame.
 - Render standard channels plus opt-in raw source channels.
 - Configure channel visibility, color, and lane weight; pin lanes while scrolling.
 - Share one cursor/readout across traces.
@@ -116,7 +116,7 @@ Native lap distance is unwrapped across start-line resets and rejected when jump
 - Open MP4, MOV, MKV, AVI, M4V, and WebM video inside the main analysis workspace; an MP4 containing an AiM `aimd` track is also a telemetry session.
 - Render through libmpv's OpenGL Render API in `MpvVideoItem`; never spawn the mpv CLI or embed a foreign native window.
 - Place video in the resizable section above the traces. Playback chrome stays minimal: the top-left speaker button toggles persisted audio mute, Space toggles playback, Left seeks 5 seconds back, and Right seeks 15 seconds forward. Store the mute preference under `video.muted` in `racecraft.yml`.
-- Selecting an AiM video session selects its fastest lap and pauses at the telemetry cursor. Cursor seeks map to media time, and active playback advances the telemetry cursor. Derive the MP4 offset from valid AiM record timestamps and track presentation times; never infer a packet clock from undocumented bytes.
+- Selecting an AiM video session selects its fastest lap and pauses at the telemetry cursor. Cursor seeks map to media time, and active playback advances the telemetry cursor. Primary/reference video consumes the same cached track-station map as traces and delta: speed landmarks provide the base map, only well-distributed accurate GPS matches correct it, and the UI reports the resulting confidence. Continuous playback uses bounded rate correction rather than periodic hard seeks. Derive each MP4 offset from valid AiM record timestamps and track presentation times; never infer a packet clock from undocumented bytes.
 - Treat video files as read-only. Parsing and playback must never rewrite embedded telemetry or media.
 - Qt Quick must use the OpenGL graphics API before the first window because `QQuickFramebufferObject` and libmpv share that context.
 - `RACECRAFT_VIDEO=/path/to/video` first attempts to open a telemetry-bearing MP4 session, falls back to standalone playback, and is also used by the GUI acceptance harness.
@@ -189,7 +189,7 @@ Warnings (`-Wall -Wextra`) come from the `racecraft_warnings` interface target.
 | Vendor parsers | `third_party/motorsport-telemetry/crates/` | File validation, memory mapping, chunks, typed decoding, vendor metadata | Qt, UI state, racecraft-specific presentation |
 | C ABI | `third_party/motorsport-telemetry/bridge/` | Extension dispatch, opaque handles, bulk decode, stable strings, thread-local errors | Analysis policy or exceptions/panics crossing FFI |
 | Core | `src/core/TelemetryEngine.*` | Channel mapping, units, lap detection, resampling, `UnifiedLap` | Qt types, QML, settings, network access |
-| Session/store | `src/app/TelemetryStore.*` | Lazy session handles, selection, comparison, viewport, caches, preferences, Track Atlas, corner analysis | Pixel-level paint loops or vendor byte parsing |
+| Session/store | `src/app/TelemetryStore.*` | Lazy session handles, selection, cached GPS/speed track-station alignment, comparison, viewport, preferences, Track Atlas, corner analysis | Pixel-level paint loops or vendor byte parsing |
 | Renderer | `src/app/TraceView.*` | Frame-budget-sensitive painting and direct trace interaction | Parsing, network access, persistent product state |
 | Video renderer | `src/app/MpvVideoItem.*` | libmpv lifecycle, OpenGL FBO rendering, playback state, and exact seek | Telemetry extraction, session association, or QML layout policy |
 | QML UI | `src/app/*.qml` | Material windows, layout, delegates, controls, high-level orchestration | Full telemetry loops, duplicated analysis, format branches |
@@ -201,9 +201,9 @@ Warnings (`-Wall -Wextra`) come from the `racecraft_warnings` interface target.
 
 - `RawChannel`: decoded physical samples, unit, sample type, frequency, and duration for one source channel.
 - `Lap`: source-session bounds and lap time.
-- `UnifiedLap`: same-rate, lap-relative arrays used by every analysis and rendering feature.
+- `UnifiedLap`: same-rate, lap-relative arrays plus distance provenance and GPS-quality channels used by every analysis and rendering feature.
 - `SessionHandle`: owns one file, defers parsing until needed, and caches unified laps.
-- `TelemetryStore`: the single Qt-facing source of truth for active/reference selection and UI state.
+- `TelemetryStore`: the single Qt-facing source of truth for active/reference selection, the primary→reference track-station map, and UI state.
 - `CornerZone`: the current individual corner range. Do not stretch it to represent every Track Atlas layer; introduce explicit domain types when complexes and geometry enter the model.
 
 ### Invariants
@@ -212,7 +212,7 @@ Warnings (`-Wall -Wextra`) come from the `racecraft_warnings` interface target.
 2. The UI never branches on telemetry format. Add a parser or mapping; do not add `.pds`/`.ld` special cases to QML.
 3. Unified channel arrays share the lap’s 50 Hz absolute-time grid. Keep their lengths aligned with `time`; sample through the source clock so late channel starts, dropped samples, and acquisition gaps cannot shift events.
 4. Unified distance starts at zero and is monotonic.
-5. Comparisons are distance-aligned. Index-aligned or raw-time-aligned deltas are incorrect unless a feature explicitly requires another domain.
+5. Comparisons use one cached primary→reference track-station map. Align speed landmarks first; allow only well-distributed accurate GPS fixes to correct drift; use validated/fused velocity progress when landmark matching is unavailable; and retain lap boundaries as start/finish anchors. Traces, delta, cursor values, and video must consume that map. Independent index/distance/time mappings and spatially clustered GPS corrections are incorrect.
 6. The same cached delta feeds both the plotted trace and numeric cursor readout.
 7. Primary means active lap; compare means reference lap. Preserve that semantic and its colors throughout the UI.
 8. Track identity and corner metadata come from Track Atlas when available; local edits are overlays, not upstream truth.

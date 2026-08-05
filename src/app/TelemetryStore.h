@@ -230,6 +230,14 @@ class TelemetryStore : public QObject {
         QUrl compareVideoSource READ compareVideoSource NOTIFY selectionChanged)
     Q_PROPERTY(
         double compareVideoTime READ compareVideoTime NOTIFY videoTimeChanged)
+    Q_PROPERTY(double comparisonVideoRate READ comparisonVideoRate NOTIFY
+                   videoTimeChanged)
+    Q_PROPERTY(QString comparisonAlignmentBasis READ comparisonAlignmentBasis
+                   NOTIFY selectionChanged)
+    Q_PROPERTY(QString comparisonAlignmentConfidence READ
+                   comparisonAlignmentConfidence NOTIFY selectionChanged)
+    Q_PROPERTY(int comparisonGpsAnchors READ comparisonGpsAnchors NOTIFY
+                   selectionChanged)
     Q_PROPERTY(bool videoMuted READ videoMuted WRITE setVideoMuted NOTIFY
                    videoMutedChanged)
 public:
@@ -365,10 +373,14 @@ public:
     QString compareSessionKey() const;
     QUrl primaryVideoSource() const;
     double primaryVideoTime() const;
-    // Reference-lap recording, distance-aligned to the primary cursor so a
-    // side-by-side view shows both cars at the same point on track.
+    // Reference-lap recording uses the same GPS/speed track-station alignment
+    // as traces and delta, so every comparison view shares one coordinate.
     QUrl compareVideoSource() const;
     double compareVideoTime() const;
+    double comparisonVideoRate() const;
+    QString comparisonAlignmentBasis() const;
+    QString comparisonAlignmentConfidence() const;
+    int comparisonGpsAnchors() const;
     bool videoMuted() const { return videoMuted_; }
     void setVideoMuted(bool muted);
     QStringList sessionDirectoriesList() const { return sessionDirs_; }
@@ -405,6 +417,10 @@ private:
     void loadTrackAtlasCache();
     void updateTrackAtlas(bool force);
     QString trackAtlasCachePath() const;
+    void invalidateComparisonAlignment();
+    void ensureComparisonAlignment() const;
+    double compareTimeForPrimaryFraction(double fraction) const;
+    double compareFractionForPrimaryFraction(double fraction) const;
     QStringList sessionDirs_;
     QSet<QString> scannedSessionPaths_;
     QSet<QString> scannedSessionIdentities_;
@@ -446,6 +462,11 @@ private:
     mutable DamperAlignment damperAlignment_;
     mutable bool damperAlignmentValid_ = false;
     mutable bool deltaCacheValid_ = false;
+    mutable QVector<double> comparisonAlignmentTime_;
+    mutable QVector<double> comparisonAlignmentFraction_;
+    mutable QString comparisonAlignmentBasis_;
+    mutable int comparisonGpsAnchors_ = 0;
+    mutable bool comparisonAlignmentValid_ = false;
 
     friend class TraceView;
 };

@@ -47,8 +47,14 @@ struct Lap {
 
 // ── unified 50 Hz lap ───────────────────────────────────────────────
 
+enum class DistanceSource {
+    Native,
+    SpeedFused,
+};
+
 struct UnifiedLap {
     int sampleRate = 50;
+    DistanceSource distanceSource = DistanceSource::SpeedFused;
     std::vector<double> time;
     std::vector<double> speed;           // km/h
     std::vector<double> throttle;        // 0-1
@@ -61,6 +67,7 @@ struct UnifiedLap {
     std::vector<double> gForceLong;
     std::vector<double> damperFL, damperFR, damperRL, damperRR;
     std::vector<double> gpsLat, gpsLon;
+    std::vector<double> gpsPositionAccuracy, gpsSpeedAccuracy;
     size_t size() const { return time.size(); }
 };
 

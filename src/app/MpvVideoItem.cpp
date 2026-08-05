@@ -213,6 +213,7 @@ MpvVideoItem::MpvVideoItem(QQuickItem* parent)
     mpv_observe_property(state_->handle, 5, "volume", MPV_FORMAT_DOUBLE);
     mpv_observe_property(state_->handle, 6, "media-title", MPV_FORMAT_STRING);
     mpv_observe_property(state_->handle, 7, "seeking", MPV_FORMAT_FLAG);
+    mpv_observe_property(state_->handle, 8, "speed", MPV_FORMAT_DOUBLE);
     mpv_set_wakeup_callback(state_->handle, &MpvVideoItem::wakeup, this);
 }
 
@@ -329,6 +330,13 @@ void MpvVideoItem::processEvents() {
                         seeking_ = value;
                         emit seekingChanged();
                     }
+                } else if (std::strcmp(property->name, "speed") == 0 &&
+                           property->format == MPV_FORMAT_DOUBLE) {
+                    const double value = *static_cast<double*>(property->data);
+                    if (!qFuzzyCompare(playbackRate_ + 1.0, value + 1.0)) {
+                        playbackRate_ = value;
+                        emit playbackRateChanged();
+                    }
                 }
                 break;
             }
@@ -367,6 +375,7 @@ void MpvVideoItem::openMedia(const QUrl& source) {
         setError(QStringLiteral("No video file selected"));
         return;
     }
+    exactSeekCount_ = 0;
 
     source_ = source;
     pendingSource_ = source;
@@ -456,10 +465,23 @@ void MpvVideoItem::setVolume(double volume) {
     if (result < 0) setError(QString::fromUtf8(mpv_error_string(result)));
 }
 
+void MpvVideoItem::setPlaybackRate(double rate) {
+    rate = std::clamp(rate, 0.5, 2.0);
+    if (qFuzzyCompare(playbackRate_ + 1.0, rate + 1.0) || !state_ ||
+        !state_->handle)
+        return;
+    playbackRate_ = rate;
+    emit playbackRateChanged();
+    const int result = mpv_set_property_async(state_->handle, 0, "speed",
+                                              MPV_FORMAT_DOUBLE, &rate);
+    if (result < 0) setError(QString::fromUtf8(mpv_error_string(result)));
+}
+
 void MpvVideoItem::seek(double seconds) {
     if (!loaded_) return;
     seconds = std::max(0.0, seconds);
     if (duration_ > 0.0) seconds = std::min(seconds, duration_);
+    ++exactSeekCount_;
     command({
         QByteArrayLiteral("seek"),
         QByteArray::number(seconds, 'f', 6),

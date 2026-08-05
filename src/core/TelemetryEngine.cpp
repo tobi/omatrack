@@ -72,6 +72,8 @@ const AliasTable& channelMappings() {
         {"gps_lat", {"fia_gpslatn", "gps latitude"}},
         {"gps_lon", {"fia_gpslonge", "gps longitude"}},
         {"gps_speed", {"fia_gpsvel", "gps speed"}},
+        {"gps_position_accuracy", {"gps position accuracy"}},
+        {"gps_speed_accuracy", {"gps speed accuracy"}},
     };
     return table;
 }
@@ -756,11 +758,16 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime) const {
     unified.gForceLong.reserve(nSamples);
     unified.gpsLat.reserve(nSamples);
     unified.gpsLon.reserve(nSamples);
+    unified.gpsPositionAccuracy.reserve(nSamples);
+    unified.gpsSpeedAccuracy.reserve(nSamples);
     unified.damperFL.reserve(nSamples);
     unified.damperFR.reserve(nSamples);
     unified.damperRL.reserve(nSamples);
     unified.damperRR.reserve(nSamples);
     unified.driverThrottle.reserve(nSamples);
+
+    std::vector<double> gpsSpeedMps;
+    gpsSpeedMps.reserve(nSamples);
 
     double dt = 1.0 / double(kDefaultSampleRate);
     for (int i = 0; i < nSamples; ++i) {
@@ -845,41 +852,100 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime) const {
         }
         unified.gpsLat.push_back(rawLat);
         unified.gpsLon.push_back(rawLon);
+        double positionAccuracy = get("gps_position_accuracy", i);
+        const std::string positionAccuracyUnit =
+            unitOf("gps_position_accuracy");
+        if (positionAccuracyUnit == "cm")
+            positionAccuracy *= 0.01;
+        else if (positionAccuracyUnit == "mm")
+            positionAccuracy *= 0.001;
+        else if (positionAccuracyUnit == "ft")
+            positionAccuracy *= 0.3048;
+        unified.gpsPositionAccuracy.push_back(std::max(0.0, positionAccuracy));
+
+        double speedAccuracy = get("gps_speed_accuracy", i);
+        const auto speedAccuracyUnit =
+            speedUnits().find(unitOf("gps_speed_accuracy"));
+        if (speedAccuracyUnit != speedUnits().end())
+            speedAccuracy *= speedAccuracyUnit->second / 3.6;
+        unified.gpsSpeedAccuracy.push_back(std::max(0.0, speedAccuracy));
+
+        double gpsSpeed = get("gps_speed", i);
+        const auto gpsSpeedUnit = speedUnits().find(unitOf("gps_speed"));
+        if (gpsSpeedUnit != speedUnits().end())
+            gpsSpeed *= gpsSpeedUnit->second / 3.6;
+        else if (format_ != "aimd")
+            gpsSpeed /= 3.6;
+        gpsSpeedMps.push_back(std::max(0.0, gpsSpeed));
     }
 
-    // Distance: unwrap the native lap-distance channel so a lap slice that
-    // begins just before the logger's start-line reset still starts at zero
-    // and remains monotonic. Implausible jumps fall back to speed integration.
+    // Distance propagates from wheel/vehicle speed at 50 Hz. GPS Doppler
+    // speed gently corrects drift only while its reported accuracy is useful;
+    // poor GPS therefore cannot inject position jitter into the distance axis.
+    std::vector<double> fusedDistance(size_t(nSamples), 0.0);
+    std::vector<double> fusedSpeed(size_t(nSamples), 0.0);
+    for (int i = 0; i < nSamples; ++i) {
+        const double wheel = std::max(0.0, unified.speed[i] / 3.6);
+        const double gps = gpsSpeedMps[size_t(i)];
+        double gpsWeight = 0.0;
+        if (gps > 0.0) {
+            const double accuracy = unified.gpsSpeedAccuracy[size_t(i)];
+            if (has("gps_speed_accuracy") && accuracy > 0.0) {
+                gpsWeight = std::clamp((1.5 - accuracy) / 1.25, 0.0, 1.0) * 0.5;
+            } else {
+                gpsWeight = 0.2;
+            }
+        }
+        if (wheel <= 0.0) gpsWeight = gps > 0.0 ? 1.0 : 0.0;
+        fusedSpeed[size_t(i)] = wheel * (1.0 - gpsWeight) + gps * gpsWeight;
+    }
+    for (int i = 1; i < nSamples; ++i) {
+        const double step =
+            0.5 * (fusedSpeed[size_t(i - 1)] + fusedSpeed[size_t(i)]) * dt;
+        fusedDistance[size_t(i)] =
+            fusedDistance[size_t(i - 1)] + std::max(0.0, step);
+    }
+
+    // A native lap-distance signal wins only after proving that its total and
+    // continuity agree with the independently integrated velocity. Logger
+    // math channels can carry a different scale, freeze, or reset mid-lap;
+    // accepting those silently makes cross-car video alignment unusable.
     auto distIt = resampled.find("distance");
-    if (distIt != resampled.end() && (int)distIt->second.size() >= nSamples) {
+    bool nativeAccepted = false;
+    if (distIt != resampled.end() && int(distIt->second.size()) >= nSamples) {
         const auto& rawDistance = distIt->second;
-        double cumulative = 0.0;
-        unified.distance.push_back(0.0);
+        std::vector<double> nativeDistance(size_t(nSamples), 0.0);
+        int rejectedSteps = 0;
         for (int i = 1; i < nSamples; ++i) {
-            const double integrated =
-                std::max(0.0, unified.speed[i] / 3.6 * dt);
-            double delta = rawDistance[i] - rawDistance[i - 1];
-            if (!std::isfinite(delta)) {
-                delta = integrated;
-            } else if (delta < -300.0) {
-                // Native lap distance wrapped back to the start line.
-                delta = std::max(0.0, rawDistance[i]);
-            } else if (delta < -1.0 ||
-                       delta > std::max(25.0, integrated * 6.0 + 2.0)) {
-                delta = integrated;
+            const double fallback =
+                fusedDistance[size_t(i)] - fusedDistance[size_t(i - 1)];
+            double delta = rawDistance[size_t(i)] - rawDistance[size_t(i - 1)];
+            const double maximumPlausible =
+                std::max(10.0, fallback * 8.0 + 1.0);
+            if (!std::isfinite(delta) || delta < -0.25 ||
+                delta > maximumPlausible) {
+                delta = fallback;
+                ++rejectedSteps;
             } else {
                 delta = std::max(0.0, delta);
             }
-            cumulative += delta;
-            unified.distance.push_back(cumulative);
+            nativeDistance[size_t(i)] = nativeDistance[size_t(i - 1)] + delta;
         }
-    } else {
-        double cumulative = 0.0;
-        for (int i = 0; i < nSamples; ++i) {
-            unified.distance.push_back(cumulative);
-            cumulative += unified.speed[i] / 3.6 * dt;
-        }
+
+        const double fusedTotal = fusedDistance.back();
+        const double nativeTotal = nativeDistance.back();
+        const double ratio =
+            fusedTotal > 100.0 ? nativeTotal / fusedTotal : 1.0;
+        const double rejectedFraction =
+            nSamples > 1 ? double(rejectedSteps) / double(nSamples - 1) : 1.0;
+        nativeAccepted =
+            fusedTotal <= 100.0 ||
+            (ratio >= 0.97 && ratio <= 1.03 && rejectedFraction <= 0.02);
+        if (nativeAccepted) unified.distance = std::move(nativeDistance);
     }
+    if (!nativeAccepted) unified.distance = std::move(fusedDistance);
+    unified.distanceSource =
+        nativeAccepted ? DistanceSource::Native : DistanceSource::SpeedFused;
     return unified;
 }
 

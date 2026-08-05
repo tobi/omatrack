@@ -455,7 +455,8 @@ void TraceView::paintCursorOverlay(QPainter* painter) {
                     ? store_->extraChannelData(lane.field, true)
                     : fieldFor(*compare, lane.field);
             const double compareFraction =
-                std::clamp(fraction - store_->referenceAlignment(), 0.0, 1.0);
+                store_->compareFractionForPrimaryFraction(std::clamp(
+                    fraction - store_->referenceAlignment(), 0.0, 1.0));
             const int compareSample = std::min(
                 int(compareData->size()) - 1,
                 int(compareFraction * double(compareData->size() - 1)));
@@ -597,14 +598,26 @@ const TraceView::ChannelGeometry& TraceView::geometryFor(
     }
     const double span = geometry.max - geometry.min;
 
-    auto buildPath = [&](const std::vector<double>* values,
-                         QPainterPath& path) {
+    auto buildPath = [&](const std::vector<double>* values, QPainterPath& path,
+                         bool alignCompare) {
         if (!values || values->size() < 2) return;
-        const int last = int(values->size()) - 1;
+        const int outputLast = alignCompare && primary
+                                   ? int(primary->size()) - 1
+                                   : int(values->size()) - 1;
+        const int valueLast = int(values->size()) - 1;
         double previousY = 0.0;
-        for (int i = 0; i <= last; ++i) {
-            const double x = double(i) / double(last);
-            const double y = 1.0 - ((*values)[i] - geometry.min) / span;
+        for (int i = 0; i <= outputLast; ++i) {
+            const double x = double(i) / double(outputLast);
+            const double sourceFraction =
+                alignCompare ? store_->compareFractionForPrimaryFraction(x) : x;
+            const double sourcePosition = sourceFraction * valueLast;
+            const int low =
+                std::clamp(int(std::floor(sourcePosition)), 0, valueLast);
+            const int high = std::min(low + 1, valueLast);
+            const double value =
+                (*values)[low] + ((*values)[high] - (*values)[low]) *
+                                     (sourcePosition - double(low));
+            const double y = 1.0 - (value - geometry.min) / span;
             if (i == 0) {
                 path.moveTo(x, y);
             } else if (geometry.gear) {
@@ -617,8 +630,8 @@ const TraceView::ChannelGeometry& TraceView::geometryFor(
         }
         path.setCachingEnabled(true);
     };
-    buildPath(primaryData, geometry.primaryLine);
-    buildPath(compareData, geometry.compareLine);
+    buildPath(primaryData, geometry.primaryLine, false);
+    buildPath(compareData, geometry.compareLine, true);
     if (geometry.filled && !geometry.primaryLine.isEmpty()) {
         geometry.primaryFill = geometry.primaryLine;
         const auto first = geometry.primaryLine.elementAt(0);
@@ -766,9 +779,12 @@ void TraceView::paintChannel(QPainter& p, const ChannelSpec& spec,
     };
 
     auto drawAdaptive = [&](const std::vector<double>* values,
-                            double horizontalShift, QColor color, bool fill) {
+                            double horizontalShift, QColor color, bool fill,
+                            bool alignCompare) {
         if (!values || values->size() < 2) return;
-        const int last = int(values->size()) - 1;
+        const int last = alignCompare && primary ? int(primary->size()) - 1
+                                                 : int(values->size()) - 1;
+        const int valueLast = int(values->size()) - 1;
         const double visibleStart = store_->viewStart() - horizontalShift;
         const double visibleEnd = store_->viewEnd() - horizontalShift;
         const int first =
@@ -781,12 +797,23 @@ void TraceView::paintChannel(QPainter& p, const ChannelSpec& spec,
             1, int(std::ceil(double(finish - first) / double(pointBudget))));
         QPainterPath path;
         int previous = -1;
+        double previousValue = 0.0;
         auto append = [&](int i) {
             const double fraction = double(i) / double(last) + horizontalShift;
             if (fraction < store_->viewStart() - 0.001 ||
                 fraction > store_->viewEnd() + 0.001)
                 return;
-            const double value = (*values)[i];
+            const double sourceFraction =
+                alignCompare ? store_->compareFractionForPrimaryFraction(
+                                   double(i) / double(last))
+                             : double(i) / double(last);
+            const double sourcePosition = sourceFraction * valueLast;
+            const int low =
+                std::clamp(int(std::floor(sourcePosition)), 0, valueLast);
+            const int high = std::min(low + 1, valueLast);
+            const double value =
+                (*values)[low] + ((*values)[high] - (*values)[low]) *
+                                     (sourcePosition - double(low));
             if (!std::isfinite(value)) return;
             const double x =
                 dataRect.left() + (fraction - store_->viewStart()) /
@@ -795,12 +822,13 @@ void TraceView::paintChannel(QPainter& p, const ChannelSpec& spec,
             if (previous < 0)
                 path.moveTo(x, y);
             else if (geometry.gear) {
-                path.lineTo(x, toY((*values)[previous]));
+                path.lineTo(x, toY(previousValue));
                 path.lineTo(x, y);
             } else {
                 path.lineTo(x, y);
             }
             previous = i;
+            previousValue = value;
         };
         append(first);
         for (int i = first + stride; i < finish; i += stride) append(i);
@@ -828,8 +856,8 @@ void TraceView::paintChannel(QPainter& p, const ChannelSpec& spec,
     // only the visible samples so a small viewport never magnifies a bitmap.
     if (store_->viewSpan() < 0.65) {
         drawAdaptive(compareData, store_->referenceAlignment(),
-                     alpha(kMuted, 175), false);
-        drawAdaptive(primaryData, 0.0, traceColor, spec.filled);
+                     alpha(kMuted, 175), false, true);
+        drawAdaptive(primaryData, 0.0, traceColor, spec.filled, false);
     } else {
         drawRaster(geometry.compareRaster, store_->referenceAlignment());
         drawRaster(geometry.primaryRaster, 0.0);
