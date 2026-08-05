@@ -6,6 +6,7 @@
 #include <QList>
 #include <QQuickFramebufferObject>
 #include <QString>
+#include <QtQml/qqmlregistration.h>
 #include <QUrl>
 
 #include <memory>
@@ -15,6 +16,7 @@ class MpvVideoRenderer;
 
 class MpvVideoItem : public QQuickFramebufferObject {
     Q_OBJECT
+    QML_ELEMENT
     Q_PROPERTY(bool ready READ ready NOTIFY readyChanged)
     Q_PROPERTY(bool loaded READ loaded NOTIFY loadedChanged)
     Q_PROPERTY(bool paused READ paused WRITE setPaused NOTIFY pausedChanged)

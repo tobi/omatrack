@@ -80,28 +80,26 @@ void TraceView::setStore(TelemetryStore* store) {
             rebuildChannelSpecs();
             invalidateGeometry();
         });
-        connect(store_, &TelemetryStore::cursorFracChanged,
-                this, [this]() { emit overlayChanged(); });
-        connect(store_, &TelemetryStore::viewChanged,
-                this, &TraceView::invalidateStaticLayer);
-        connect(store_, &TelemetryStore::cornersChanged,
-                this, &TraceView::invalidateStaticLayer);
-        connect(store_, &TelemetryStore::editingCornersChanged,
-                this, &TraceView::invalidateStaticLayer);
-        connect(store_, &TelemetryStore::channelHeightChanged,
-                this, &TraceView::invalidateStaticLayer);
-        connect(store_, &TelemetryStore::channelConfigChanged,
-                this, [this]() {
-                    rebuildChannelSpecs();
-                    invalidateGeometry();
-                });
-        connect(store_, &TelemetryStore::referenceAlignmentChanged,
-                this, &TraceView::invalidateStaticLayer);
+        connect(store_, &TelemetryStore::cursorFracChanged, this,
+                [this]() { emit overlayChanged(); });
+        connect(store_, &TelemetryStore::viewChanged, this,
+                &TraceView::invalidateStaticLayer);
+        connect(store_, &TelemetryStore::cornersChanged, this,
+                &TraceView::invalidateStaticLayer);
+        connect(store_, &TelemetryStore::editingCornersChanged, this,
+                &TraceView::invalidateStaticLayer);
+        connect(store_, &TelemetryStore::channelHeightChanged, this,
+                &TraceView::invalidateStaticLayer);
+        connect(store_, &TelemetryStore::channelConfigChanged, this, [this]() {
+            rebuildChannelSpecs();
+            invalidateGeometry();
+        });
+        connect(store_, &TelemetryStore::referenceAlignmentChanged, this,
+                &TraceView::invalidateStaticLayer);
     }
     invalidateGeometry();
     emit storeChanged();
 }
-
 
 void TraceView::invalidateStaticLayer() {
     update();
@@ -118,8 +116,9 @@ void TraceView::invalidateGeometry() {
 void TraceView::rebuildChannelSpecs() {
     channelSpecs_.clear();
     // ordered like racecraft: delta on top, then main channels
-    auto add = [&](const QString& key, const QString& title, const QString& unit, QColor color,
-                   Clamp clamp, bool filled, bool dots, const QString& field) {
+    auto add = [&](const QString& key, const QString& title,
+                   const QString& unit, QColor color, Clamp clamp, bool filled,
+                   bool dots, const QString& field) {
         ChannelSpec s;
         s.key = key;
         s.title = title;
@@ -131,24 +130,24 @@ void TraceView::rebuildChannelSpecs() {
         s.field = field;
         channelSpecs_.append(s);
     };
-    add("delta", "Δ Time", "s", QColor("#83c092"),
-        Clamp{0, 0, true, true}, true, false, "");
-    add("speed", "Speed", "km/h", QColor("#a7c080"),
-        Clamp{0, 0, true, false}, false, true, "speed");
+    add("delta", "Δ Time", "s", QColor("#83c092"), Clamp{0, 0, true, true},
+        true, false, "");
+    add("speed", "Speed", "km/h", QColor("#a7c080"), Clamp{0, 0, true, false},
+        false, true, "speed");
     add("throttle", "Throttle", "%", QColor("#a7c080"),
         Clamp{0, 1, false, false}, true, false, "throttle");
-    add("brake", "Brake", "bar", QColor("#e67e80"),
-        Clamp{0, 0, true, false}, true, false, "brake");
+    add("brake", "Brake", "bar", QColor("#e67e80"), Clamp{0, 0, true, false},
+        true, false, "brake");
     add("steering", "Steering", "deg", QColor("#dbbc7f"),
         Clamp{0, 0, true, true}, false, true, "steering");
-    add("gear", "Gear", "", QColor("#d699b6"),
-        Clamp{0, 7, false, false}, false, true, "gear");
-    add("dampers", "Dampers", "mm", QColor("#7fbbb3"),
-        Clamp{0, 0, true, true}, false, false, "damperFL");
-    add("g_long", "G Long", "g", QColor("#e09d7f"),
-        Clamp{0, 0, true, true}, false, false, "gForceLong");
-    add("clutch", "Clutch", "%", QColor("#d3c6aa"),
-        Clamp{0, 1, false, false}, true, false, "clutch");
+    add("gear", "Gear", "", QColor("#d699b6"), Clamp{0, 7, false, false}, false,
+        true, "gear");
+    add("dampers", "Dampers", "mm", QColor("#7fbbb3"), Clamp{0, 0, true, true},
+        false, false, "damperFL");
+    add("g_long", "G Long", "g", QColor("#e09d7f"), Clamp{0, 0, true, true},
+        false, false, "gForceLong");
+    add("clutch", "Clutch", "%", QColor("#d3c6aa"), Clamp{0, 1, false, false},
+        true, false, "clutch");
     add("driver_throttle", "Driver throttle", "%", QColor("#9da9a0"),
         Clamp{0, 1, false, false}, false, false, "driverThrottle");
     add("gps_lat", "GPS latitude", "°", QColor("#83c092"),
@@ -171,12 +170,14 @@ void TraceView::rebuildChannelSpecs() {
 }
 
 double TraceView::xForFrac(double frac) const {
-    return kLabelW + (frac - store_->viewStart()) / store_->viewSpan() * (width() - kLabelW);
+    return kLabelW + (frac - store_->viewStart()) / store_->viewSpan() *
+                         (width() - kLabelW);
 }
 
 double TraceView::fracForX(double x) const {
     double w = std::max(1.0, width() - kLabelW);
-    return store_->viewStart() + std::clamp((x - kLabelW) / w, 0.0, 1.0) * store_->viewSpan();
+    return store_->viewStart() +
+           std::clamp((x - kLabelW) / w, 0.0, 1.0) * store_->viewSpan();
 }
 
 bool TraceView::isSticky(const QString& key) const {
@@ -186,11 +187,12 @@ bool TraceView::isSticky(const QString& key) const {
 double TraceView::rowHeightFor(const ChannelSpec& spec) const {
     const double weight = std::max(0.5, store_->channelWeight(spec.key));
     const double speedBoost = spec.key == QStringLiteral("speed") ? 1.35 : 1.0;
-    return std::max(48.0, double(store_->channelHeight()) * weight * speedBoost);
+    return std::max(48.0,
+                    double(store_->channelHeight()) * weight * speedBoost);
 }
 
-
-const std::vector<double>* TraceView::fieldFor(const UnifiedLap& lap, const QString& field) const {
+const std::vector<double>* TraceView::fieldFor(const UnifiedLap& lap,
+                                               const QString& field) const {
     if (field == "speed") return &lap.speed;
     if (field == "throttle") return &lap.throttle;
     if (field == "driverThrottle") return &lap.driverThrottle;
@@ -212,7 +214,8 @@ const std::vector<double>* TraceView::fieldFor(const UnifiedLap& lap, const QStr
         int idx = scratchIdx_++;
         auto& buf = scratch_[idx & 1];
         buf.resize(lap.gear.size());
-        for (size_t i = 0; i < lap.gear.size(); ++i) buf[i] = double(lap.gear[i]);
+        for (size_t i = 0; i < lap.gear.size(); ++i)
+            buf[i] = double(lap.gear[i]);
         return &buf;
     }
     return nullptr;
@@ -231,8 +234,7 @@ QColor TraceView::colorForDriver() const {
 void TraceView::paint(QPainter* painter) {
     paintStatic(painter);
     QMetaObject::invokeMethod(
-        this, [this]() { emit overlayChanged(); },
-        Qt::QueuedConnection);
+        this, [this]() { emit overlayChanged(); }, Qt::QueuedConnection);
 }
 
 void TraceView::paintStatic(QPainter* painter) {
@@ -277,9 +279,7 @@ void TraceView::paintStatic(QPainter* painter) {
     canvasFont.setPointSizeF(8.5);
     painter->setFont(canvasFont);
 
-    auto rowHeight = [&](int idx) {
-        return rowHeightFor(channelSpecs_[idx]);
-    };
+    auto rowHeight = [&](int idx) { return rowHeightFor(channelSpecs_[idx]); };
     double stickyHeight = 0.0;
     for (int idx : stickyIdx) stickyHeight += rowHeight(idx);
     double secondaryContentHeight = 0.0;
@@ -301,12 +301,11 @@ void TraceView::paintStatic(QPainter* painter) {
         if (spec.key == "delta") {
             paintDelta(*painter, rect);
         } else {
-            paintChannel(*painter, spec, rect, idx,
-                         primary, compare, nullptr, nullptr);
+            paintChannel(*painter, spec, rect, idx, primary, compare, nullptr,
+                         nullptr);
         }
         painter->setPen(QPen(alpha(kGridStrong, 110), 1));
-        painter->drawLine(QPointF(kLabelW, y),
-                          QPointF(width(), y));
+        painter->drawLine(QPointF(kLabelW, y), QPointF(width(), y));
     };
 
     double y = kTopPad;
@@ -317,8 +316,8 @@ void TraceView::paintStatic(QPainter* painter) {
 
     if (!scrollIdx.isEmpty() && secondaryViewport > 0.0) {
         painter->save();
-        painter->setClipRect(QRectF(0, secondaryTop,
-                                    width(), secondaryViewport));
+        painter->setClipRect(
+            QRectF(0, secondaryTop, width(), secondaryViewport));
         y = secondaryTop - secondaryScroll_;
         for (int idx : scrollIdx) {
             drawRow(idx, y);
@@ -328,52 +327,50 @@ void TraceView::paintStatic(QPainter* painter) {
 
         if (maxScroll > 0.0) {
             const double trackTop = secondaryTop + 3.0;
-            const double trackHeight = std::max(
-                12.0, secondaryViewport - 6.0);
+            const double trackHeight = std::max(12.0, secondaryViewport - 6.0);
             const double thumbHeight = std::max(
-                18.0, trackHeight * secondaryViewport /
-                           secondaryContentHeight);
-            const double thumbY = trackTop +
-                (trackHeight - thumbHeight) *
-                (secondaryScroll_ / maxScroll);
+                18.0, trackHeight * secondaryViewport / secondaryContentHeight);
+            const double thumbY = trackTop + (trackHeight - thumbHeight) *
+                                                 (secondaryScroll_ / maxScroll);
             painter->setPen(Qt::NoPen);
             painter->setBrush(alpha(kMuted, 70));
-            painter->drawRoundedRect(QRectF(width() - 5, thumbY, 3,
-                                            thumbHeight), 1.5, 1.5);
+            painter->drawRoundedRect(
+                QRectF(width() - 5, thumbY, 3, thumbHeight), 1.5, 1.5);
         }
     }
 
-    const QRectF axisRect(kLabelW, height() - kBottomPad,
-                          width() - kLabelW, kBottomPad);
+    const QRectF axisRect(kLabelW, height() - kBottomPad, width() - kLabelW,
+                          kBottomPad);
     painter->setPen(kGridStrong);
     painter->drawLine(QPointF(kLabelW, axisRect.top()),
                       QPointF(width(), axisRect.top()));
     if (!primary->distance.empty()) {
         const int n = int(primary->size());
-        const int divisions = std::max(
-            2, int((width() - kLabelW) / 120.0));
+        const int divisions = std::max(2, int((width() - kLabelW) / 120.0));
         const double totalDistance = primary->distance.back();
         double step = totalDistance / divisions;
-        if (step < 50) step = 50;
-        else if (step < 100) step = 100;
-        else if (step < 200) step = 200;
-        else if (step < 500) step = 500;
-        else step = 1000;
+        if (step < 50)
+            step = 50;
+        else if (step < 100)
+            step = 100;
+        else if (step < 200)
+            step = 200;
+        else if (step < 500)
+            step = 500;
+        else
+            step = 1000;
 
-        for (double distance = 0; distance <= totalDistance;
-             distance += step) {
+        for (double distance = 0; distance <= totalDistance; distance += step) {
             const auto it = std::lower_bound(primary->distance.begin(),
-                                             primary->distance.end(),
-                                             distance);
-            int sample = std::clamp(int(it - primary->distance.begin()),
-                                    0, n - 1);
+                                             primary->distance.end(), distance);
+            int sample =
+                std::clamp(int(it - primary->distance.begin()), 0, n - 1);
             if (sample > 0 &&
                 std::fabs(primary->distance[sample - 1] - distance) <
                     std::fabs(primary->distance[sample] - distance))
                 --sample;
             const double fraction = double(sample) / double(n - 1);
-            if (fraction < store_->viewStart() ||
-                fraction > store_->viewEnd())
+            if (fraction < store_->viewStart() || fraction > store_->viewEnd())
                 continue;
             const double x = xForFrac(fraction);
             painter->drawLine(QPointF(x, axisRect.top()),
@@ -384,16 +381,13 @@ void TraceView::paintStatic(QPainter* painter) {
         }
     }
 
-    const double traceHeight =
-        std::max(0.0, height() - kTopPad - kBottomPad);
+    const double traceHeight = std::max(0.0, height() - kTopPad - kBottomPad);
     paintCornerZones(*painter,
-                     QRectF(kLabelW, kTopPad, width() - kLabelW,
-                            traceHeight));
+                     QRectF(kLabelW, kTopPad, width() - kLabelW, traceHeight));
 
     cursorTop_ = kTopPad - 3;
     cursorBottom_ = height() - kBottomPad;
 }
-
 
 void TraceView::paintCursorOverlay(QPainter* painter) {
     if (!store_ || cursorLanes_.isEmpty()) return;
@@ -420,9 +414,9 @@ void TraceView::paintCursorOverlay(QPainter* painter) {
             return lane.rect.top() +
                    (1.0 - (value - lane.min) / span) * lane.rect.height();
         };
-        const int sample = std::min(
-            int(primaryData->size()) - 1,
-            int(fraction * double(primaryData->size() - 1)));
+        const int sample =
+            std::min(int(primaryData->size()) - 1,
+                     int(fraction * double(primaryData->size() - 1)));
         const double value = (*primaryData)[sample];
 
         painter->setPen(Qt::NoPen);
@@ -445,8 +439,7 @@ void TraceView::paintCursorOverlay(QPainter* painter) {
         else
             valueText = QString::number(value, 'f', 2);
 
-        const QRectF valueRect(0, lane.rect.top() + 15,
-                               kLabelW - 6, 12);
+        const QRectF valueRect(0, lane.rect.top() + 15, kLabelW - 6, 12);
         painter->fillRect(valueRect, kTraceBackground);
         QFont valueFont("Geist Mono");
         valueFont.setPointSizeF(7.0);
@@ -461,16 +454,15 @@ void TraceView::paintCursorOverlay(QPainter* painter) {
                 lane.field.startsWith(QStringLiteral("raw:"))
                     ? store_->extraChannelData(lane.field, true)
                     : fieldFor(*compare, lane.field);
-            const double compareFraction = std::clamp(
-                fraction - store_->referenceAlignment(), 0.0, 1.0);
+            const double compareFraction =
+                std::clamp(fraction - store_->referenceAlignment(), 0.0, 1.0);
             const int compareSample = std::min(
                 int(compareData->size()) - 1,
                 int(compareFraction * double(compareData->size() - 1)));
             painter->setPen(Qt::NoPen);
             painter->setBrush(alpha(kMuted, 190));
             painter->drawEllipse(
-                QPointF(cursorX, toY((*compareData)[compareSample])),
-                1.8, 1.8);
+                QPointF(cursorX, toY((*compareData)[compareSample])), 1.8, 1.8);
         }
     }
 }
@@ -484,9 +476,8 @@ void TraceView::paintSelectionOverlay(QPainter* painter) {
     const double hi = std::max(selectionStart_, selectionEnd_);
     const double x0 = xForFrac(lo);
     const double x1 = xForFrac(hi);
-    const QRectF selectionRect(
-        x0, cursorTop_, std::max(1.0, x1 - x0),
-        std::max(1.0, cursorBottom_ - cursorTop_));
+    const QRectF selectionRect(x0, cursorTop_, std::max(1.0, x1 - x0),
+                               std::max(1.0, cursorBottom_ - cursorTop_));
 
     painter->save();
     painter->fillRect(selectionRect, alpha(kAccent, 24));
@@ -497,11 +488,10 @@ void TraceView::paintSelectionOverlay(QPainter* painter) {
     auto sampleStd = [](const std::vector<double>& values, double fraction) {
         const double position =
             std::clamp(fraction, 0.0, 1.0) * double(values.size() - 1);
-        const int i0 = std::clamp(int(std::floor(position)), 0,
-                                  int(values.size()) - 1);
+        const int i0 =
+            std::clamp(int(std::floor(position)), 0, int(values.size()) - 1);
         const int i1 = std::min(i0 + 1, int(values.size()) - 1);
-        return values[i0] +
-               (values[i1] - values[i0]) * (position - i0);
+        return values[i0] + (values[i1] - values[i0]) * (position - i0);
     };
     const double primaryTime =
         sampleStd(primary->time, hi) - sampleStd(primary->time, lo);
@@ -514,11 +504,9 @@ void TraceView::paintSelectionOverlay(QPainter* painter) {
         auto sampleDelta = [&](double fraction) {
             const double position =
                 std::clamp(fraction, 0.0, 1.0) * double(deltaLast);
-            const int i0 = std::clamp(
-                int(std::floor(position)), 0, deltaLast);
+            const int i0 = std::clamp(int(std::floor(position)), 0, deltaLast);
             const int i1 = std::min(i0 + 1, deltaLast);
-            return delta[i0] +
-                   (delta[i1] - delta[i0]) * (position - i0);
+            return delta[i0] + (delta[i1] - delta[i0]) * (position - i0);
         };
         const double regionDelta = sampleDelta(hi) - sampleDelta(lo);
         const double referenceTime = primaryTime - regionDelta;
@@ -527,9 +515,9 @@ void TraceView::paintSelectionOverlay(QPainter* painter) {
                     .arg(referenceTime, 0, 'f', 3)
                     .arg(regionDelta >= 0.0 ? "+" : "")
                     .arg(regionDelta, 0, 'f', 3);
-        labelColor = regionDelta > 0.01
-                         ? kRed
-                         : regionDelta < -0.01 ? kGreen : kForeground;
+        labelColor = regionDelta > 0.01    ? kRed
+                     : regionDelta < -0.01 ? kGreen
+                                           : kForeground;
     }
 
     QFont labelFont("Geist Mono");
@@ -553,8 +541,7 @@ void TraceView::paintSelectionOverlay(QPainter* painter) {
 }
 
 const TraceView::ChannelGeometry& TraceView::geometryFor(
-    const ChannelSpec& spec,
-    const UnifiedLap* primary,
+    const ChannelSpec& spec, const UnifiedLap* primary,
     const UnifiedLap* compare) {
     auto cached = geometryCache_.find(spec.key);
     if (cached != geometryCache_.end()) return cached.value();
@@ -567,15 +554,13 @@ const TraceView::ChannelGeometry& TraceView::geometryFor(
 
     const bool rawChannel = spec.field.startsWith(QStringLiteral("raw:"));
     const std::vector<double>* primaryData =
-        primary ? (rawChannel
-                       ? store_->extraChannelData(spec.key, false)
-                       : fieldFor(*primary, spec.field))
-                 : nullptr;
+        primary ? (rawChannel ? store_->extraChannelData(spec.key, false)
+                              : fieldFor(*primary, spec.field))
+                : nullptr;
     const std::vector<double>* compareData =
         compare && !geometry.gear
-            ? (rawChannel
-                   ? store_->extraChannelData(spec.key, true)
-                   : fieldFor(*compare, spec.field))
+            ? (rawChannel ? store_->extraChannelData(spec.key, true)
+                          : fieldFor(*compare, spec.field))
             : nullptr;
 
     if (spec.clamp.autoRange) {
@@ -601,8 +586,7 @@ const TraceView::ChannelGeometry& TraceView::geometryFor(
             geometry.min = magnitude < 1e-6 ? -1.0 : -magnitude;
             geometry.max = magnitude < 1e-6 ? 1.0 : magnitude;
         } else {
-            const double padding =
-                (geometry.max - geometry.min) * 0.06;
+            const double padding = (geometry.max - geometry.min) * 0.06;
             geometry.min -= padding;
             geometry.max += padding;
         }
@@ -620,8 +604,7 @@ const TraceView::ChannelGeometry& TraceView::geometryFor(
         double previousY = 0.0;
         for (int i = 0; i <= last; ++i) {
             const double x = double(i) / double(last);
-            const double y =
-                1.0 - ((*values)[i] - geometry.min) / span;
+            const double y = 1.0 - ((*values)[i] - geometry.min) / span;
             if (i == 0) {
                 path.moveTo(x, y);
             } else if (geometry.gear) {
@@ -638,8 +621,7 @@ const TraceView::ChannelGeometry& TraceView::geometryFor(
     buildPath(compareData, geometry.compareLine);
     if (geometry.filled && !geometry.primaryLine.isEmpty()) {
         geometry.primaryFill = geometry.primaryLine;
-        const auto first =
-            geometry.primaryLine.elementAt(0);
+        const auto first = geometry.primaryLine.elementAt(0);
         const auto last = geometry.primaryLine.elementAt(
             geometry.primaryLine.elementCount() - 1);
         geometry.primaryFill.lineTo(last.x, 1.0);
@@ -656,29 +638,25 @@ const TraceView::ChannelGeometry& TraceView::geometryFor(
     rasterTransform.scale(rasterWidth - 1, rasterHeight - 1);
 
     if (!geometry.primaryLine.isEmpty()) {
-        geometry.primaryRaster =
-            QImage(rasterWidth, rasterHeight,
-                   QImage::Format_ARGB32_Premultiplied);
+        geometry.primaryRaster = QImage(rasterWidth, rasterHeight,
+                                        QImage::Format_ARGB32_Premultiplied);
         geometry.primaryRaster.fill(Qt::transparent);
         QPainter rasterPainter(&geometry.primaryRaster);
         rasterPainter.setRenderHint(QPainter::Antialiasing, true);
         if (!geometry.primaryFill.isEmpty()) {
             rasterPainter.setPen(Qt::NoPen);
             rasterPainter.setBrush(alpha(traceColor, 46));
-            rasterPainter.drawPath(
-                rasterTransform.map(geometry.primaryFill));
+            rasterPainter.drawPath(rasterTransform.map(geometry.primaryFill));
         }
         QPen pen(traceColor, 2.2);
         pen.setCosmetic(true);
         rasterPainter.setPen(pen);
         rasterPainter.setBrush(Qt::NoBrush);
-        rasterPainter.drawPath(
-            rasterTransform.map(geometry.primaryLine));
+        rasterPainter.drawPath(rasterTransform.map(geometry.primaryLine));
     }
     if (!geometry.compareLine.isEmpty()) {
-        geometry.compareRaster =
-            QImage(rasterWidth, rasterHeight,
-                   QImage::Format_ARGB32_Premultiplied);
+        geometry.compareRaster = QImage(rasterWidth, rasterHeight,
+                                        QImage::Format_ARGB32_Premultiplied);
         geometry.compareRaster.fill(Qt::transparent);
         QPainter rasterPainter(&geometry.compareRaster);
         rasterPainter.setRenderHint(QPainter::Antialiasing, true);
@@ -686,31 +664,32 @@ const TraceView::ChannelGeometry& TraceView::geometryFor(
         pen.setCosmetic(true);
         rasterPainter.setPen(pen);
         rasterPainter.setBrush(Qt::NoBrush);
-        rasterPainter.drawPath(
-            rasterTransform.map(geometry.compareLine));
+        rasterPainter.drawPath(rasterTransform.map(geometry.compareLine));
     }
 
     auto inserted = geometryCache_.insert(spec.key, std::move(geometry));
     return inserted.value();
 }
 
-void TraceView::paintChannel(QPainter& p, const ChannelSpec& spec, const QRectF& rect, int index,
-                             const UnifiedLap* primary, const UnifiedLap* compare,
-                             const std::vector<double>* pf, const std::vector<double>* cf) {
+void TraceView::paintChannel(QPainter& p, const ChannelSpec& spec,
+                             const QRectF& rect, int index,
+                             const UnifiedLap* primary,
+                             const UnifiedLap* compare,
+                             const std::vector<double>* pf,
+                             const std::vector<double>* cf) {
     Q_UNUSED(index);
     const bool rawChannel = spec.field.startsWith(QStringLiteral("raw:"));
     const std::vector<double>* primaryData =
-        pf ? pf : (primary
-                       ? (rawChannel
-                              ? store_->extraChannelData(spec.key, false)
-                              : fieldFor(*primary, spec.field))
-                       : nullptr);
+        pf ? pf
+           : (primary ? (rawChannel ? store_->extraChannelData(spec.key, false)
+                                    : fieldFor(*primary, spec.field))
+                      : nullptr);
     const std::vector<double>* compareData =
-        cf ? cf : (compare && spec.field != QStringLiteral("gear")
-                       ? (rawChannel
-                              ? store_->extraChannelData(spec.key, true)
-                              : fieldFor(*compare, spec.field))
-                       : nullptr);
+        cf ? cf
+           : (compare && spec.field != QStringLiteral("gear")
+                  ? (rawChannel ? store_->extraChannelData(spec.key, true)
+                                : fieldFor(*compare, spec.field))
+                  : nullptr);
 
     QColor traceColor(store_->channelColor(spec.key));
     if (!traceColor.isValid()) traceColor = spec.color;
@@ -721,16 +700,17 @@ void TraceView::paintChannel(QPainter& p, const ChannelSpec& spec, const QRectF&
                QPointF(rect.left() - 1, rect.bottom()));
     QFont labelFont("Geist Mono");
     if (isSticky(spec.key)) {
-    const QRectF stickyButton(3, rect.top() + 4, 12, 12);
-    p.setPen(QPen(alpha(isSticky(spec.key) ? traceColor : kMuted,
-                       isSticky(spec.key) ? 90 : 35), 1));
-    p.setBrush(alpha(isSticky(spec.key) ? traceColor : kMuted,
-                     isSticky(spec.key) ? 22 : 8));
-    p.drawRoundedRect(stickyButton, 2, 2);
-    p.setFont(QFont("Geist Mono", 6));
-    p.setPen(alpha(isSticky(spec.key) ? traceColor : kMuted,
-                   isSticky(spec.key) ? 190 : 70));
-    p.drawText(stickyButton, Qt::AlignCenter, QStringLiteral("S"));
+        const QRectF stickyButton(3, rect.top() + 4, 12, 12);
+        p.setPen(QPen(alpha(isSticky(spec.key) ? traceColor : kMuted,
+                            isSticky(spec.key) ? 90 : 35),
+                      1));
+        p.setBrush(alpha(isSticky(spec.key) ? traceColor : kMuted,
+                         isSticky(spec.key) ? 22 : 8));
+        p.drawRoundedRect(stickyButton, 2, 2);
+        p.setFont(QFont("Geist Mono", 6));
+        p.setPen(alpha(isSticky(spec.key) ? traceColor : kMuted,
+                       isSticky(spec.key) ? 190 : 70));
+        p.drawText(stickyButton, Qt::AlignCenter, QStringLiteral("S"));
     }
 
     labelFont.setPointSizeF(8.0);
@@ -750,16 +730,13 @@ void TraceView::paintChannel(QPainter& p, const ChannelSpec& spec, const QRectF&
     const double span = geometry.max - geometry.min;
     auto toY = [&](double value) {
         return dataRect.top() +
-               (1.0 - (value - geometry.min) / span) *
-                   dataRect.height();
+               (1.0 - (value - geometry.min) / span) * dataRect.height();
     };
 
     p.setPen(QPen(kGrid, 1));
     for (int grid = 1; grid < 4; ++grid) {
-        const double y =
-            dataRect.top() + dataRect.height() * grid / 4.0;
-        p.drawLine(QPointF(dataRect.left(), y),
-                   QPointF(dataRect.right(), y));
+        const double y = dataRect.top() + dataRect.height() * grid / 4.0;
+        p.drawLine(QPointF(dataRect.left(), y), QPointF(dataRect.right(), y));
     }
     if (geometry.min < 0 && geometry.max > 0) {
         p.setPen(QPen(kGridStrong, 1, Qt::DashLine));
@@ -772,57 +749,51 @@ void TraceView::paintChannel(QPainter& p, const ChannelSpec& spec, const QRectF&
         if (image.isNull()) return;
         const double sourceStart =
             (store_->viewStart() - horizontalShift) * image.width();
-        const double sourceWidth =
-            store_->viewSpan() * image.width();
-        const QRectF requested(
-            sourceStart, 0, sourceWidth, image.height());
+        const double sourceWidth = store_->viewSpan() * image.width();
+        const QRectF requested(sourceStart, 0, sourceWidth, image.height());
         const QRectF available =
-            requested.intersected(
-                QRectF(0, 0, image.width(), image.height()));
+            requested.intersected(QRectF(0, 0, image.width(), image.height()));
         if (available.isEmpty() || sourceWidth <= 0.0) return;
         const double targetX =
             dataRect.left() +
-            (available.left() - sourceStart) / sourceWidth *
-                dataRect.width();
+            (available.left() - sourceStart) / sourceWidth * dataRect.width();
         const double targetWidth =
             available.width() / sourceWidth * dataRect.width();
-        const QRectF target(
-            targetX, dataRect.top(), targetWidth, dataRect.height());
+        const QRectF target(targetX, dataRect.top(), targetWidth,
+                            dataRect.height());
         p.setRenderHint(QPainter::SmoothPixmapTransform, true);
         p.drawImage(target, image, available);
     };
 
     auto drawAdaptive = [&](const std::vector<double>* values,
-                            double horizontalShift, QColor color,
-                            bool fill) {
+                            double horizontalShift, QColor color, bool fill) {
         if (!values || values->size() < 2) return;
         const int last = int(values->size()) - 1;
         const double visibleStart = store_->viewStart() - horizontalShift;
         const double visibleEnd = store_->viewEnd() - horizontalShift;
-        const int first = std::clamp(
-            int(std::floor(visibleStart * last)) - 1, 0, last);
-        const int finish = std::clamp(
-            int(std::ceil(visibleEnd * last)) + 1, 0, last);
-        const int pointBudget = std::max(
-            96, int(std::ceil(dataRect.width() * 1.5)));
+        const int first =
+            std::clamp(int(std::floor(visibleStart * last)) - 1, 0, last);
+        const int finish =
+            std::clamp(int(std::ceil(visibleEnd * last)) + 1, 0, last);
+        const int pointBudget =
+            std::max(96, int(std::ceil(dataRect.width() * 1.5)));
         const int stride = std::max(
-            1, int(std::ceil(double(finish - first) /
-                             double(pointBudget))));
+            1, int(std::ceil(double(finish - first) / double(pointBudget))));
         QPainterPath path;
         int previous = -1;
         auto append = [&](int i) {
-            const double fraction =
-                double(i) / double(last) + horizontalShift;
+            const double fraction = double(i) / double(last) + horizontalShift;
             if (fraction < store_->viewStart() - 0.001 ||
                 fraction > store_->viewEnd() + 0.001)
                 return;
             const double value = (*values)[i];
             if (!std::isfinite(value)) return;
-            const double x = dataRect.left() +
-                (fraction - store_->viewStart()) /
-                    store_->viewSpan() * dataRect.width();
+            const double x =
+                dataRect.left() + (fraction - store_->viewStart()) /
+                                      store_->viewSpan() * dataRect.width();
             const double y = toY(value);
-            if (previous < 0) path.moveTo(x, y);
+            if (previous < 0)
+                path.moveTo(x, y);
             else if (geometry.gear) {
                 path.lineTo(x, toY((*values)[previous]));
                 path.lineTo(x, y);
@@ -832,8 +803,7 @@ void TraceView::paintChannel(QPainter& p, const ChannelSpec& spec, const QRectF&
             previous = i;
         };
         append(first);
-        for (int i = first + stride; i < finish; i += stride)
-            append(i);
+        for (int i = first + stride; i < finish; i += stride) append(i);
         append(finish);
         if (path.isEmpty()) return;
 
@@ -861,31 +831,32 @@ void TraceView::paintChannel(QPainter& p, const ChannelSpec& spec, const QRectF&
                      alpha(kMuted, 175), false);
         drawAdaptive(primaryData, 0.0, traceColor, spec.filled);
     } else {
-        drawRaster(geometry.compareRaster,
-                   store_->referenceAlignment());
+        drawRaster(geometry.compareRaster, store_->referenceAlignment());
         drawRaster(geometry.primaryRaster, 0.0);
     }
 
     if (!geometry.primaryLine.isEmpty()) {
-        cursorLanes_.append(
-            CursorLane{spec.field, dataRect, geometry.min,
-                       geometry.max, traceColor, geometry.gear});
+        cursorLanes_.append(CursorLane{spec.field, dataRect, geometry.min,
+                                       geometry.max, traceColor,
+                                       geometry.gear});
     }
 }
 
 void TraceView::paintDelta(QPainter& p, const QRectF& rect) {
     if (!store_->comparing()) return;
     if (isSticky(QStringLiteral("delta"))) {
-    const QRectF stickyButton(3, rect.top() + 4, 12, 12);
-    p.setPen(QPen(alpha(isSticky(QStringLiteral("delta")) ? kAccent : kMuted,
-                       isSticky(QStringLiteral("delta")) ? 90 : 35), 1));
-    p.setBrush(alpha(isSticky(QStringLiteral("delta")) ? kAccent : kMuted,
-                     isSticky(QStringLiteral("delta")) ? 22 : 8));
-    p.drawRoundedRect(stickyButton, 2, 2);
-    p.setFont(QFont("Geist Mono", 6));
-    p.setPen(alpha(isSticky(QStringLiteral("delta")) ? kAccent : kMuted,
-                   isSticky(QStringLiteral("delta")) ? 190 : 70));
-    p.drawText(stickyButton, Qt::AlignCenter, QStringLiteral("S"));
+        const QRectF stickyButton(3, rect.top() + 4, 12, 12);
+        p.setPen(
+            QPen(alpha(isSticky(QStringLiteral("delta")) ? kAccent : kMuted,
+                       isSticky(QStringLiteral("delta")) ? 90 : 35),
+                 1));
+        p.setBrush(alpha(isSticky(QStringLiteral("delta")) ? kAccent : kMuted,
+                         isSticky(QStringLiteral("delta")) ? 22 : 8));
+        p.drawRoundedRect(stickyButton, 2, 2);
+        p.setFont(QFont("Geist Mono", 6));
+        p.setPen(alpha(isSticky(QStringLiteral("delta")) ? kAccent : kMuted,
+                       isSticky(QStringLiteral("delta")) ? 190 : 70));
+        p.drawText(stickyButton, Qt::AlignCenter, QStringLiteral("S"));
     }
 
     const QVector<double>& delta = store_->deltaTrace();
@@ -913,13 +884,11 @@ void TraceView::paintDelta(QPainter& p, const QRectF& rect) {
         for (double value : delta)
             deltaMaxAbs_ = std::max(deltaMaxAbs_, std::fabs(value));
 
-        deltaRaster_ =
-            QImage(rasterWidth, rasterHeight,
-                   QImage::Format_ARGB32_Premultiplied);
+        deltaRaster_ = QImage(rasterWidth, rasterHeight,
+                              QImage::Format_ARGB32_Premultiplied);
         deltaRaster_.fill(Qt::transparent);
         auto toY = [&](double value) {
-            return (1.0 - (value + deltaMaxAbs_) /
-                              (deltaMaxAbs_ * 2.0)) *
+            return (1.0 - (value + deltaMaxAbs_) / (deltaMaxAbs_ * 2.0)) *
                    (rasterHeight - 1);
         };
         QPainterPath ahead;
@@ -927,10 +896,8 @@ void TraceView::paintDelta(QPainter& p, const QRectF& rect) {
         QPainterPath line;
         line.moveTo(0, toY(delta[0]));
         for (int i = 1; i < n; ++i) {
-            const double x0 =
-                double(i - 1) / double(n - 1) * (rasterWidth - 1);
-            const double x1 =
-                double(i) / double(n - 1) * (rasterWidth - 1);
+            const double x0 = double(i - 1) / double(n - 1) * (rasterWidth - 1);
+            const double x1 = double(i) / double(n - 1) * (rasterWidth - 1);
             const double y0 = toY(delta[i - 1]);
             const double y1 = toY(delta[i]);
             line.lineTo(x1, y1);
@@ -957,24 +924,23 @@ void TraceView::paintDelta(QPainter& p, const QRectF& rect) {
         QPen zeroPen(kGridStrong, 1, Qt::DashLine);
         zeroPen.setCosmetic(true);
         rasterPainter.setPen(zeroPen);
-        rasterPainter.drawLine(
-            QPointF(0, toY(0)),
-            QPointF(rasterWidth - 1, toY(0)));
+        rasterPainter.drawLine(QPointF(0, toY(0)),
+                               QPointF(rasterWidth - 1, toY(0)));
     }
 
     if (store_->viewSpan() < 0.65) {
         const int last = n - 1;
         const int first = std::clamp(
             int(std::floor(store_->viewStart() * last)) - 1, 0, last);
-        const int finish = std::clamp(
-            int(std::ceil(store_->viewEnd() * last)) + 1, 0, last);
+        const int finish =
+            std::clamp(int(std::ceil(store_->viewEnd() * last)) + 1, 0, last);
         const int budget = std::max(96, int(rect.width() * 1.5));
-        const int stride = std::max(
-            1, int(std::ceil(double(finish - first) / budget)));
+        const int stride =
+            std::max(1, int(std::ceil(double(finish - first) / budget)));
         auto yForDelta = [&](double value) {
-            return rect.top() + (1.0 -
-                (value + deltaMaxAbs_) / (2.0 * deltaMaxAbs_)) *
-                rect.height();
+            return rect.top() +
+                   (1.0 - (value + deltaMaxAbs_) / (2.0 * deltaMaxAbs_)) *
+                       rect.height();
         };
         QPainterPath line;
         QPainterPath ahead;
@@ -988,12 +954,13 @@ void TraceView::paintDelta(QPainter& p, const QRectF& rect) {
                 return;
             const double x = xForFrac(fraction);
             const double y = yForDelta(delta[i]);
-            if (previous < 0) line.moveTo(x, y);
-            else line.lineTo(x, y);
+            if (previous < 0)
+                line.moveTo(x, y);
+            else
+                line.lineTo(x, y);
             if (previous >= 0) {
                 QPainterPath& band = delta[i] < 0 ? ahead : behind;
-                const double x0 = xForFrac(
-                    double(previous) / double(last));
+                const double x0 = xForFrac(double(previous) / double(last));
                 const double y0 = yForDelta(delta[previous]);
                 const double zero = yForDelta(0.0);
                 band.moveTo(x0, y0);
@@ -1005,8 +972,7 @@ void TraceView::paintDelta(QPainter& p, const QRectF& rect) {
             previous = i;
         };
         append(first);
-        for (int i = first + stride; i < finish; i += stride)
-            append(i);
+        for (int i = first + stride; i < finish; i += stride) append(i);
         append(finish);
         p.setPen(Qt::NoPen);
         p.setBrush(alpha(kGreen, 48));
@@ -1024,22 +990,19 @@ void TraceView::paintDelta(QPainter& p, const QRectF& rect) {
         p.drawLine(QPointF(rect.left(), yForDelta(0.0)),
                    QPointF(rect.right(), yForDelta(0.0)));
     } else {
-        const QRectF source(
-            store_->viewStart() * deltaRaster_.width(), 0,
-            store_->viewSpan() * deltaRaster_.width(),
-            deltaRaster_.height());
+        const QRectF source(store_->viewStart() * deltaRaster_.width(), 0,
+                            store_->viewSpan() * deltaRaster_.width(),
+                            deltaRaster_.height());
         p.setRenderHint(QPainter::SmoothPixmapTransform, true);
         p.drawImage(rect, deltaRaster_, source);
     }
     p.setPen(kAccent);
-    p.drawText(QRectF(rect.left(), rect.top() + 2,
-                      rect.width() - 8, 14),
+    p.drawText(QRectF(rect.left(), rect.top() + 2, rect.width() - 8, 14),
                Qt::AlignRight,
                QString("Δ +%1 / -%2")
                    .arg(deltaMaxAbs_, 0, 'f', 3)
                    .arg(deltaMaxAbs_, 0, 'f', 3));
 }
-
 
 int TraceView::cornerIndexAt(const QPointF& position) const {
     if (!store_ || store_->corners().isEmpty() || position.y() > kTopPad)
@@ -1047,8 +1010,7 @@ int TraceView::cornerIndexAt(const QPointF& position) const {
     const double fraction = fracForX(position.x());
     for (int i = 0; i < store_->corners().size(); ++i) {
         const CornerZone& corner = store_->corners()[i];
-        if (corner.start <= fraction && fraction <= corner.end)
-            return i;
+        if (corner.start <= fraction && fraction <= corner.end) return i;
     }
     return -1;
 }
@@ -1079,16 +1041,13 @@ void TraceView::paintCornerZones(QPainter& p, const QRectF& totalRect) {
         labelFont.setBold(editing);
         p.setFont(labelFont);
         p.drawText(labelBand.adjusted(4, 0, -3, 0),
-                   Qt::AlignLeft | Qt::AlignVCenter,
-                   corner.name);
+                   Qt::AlignLeft | Qt::AlignVCenter, corner.name);
 
         if (editing) {
             p.setPen(Qt::NoPen);
             p.setBrush(alpha(kOrange, 220));
-            p.drawRect(QRectF(x1 - 2, totalRect.top(), 4,
-                              totalRect.height()));
-            p.drawRect(QRectF(x2 - 2, totalRect.top(), 4,
-                              totalRect.height()));
+            p.drawRect(QRectF(x1 - 2, totalRect.top(), 4, totalRect.height()));
+            p.drawRect(QRectF(x2 - 2, totalRect.top(), 4, totalRect.height()));
             p.setBrush(Qt::NoBrush);
         }
     }
@@ -1111,13 +1070,11 @@ int TraceView::channelIndexAt(const QPointF& position) const {
     double y = kTopPad;
     for (int idx : stickyIdx) {
         const double rowH = rowHeightFor(channelSpecs_[idx]);
-        if (position.y() >= y && position.y() < y + rowH)
-            return idx;
+        if (position.y() >= y && position.y() < y + rowH) return idx;
         y += rowH;
     }
     const double secondaryTop = y;
-    const double viewport =
-        std::max(0.0, height() - kBottomPad - secondaryTop);
+    const double viewport = std::max(0.0, height() - kBottomPad - secondaryTop);
     y = secondaryTop - secondaryScroll_;
     for (int idx : scrollIdx) {
         const double rowH = rowHeightFor(channelSpecs_[idx]);
@@ -1192,7 +1149,6 @@ void TraceView::showAllStandardChannels() {
 // ── interaction ─────────────────────────────────────────────────────
 
 void TraceView::mouseDoubleClickEvent(QMouseEvent* event) {
-
     if (!store_ || !store_->primaryUnified()) return;
     panning_ = false;
     selecting_ = true;
@@ -1240,8 +1196,8 @@ void TraceView::mousePressEvent(QMouseEvent* event) {
     }
 
     // Corner editing takes precedence over navigation.
-    if (event->button() == Qt::LeftButton &&
-        store_->editingCorners() && !store_->corners().isEmpty()) {
+    if (event->button() == Qt::LeftButton && store_->editingCorners() &&
+        !store_->corners().isEmpty()) {
         for (int i = 0; i < store_->corners().size(); ++i) {
             const CornerZone& corner = store_->corners()[i];
             const double x1 = xForFrac(corner.start);
@@ -1301,11 +1257,11 @@ void TraceView::mouseMoveEvent(QMouseEvent* event) {
             const double dx1 = std::fabs(x - xForFrac(start));
             const double dx2 = std::fabs(x - xForFrac(end));
             if (dx1 < dx2)
-                store_->updateCorner(dragCorner_,
-                                     qBound(0.0, fraction, end), end);
+                store_->updateCorner(dragCorner_, qBound(0.0, fraction, end),
+                                     end);
             else
-                store_->updateCorner(dragCorner_,
-                                     start, qBound(start, fraction, 1.0));
+                store_->updateCorner(dragCorner_, start,
+                                     qBound(start, fraction, 1.0));
         } else {
             const double width = end - start;
             const double nextStart =
@@ -1365,8 +1321,14 @@ void TraceView::keyPressEvent(QKeyEvent* event) {
     switch (event->key()) {
         case Qt::Key_Left: steps = -kCursorSamplesPerStep; break;
         case Qt::Key_Right: steps = kCursorSamplesPerStep; break;
-        case Qt::Key_Home: event->accept(); store_->jumpToFraction(0.0); return;
-        case Qt::Key_End: event->accept(); store_->jumpToFraction(1.0); return;
+        case Qt::Key_Home:
+            event->accept();
+            store_->jumpToFraction(0.0);
+            return;
+        case Qt::Key_End:
+            event->accept();
+            store_->jumpToFraction(1.0);
+            return;
         default: QQuickPaintedItem::keyPressEvent(event); return;
     }
     store_->moveCursorSteps(steps);
@@ -1392,11 +1354,11 @@ void TraceView::hoverMoveEvent(QHoverEvent* event) {
 }
 
 bool TraceView::event(QEvent* event) {
-    if (event->type() == QEvent::HoverEnter || event->type() == QEvent::HoverLeave)
+    if (event->type() == QEvent::HoverEnter ||
+        event->type() == QEvent::HoverLeave)
         return QQuickPaintedItem::event(event);
     return QQuickPaintedItem::event(event);
 }
-
 
 TraceCursorOverlay::TraceCursorOverlay(QQuickItem* parent)
     : QQuickPaintedItem(parent) {
@@ -1411,8 +1373,8 @@ void TraceCursorOverlay::setTrace(TraceView* trace) {
     if (trace_) disconnect(trace_, nullptr, this, nullptr);
     trace_ = trace;
     if (trace_) {
-        connect(trace_, &TraceView::overlayChanged,
-                this, [this]() { update(); });
+        connect(trace_, &TraceView::overlayChanged, this,
+                [this]() { update(); });
     }
     update();
     emit traceChanged();

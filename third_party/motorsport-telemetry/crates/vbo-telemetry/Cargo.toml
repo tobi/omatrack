@@ -12,6 +12,7 @@ name = "vbo_telemetry"
 
 [dependencies]
 motorsport-telemetry-core.workspace = true
+memmap2.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

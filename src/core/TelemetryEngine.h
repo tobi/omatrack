@@ -47,14 +47,14 @@ struct Lap {
 struct UnifiedLap {
     int sampleRate = 50;
     std::vector<double> time;
-    std::vector<double> speed;         // km/h
-    std::vector<double> throttle;      // 0-1
-    std::vector<double> driverThrottle; // 0-1 (pre-TC)
-    std::vector<double> brake;         // bar (or pos*100)
-    std::vector<double> clutch;        // 0-1
-    std::vector<double> steering;      // deg
+    std::vector<double> speed;           // km/h
+    std::vector<double> throttle;        // 0-1
+    std::vector<double> driverThrottle;  // 0-1 (pre-TC)
+    std::vector<double> brake;           // bar (or pos*100)
+    std::vector<double> clutch;          // 0-1
+    std::vector<double> steering;        // deg
     std::vector<int> gear;
-    std::vector<double> distance;      // m
+    std::vector<double> distance;  // m
     std::vector<double> gForceLong;
     std::vector<double> damperFL, damperFR, damperRL, damperRR;
     std::vector<double> gpsLat, gpsLon;
@@ -124,8 +124,8 @@ SessionMeta sessionMetaFromFilename(const std::string& stem);
 std::string formatLapTime(double timeMs);
 
 /// Decode only sidebar metadata channels without loading full telemetry.
-std::vector<Lap> detectLapsLightweight(
-    const std::string& path, int* driverId = nullptr);
+std::vector<Lap> detectLapsLightweight(const std::string& path,
+                                       int* driverId = nullptr);
 
 /// Port of MoTecParser.resample (srcFreq -> targetFreq, linear).
 std::vector<double> resample(const std::vector<double>& values, double srcFreq,

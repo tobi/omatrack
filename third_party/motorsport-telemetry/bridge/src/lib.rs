@@ -43,14 +43,6 @@ fn as_file<'a>(handle: *mut c_void) -> Option<&'a BridgeFile> {
     }
 }
 
-fn as_file_mut<'a>(handle: *mut c_void) -> Option<&'a mut BridgeFile> {
-    if handle.is_null() {
-        None
-    } else {
-        Some(unsafe { &mut *(handle as *mut BridgeFile) })
-    }
-}
-
 fn parse_path(open_path: &Path) -> Result<Box<dyn TelemetrySource>, String> {
     let ext = open_path
         .extension()

@@ -23,21 +23,24 @@ static int cmdParse(const std::string& path) {
     printf("channels: %zu\n", src->channels().size());
     for (size_t i = 0; i < src->channels().size(); ++i) {
         const auto& ch = src->channels()[i];
-        printf("  [%zu] %-40s %-10s freq=%5.1fHz n=%zu dur=%.1fs\n", i, ch.name.c_str(),
-               ch.unit.c_str(), ch.frequencyHz, ch.samples.size(), ch.durationSec);
+        printf("  [%zu] %-40s %-10s freq=%5.1fHz n=%zu dur=%.1fs\n", i,
+               ch.name.c_str(), ch.unit.c_str(), ch.frequencyHz,
+               ch.samples.size(), ch.durationSec);
     }
 
     auto mapping = src->mapChannels();
     printf("mapping:\n");
     for (auto& [field, idx] : mapping) {
-        printf("  %-14s -> %s\n", field.c_str(), src->channels()[idx].name.c_str());
+        printf("  %-14s -> %s\n", field.c_str(),
+               src->channels()[idx].name.c_str());
     }
 
     auto laps = src->detectLaps();
     printf("laps: %zu\n", laps.size());
     for (size_t i = 0; i < laps.size(); ++i) {
-        printf("  %s  %8.3fs -> %8.3fs  %s\n", formatLapTime(laps[i].timeMs).c_str(),
-               laps[i].startTime, laps[i].endTime, laps[i].id == 0 ? "(0 = partial/outlap)" : "");
+        printf("  %s  %8.3fs -> %8.3fs  %s\n",
+               formatLapTime(laps[i].timeMs).c_str(), laps[i].startTime,
+               laps[i].endTime, laps[i].id == 0 ? "(0 = partial/outlap)" : "");
     }
 
     int failures = 0;
@@ -86,8 +89,8 @@ static int cmdUnify(const std::string& path) {
         }
     }
     const Lap& lap = laps[best];
-    printf("unify: lap %d  %s  [%.3f, %.3f]\n", lap.id, formatLapTime(lap.timeMs).c_str(),
-           lap.startTime, lap.endTime);
+    printf("unify: lap %d  %s  [%.3f, %.3f]\n", lap.id,
+           formatLapTime(lap.timeMs).c_str(), lap.startTime, lap.endTime);
 
     UnifiedLap u = src->unifyLap(lap.startTime, lap.endTime);
     printf("unified: %zu samples @ %d Hz\n", u.size(), u.sampleRate);
@@ -123,11 +126,14 @@ static int cmdUnify(const std::string& path) {
         printf("FAIL: cannot write %s\n", csvPath.c_str());
         return 1;
     }
-    fprintf(f, "time,speed,throttle,driverThrottle,brake,clutch,steering,gear,distance,gForceLong\n");
+    fprintf(f,
+            "time,speed,throttle,driverThrottle,brake,clutch,steering,gear,"
+            "distance,gForceLong\n");
     for (size_t i = 0; i < u.size(); ++i) {
-        fprintf(f, "%.3f,%.3f,%.4f,%.4f,%.3f,%.4f,%.3f,%d,%.2f,%.4f\n", u.time[i], u.speed[i],
-                u.throttle[i], u.driverThrottle[i], u.brake[i], u.clutch[i], u.steering[i],
-                u.gear[i], u.distance[i], u.gForceLong[i]);
+        fprintf(f, "%.3f,%.3f,%.4f,%.4f,%.3f,%.4f,%.3f,%d,%.2f,%.4f\n",
+                u.time[i], u.speed[i], u.throttle[i], u.driverThrottle[i],
+                u.brake[i], u.clutch[i], u.steering[i], u.gear[i],
+                u.distance[i], u.gForceLong[i]);
     }
     fclose(f);
     printf("wrote %s\n", csvPath.c_str());
@@ -144,7 +150,8 @@ int main(int argc, char** argv) {
     if (argc < 3) {
         fprintf(stderr,
                 "usage: %s parse|unify <file.pds|file.ld|file.vbo>\n"
-                "  parse — validate channel parsing + lap detection (exit 0 on success)\n"
+                "  parse — validate channel parsing + lap detection (exit 0 on "
+                "success)\n"
                 "  unify — build 50 Hz UnifiedLap for fastest lap, dump CSV\n",
                 argv[0]);
         return 2;

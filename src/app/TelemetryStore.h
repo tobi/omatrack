@@ -1,8 +1,9 @@
 // Qt object model bridging the racecraft core engine to QML.
 //
-// Mirrors racecraft's TelemetryStore architecture: lazy per-file SessionHandles,
-// Track→Date→Session→Laps grouping, primary/compare lap selection, cursor +
-// viewport state, corner zones, and channel display configuration.
+// Mirrors racecraft's TelemetryStore architecture: lazy per-file
+// SessionHandles, Track→Date→Session→Laps grouping, primary/compare lap
+// selection, cursor + viewport state, corner zones, and channel display
+// configuration.
 
 #pragma once
 
@@ -15,6 +16,7 @@
 #include <QJsonObject>
 #include <QVector>
 #include <QUrl>
+#include <QtQml/qqmlregistration.h>
 #include <QVariantList>
 
 #include <memory>
@@ -24,12 +26,79 @@ namespace racecraft {
 class TelemetrySource;
 struct UnifiedLap;
 struct Lap;
-}
+}  // namespace racecraft
 
 class SessionHandle;
 class TelemetryStore;
 class QNetworkAccessManager;
 class QTimer;
+class QQmlEngine;
+class QJSEngine;
+
+// ── damper alignment ────────────────────────────────────────────────
+
+// Front-damper traces for the active and reference laps on one shared vertical
+// scale. Used by the manual alignment tool when a session has no positional
+// GPS; kept as plain vectors so the renderer walks them without boxing every
+// sample into a QVariant.
+struct DamperAlignment {
+    std::vector<double> primary;
+    std::vector<double> compare;
+    double minimum = 0.0;
+    double maximum = 1.0;
+
+    bool valid() const { return primary.size() > 1 && compare.size() > 1; }
+    double span() const { return std::max(1e-6, maximum - minimum); }
+};
+
+// ── corner graph payload ────────────────────────────────────────────
+
+// Everything the corner graph renderer draws for one corner, resampled onto a
+// fixed grid across the corner's context window. Kept as plain vectors: the
+// previous QVariantList form boxed 800 doubles per lap per corner and the
+// window rebuilds them on every selection change.
+struct CornerGraphSeries {
+    std::vector<double> speed;
+    std::vector<double> throttle;
+    std::vector<double> brake;
+    std::vector<double> steering;
+    double maxBrake = 1.0;
+
+    bool valid() const { return speed.size() > 1; }
+};
+
+// Damper travel across a corner's approach window, used by the fallback
+// alignment tool when a session has no positional GPS.
+struct CornerDamperWindow {
+    std::vector<double> primary;
+    std::vector<double> compare;
+    double windowMeters = 0.0;
+    double cornerStartMeters = 0.0;
+
+    bool valid() const { return primary.size() > 1 && compare.size() > 1; }
+};
+
+struct CornerGraph {
+    CornerGraphSeries primary;
+    CornerGraphSeries compare;
+    CornerDamperWindow damper;
+
+    // Positions are 0-1 across the context window, not the lap.
+    double zoneStart = 0.0;
+    double zoneEnd = 1.0;
+    double turnIn = -1.0;
+    double apex = -1.0;
+    double pickup = -1.0;
+    double compareTurnIn = -1.0;
+    double compareApex = -1.0;
+    double comparePickup = -1.0;
+
+    double windowMeters = 0.0;
+    double zoneMeters = 0.0;
+
+    bool valid() const { return primary.valid(); }
+    bool hasCompare() const { return compare.valid(); }
+};
 
 // ── corner zone ─────────────────────────────────────────────────────
 
@@ -68,8 +137,7 @@ public:
     std::shared_ptr<const racecraft::UnifiedLap> unifiedLap(int lapId);
     QString sessionKey() const;
     bool isVideo() const {
-        return path_.endsWith(QStringLiteral(".mp4"),
-                              Qt::CaseInsensitive);
+        return path_.endsWith(QStringLiteral(".mp4"), Qt::CaseInsensitive);
     }
 
     QString track() const { return track_; }
@@ -84,8 +152,8 @@ public:
     QString carNumber() const { return carNumber_; }
     QString carClass() const { return carClass_; }
     QString driverMappingKey() const {
-        return carNumber_ + QStringLiteral("|") +
-               carClass_ + QStringLiteral("|") + driverId_;
+        return carNumber_ + QStringLiteral("|") + carClass_ +
+               QStringLiteral("|") + driverId_;
     }
 
 private:
@@ -115,33 +183,53 @@ private:
 
 class TelemetryStore : public QObject {
     Q_OBJECT
+    QML_NAMED_ELEMENT(Store)
+    QML_SINGLETON
     Q_PROPERTY(bool ready READ ready NOTIFY readyChanged)
     Q_PROPERTY(bool comparing READ comparing NOTIFY selectionChanged)
-    Q_PROPERTY(bool editingCorners READ editingCorners WRITE setEditingCorners NOTIFY editingCornersChanged)
-    Q_PROPERTY(double cursorFrac READ cursorFrac WRITE setCursorFrac NOTIFY cursorFracChanged)
+    Q_PROPERTY(bool editingCorners READ editingCorners WRITE setEditingCorners
+                   NOTIFY editingCornersChanged)
+    Q_PROPERTY(double cursorFrac READ cursorFrac WRITE setCursorFrac NOTIFY
+                   cursorFracChanged)
     Q_PROPERTY(bool hasGpsData READ hasGpsData NOTIFY selectionChanged)
-    Q_PROPERTY(double viewStart READ viewStart WRITE setViewStart NOTIFY viewChanged)
+    Q_PROPERTY(
+        double viewStart READ viewStart WRITE setViewStart NOTIFY viewChanged)
     Q_PROPERTY(double viewEnd READ viewEnd WRITE setViewEnd NOTIFY viewChanged)
-    Q_PROPERTY(int channelHeight READ channelHeight WRITE setChannelHeight NOTIFY channelHeightChanged)
+    Q_PROPERTY(int channelHeight READ channelHeight WRITE setChannelHeight
+                   NOTIFY channelHeightChanged)
     Q_PROPERTY(QString primaryLabel READ primaryLabel NOTIFY selectionChanged)
     Q_PROPERTY(QString primaryDetail READ primaryDetail NOTIFY selectionChanged)
-    Q_PROPERTY(QString primaryDriverName READ primaryDriverName NOTIFY selectionChanged)
-    Q_PROPERTY(QString primaryDriverMappingKey READ primaryDriverMappingKey NOTIFY selectionChanged)
+    Q_PROPERTY(QString primaryDriverName READ primaryDriverName NOTIFY
+                   selectionChanged)
+    Q_PROPERTY(QString primaryDriverMappingKey READ primaryDriverMappingKey
+                   NOTIFY selectionChanged)
     Q_PROPERTY(QString compareLabel READ compareLabel NOTIFY selectionChanged)
     Q_PROPERTY(QString roomName READ roomName NOTIFY selectionChanged)
-    Q_PROPERTY(QString primarySessionKey READ primarySessionKey NOTIFY selectionChanged)
+    Q_PROPERTY(QString primarySessionKey READ primarySessionKey NOTIFY
+                   selectionChanged)
     Q_PROPERTY(int primaryLapIndex READ primaryLapIndex NOTIFY selectionChanged)
-    Q_PROPERTY(QString compareSessionKey READ compareSessionKey NOTIFY selectionChanged)
+    Q_PROPERTY(QString compareSessionKey READ compareSessionKey NOTIFY
+                   selectionChanged)
     Q_PROPERTY(int compareLapIndex READ compareLapIndex NOTIFY selectionChanged)
-    Q_PROPERTY(double referenceAlignment READ referenceAlignment WRITE setReferenceAlignment NOTIFY referenceAlignmentChanged)
-    Q_PROPERTY(bool trackAtlasReady READ trackAtlasReady NOTIFY trackAtlasChanged)
-    Q_PROPERTY(QString trackAtlasStatus READ trackAtlasStatus NOTIFY trackAtlasChanged)
-    Q_PROPERTY(QUrl primaryVideoSource READ primaryVideoSource NOTIFY selectionChanged)
-    Q_PROPERTY(double primaryVideoTime READ primaryVideoTime NOTIFY videoTimeChanged)
+    Q_PROPERTY(double referenceAlignment READ referenceAlignment WRITE
+                   setReferenceAlignment NOTIFY referenceAlignmentChanged)
+    Q_PROPERTY(
+        bool trackAtlasReady READ trackAtlasReady NOTIFY trackAtlasChanged)
+    Q_PROPERTY(
+        QString trackAtlasStatus READ trackAtlasStatus NOTIFY trackAtlasChanged)
+    Q_PROPERTY(
+        QUrl primaryVideoSource READ primaryVideoSource NOTIFY selectionChanged)
+    Q_PROPERTY(
+        double primaryVideoTime READ primaryVideoTime NOTIFY videoTimeChanged)
 public:
+    // Registered as the `Store` singleton of the Racecraft QML module. The
+    // instance is owned by main(), not the engine: setInstance() publishes it
+    // before the engine loads, and create() hands it out with CppOwnership.
+    static void setInstance(TelemetryStore* store);
+    static TelemetryStore* create(QQmlEngine* qmlEngine, QJSEngine* jsEngine);
+
     explicit TelemetryStore(QObject* parent = nullptr);
     ~TelemetryStore() override;
-
 
     Q_INVOKABLE void closeTrack(const QString& trackName);
 
@@ -153,7 +241,8 @@ public:
     Q_INVOKABLE void removeSessionDirectory(const QString& dirPath);
     Q_INVOKABLE QStringList sessionDirectories() const;
     Q_INVOKABLE void clearSessions();
-    Q_INVOKABLE QVariantList trackGroups() const;  // nested: track → dates → sessions → laps
+    Q_INVOKABLE QVariantList
+    trackGroups() const;  // nested: track → dates → sessions → laps
     Q_INVOKABLE void refreshTrackAtlas();
 
     // ── selection ──────────────────────────────────────────────────
@@ -170,7 +259,11 @@ public:
     Q_INVOKABLE void seekCursorSeconds(double seconds);
     Q_INVOKABLE void setCursorFromVideoTime(double mediaTime);
     Q_INVOKABLE void jumpToFraction(double frac);
-    Q_INVOKABLE QVariantMap alignmentData(int points = 360) const;
+    // Front-damper traces for the manual reference-alignment tool. The typed
+    // accessor feeds the C++ strip renderer; QML only needs to know whether
+    // there is anything worth showing.
+    Q_INVOKABLE bool hasDamperAlignment() const;
+    const DamperAlignment& damperAlignment() const;
     Q_INVOKABLE double referenceAlignmentSeconds() const;
     Q_INVOKABLE void resetReferenceAlignment();
 
@@ -182,6 +275,10 @@ public:
     Q_INVOKABLE QVariantList cornerList() const;
     Q_INVOKABLE void setCornerName(int index, const QString& name);
     Q_INVOKABLE QVariantList cornerComparison() const;
+    // Typed payload for the corner graph renderer, indexed like
+    // cornerComparison(). Populated as a side effect of that call, which the
+    // corner window already makes whenever the selection or corners change.
+    const CornerGraph* cornerGraph(int index) const;
     Q_INVOKABLE void updateCorner(int index, double start, double end);
     Q_INVOKABLE int addCorner(double start, double end);
     Q_INVOKABLE void deleteCorner(int index);
@@ -199,12 +296,12 @@ public:
 
     // ── driver aliases / user preferences ─────────────────────────
     Q_INVOKABLE QVariantList driverAliases() const;
-    Q_INVOKABLE void setDriverAlias(const QString& detected, const QString& display);
+    Q_INVOKABLE void setDriverAlias(const QString& detected,
+                                    const QString& display);
     Q_INVOKABLE QVariantList driverMappings() const;
     Q_INVOKABLE void setDriverMapping(const QString& key,
                                       const QString& display);
-    Q_INVOKABLE QString driverDisplayName(
-        const QString& sessionKey) const;
+    Q_INVOKABLE QString driverDisplayName(const QString& sessionKey) const;
 
     // ── data access for the trace canvas ───────────────────────────
     const racecraft::UnifiedLap* primaryUnified() const;
@@ -222,8 +319,8 @@ public:
     // compare). Shared by the trace canvas and the cursor readout so the
     // numeric Δ and the Δ trace never disagree. Cached until selection changes.
     const QVector<double>& deltaTrace() const;
-    const std::vector<double>* extraChannelData(
-        const QString& key, bool reference) const;
+    const std::vector<double>* extraChannelData(const QString& key,
+                                                bool reference) const;
     bool trackAtlasReady() const { return !atlasTracks_.isEmpty(); }
     QString trackAtlasStatus() const { return trackAtlasStatus_; }
 
@@ -236,7 +333,9 @@ public:
     void setViewStart(double v);
     double viewEnd() const { return viewEnd_; }
     void setViewEnd(double v);
-    double viewSpan() const { return qBound(0.001, viewEnd_ - viewStart_, 1.0); }
+    double viewSpan() const {
+        return qBound(0.001, viewEnd_ - viewStart_, 1.0);
+    }
     double referenceAlignment() const { return referenceAlignment_; }
     void setReferenceAlignment(double fraction);
     int channelHeight() const { return channelHeight_; }
@@ -319,8 +418,11 @@ private:
     mutable QHash<QString, std::shared_ptr<std::vector<double>>>
         extraChannelCache_;
     QHash<QString, QString> driverAliases_;
+    mutable std::vector<CornerGraph> cornerGraphs_;
     QStringList channelOrder_;
     mutable QVector<double> deltaCache_;
+    mutable DamperAlignment damperAlignment_;
+    mutable bool damperAlignmentValid_ = false;
     mutable bool deltaCacheValid_ = false;
 
     friend class TraceView;

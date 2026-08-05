@@ -29,8 +29,10 @@ uint64_t rc_channel_duration_ns(void* handle, size_t index);
 uint64_t rc_channel_sample_count(void* handle, size_t index);
 size_t rc_channel_chunk_count(void* handle, size_t index);
 uint64_t rc_chunk_period_ns(void* handle, size_t index, size_t chunk);
-size_t rc_channel_decode_all(void* handle, size_t index, double* out, size_t capacity);
-int rc_sample_at(void* handle, size_t index, uint64_t time_ns, int linear, double* out);
+size_t rc_channel_decode_all(void* handle, size_t index, double* out,
+                             size_t capacity);
+int rc_sample_at(void* handle, size_t index, uint64_t time_ns, int linear,
+                 double* out);
 }
 
 namespace racecraft {
@@ -46,18 +48,23 @@ using AliasTable = std::map<std::string, std::vector<std::string>>;
 
 const AliasTable& channelMappings() {
     static const AliasTable table = {
-        {"speed", {"corr speed", "ground speed", "wheel speed avg", "aero speed", "speed_ref",
-                   "vehrefspeed", "speed_wspd_app", "uspeed", "speed"}},
-        {"throttle", {"driver throttle pos", "accel pedal pos", "acc pedal pos", "fbwdrivertps",
-                      "pps", "tpsreal", "tps", "aps", "throttle pos"}},
-        {"brake", {"brake pressure f", "brake pressure fr", "p_f_brake", "p_brake_front"}},
+        {"speed",
+         {"corr speed", "ground speed", "wheel speed avg", "aero speed",
+          "speed_ref", "vehrefspeed", "speed_wspd_app", "uspeed", "speed"}},
+        {"throttle",
+         {"driver throttle pos", "accel pedal pos", "acc pedal pos",
+          "fbwdrivertps", "pps", "tpsreal", "tps", "aps", "throttle pos"}},
+        {"brake",
+         {"brake pressure f", "brake pressure fr", "p_f_brake",
+          "p_brake_front"}},
         {"clutch", {"clutch pos", "clutch position", "clutch pedal", "clutch"}},
         {"brake_pos", {"brake pos"}},
         {"steering", {"steering angle", "steer"}},
         {"gear", {"gear_pos", "gear", "gearposdisplay"}},
         {"driver_throttle", {"driver throttle pos", "fbwdrivertps", "pps"}},
         {"g_long", {"g force long", "i_accel_long", "fia_accelx"}},
-        {"distance", {"lap distance corrected", "lap distance", "distance_wspd_app"}},
+        {"distance",
+         {"lap distance corrected", "lap distance", "distance_wspd_app"}},
         {"damper_fl", {"x_fl_damper", "damper travel fl"}},
         {"damper_fr", {"x_fr_damper", "damper travel fr"}},
         {"damper_rl", {"x_rl_damper", "damper travel rl"}},
@@ -70,7 +77,8 @@ const AliasTable& channelMappings() {
 }
 
 const std::map<std::string, double>& speedUnits() {
-    static const std::map<std::string, double> m = {{"m/s", 3.6}, {"km/h", 1.0}, {"mph", 1.60934}};
+    static const std::map<std::string, double> m = {
+        {"m/s", 3.6}, {"km/h", 1.0}, {"mph", 1.60934}};
     return m;
 }
 
@@ -92,7 +100,8 @@ std::string lowerTrimmed(const std::string& s) {
 
 // ── lap split helpers (port of MoTecParser.pds*Splits) ──────────────
 
-std::vector<double> pdsBeaconSplits(const std::vector<double>& values, int freq) {
+std::vector<double> pdsBeaconSplits(const std::vector<double>& values,
+                                    int freq) {
     std::vector<double> splits;
     if (freq <= 0 || values.empty()) return splits;
     bool inPulse = false;
@@ -104,13 +113,15 @@ std::vector<double> pdsBeaconSplits(const std::vector<double>& values, int freq)
     return splits;
 }
 
-std::vector<double> pdsLapTimeSplits(const std::vector<double>& values, int freq) {
+std::vector<double> pdsLapTimeSplits(const std::vector<double>& values,
+                                     int freq) {
     std::vector<double> splits;
     if (freq <= 0 || values.size() < 2) return splits;
     int lastSplitIndex = -std::max(1, freq);
     int clusterGap = std::max(1, freq / 2);
     for (size_t i = 1; i < values.size(); ++i) {
-        if (values[i - 1] - values[i] > 5 && int(i) - lastSplitIndex >= clusterGap) {
+        if (values[i - 1] - values[i] > 5 &&
+            int(i) - lastSplitIndex >= clusterGap) {
             splits.push_back(double(i) / double(freq));
             lastSplitIndex = int(i);
         }
@@ -118,7 +129,8 @@ std::vector<double> pdsLapTimeSplits(const std::vector<double>& values, int freq
     return splits;
 }
 
-std::vector<double> pdsLapNumberSplits(const std::vector<double>& values, int freq) {
+std::vector<double> pdsLapNumberSplits(const std::vector<double>& values,
+                                       int freq) {
     std::vector<double> splits;
     if (freq <= 0 || values.size() < 2) return splits;
     int prev = std::llround(values[0]);
@@ -130,13 +142,15 @@ std::vector<double> pdsLapNumberSplits(const std::vector<double>& values, int fr
     return splits;
 }
 
-std::vector<double> pdsDistanceSplits(const std::vector<double>& values, int freq) {
+std::vector<double> pdsDistanceSplits(const std::vector<double>& values,
+                                      int freq) {
     std::vector<double> splits;
     if (freq <= 0 || values.size() < 2) return splits;
     int lastSplitIndex = -std::max(1, freq);
     int clusterGap = std::max(1, freq / 2);
     for (size_t i = 1; i < values.size(); ++i) {
-        if (values[i - 1] - values[i] > 300 && int(i) - lastSplitIndex >= clusterGap) {
+        if (values[i - 1] - values[i] > 300 &&
+            int(i) - lastSplitIndex >= clusterGap) {
             splits.push_back(double(i) / double(freq));
             lastSplitIndex = int(i);
         }
@@ -144,7 +158,8 @@ std::vector<double> pdsDistanceSplits(const std::vector<double>& values, int fre
     return splits;
 }
 
-std::vector<Lap> buildLapsFromSplits(const std::vector<double>& splitTimesIn, double duration) {
+std::vector<Lap> buildLapsFromSplits(const std::vector<double>& splitTimesIn,
+                                     double duration) {
     std::vector<Lap> result;
     if (duration <= 0) return result;
     std::set<double> filtered;
@@ -175,15 +190,16 @@ std::vector<Lap> buildLapsFromSplits(const std::vector<double>& splitTimesIn, do
     if (head > std::max(10.0, median * 0.5) && head < median * 1.8)
         lapBounds.insert(lapBounds.begin(), {0.0, head});
     for (size_t i = 0; i < lapBounds.size(); ++i) {
-        result.push_back(Lap{int(i), lapBounds[i].first, lapBounds[i].second,
-                             (lapBounds[i].second - lapBounds[i].first) * 1000.0});
+        result.push_back(
+            Lap{int(i), lapBounds[i].first, lapBounds[i].second,
+                (lapBounds[i].second - lapBounds[i].first) * 1000.0});
     }
     return result;
 }
 
-std::vector<Lap> pdsApplyPreviousLapTimes(const std::vector<Lap>& laps,
-                                          const std::vector<double>& previousLapTimeValues,
-                                          int freq) {
+std::vector<Lap> pdsApplyPreviousLapTimes(
+    const std::vector<Lap>& laps,
+    const std::vector<double>& previousLapTimeValues, int freq) {
     if (laps.empty() || previousLapTimeValues.empty() || freq <= 0) return laps;
     auto samplePrevLapTime = [&](double time) -> double {
         int center = int(std::llround(time * double(freq)));
@@ -196,7 +212,8 @@ std::vector<Lap> pdsApplyPreviousLapTimes(const std::vector<Lap>& laps,
             bool found = false;
             for (int sign : {-1, 1}) {
                 int idx = center + sign * delta;
-                if (idx < 0 || idx >= int(previousLapTimeValues.size())) continue;
+                if (idx < 0 || idx >= int(previousLapTimeValues.size()))
+                    continue;
                 double value = previousLapTimeValues[idx];
                 if (!(value > 1 && value < 600)) continue;
                 if (best.delta < 0 || delta < best.delta) {
@@ -222,10 +239,12 @@ std::vector<Lap> pdsApplyPreviousLapTimes(const std::vector<Lap>& laps,
 
 // ── channel mapping scoring (port of MoTecParser) ───────────────────
 
-int scoreChannelMatch(const std::string& channelName, const std::string& alias, int aliasPriority) {
+int scoreChannelMatch(const std::string& channelName, const std::string& alias,
+                      int aliasPriority) {
     const std::string nChannel = normalizeChannelName(channelName);
     const std::string nAlias = normalizeChannelName(alias);
-    if (nChannel.empty() || nAlias.empty()) return std::numeric_limits<int>::min();
+    if (nChannel.empty() || nAlias.empty())
+        return std::numeric_limits<int>::min();
     if (nChannel == nAlias) return 10000 - aliasPriority;
     if (nAlias.size() >= 4 && nChannel.find(nAlias) != std::string::npos)
         return 7000 - aliasPriority;
@@ -237,8 +256,8 @@ int scoreChannelMatch(const std::string& channelName, const std::string& alias, 
 // Driver-ID channel aliases, shared by the loaded-source and lightweight paths.
 const std::vector<std::string>& driverIdAliases() {
     static const std::vector<std::string> aliases{
-        "DriverID", "driver_id", "driver id", "driverid",
-        "activeDriverId", "X2LNK_driverID"};
+        "DriverID", "driver_id",      "driver id",
+        "driverid", "activeDriverId", "X2LNK_driverID"};
     return aliases;
 }
 
@@ -308,7 +327,8 @@ SessionMeta sessionMetaFromFilename(const std::string& stem) {
             int mi = std::stoi(token.substr(8, 2));
             int ss = std::stoi(token.substr(10, 2));
             char buf[64];
-            std::snprintf(buf, sizeof(buf), "%02d/%02d/%04d", dd, mm, 2000 + yy);
+            std::snprintf(buf, sizeof(buf), "%02d/%02d/%04d", dd, mm,
+                          2000 + yy);
             meta.date = buf;
             std::snprintf(buf, sizeof(buf), "%02d:%02d:%02d", hh, mi, ss);
             meta.time = buf;
@@ -337,16 +357,21 @@ SessionMeta sessionMetaFromFilename(const std::string& stem) {
     }
     meta.venue = venueCode.empty() ? venueCode : codeMap.at(venueCode);
     for (auto& t : tokens) {
-        if (t.find("LMP") != std::string::npos || t.find("MQ") != std::string::npos) {
+        if (t.find("LMP") != std::string::npos ||
+            t.find("MQ") != std::string::npos) {
             meta.vehicleId = t;
             break;
         }
     }
-    static const std::map<std::string, std::pair<std::string, std::string>> driverTags = {
-        {"_MJ_", {"Mikkel Jensen", "mj"}}, {"_HM_", {"Hunter McElrea", "hm"}},
-        {"_ST_", {"Steven Thomas", "st"}},   {"_TL_", {"Tobi Lütke", "tl"}},
-        {"_CM_", {"Charles Melesi", "cm"}}, {"_MB_", {"Mathias Beche", "mb"}},
-        {"_DH_", {"DHH", "dh"}},            {"_SH_", {"Steven Holloway", "sh"}}};
+    static const std::map<std::string, std::pair<std::string, std::string>>
+        driverTags = {{"_MJ_", {"Mikkel Jensen", "mj"}},
+                      {"_HM_", {"Hunter McElrea", "hm"}},
+                      {"_ST_", {"Steven Thomas", "st"}},
+                      {"_TL_", {"Tobi Lütke", "tl"}},
+                      {"_CM_", {"Charles Melesi", "cm"}},
+                      {"_MB_", {"Mathias Beche", "mb"}},
+                      {"_DH_", {"DHH", "dh"}},
+                      {"_SH_", {"Steven Holloway", "sh"}}};
     meta.driverName = "Unknown";
     meta.driverTag = "??";
     for (auto& [key, val] : driverTags) {
@@ -362,11 +387,13 @@ SessionMeta sessionMetaFromFilename(const std::string& stem) {
 
 // ── TelemetrySource ─────────────────────────────────────────────────
 
-std::unique_ptr<TelemetrySource> TelemetrySource::open(const std::string& path) {
+std::unique_ptr<TelemetrySource> TelemetrySource::open(
+    const std::string& path) {
     void* handle = rc_open(path.c_str());
     if (!handle) {
         const char* err = rc_last_error();
-        fprintf(stderr, "racecraft: failed to open %s: %s\n", path.c_str(), err ? err : "unknown");
+        fprintf(stderr, "racecraft: failed to open %s: %s\n", path.c_str(),
+                err ? err : "unknown");
         return nullptr;
     }
     std::unique_ptr<TelemetrySource> src(new TelemetrySource());
@@ -399,7 +426,8 @@ std::unique_ptr<TelemetrySource> TelemetrySource::open(const std::string& path) 
         uint64_t count = rc_channel_sample_count(handle, i);
         ch.samples.resize((size_t)count);
         if (count > 0) {
-            size_t written = rc_channel_decode_all(handle, i, ch.samples.data(), (size_t)count);
+            size_t written = rc_channel_decode_all(handle, i, ch.samples.data(),
+                                                   (size_t)count);
             ch.samples.resize(written);
         }
         // PDS stores SI values; keep physical units as-is (port: no formula).
@@ -413,7 +441,8 @@ TelemetrySource::~TelemetrySource() {
     if (handle_) rc_close(handle_);
 }
 
-bool TelemetrySource::sampleAt(size_t channelIdx, double timeSec, double* out) const {
+bool TelemetrySource::sampleAt(size_t channelIdx, double timeSec,
+                               double* out) const {
     if (channelIdx >= channels_.size() || !out) return false;
     uint64_t timeNs = (uint64_t)std::llround(timeSec * 1e9);
     return rc_sample_at(handle_, channelIdx, timeNs, /*linear=*/1, out) != 0;
@@ -465,7 +494,8 @@ std::vector<Lap> TelemetrySource::detectLaps() const {
             std::string nAlias = normalizeChannelName(alias);
             for (size_t i = 0; i < channels_.size(); ++i) {
                 if (channels_[i].samples.empty()) continue;
-                if (normalizeChannelName(channels_[i].name) == nAlias) return int(i);
+                if (normalizeChannelName(channels_[i].name) == nAlias)
+                    return int(i);
             }
         }
         for (auto& alias : aliases) {
@@ -473,7 +503,8 @@ std::vector<Lap> TelemetrySource::detectLaps() const {
             if (nAlias.size() < 4) continue;
             for (size_t i = 0; i < channels_.size(); ++i) {
                 if (channels_[i].samples.empty()) continue;
-                if (normalizeChannelName(channels_[i].name).find(nAlias) != std::string::npos)
+                if (normalizeChannelName(channels_[i].name).find(nAlias) !=
+                    std::string::npos)
                     return int(i);
             }
         }
@@ -488,8 +519,8 @@ std::vector<Lap> TelemetrySource::detectLaps() const {
             return {};
         const int frequency =
             std::max(1, int(std::lround(channel.frequencyHz)));
-        const size_t count = size_t(std::ceil(
-            channel.durationSec * double(frequency)));
+        const size_t count =
+            size_t(std::ceil(channel.durationSec * double(frequency)));
         std::vector<double> values;
         values.reserve(count);
         for (size_t index = 0; index < count; ++index) {
@@ -518,8 +549,7 @@ std::vector<Lap> TelemetrySource::detectLaps() const {
         maxDuration = std::max(maxDuration, channel.durationSec);
 
     std::vector<double> splitTimes;
-    if (!lapBeacon.empty())
-        splitTimes = pdsBeaconSplits(lapBeacon, beaconFreq);
+    if (!lapBeacon.empty()) splitTimes = pdsBeaconSplits(lapBeacon, beaconFreq);
     if (splitTimes.size() < 2 && !lapTime.empty())
         splitTimes = pdsLapTimeSplits(lapTime, timeFreq);
     if (splitTimes.size() < 2 && !lapNumber.empty())
@@ -527,11 +557,10 @@ std::vector<Lap> TelemetrySource::detectLaps() const {
     if (splitTimes.size() < 2 && !lapDistance.empty())
         splitTimes = pdsDistanceSplits(lapDistance, distanceFreq);
 
-    std::vector<Lap> laps =
-        buildLapsFromSplits(splitTimes, maxDuration);
+    std::vector<Lap> laps = buildLapsFromSplits(splitTimes, maxDuration);
     if (!prevLapTime.empty())
-        laps = pdsApplyPreviousLapTimes(
-            laps, prevLapTime, std::max(1, prevFreq));
+        laps =
+            pdsApplyPreviousLapTimes(laps, prevLapTime, std::max(1, prevFreq));
     return laps;
 }
 
@@ -545,8 +574,7 @@ std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
             const std::string normalizedAlias = normalizeChannelName(alias);
             for (size_t i = 0; i < channelCount; ++i) {
                 const char* name = rc_channel_name(handle, i);
-                if (name &&
-                    normalizeChannelName(name) == normalizedAlias)
+                if (name && normalizeChannelName(name) == normalizedAlias)
                     return int(i);
             }
         }
@@ -555,9 +583,8 @@ std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
             if (normalizedAlias.size() < 4) continue;
             for (size_t i = 0; i < channelCount; ++i) {
                 const char* name = rc_channel_name(handle, i);
-                if (name &&
-                    normalizeChannelName(name).find(normalizedAlias) !=
-                        std::string::npos)
+                if (name && normalizeChannelName(name).find(normalizedAlias) !=
+                                std::string::npos)
                     return int(i);
             }
         }
@@ -566,17 +593,14 @@ std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
     auto decodeRaw = [&](int id) {
         std::pair<std::vector<double>, int> result;
         if (id < 0) return result;
-        const uint64_t count =
-            rc_channel_sample_count(handle, size_t(id));
+        const uint64_t count = rc_channel_sample_count(handle, size_t(id));
         result.first.resize(size_t(count));
         if (count > 0) {
-            const size_t written =
-                rc_channel_decode_all(handle, size_t(id),
-                                      result.first.data(), size_t(count));
+            const size_t written = rc_channel_decode_all(
+                handle, size_t(id), result.first.data(), size_t(count));
             result.first.resize(written);
         }
-        const uint64_t period =
-            rc_chunk_period_ns(handle, size_t(id), 0);
+        const uint64_t period = rc_chunk_period_ns(handle, size_t(id), 0);
         result.second =
             period > 0 ? std::max(1, int(std::lround(1e9 / period))) : 1;
         return result;
@@ -584,8 +608,7 @@ std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
     auto sampleRegular = [&](int id) {
         std::pair<std::vector<double>, int> result;
         if (id < 0) return result;
-        const uint64_t period =
-            rc_chunk_period_ns(handle, size_t(id), 0);
+        const uint64_t period = rc_chunk_period_ns(handle, size_t(id), 0);
         result.second =
             period > 0 ? std::max(1, int(std::lround(1e9 / period))) : 1;
         const double duration =
@@ -595,8 +618,8 @@ std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
         result.first.reserve(count);
         for (size_t index = 0; index < count; ++index) {
             double value = 0.0;
-            const uint64_t timeNs = uint64_t(std::llround(
-                double(index) * 1e9 / double(result.second)));
+            const uint64_t timeNs = uint64_t(
+                std::llround(double(index) * 1e9 / double(result.second)));
             if (!rc_sample_at(handle, size_t(id), timeNs, 1, &value)) break;
             result.first.push_back(value);
         }
@@ -622,18 +645,15 @@ std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
     auto [lapNumber, numberFreq] = sampleRegular(lapNumberId);
     auto [lapDistance, distanceFreq] = sampleRegular(lapDistanceId);
     auto [lapTime, timeFreq] = sampleRegular(lapTimeId);
-    auto [previousLapTime, previousFreq] =
-        sampleRegular(previousLapTimeId);
+    auto [previousLapTime, previousFreq] = sampleRegular(previousLapTimeId);
 
     double maxDuration = 0.0;
     for (size_t i = 0; i < channelCount; ++i)
-        maxDuration = std::max(
-            maxDuration,
-            double(rc_channel_duration_ns(handle, i)) / 1e9);
+        maxDuration = std::max(maxDuration,
+                               double(rc_channel_duration_ns(handle, i)) / 1e9);
 
     std::vector<double> splits;
-    if (!beacon.empty())
-        splits = pdsBeaconSplits(beacon, beaconFreq);
+    if (!beacon.empty()) splits = pdsBeaconSplits(beacon, beaconFreq);
     if (splits.size() < 2 && !lapTime.empty())
         splits = pdsLapTimeSplits(lapTime, timeFreq);
     if (splits.size() < 2 && !lapNumber.empty())
@@ -641,11 +661,10 @@ std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
     if (splits.size() < 2 && !lapDistance.empty())
         splits = pdsDistanceSplits(lapDistance, distanceFreq);
 
-    std::vector<Lap> laps =
-        buildLapsFromSplits(splits, maxDuration);
+    std::vector<Lap> laps = buildLapsFromSplits(splits, maxDuration);
     if (!previousLapTime.empty())
-        laps = pdsApplyPreviousLapTimes(
-            laps, previousLapTime, std::max(1, previousFreq));
+        laps = pdsApplyPreviousLapTimes(laps, previousLapTime,
+                                        std::max(1, previousFreq));
 
     rc_close(handle);
     return laps;
@@ -655,11 +674,6 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime) const {
     auto mapping = mapChannels();
 
     auto has = [&](const std::string& f) { return mapping.count(f) != 0; };
-    auto chOf = [&](const std::string& f) -> const RawChannel* {
-        auto it = mapping.find(f);
-        if (it == mapping.end()) return nullptr;
-        return &channels_[it->second];
-    };
 
     double duration = endTime - startTime;
     int nSamples = int(duration * kDefaultSampleRate) + 1;
@@ -708,7 +722,8 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime) const {
             int g = int(std::llround(v));
             if (g > 0) minPositive = std::min(minPositive, g);
         }
-        if (minPositive != std::numeric_limits<int>::max() && minPositive >= 2) gearOffset = 1;
+        if (minPositive != std::numeric_limits<int>::max() && minPositive >= 2)
+            gearOffset = 1;
     }
 
     UnifiedLap unified;
@@ -738,10 +753,9 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime) const {
         if (has("speed")) {
             std::string u = unitOf("speed");
             auto su = speedUnits().find(u);
-            double factor =
-                su != speedUnits().end()
-                    ? su->second
-                    : (format_ == "aimd" ? 1.0 : 3.6);
+            double factor = su != speedUnits().end()
+                                ? su->second
+                                : (format_ == "aimd" ? 1.0 : 3.6);
             unified.speed.push_back(get("speed", i) * factor);
         } else {
             unified.speed.push_back(0);
@@ -750,8 +764,10 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime) const {
         // throttle → 0-1
         double th = get("throttle", i);
         std::string thu = unitOf("throttle");
-        if (thu == "rad") th /= 1.7453292519943295;
-        else if (thu == "deg") th /= 100;
+        if (thu == "rad")
+            th /= 1.7453292519943295;
+        else if (thu == "deg")
+            th /= 100;
         if (th > 1.5) th /= 100;
         unified.throttle.push_back(std::max(0.0, std::min(1.0, th)));
 
@@ -770,8 +786,10 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime) const {
         // clutch → 0-1
         double clutch = get("clutch", i);
         std::string cu = unitOf("clutch");
-        if (cu == "rad") clutch /= 1.7453292519943295;
-        else if (cu == "deg") clutch /= 100;
+        if (cu == "rad")
+            clutch /= 1.7453292519943295;
+        else if (cu == "deg")
+            clutch /= 100;
         if (clutch > 1.5) clutch /= 100;
         unified.clutch.push_back(std::max(0.0, std::min(1.0, clutch)));
 
@@ -782,13 +800,16 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime) const {
         unified.steering.push_back(steer);
 
         // gear
-        unified.gear.push_back(std::max(0, int(std::llround(get("gear", i))) - gearOffset));
+        unified.gear.push_back(
+            std::max(0, int(std::llround(get("gear", i))) - gearOffset));
 
         // driver throttle
         double dth = get("driver_throttle", i);
         std::string dtu = unitOf("driver_throttle");
-        if (dtu == "rad") dth /= 1.7453292519943295;
-        else if (dtu == "deg") dth /= 100;
+        if (dtu == "rad")
+            dth /= 1.7453292519943295;
+        else if (dtu == "deg")
+            dth /= 100;
         if (dth > 1.5) dth /= 100;
         unified.driverThrottle.push_back(std::max(0.0, std::min(1.0, dth)));
 

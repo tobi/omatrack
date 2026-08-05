@@ -1,5 +1,6 @@
+use memmap2::Mmap;
 use motorsport_telemetry_core::{Channel, Chunk, SampleType, TelemetrySource, UnitSource};
-use std::fs;
+use std::fs::File;
 use std::path::Path;
 use thiserror::Error;
 
@@ -43,12 +44,15 @@ pub enum VboError {
     Invalid { path: String, message: String },
 }
 
+/// Sections borrow directly out of the mapped file: a VBO's `[data]` block is
+/// one line per sample, so owning each line would allocate once per sample for
+/// text we only ever read.
 #[derive(Default)]
-struct Sections {
-    header: Vec<String>,
-    units: Vec<String>,
-    column_names: Vec<String>,
-    data: Vec<String>,
+struct Sections<'a> {
+    header: Vec<&'a str>,
+    units: Vec<&'a str>,
+    column_names: Vec<&'a str>,
+    data: Vec<&'a str>,
 }
 
 #[derive(Debug)]
@@ -66,7 +70,7 @@ fn invalid(path: &str, message: impl Into<String>) -> VboError {
     }
 }
 
-fn sections(text: &str) -> Sections {
+fn sections(text: &str) -> Sections<'_> {
     let mut result = Sections::default();
     let mut current = String::new();
     for line in text.lines() {
@@ -79,13 +83,13 @@ fn sections(text: &str) -> Sections {
             continue;
         }
         match current.as_str() {
-            "header" => result.header.push(trimmed.into()),
-            "channel units" => result.units.push(trimmed.into()),
+            "header" => result.header.push(trimmed),
+            "channel units" => result.units.push(trimmed),
             "column names" => {
-                result.column_names = trimmed.split_whitespace().map(str::to_owned).collect();
+                result.column_names = trimmed.split_whitespace().collect();
                 current.clear();
             }
-            "data" => result.data.push(trimmed.into()),
+            "data" => result.data.push(trimmed),
             _ => {}
         }
     }
@@ -111,40 +115,63 @@ fn builtin_unit(name: &str) -> &'static str {
 }
 
 impl VboFile {
+    /// Memory-maps the file and parses straight out of the mapping. VBO is a
+    /// text format, so the previous read-then-`String`-copy path held the whole
+    /// session twice on the heap before parsing began.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, VboError> {
         let path = path.as_ref();
         let display = path.to_string_lossy().into_owned();
-        let bytes = fs::read(path).map_err(|source| VboError::Io {
+        let file = File::open(path).map_err(|source| VboError::Io {
             path: display.clone(),
             source,
         })?;
-        Self::from_bytes(display, bytes)
+        // SAFETY: same contract as every other decoder in this workspace —
+        // telemetry files are treated as immutable evidence and are not
+        // written while open. External truncation would fault, as documented
+        // by memmap2.
+        let mapping = unsafe { Mmap::map(&file) }.map_err(|source| VboError::Io {
+            path: display.clone(),
+            source,
+        })?;
+        Self::from_slice(display, &mapping)
     }
 
     pub fn from_bytes(path: impl Into<String>, bytes: Vec<u8>) -> Result<Self, VboError> {
+        Self::from_slice(path, &bytes)
+    }
+
+    pub fn from_slice(path: impl Into<String>, bytes: &[u8]) -> Result<Self, VboError> {
         let display = path.into();
         if bytes.is_empty() {
             return Err(invalid(&display, "empty file"));
         }
-        let text = String::from_utf8(bytes.clone())
-            .unwrap_or_else(|_| bytes.iter().map(|&byte| char::from(byte)).collect());
-        let parsed = sections(&text);
+        // Borrow when the file is UTF-8 (the overwhelmingly common case) and
+        // only allocate for the latin-1 fallback.
+        let fallback;
+        let text: &str = match std::str::from_utf8(bytes) {
+            Ok(text) => text,
+            Err(_) => {
+                fallback = bytes.iter().map(|&byte| char::from(byte)).collect::<String>();
+                &fallback
+            }
+        };
+        let parsed = sections(text);
         if parsed.data.is_empty() {
             return Err(invalid(&display, "missing or empty [data] section"));
         }
-        let short_names = if parsed.column_names.is_empty() {
+        let short_names: Vec<&str> = if parsed.column_names.is_empty() {
             parsed
                 .header
                 .iter()
                 .enumerate()
                 .map(|(index, name)| {
                     if index < BUILTIN_SHORT.len() {
-                        BUILTIN_SHORT[index].to_owned()
+                        BUILTIN_SHORT[index]
                     } else {
-                        name.clone()
+                        *name
                     }
                 })
-                .collect::<Vec<_>>()
+                .collect()
         } else {
             parsed.column_names.clone()
         };
@@ -205,18 +232,16 @@ impl VboFile {
 
         let mut channels = Vec::with_capacity(count);
         for index in 0..count {
-            let name = parsed.header.get(index).cloned().unwrap_or_else(|| {
-                if index < BUILTIN_NAMES.len() {
-                    BUILTIN_NAMES[index].into()
-                } else {
-                    short_names[index].clone()
-                }
-            });
+            let name: String = match parsed.header.get(index) {
+                Some(declared) => (*declared).to_owned(),
+                None if index < BUILTIN_NAMES.len() => BUILTIN_NAMES[index].to_owned(),
+                None => short_names[index].to_owned(),
+            };
             let custom_unit_index = index.saturating_sub(BUILTIN_NAMES.len());
             // Builtin VBOX columns have units fixed by the format spec; the
             // trailing custom columns declare theirs in [channel units].
             let (unit, unit_source) = if index < BUILTIN_NAMES.len() {
-                let builtin = builtin_unit(&short_names[index]);
+                let builtin = builtin_unit(short_names[index]);
                 if builtin.is_empty() {
                     (String::new(), UnitSource::Unknown)
                 } else {
@@ -226,9 +251,9 @@ impl VboFile {
                 match parsed
                     .units
                     .get(custom_unit_index)
-                    .filter(|unit| unit.as_str() != "(null)" && !unit.is_empty())
+                    .filter(|unit| **unit != "(null)" && !unit.is_empty())
                 {
-                    Some(declared) => (declared.clone(), UnitSource::Declared),
+                    Some(declared) => ((*declared).to_owned(), UnitSource::Declared),
                     None => (String::new(), UnitSource::Unknown),
                 }
             };

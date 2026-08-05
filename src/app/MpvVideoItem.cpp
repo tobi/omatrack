@@ -32,8 +32,7 @@ namespace {
 void* resolveOpenGl(void*, const char* name) {
     QOpenGLContext* context = QOpenGLContext::currentContext();
     if (!context) return nullptr;
-    return reinterpret_cast<void*>(
-        context->getProcAddress(QByteArray(name)));
+    return reinterpret_cast<void*>(context->getProcAddress(QByteArray(name)));
 }
 
 bool setOption(mpv_handle* handle, const char* name, const char* value) {
@@ -50,14 +49,13 @@ bool setOption(mpv_handle* handle, const char* name, const char* value) {
 
 class MpvVideoRenderer final : public QQuickFramebufferObject::Renderer {
 public:
-    MpvVideoRenderer(std::shared_ptr<MpvSharedState> state,
-                     MpvVideoItem* item)
+    MpvVideoRenderer(std::shared_ptr<MpvSharedState> state, MpvVideoItem* item)
         : state_(std::move(state)), item_(item) {}
 
     ~MpvVideoRenderer() override {
         if (state_ && state_->renderContext) {
-            mpv_render_context_set_update_callback(
-                state_->renderContext, nullptr, nullptr);
+            mpv_render_context_set_update_callback(state_->renderContext,
+                                                   nullptr, nullptr);
             mpv_render_context_free(state_->renderContext);
             state_->renderContext = nullptr;
         }
@@ -89,13 +87,13 @@ public:
                 {MPV_RENDER_PARAM_FLIP_Y, &flipY},
                 {MPV_RENDER_PARAM_INVALID, nullptr},
             };
-            const int result = mpv_render_context_render(
-                state_->renderContext, parameters);
+            const int result =
+                mpv_render_context_render(state_->renderContext, parameters);
             if (result < 0 && !renderErrorReported_) {
                 renderErrorReported_ = true;
-                notifyFailure(QStringLiteral("Video render failed: %1")
-                                  .arg(QString::fromUtf8(
-                                      mpv_error_string(result))));
+                notifyFailure(
+                    QStringLiteral("Video render failed: %1")
+                        .arg(QString::fromUtf8(mpv_error_string(result))));
             }
         }
         QQuickOpenGLUtils::resetOpenGLState();
@@ -110,12 +108,12 @@ private:
         mpv_opengl_init_params openGl{resolveOpenGl, nullptr};
         mpv_render_param display{MPV_RENDER_PARAM_INVALID, nullptr};
 
-#if defined(Q_OS_UNIX) && !defined(Q_OS_DARWIN) && \
-    !defined(Q_OS_ANDROID) && !defined(Q_OS_HAIKU)
+#if defined(Q_OS_UNIX) && !defined(Q_OS_DARWIN) && !defined(Q_OS_ANDROID) && \
+    !defined(Q_OS_HAIKU)
         if (QGuiApplication::platformName() == QStringLiteral("xcb")) {
 #if QT_CONFIG(xcb)
-            if (auto* native =
-                    qGuiApp->nativeInterface<QNativeInterface::QX11Application>()) {
+            if (auto* native = qGuiApp->nativeInterface<
+                               QNativeInterface::QX11Application>()) {
                 display.type = MPV_RENDER_PARAM_X11_DISPLAY;
                 display.data = native->display();
             }
@@ -124,7 +122,7 @@ private:
                    QStringLiteral("wayland")) {
 #if QT_CONFIG(wayland)
             if (auto* native = qGuiApp->nativeInterface<
-                    QNativeInterface::QWaylandApplication>()) {
+                               QNativeInterface::QWaylandApplication>()) {
                 display.type = MPV_RENDER_PARAM_WL_DISPLAY;
                 display.data = native->display();
             }
@@ -143,30 +141,30 @@ private:
             &state_->renderContext, state_->handle, parameters);
         if (result < 0) {
             state_->renderContext = nullptr;
-            notifyFailure(QStringLiteral("Unable to initialize video renderer: %1")
-                              .arg(QString::fromUtf8(
-                                  mpv_error_string(result))));
+            notifyFailure(
+                QStringLiteral("Unable to initialize video renderer: %1")
+                    .arg(QString::fromUtf8(mpv_error_string(result))));
             return;
         }
 
-        mpv_render_context_set_update_callback(
-            state_->renderContext, &MpvVideoRenderer::redraw, this);
+        mpv_render_context_set_update_callback(state_->renderContext,
+                                               &MpvVideoRenderer::redraw, this);
         if (item_)
-            QMetaObject::invokeMethod(
-                item_, "markRendererReady", Qt::QueuedConnection);
+            QMetaObject::invokeMethod(item_, "markRendererReady",
+                                      Qt::QueuedConnection);
     }
 
     void requestUpdate() {
         if (item_)
-            QMetaObject::invokeMethod(
-                item_, "requestVideoFrame", Qt::QueuedConnection);
+            QMetaObject::invokeMethod(item_, "requestVideoFrame",
+                                      Qt::QueuedConnection);
     }
 
     void notifyFailure(const QString& message) {
         if (item_)
-            QMetaObject::invokeMethod(
-                item_, "markRendererFailed", Qt::QueuedConnection,
-                Q_ARG(QString, message));
+            QMetaObject::invokeMethod(item_, "markRendererFailed",
+                                      Qt::QueuedConnection,
+                                      Q_ARG(QString, message));
     }
 
     std::shared_ptr<MpvSharedState> state_;
@@ -215,8 +213,7 @@ MpvVideoItem::MpvVideoItem(QQuickItem* parent)
     mpv_observe_property(state_->handle, 5, "volume", MPV_FORMAT_DOUBLE);
     mpv_observe_property(state_->handle, 6, "media-title", MPV_FORMAT_STRING);
     mpv_observe_property(state_->handle, 7, "seeking", MPV_FORMAT_FLAG);
-    mpv_set_wakeup_callback(
-        state_->handle, &MpvVideoItem::wakeup, this);
+    mpv_set_wakeup_callback(state_->handle, &MpvVideoItem::wakeup, this);
 }
 
 MpvVideoItem::~MpvVideoItem() {
@@ -225,14 +222,12 @@ MpvVideoItem::~MpvVideoItem() {
 }
 
 QQuickFramebufferObject::Renderer* MpvVideoItem::createRenderer() const {
-    return new MpvVideoRenderer(
-        state_, const_cast<MpvVideoItem*>(this));
+    return new MpvVideoRenderer(state_, const_cast<MpvVideoItem*>(this));
 }
 
 void MpvVideoItem::wakeup(void* context) {
     auto* item = static_cast<MpvVideoItem*>(context);
-    QMetaObject::invokeMethod(
-        item, "processEvents", Qt::QueuedConnection);
+    QMetaObject::invokeMethod(item, "processEvents", Qt::QueuedConnection);
 }
 
 void MpvVideoItem::processEvents() {
@@ -286,48 +281,42 @@ void MpvVideoItem::processEvents() {
                 if (!property || !property->name || !property->data) break;
                 if (std::strcmp(property->name, "time-pos") == 0 &&
                     property->format == MPV_FORMAT_DOUBLE) {
-                    const double value =
-                        *static_cast<double*>(property->data);
+                    const double value = *static_cast<double*>(property->data);
                     if (!qFuzzyCompare(position_ + 1.0, value + 1.0)) {
                         position_ = std::max(0.0, value);
                         emit positionChanged();
                     }
                 } else if (std::strcmp(property->name, "duration") == 0 &&
                            property->format == MPV_FORMAT_DOUBLE) {
-                    const double value =
-                        *static_cast<double*>(property->data);
+                    const double value = *static_cast<double*>(property->data);
                     if (!qFuzzyCompare(duration_ + 1.0, value + 1.0)) {
                         duration_ = std::max(0.0, value);
                         emit durationChanged();
                     }
                 } else if (std::strcmp(property->name, "pause") == 0 &&
                            property->format == MPV_FORMAT_FLAG) {
-                    const bool value =
-                        *static_cast<int*>(property->data) != 0;
+                    const bool value = *static_cast<int*>(property->data) != 0;
                     if (paused_ != value) {
                         paused_ = value;
                         emit pausedChanged();
                     }
                 } else if (std::strcmp(property->name, "mute") == 0 &&
                            property->format == MPV_FORMAT_FLAG) {
-                    const bool value =
-                        *static_cast<int*>(property->data) != 0;
+                    const bool value = *static_cast<int*>(property->data) != 0;
                     if (muted_ != value) {
                         muted_ = value;
                         emit mutedChanged();
                     }
                 } else if (std::strcmp(property->name, "volume") == 0 &&
                            property->format == MPV_FORMAT_DOUBLE) {
-                    const double value =
-                        *static_cast<double*>(property->data);
+                    const double value = *static_cast<double*>(property->data);
                     if (!qFuzzyCompare(volume_ + 1.0, value + 1.0)) {
                         volume_ = value;
                         emit volumeChanged();
                     }
                 } else if (std::strcmp(property->name, "media-title") == 0 &&
                            property->format == MPV_FORMAT_STRING) {
-                    const char* value =
-                        *static_cast<char**>(property->data);
+                    const char* value = *static_cast<char**>(property->data);
                     const QString next = QString::fromUtf8(value ? value : "");
                     if (title_ != next) {
                         title_ = next;
@@ -335,8 +324,7 @@ void MpvVideoItem::processEvents() {
                     }
                 } else if (std::strcmp(property->name, "seeking") == 0 &&
                            property->format == MPV_FORMAT_FLAG) {
-                    const bool value =
-                        *static_cast<int*>(property->data) != 0;
+                    const bool value = *static_cast<int*>(property->data) != 0;
                     if (seeking_ != value) {
                         seeking_ = value;
                         emit seekingChanged();
@@ -347,8 +335,7 @@ void MpvVideoItem::processEvents() {
             case MPV_EVENT_COMMAND_REPLY:
             case MPV_EVENT_SET_PROPERTY_REPLY:
                 if (event->error < 0)
-                    setError(QString::fromUtf8(
-                        mpv_error_string(event->error)));
+                    setError(QString::fromUtf8(mpv_error_string(event->error)));
                 break;
             case MPV_EVENT_LOG_MESSAGE: {
                 const auto* message =
@@ -357,15 +344,12 @@ void MpvVideoItem::processEvents() {
                     qWarning().noquote() << "libmpv:" << message->text;
                 break;
             }
-            default:
-                break;
+            default: break;
         }
     }
 }
 
-void MpvVideoItem::requestVideoFrame() {
-    update();
-}
+void MpvVideoItem::requestVideoFrame() { update(); }
 
 void MpvVideoItem::markRendererReady() {
     if (ready_) return;
@@ -390,9 +374,8 @@ void MpvVideoItem::openMedia(const QUrl& source) {
     duration_ = 0.0;
     loaded_ = false;
     autoplayPending_ = true;
-    title_ = source.isLocalFile()
-                 ? QFileInfo(source.toLocalFile()).fileName()
-                 : source.fileName();
+    title_ = source.isLocalFile() ? QFileInfo(source.toLocalFile()).fileName()
+                                  : source.fileName();
     setError(QString());
     emit sourceChanged();
     emit positionChanged();
@@ -403,8 +386,7 @@ void MpvVideoItem::openMedia(const QUrl& source) {
 }
 
 void MpvVideoItem::loadPendingMedia() {
-    if (!ready_ || pendingSource_.isEmpty() ||
-        !state_ || !state_->handle)
+    if (!ready_ || pendingSource_.isEmpty() || !state_ || !state_->handle)
         return;
 
     const QUrl source = pendingSource_;
@@ -425,8 +407,7 @@ void MpvVideoItem::loadPendingMedia() {
 void MpvVideoItem::closeMedia() {
     pendingSource_ = QUrl();
     autoplayPending_ = false;
-    if (state_ && state_->handle)
-        command({QByteArrayLiteral("stop")});
+    if (state_ && state_->handle) command({QByteArrayLiteral("stop")});
     source_ = QUrl();
     title_.clear();
     position_ = 0.0;
@@ -446,38 +427,33 @@ void MpvVideoItem::setPaused(bool paused) {
     paused_ = paused;
     emit pausedChanged();
     int value = paused ? 1 : 0;
-    const int result = mpv_set_property_async(
-        state_->handle, 0, "pause", MPV_FORMAT_FLAG, &value);
-    if (result < 0)
-        setError(QString::fromUtf8(mpv_error_string(result)));
+    const int result = mpv_set_property_async(state_->handle, 0, "pause",
+                                              MPV_FORMAT_FLAG, &value);
+    if (result < 0) setError(QString::fromUtf8(mpv_error_string(result)));
 }
 
-void MpvVideoItem::togglePaused() {
-    setPaused(!paused_);
-}
+void MpvVideoItem::togglePaused() { setPaused(!paused_); }
 
 void MpvVideoItem::setMuted(bool muted) {
     if (muted_ == muted || !state_ || !state_->handle) return;
     muted_ = muted;
     emit mutedChanged();
     int value = muted ? 1 : 0;
-    const int result = mpv_set_property_async(
-        state_->handle, 0, "mute", MPV_FORMAT_FLAG, &value);
-    if (result < 0)
-        setError(QString::fromUtf8(mpv_error_string(result)));
+    const int result = mpv_set_property_async(state_->handle, 0, "mute",
+                                              MPV_FORMAT_FLAG, &value);
+    if (result < 0) setError(QString::fromUtf8(mpv_error_string(result)));
 }
 
 void MpvVideoItem::setVolume(double volume) {
     volume = std::clamp(volume, 0.0, 100.0);
-    if (qFuzzyCompare(volume_ + 1.0, volume + 1.0) ||
-        !state_ || !state_->handle)
+    if (qFuzzyCompare(volume_ + 1.0, volume + 1.0) || !state_ ||
+        !state_->handle)
         return;
     volume_ = volume;
     emit volumeChanged();
-    const int result = mpv_set_property_async(
-        state_->handle, 0, "volume", MPV_FORMAT_DOUBLE, &volume);
-    if (result < 0)
-        setError(QString::fromUtf8(mpv_error_string(result)));
+    const int result = mpv_set_property_async(state_->handle, 0, "volume",
+                                              MPV_FORMAT_DOUBLE, &volume);
+    if (result < 0) setError(QString::fromUtf8(mpv_error_string(result)));
 }
 
 void MpvVideoItem::seek(double seconds) {
@@ -491,9 +467,7 @@ void MpvVideoItem::seek(double seconds) {
     });
 }
 
-void MpvVideoItem::seekRelative(double seconds) {
-    seek(position_ + seconds);
-}
+void MpvVideoItem::seekRelative(double seconds) { seek(position_ + seconds); }
 
 void MpvVideoItem::frameStep() {
     if (!loaded_) return;

@@ -3,11 +3,19 @@ project(racecraft_qt VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTORCC ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-if(NOT CMAKE_BUILD_TYPE)
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release)
+endif()
+
+# Binaries stay at the top of the build tree: ./build/racecraft, ./build/racecraft-cli.
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+find_program(CCACHE_PROGRAM ccache)
+if(CCACHE_PROGRAM)
+  set(CMAKE_CXX_COMPILER_LAUNCHER ${CCACHE_PROGRAM})
 endif()
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS
@@ -16,53 +24,21 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBMPV REQUIRED IMPORTED_TARGET mpv)
 pkg_check_modules(LIBYAML REQUIRED IMPORTED_TARGET yaml-0.1)
 
-# ── Rust parsing bridge (vendored duckdb_motorsport_telemetry) ──────
-set(RUST_WORKSPACE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/motorsport-telemetry)
-set(RUST_TARGET_DIR ${RUST_WORKSPACE}/target)
-set(RUST_STATICLIB ${RUST_TARGET_DIR}/release/libracecraft_bridge.a)
+qt_standard_project_setup(REQUIRES 6.5)
 
-# Build the bridge staticlib. The archive is the real parser we link against.
-add_custom_command(
-  OUTPUT ${RUST_STATICLIB}
-  COMMAND cargo build --release --manifest-path ${RUST_WORKSPACE}/Cargo.toml
-  WORKING_DIRECTORY ${RUST_WORKSPACE}
-  DEPENDS ${RUST_WORKSPACE}/Cargo.toml
-          ${RUST_WORKSPACE}/crates/aim-telemetry/Cargo.toml
-          ${RUST_WORKSPACE}/crates/aim-telemetry/src/lib.rs
-          ${RUST_WORKSPACE}/bridge/src/lib.rs
-  COMMENT "Building Rust telemetry parsing bridge (duckdb_motorsport_telemetry)"
-  VERBATIM)
+# Write .qmlls.ini next to the QML sources so the QML Language Server resolves
+# the module without per-editor configuration.
+set(QT_QML_GENERATE_QMLLS_INI ON)
 
-add_custom_target(rust_bridge DEPENDS ${RUST_STATICLIB})
+# Warnings are opt-in per target so Qt-generated sources and the vendored Rust
+# bridge are not held to them.
+add_library(racecraft_warnings INTERFACE)
+target_compile_options(racecraft_warnings INTERFACE
+  -Wall -Wextra -Wno-unused-parameter)
 
-add_library(racecraft_rust_bridge STATIC IMPORTED GLOBAL)
-set_target_properties(racecraft_rust_bridge PROPERTIES
-  IMPORTED_LOCATION ${RUST_STATICLIB})
-add_dependencies(racecraft_rust_bridge rust_bridge)
+enable_testing()
 
-# ── core engine (Qt-free) ───────────────────────────────────────────
-add_library(racecraft_core STATIC
-  src/core/TelemetryEngine.cpp)
-target_include_directories(racecraft_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(racecraft_core PUBLIC racecraft_rust_bridge)
-target_link_directories(racecraft_core PUBLIC ${RUST_TARGET_DIR}/release)
-target_link_options(racecraft_core PUBLIC -Wl,--whole-archive
-  -lracecraft_bridge -Wl,--no-whole-archive)
-target_link_libraries(racecraft_core PUBLIC pthread dl m)
-
-# ── CLI (headless acceptance harness) ───────────────────────────────
-add_executable(racecraft-cli cli/main.cpp)
-target_link_libraries(racecraft-cli PRIVATE racecraft_core)
-target_include_directories(racecraft-cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-
-# ── Qt app ──────────────────────────────────────────────────────────
-qt_add_executable(racecraft
-  src/main.cpp
-  src/app/MpvVideoItem.cpp
-  src/app/TelemetryStore.cpp
-  src/app/TraceView.cpp
-  src/app/YamlConfig.cpp
-  src/qml/application.qrc
-)
-target_link_libraries(racecraft PRIVATE racecraft_core PkgConfig::LIBYAML PkgConfig::LIBMPV Qt6::Quick Qt6::QuickControls2 Qt6::Widgets Qt6::Qml Qt6::Network)
-target_include_directories(racecraft PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_subdirectory(third_party)
+add_subdirectory(src/core)
+add_subdirectory(src/app)
+add_subdirectory(cli)

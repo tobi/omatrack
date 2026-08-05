@@ -160,13 +160,26 @@ headless acceptance                sessions, state, cache, Track Atlas
                                   +--------+-----------+---------+
                                   |                    |         |
                                   v                    v         v
-                           src/app/TraceView  src/app/MpvVideoItem  src/qml/Main.qml
+                           src/app/TraceView  src/app/MpvVideoItem  src/app/*.qml
                            telemetry canvas  libmpv rendering      Material UI
 ```
 
 ### Build graph
 
-CMake builds the vendored Rust workspace into `libracecraft_bridge.a`, links it into the static `racecraft_core`, then links that core into both `racecraft-cli` and the Qt application. The Qt application also links libmpv through `pkg-config`. `src/qml/application.qrc` embeds QML, Geist fonts, and compatibility corner CSVs.
+CMake is driven through `CMakePresets.json` (Ninja + ccache): `release` builds
+into `./build`, `debug` into `./build-debug` with `QT_QML_DEBUG` so
+`qmlprofiler`/`qmlpreview` can attach, and `asan` into `./build-asan`.
+`third_party/CMakeLists.txt` compiles every vendored Rust crate into
+`libracecraft_bridge.a`, tracking all `*.rs`/`Cargo.toml` files so a decoder
+change actually triggers a rebuild, and registers one CTest per crate
+(`ctest -R rust-`). `src/core` builds the Qt-free `racecraft_core`, linked by
+both `cli/racecraft-cli` and the Qt app. `src/app/CMakeLists.txt` declares the
+`Racecraft` QML module via `qt_add_qml_module`: QML documents and the C++ types
+they import live in that one directory, which is what gives `qmllint`, `qmlls`,
+and ahead-of-time `qmlcachegen` a resolvable `import Racecraft`. Fonts and the
+compatibility corner CSVs are a plain `qt_add_resources` payload under
+`src/app/assets`, keeping the historic `:/fonts` and `:/corners` prefixes.
+Warnings (`-Wall -Wextra`) come from the `racecraft_warnings` interface target.
 
 ### Layer responsibilities
 
@@ -178,8 +191,9 @@ CMake builds the vendored Rust workspace into `libracecraft_bridge.a`, links it 
 | Session/store | `src/app/TelemetryStore.*` | Lazy session handles, selection, comparison, viewport, caches, preferences, Track Atlas, corner analysis | Pixel-level paint loops or vendor byte parsing |
 | Renderer | `src/app/TraceView.*` | Frame-budget-sensitive painting and direct trace interaction | Parsing, network access, persistent product state |
 | Video renderer | `src/app/MpvVideoItem.*` | libmpv lifecycle, OpenGL FBO rendering, playback state, and exact seek | Telemetry extraction, session association, or QML layout policy |
-| QML UI | `src/qml/Main.qml` | Material windows, layout, delegates, controls, high-level orchestration | Full telemetry loops, duplicated analysis, format branches |
-| Bootstrap | `src/main.cpp` | Qt startup, type registration, theme bridge, automation harness | Product analysis |
+| QML UI | `src/app/*.qml` | Material windows, layout, delegates, controls, high-level orchestration | Full telemetry loops, duplicated analysis, format branches |
+| Bootstrap | `src/app/main.cpp` | Qt startup, style, fonts, store ownership, initial properties, module load | Product analysis, autotest behaviour |
+| Acceptance harness | `src/app/AutotestHarness.*` | Every `RACECRAFT_AUTOTEST*` mode | Anything a normal launch executes |
 | CLI | `cli/main.cpp` | Reproducible headless acceptance and inspection | A second analysis implementation |
 
 ### Core data contracts
@@ -204,6 +218,24 @@ CMake builds the vendored Rust workspace into `libracecraft_bridge.a`, links it 
 9. Parser errors become explicit failures. No Rust panic, C++ exception, or invalid pointer crosses the ABI boundary.
 10. Optional channels and optional network data degrade gracefully; silent fabrication does not.
 11. A flattened decoded array is not a clock. Lap boundaries, resampling, raw channels, and media synchronization must preserve source chunk time bases.
+12. QML reaches C++ only through registered types. `TelemetryStore` is the
+    `Store` singleton (`QML_NAMED_ELEMENT` + `QML_SINGLETON`), the Omarchy
+    palette is the `Theme` singleton, and launch inputs arrive as root
+    `required property` values through
+    `QQmlApplicationEngine::setInitialProperties`. Context properties are
+    forbidden: Qt documents them as invisible to `qmllint`, `qmlls`, and the
+    Qt Quick Compiler, which is exactly the checking this project relies on.
+13. Colors, fonts, and the trace color palette come from the `Style` QML
+    singleton. A hex literal or a font-family string in a component is a bug.
+14. Every QML file starts with `pragma ComponentBehavior: Bound`, qualifies
+    every property access through an `id`, and declares a `required property`
+    for each model role a delegate consumes. A component that renders
+    store-derived rows owns its own cache and refreshes from a
+    `Connections { target: Store }` block rather than having data pushed in.
+15. Never declare a function inside a QML function. A singleton call inside a
+    nested function declaration silently disables `qmllint`'s semantic
+    analysis for the whole document, so the file appears clean while nothing
+    is being checked.
 
 ## Where changes belong
 
@@ -223,7 +255,7 @@ Do not fix parser ambiguity with filename-specific UI conditionals. Do not copy 
 Requirements: CMake 3.21+, `pkg-config`, libmpv and libyaml development files, a C++17 compiler, Qt 6.5+ (`Core`, `Gui`, `Quick`, `QuickControls2`, `Widgets`, `Qml`, `Network`), and Rust/Cargo 1.84+.
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --preset release          # Ninja + ccache into ./build
 cmake --build build --parallel
 
 ./build/racecraft /path/to/telemetry-directory
@@ -234,11 +266,28 @@ RACECRAFT_VIDEO=/path/to/onboard.mp4 ./build/racecraft /path/to/telemetry-direct
 
 `racecraft-cli unify` writes `<input>.unified.csv` beside the input. Run it only on a copied fixture or in a location where generated output is acceptable; never use raw event telemetry as a disposable test fixture.
 
-The Rust workspace can be checked independently:
+Other presets: `debug` (`./build-debug`, `QT_QML_DEBUG` for `qmlprofiler`) and
+`asan` (`./build-asan`, ASan + UBSan).
+
+Checks:
 
 ```sh
-cargo test --manifest-path third_party/motorsport-telemetry/Cargo.toml
+ctest --test-dir build                      # one entry per Rust crate
+cmake --build build --target all_qmllint    # generated by qt_add_qml_module
+cmake --build build --target rust_clippy
+/usr/lib/qt6/bin/qmlformat -i src/app/*.qml # config in .qmlformat.ini
+clang-format -i src/**/*.{cpp,h} cli/*.cpp  # config in .clang-format
 ```
+
+`qmllint` currently reports only `[compiler]` warnings, all of them caused by
+`QVariantList`/`QVariantMap` crossing into QML; those bindings cannot be
+compiled ahead of time until the store exposes typed value types. Anything
+else appearing there is a regression.
+
+Note for Arch/Omarchy: Qt is built with journald support, so `qWarning()` —
+including every `AUTOTEST …` line the acceptance harness prints — goes to the
+journal, not stderr. Prefix runs with `QT_FORCE_STDERR_LOGGING=1` or the
+harness looks silent.
 
 ## Verification
 
@@ -264,6 +313,7 @@ The base autotest opens the first session’s fastest lap, renders the app, save
 
 ```sh
 QT_QPA_PLATFORM=offscreen \
+QT_FORCE_STDERR_LOGGING=1 \
 RACECRAFT_AUTOTEST=/tmp/racecraft.png \
 ./build/racecraft /path/to/copied-telemetry
 ```
@@ -292,6 +342,24 @@ Embedded libmpv playback must be verified on the native Linux/Omarchy OpenGL sce
 
 - The bridge dispatches `.pds`, `.ld`, `.vbo`, and AiM `aimd` `.mp4`; `.ldx` resolves to its `.ld` companion and is not parsed independently. An ordinary MP4 without an `aimd` track remains valid for standalone playback but is not a telemetry session.
 - Session parsing is lazy, but opening a source currently decodes and retains whole channel arrays. Do not describe it as streaming.
+- Every format crate memory-maps its input (`cosworth`, `aim`, `motec`, `vbo`), but the decoders still materialise whole channel arrays into `Vec<f64>` before the C++ side sees them. The mapping avoids the read copy; it is not a zero-copy channel walker. Pushing zero-copy further would change the C ABI, and the renderer measurements below show sample access is not the frame-budget bottleneck — so do it for memory, if at all, not for frame time.
+- `TelemetryStore` hands QML `QVariantList`/`QVariantMap` for channel rows, corner rows, driver mappings, directories, and the cursor readout. That is why `qmllint` still reports `[compiler]` warnings and why several QML properties remain `var`. Typed value types are the fix, not more `var`.
+- No QML `Canvas` remains. Every trace surface is a C++ Quick item:
+  `TraceView` + `TraceCursorOverlay` for the main lanes, `CornerGraphView` for
+  the corner speed/pedal/steering panels, and `DamperStripView` for both the
+  lap alignment strips and the corner damper window. Do not add a `Canvas` —
+  JavaScript painting runs on the GUI thread and cannot hold the frame budget.
+- `TraceView` keeps a deliberate two-path renderer: a cached 4096 px raster per
+  channel above `viewSpan >= 0.65`, and a stride-limited walk of the visible
+  samples below it. This looks redundant and is not. Replacing both with a
+  single min/max-per-pixel-column envelope walk was measured on a real
+  Road America lap: **5.2 ms → 35 ms** average zoom paint (48 ms with a
+  per-column vertical zig-zag), against an 8.33 ms design budget. The scan is
+  not the cost — capping the per-column scan to 8 samples changed nothing —
+  QPainter path rasterisation is. A real improvement here needs
+  `QSGGeometryNode` line strips on the GPU, not another QPainter geometry
+  scheme. `CornerGraphView` and `DamperStripView` do walk per column, which is
+  correct for their point counts.
 - The app currently consumes Track Atlas `corner_ranges`; first-class complexes and geometry are not wired through yet.
 - `sessionStartUnixTime()`/`hasGlobalTime()` do not currently provide global session time.
 - The GUI is file-based post-session analysis today. Future live or database-backed work must preserve the same normalized core instead of bypassing it.

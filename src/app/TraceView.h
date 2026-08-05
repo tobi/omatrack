@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <QtQml/qqmlregistration.h>
 #include <QQuickPaintedItem>
 #include <QElapsedTimer>
 #include <QFont>
@@ -16,7 +17,6 @@
 #include <QPainterPath>
 #include <QSet>
 #include <QVector>
-
 
 #include "TelemetryStore.h"
 
@@ -30,7 +30,9 @@ struct UnifiedLap;
 
 class TraceView : public QQuickPaintedItem {
     Q_OBJECT
-    Q_PROPERTY(TelemetryStore* store READ store WRITE setStore NOTIFY storeChanged)
+    QML_ELEMENT
+    Q_PROPERTY(
+        TelemetryStore* store READ store WRITE setStore NOTIFY storeChanged)
 
 public:
     explicit TraceView(QQuickItem* parent = nullptr);
@@ -117,12 +119,12 @@ private:
     void paintSelectionOverlay(QPainter* painter);
     void invalidateStaticLayer();
     void invalidateGeometry();
-    const ChannelGeometry& geometryFor(
-        const ChannelSpec& spec,
-        const racecraft::UnifiedLap* primary,
-        const racecraft::UnifiedLap* compare);
-    void paintChannel(QPainter& p, const ChannelSpec& spec, const QRectF& rect, int index,
-                      const racecraft::UnifiedLap* primary, const racecraft::UnifiedLap* compare,
+    const ChannelGeometry& geometryFor(const ChannelSpec& spec,
+                                       const racecraft::UnifiedLap* primary,
+                                       const racecraft::UnifiedLap* compare);
+    void paintChannel(QPainter& p, const ChannelSpec& spec, const QRectF& rect,
+                      int index, const racecraft::UnifiedLap* primary,
+                      const racecraft::UnifiedLap* compare,
                       const std::vector<double>* primaryField,
                       const std::vector<double>* compareField);
     void paintDelta(QPainter& p, const QRectF& rect);
@@ -167,6 +169,7 @@ private:
 
 class TraceCursorOverlay : public QQuickPaintedItem {
     Q_OBJECT
+    QML_ELEMENT
     Q_PROPERTY(TraceView* trace READ trace WRITE setTrace NOTIFY traceChanged)
 
 public:

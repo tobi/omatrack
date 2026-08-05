@@ -55,19 +55,17 @@ bool emitSeq(yaml_emitter_t* emitter, const QVariantList& items) {
 
 bool emitValue(yaml_emitter_t* emitter, const QVariant& value) {
     switch (value.typeId()) {
-        case QMetaType::QVariantMap:
-            return emitMap(emitter, value.toMap());
+        case QMetaType::QVariantMap: return emitMap(emitter, value.toMap());
         case QMetaType::QVariantList:
-        case QMetaType::QStringList:
-            return emitSeq(emitter, value.toList());
+        case QMetaType::QStringList: return emitSeq(emitter, value.toList());
         case QMetaType::Bool:
             return emitScalar(emitter, value.toBool()
                                            ? QStringLiteral("true")
                                            : QStringLiteral("false"));
         case QMetaType::Double:
-            return emitScalar(emitter, QString::number(value.toDouble(), 'g', 10));
-        default:
-            return emitScalar(emitter, value.toString());
+            return emitScalar(emitter,
+                              QString::number(value.toDouble(), 'g', 10));
+        default: return emitScalar(emitter, value.toString());
     }
 }
 
@@ -91,7 +89,8 @@ QByteArray serialize(const QVariantMap& root) {
     ok = ok && yaml_stream_start_event_initialize(&event, YAML_UTF8_ENCODING) &&
          yaml_emitter_emit(&emitter, &event);
     ok = ok &&
-         yaml_document_start_event_initialize(&event, nullptr, nullptr, nullptr, 1) &&
+         yaml_document_start_event_initialize(&event, nullptr, nullptr, nullptr,
+                                              1) &&
          yaml_emitter_emit(&emitter, &event);
     ok = ok && emitMap(&emitter, root);
     ok = ok && yaml_document_end_event_initialize(&event, 1) &&
@@ -170,8 +169,7 @@ bool parseNode(yaml_parser_t* parser, yaml_event_t* event, QVariant* out) {
             *out = list;
             return true;
         }
-        default:
-            return false;
+        default: return false;
     }
 }
 
@@ -212,8 +210,7 @@ YamlConfig& YamlConfig::instance() {
 
 QString YamlConfig::filePath() {
     QString base = qEnvironmentVariable("XDG_CONFIG_HOME");
-    if (base.isEmpty())
-        base = QDir::home().filePath(QStringLiteral(".config"));
+    if (base.isEmpty()) base = QDir::home().filePath(QStringLiteral(".config"));
     const QString dir = base + QStringLiteral("/racecraft");
     QDir().mkpath(dir);
     return dir + QStringLiteral("/racecraft.yml");
