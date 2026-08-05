@@ -652,6 +652,7 @@ ApplicationWindow {
                     anchors.margins: 6
                     anchors.right: parent.right
                     anchors.top: parent.top
+                    anchors.topMargin: 22
                     bottomPadding: 2
                     color: root.referenceSyncState === "LOCKED" && Store.comparisonAlignmentConfidence !== "LOW" ? Style.greenColor : Style.yellowColor
                     font.family: Style.monoFontFamily
