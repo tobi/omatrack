@@ -9,6 +9,7 @@
 #include <QHoverEvent>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QWheelEvent>
 #include <QFileInfo>
 #include <QImage>
 #include <QPainter>
@@ -379,6 +380,26 @@ bool racecraft::autotest::install(QQmlApplicationEngine& engine,
                                             QStringLiteral("traceView"));
                                 if (trace && trace->width() > 0 &&
                                     trace->height() > 0) {
+                                    const double wheelSpanBefore =
+                                        store.viewSpan();
+                                    const QPointF wheelPosition(
+                                        trace->width() * 0.5,
+                                        trace->height() * 0.5);
+                                    QWheelEvent wheel(
+                                        wheelPosition, wheelPosition, QPoint(),
+                                        QPoint(0, 120), Qt::NoButton,
+                                        Qt::NoModifier, Qt::ScrollUpdate,
+                                        false);
+                                    QGuiApplication::sendEvent(trace, &wheel);
+                                    const bool wheelZoomReady =
+                                        store.viewSpan() < wheelSpanBefore;
+                                    engine.rootObjects().first()->setProperty(
+                                        "wheelZoomAutotestReady",
+                                        wheelZoomReady);
+                                    qWarning() << "AUTOTEST wheel zoom:"
+                                               << wheelZoomReady;
+                                    store.setViewStart(0.0);
+                                    store.setViewEnd(1.0);
                                     QImage benchmark(
                                         QSize(int(trace->width()),
                                               int(trace->height())),
@@ -529,7 +550,8 @@ bool racecraft::autotest::install(QQmlApplicationEngine& engine,
                                 [&store, &engine, shotPath, startupVideoPath,
                                  autotestWindows, autotestRename,
                                  autotestBrakeSync, autotestCornerEdit,
-                                 autotestDualVideo, sequentialVideoReady]() {
+                                 autotestZoom, autotestDualVideo,
+                                 sequentialVideoReady]() {
                                     QList<QQuickWindow*> windows;
                                     for (QObject* root : engine.rootObjects()) {
                                         if (auto* window =
@@ -823,6 +845,14 @@ bool racecraft::autotest::install(QQmlApplicationEngine& engine,
                                             << cornerMutationReady
                                             << "escape:" << cornerEscapeReady;
                                     }
+                                    const bool zoomReady =
+                                        !autotestZoom ||
+                                        (!engine.rootObjects().isEmpty() &&
+                                         engine.rootObjects()
+                                             .first()
+                                             ->property(
+                                                 "wheelZoomAutotestReady")
+                                             .toBool());
                                     const QFileInfo requested(shotPath);
                                     for (QQuickWindow* window : windows) {
                                         QString output = shotPath;
@@ -853,7 +883,7 @@ bool racecraft::autotest::install(QQmlApplicationEngine& engine,
                                     videoReady = videoReady && renameReady &&
                                                  cornerMutationReady &&
                                                  cornerEscapeReady &&
-                                                 dualVideoReady;
+                                                 zoomReady && dualVideoReady;
                                     const int exitCode =
                                         videoReady             ? 0
                                         : !cornerMutationReady ? 3

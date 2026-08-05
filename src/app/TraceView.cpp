@@ -1331,14 +1331,20 @@ void TraceView::mouseReleaseEvent(QMouseEvent* event) {
 
 void TraceView::wheelEvent(QWheelEvent* event) {
     if (!store_ || !store_->primaryUnified()) return;
-    const double delta = event->angleDelta().y();
+    double delta = event->angleDelta().y();
+    if (delta == 0.0) delta = event->pixelDelta().y();
     if (delta == 0.0) return;
-    if (event->modifiers() & Qt::ControlModifier) {
-        const double anchor = fracForX(event->position().x());
-        store_->zoomAt(anchor, delta > 0.0 ? 0.8 : 1.25);
-    } else {
+
+    const bool forceZoom = event->modifiers() & Qt::ControlModifier;
+    const bool scrollChannels =
+        !forceZoom && ((event->modifiers() & Qt::ShiftModifier) ||
+                       event->position().x() < kLabelW);
+    if (scrollChannels) {
         secondaryScroll_ -= delta / 120.0 * 80.0;
         invalidateStaticLayer();
+    } else {
+        const double anchor = fracForX(event->position().x());
+        store_->zoomAt(anchor, std::pow(0.8, delta / 120.0));
     }
     event->accept();
 }
