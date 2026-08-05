@@ -40,6 +40,9 @@ struct Lap {
     double startTime = 0.0;  // seconds from session start
     double endTime = 0.0;
     double timeMs = 0.0;
+    /// True when both bounds are real start/finish crossings. A leading
+    /// (out) or trailing (in) fragment of the recording is not a lap.
+    bool complete = true;
 };
 
 // ── unified 50 Hz lap ───────────────────────────────────────────────

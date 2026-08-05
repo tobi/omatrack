@@ -159,25 +159,45 @@ QString SessionHandle::sessionKey() const {
 
 void SessionHandle::populateLaps(const std::vector<Lap>& detected) {
     laps_.clear();
-    double fastest = 1e18;
-    int fastestId = -1;
-    for (const Lap& lap : detected) {
+    laps_.reserve(int(detected.size()));
+    int lapNumber = 0;
+    for (size_t i = 0; i < detected.size(); ++i) {
+        const Lap& lap = detected[i];
         LapEntry entry;
         entry.lapId = lap.id;
         entry.startTime = lap.startTime;
         entry.endTime = lap.endTime;
         entry.timeMs = lap.timeMs;
-        entry.isOutlap = lap.id == 0;
-        entry.label = entry.isOutlap
-                          ? QStringLiteral("Out")
-                          : QStringLiteral("L%1").arg(lap.id);
+        entry.isComplete = lap.complete;
+        entry.label =
+            lap.complete ? QStringLiteral("L%1").arg(++lapNumber)
+            : i == 0     ? QStringLiteral("Out")
+            : i + 1 == detected.size() ? QStringLiteral("In")
+                                       : QStringLiteral("Frag");
         entry.timeText =
             QString::fromStdString(formatLapTime(lap.timeMs));
-        if (!entry.isOutlap && lap.timeMs < fastest) {
-            fastest = lap.timeMs;
-            fastestId = lap.id;
-        }
         laps_.append(entry);
+    }
+    // Pit in/out laps are crossing-bounded but not representative: their
+    // time sits far above the session median. Requires enough timed laps
+    // for the median to mean anything.
+    QVector<double> timedMs;
+    for (const LapEntry& entry : laps_)
+        if (entry.isComplete) timedMs.append(entry.timeMs);
+    if (timedMs.size() >= 3) {
+        std::sort(timedMs.begin(), timedMs.end());
+        const double limit = timedMs[timedMs.size() / 2] * 1.35;
+        for (LapEntry& entry : laps_)
+            if (entry.isComplete && entry.timeMs > limit)
+                entry.isPitLap = true;
+    }
+    double fastest = 1e18;
+    int fastestId = -1;
+    for (const LapEntry& entry : laps_) {
+        if (entry.countsForBest() && entry.timeMs < fastest) {
+            fastest = entry.timeMs;
+            fastestId = entry.lapId;
+        }
     }
     for (LapEntry& entry : laps_)
         entry.isFastest =
@@ -573,7 +593,7 @@ void TelemetryStore::openFile(const QString& filePath) {
     int bestId = -1;
     double bestMs = 1e18;
     for (const auto& l : laps) {
-        if (!l.isOutlap && l.timeMs < bestMs) {
+        if (l.countsForBest() && l.timeMs < bestMs) {
             bestMs = l.timeMs;
             bestId = l.lapId;
         }
@@ -1054,7 +1074,10 @@ QVariantList TelemetryStore::lapsForSession(const QString& sessionKey) const {
                                {QStringLiteral("timeMs"), l.timeMs},
                                {QStringLiteral("startTime"), l.startTime},
                                {QStringLiteral("isFastest"), l.isFastest},
-                               {QStringLiteral("isOutlap"), l.isOutlap}});
+                               {QStringLiteral("isComplete"), l.isComplete},
+                               {QStringLiteral("isPitLap"), l.isPitLap},
+                               {QStringLiteral("countsForBest"),
+                                l.countsForBest()}});
     }
     return out;
 }

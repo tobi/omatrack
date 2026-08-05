@@ -151,32 +151,50 @@ std::vector<Lap> buildLapsFromSplits(const std::vector<double>& splitTimesIn, do
     for (double s : splitTimesIn)
         if (s > 0 && s < duration) filtered.insert(s);
     std::vector<double> splits(filtered.begin(), filtered.end());
+    // Without two crossings the whole recording is one unbounded fragment.
     if (splits.size() < 2) {
-        return {Lap{0, 0, duration, duration * 1000.0}};
+        return {Lap{0, 0, duration, duration * 1000.0, /*complete=*/false}};
     }
-    std::vector<std::pair<double, double>> lapBounds;
+    struct Bound {
+        double start;
+        double end;
+        bool complete;
+    };
+    std::vector<Bound> lapBounds;
     for (size_t i = 0; i + 1 < splits.size(); ++i) {
         double a = splits[i], b = splits[i + 1];
-        if (b - a > 10) lapBounds.push_back({a, b});
+        if (b - a > 10) lapBounds.push_back({a, b, true});
     }
     if (lapBounds.empty()) {
-        return {Lap{0, 0, duration, duration * 1000.0}};
+        return {Lap{0, 0, duration, duration * 1000.0, /*complete=*/false}};
     }
     std::vector<double> durations;
-    for (auto& p : lapBounds) durations.push_back(p.second - p.first);
+    for (auto& p : lapBounds) durations.push_back(p.end - p.start);
     std::sort(durations.begin(), durations.end());
     double median = durations[durations.size() / 2];
+    // Head and tail fragments are bounded by the recording, not by a
+    // crossing: keep them selectable but never treat them as timed laps.
     if (!splits.empty()) {
         double tail = duration - splits.back();
         if (tail > std::max(10.0, median * 0.5) && tail < median * 1.8)
-            lapBounds.push_back({splits.back(), duration});
+            lapBounds.push_back({splits.back(), duration, false});
     }
     double head = splits.front();
     if (head > std::max(10.0, median * 0.5) && head < median * 1.8)
-        lapBounds.insert(lapBounds.begin(), {0.0, head});
+        lapBounds.insert(lapBounds.begin(), {0.0, head, false});
+    // A crossing pair much shorter than the session median is a double
+    // trigger, not a lap. With too few bounds to trust a median, fall back
+    // to a conservative floor: no circuit lap is under half a minute.
+    const bool medianIsEvidence = lapBounds.size() >= 3;
+    const double minLapSeconds =
+        medianIsEvidence ? median * 0.5 : std::max(median * 0.5, 30.0);
+    for (Bound& bound : lapBounds)
+        if (bound.complete && bound.end - bound.start < minLapSeconds)
+            bound.complete = false;
     for (size_t i = 0; i < lapBounds.size(); ++i) {
-        result.push_back(Lap{int(i), lapBounds[i].first, lapBounds[i].second,
-                             (lapBounds[i].second - lapBounds[i].first) * 1000.0});
+        result.push_back(Lap{int(i), lapBounds[i].start, lapBounds[i].end,
+                             (lapBounds[i].end - lapBounds[i].start) * 1000.0,
+                             lapBounds[i].complete});
     }
     return result;
 }

@@ -151,7 +151,9 @@ ApplicationWindow {
         for (let i = 0; i < laps.length; ++i)
             if (laps[i].isFastest) return laps[i]
         for (let i = 0; i < laps.length; ++i)
-            if (!laps[i].isOutlap) return laps[i]
+            if (laps[i].countsForBest) return laps[i]
+        for (let i = 0; i < laps.length; ++i)
+            if (laps[i].isComplete) return laps[i]
         return laps.length > 0 ? laps[0] : null
     }
     function refreshLapStrip() {
@@ -274,36 +276,6 @@ ApplicationWindow {
         draw(a, root.accentColor, 0, 0.82)
         ctx.globalAlpha = 1
     }
-    function activateSession(key, name) {
-        const selectedLap = bestLapForSession(key)
-        if (!selectedLap) return
-        const currentKey = activeSessionKey !== ""
-                           ? activeSessionKey : store.primarySessionKey
-        const currentReference = referenceSessionKey !== ""
-                                 ? referenceSessionKey : store.compareSessionKey
-
-        if (currentKey === "") {
-            store.clearCompare()
-            store.selectLap(key, selectedLap.lapId)
-            return
-        }
-        if (key === currentKey) {
-            if (currentReference !== "") store.clearCompare()
-            return
-        }
-        if (key === currentReference) {
-            store.clearCompare()
-            store.selectLap(key, selectedLap.lapId)
-            return
-        }
-
-        const referenceKey = currentReference !== ""
-                             ? currentReference : currentKey
-        const referenceLap = bestLapForSession(referenceKey)
-        store.selectLap(key, selectedLap.lapId)
-        if (referenceLap)
-            store.compareLap(referenceKey, referenceLap.lapId)
-    }
     function useSessionAlone(key) {
         const lap = bestLapForSession(key)
         if (!lap) return
@@ -322,6 +294,10 @@ ApplicationWindow {
             store.clearCompare()
     }
     function setSessionReference(key) {
+        if (key === referenceSessionKey) {
+            store.clearCompare()
+            return
+        }
         if (activeSessionKey === "" || key === activeSessionKey) {
             useSessionAlone(key)
             return
@@ -2492,6 +2468,39 @@ ApplicationWindow {
         }
     }
 
+    // ══ current / reference selector dot ════════════════════════════
+    component RoleDot: Item {
+        id: dot
+        property bool selected: false
+        property color activeColor: root.accentColor
+        property string tip: ""
+        signal activated()
+        implicitWidth: 14
+        implicitHeight: 14
+        Rectangle {
+            anchors.centerIn: parent
+            width: dot.selected ? 12 : dotMouse.containsMouse ? 8 : 5
+            height: width
+            radius: width / 2
+            color: dot.selected ? dot.activeColor
+                   : dotMouse.containsMouse ? root.foregroundColor
+                   : root.dimTextColor
+            opacity: dot.selected ? 1.0 : dotMouse.containsMouse ? 0.85 : 0.45
+            Behavior on width {
+                NumberAnimation { duration: 110; easing.type: Easing.OutCubic }
+            }
+            Behavior on opacity { NumberAnimation { duration: 110 } }
+        }
+        MouseArea {
+            id: dotMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            onClicked: dot.activated()
+            ToolTip.visible: containsMouse && dot.tip !== ""
+            ToolTip.text: dot.tip
+        }
+    }
+
     // ══ sidebar delegate: collapsible rows ══════════════════════════
     Component {
         id: sidebarDelegate
@@ -2501,6 +2510,7 @@ ApplicationWindow {
             height: model.role === "track" ? 28
                     : model.role === "date" ? 24 : 38
 
+            property string sessionKey: model.key || ""
             property bool activeSession:
                 model.role === "session" && model.key === activeSessionKey
             property bool referenceSession:
@@ -2518,8 +2528,9 @@ ApplicationWindow {
 
             RowLayout {
                 anchors.fill: parent
+                z: 1
                 anchors.leftMargin: 4 + model.indent * 8
-                anchors.rightMargin: 4
+                anchors.rightMargin: model.role === "session" ? 46 : 4
                 spacing: 4
                 Label {
                     text: model.role === "track" || model.role === "date"
@@ -2593,14 +2604,6 @@ ApplicationWindow {
                                ? root.foregroundColor : root.mutedTextColor
                     }
                 }
-                Label {
-                    visible: activeSession || referenceSession
-                    text: referenceSession ? "⇄ REF" : "ACTIVE"
-                    font.family: "Geist Mono"
-                    font.pixelSize: 8
-                    font.bold: true
-                    color: referenceSession ? root.orangeColor : root.accentColor
-                }
                 ToolButton {
                     visible: model.role === "track"
                     Layout.preferredWidth: 22
@@ -2609,6 +2612,28 @@ ApplicationWindow {
                     onClicked: store.closeTrack(model.name)
                     ToolTip.visible: hovered
                     ToolTip.text: "Close track"
+                }
+            }
+
+            Row {
+                visible: model.role === "session"
+                anchors.right: parent.right
+                anchors.rightMargin: 8
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 8
+                z: 2
+                RoleDot {
+                    selected: row.activeSession
+                    activeColor: root.accentColor
+                    tip: "Make current lap"
+                    onActivated: setSessionActive(row.sessionKey)
+                }
+                RoleDot {
+                    selected: row.referenceSession
+                    activeColor: root.orangeColor
+                    tip: row.referenceSession ? "Clear reference"
+                                              : "Make reference lap"
+                    onActivated: setSessionReference(row.sessionKey)
                 }
             }
 
@@ -2646,6 +2671,7 @@ ApplicationWindow {
 
             MouseArea {
                 id: rowMouse
+                z: 0
                 anchors.fill: parent
                 hoverEnabled: true
                 acceptedButtons: Qt.LeftButton | Qt.RightButton
@@ -2665,7 +2691,7 @@ ApplicationWindow {
                         expandedDates[model.key] = !dateExpanded(model.key)
                         rebuildTree()
                     } else if (model.role === "session") {
-                        activateSession(model.key, model.name)
+                        setSessionActive(model.key)
                     }
                 }
             }

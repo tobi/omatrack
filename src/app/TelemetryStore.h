@@ -50,7 +50,12 @@ struct LapEntry {
     QString label;
     QString timeText;
     bool isFastest = false;
-    bool isOutlap = false;
+    /// False for the leading/trailing recording fragment (out/in fragment).
+    bool isComplete = true;
+    /// Complete crossing-to-crossing lap whose time is a pit in/out outlier.
+    bool isPitLap = false;
+    /// Representative timed racing lap: eligible for best-lap statistics.
+    bool countsForBest() const { return isComplete && !isPitLap; }
 };
 
 // ── session handle: lazy parse + unified-lap cache per file ─────────
