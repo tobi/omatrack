@@ -34,13 +34,8 @@ int main(int argc, char** argv) {
             qWarning() << "Failed to load bundled font:" << font;
     }
 
-    TelemetryStore store;
-    // The `Store` QML singleton hands out this instance; ownership stays here.
-    TelemetryStore::setInstance(&store);
-
-    // Configured telemetry directories come from racecraft.yml; a positional
-    // argument adds one scan root for this launch (and is remembered).
-    if (argc > 1) store.addSessionDirectory(QString::fromLocal8Bit(argv[1]));
+    // The store is the `Store` QML singleton; the engine owns the one
+    // instance and creates it while loading Main.qml.
 
     QQmlApplicationEngine engine;
     QObject::connect(
@@ -54,7 +49,6 @@ int main(int argc, char** argv) {
     const bool autotestWindows =
         !qgetenv("RACECRAFT_AUTOTEST_WINDOWS").isEmpty();
     const QString startupVideoPath = qEnvironmentVariable("RACECRAFT_VIDEO");
-    if (!startupVideoPath.isEmpty()) store.openFile(startupVideoPath);
     // Root-window inputs travel as required properties, not context
     // properties, so qmllint and qmlcachegen can see them.
     engine.setInitialProperties({
@@ -68,6 +62,17 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    racecraft::autotest::install(engine, store);
+    TelemetryStore* store =
+        engine.singletonInstance<TelemetryStore*>("Racecraft", "Store");
+    if (!store) {
+        qWarning() << "Store singleton missing";
+        return -1;
+    }
+    // Configured telemetry directories come from racecraft.yml; a positional
+    // argument adds one scan root for this launch (and is remembered).
+    if (argc > 1) store->addSessionDirectory(QString::fromLocal8Bit(argv[1]));
+    if (!startupVideoPath.isEmpty()) store->openFile(startupVideoPath);
+
+    racecraft::autotest::install(engine, *store);
     return app.exec();
 }

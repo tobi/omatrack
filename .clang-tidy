@@ -1,0 +1,25 @@
+# Static analysis for the C++ sources. Opt-in: configure with
+# -DRACECRAFT_CLANG_TIDY=ON to add the `cpp_tidy` target and the
+# `lint-cpp-tidy` test.
+#
+# The disabled checks are deliberate:
+#   readability-braces-around-statements  - the house style omits braces for
+#                                           single statements, and .clang-format
+#                                           formats them that way.
+#   bugprone-easily-swappable-parameters  - fires on every (x, y) and
+#                                           (start, end) pair in the analysis
+#                                           code.
+#   bugprone-narrowing-conversions        - telemetry math moves between double
+#                                           and int sample indices by design.
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-branch-clone,
+  performance-*,
+  modernize-use-nullptr,
+  modernize-use-override
+WarningsAsErrors: ''
+HeaderFilterRegex: 'src/(app|core)/.*\.h$'
+FormatStyle: file

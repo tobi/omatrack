@@ -266,23 +266,6 @@ std::shared_ptr<const racecraft::UnifiedLap> SessionHandle::unifiedLap(
 
 // ── TelemetryStore ──────────────────────────────────────────────────
 
-namespace {
-TelemetryStore* g_storeInstance = nullptr;
-}
-
-void TelemetryStore::setInstance(TelemetryStore* store) {
-    g_storeInstance = store;
-}
-
-TelemetryStore* TelemetryStore::create(QQmlEngine*, QJSEngine* jsEngine) {
-    Q_ASSERT_X(g_storeInstance, "TelemetryStore::create",
-               "setInstance() must run before the QML engine loads");
-    // main() owns the store; the engine must not delete it.
-    QJSEngine::setObjectOwnership(g_storeInstance, QJSEngine::CppOwnership);
-    Q_UNUSED(jsEngine);
-    return g_storeInstance;
-}
-
 TelemetryStore::TelemetryStore(QObject* parent) : QObject(parent) {
     loadPreferences();
     loadChannelsConfig();
@@ -326,6 +309,7 @@ void TelemetryStore::loadPreferences() {
                          .value(QStringLiteral("view/channel_height"),
                                 s.value("channelHeight", 110))
                          .toInt();
+    videoMuted_ = yamlBool(config.value(QStringLiteral("video/muted")), false);
     const QVariantMap selection = config.map({QStringLiteral("selection")});
     lastPrimaryKey_ =
         selection
@@ -373,6 +357,7 @@ void TelemetryStore::savePreferences() {
     config.setValue(QStringList{QStringLiteral("telemetry_dirs")},
                     QVariant(sessionDirs_));
     config.setValue(QStringLiteral("view/channel_height"), channelHeight_);
+    config.setValue(QStringLiteral("video/muted"), videoMuted_);
     config.setMap(
         {QStringLiteral("selection")},
         QVariantMap{{QStringLiteral("primary_key"), lastPrimaryKey_},
@@ -597,35 +582,51 @@ void TelemetryStore::removeSessionDirectory(const QString& dirPath) {
     scan();
 }
 
-void TelemetryStore::openFile(const QString& filePath) {
-    if (filePath.isEmpty() || !QFileInfo::exists(filePath)) return;
+bool TelemetryStore::openFile(const QString& filePath) {
+    if (filePath.isEmpty() || !QFileInfo::exists(filePath)) return false;
     QString telemetryPath = filePath;
     if (QFileInfo(filePath).suffix().compare("ldx", Qt::CaseInsensitive) == 0) {
         telemetryPath.chop(3);
         telemetryPath += "ld";
     }
-    if (!QFileInfo::exists(telemetryPath)) return;
-    auto handle = std::make_unique<SessionHandle>(telemetryPath);
-    SessionHandle* raw = handle.get();
+    if (!QFileInfo::exists(telemetryPath)) return false;
+
+    SessionHandle* raw = findSession(telemetryPath);
+    bool added = false;
+    if (!raw) {
+        auto handle = std::make_unique<SessionHandle>(telemetryPath);
+        raw = handle.get();
+        const auto& laps = raw->laps();
+        if (!raw->source() || laps.isEmpty()) return false;
+        sessions_.push_back(std::move(handle));
+        added = true;
+    }
+
     const auto& laps = raw->laps();
-    if (!raw->source() || laps.isEmpty()) return;
-    sessions_.push_back(std::move(handle));
     int bestId = -1;
     double bestMs = 1e18;
-    for (const auto& l : laps) {
-        if (l.countsForBest() && l.timeMs < bestMs) {
-            bestMs = l.timeMs;
-            bestId = l.lapId;
+    for (const auto& lap : laps) {
+        if (lap.countsForBest() && lap.timeMs < bestMs) {
+            bestMs = lap.timeMs;
+            bestId = lap.lapId;
         }
     }
-    if (bestId >= 0) {
+    if (bestId < 0) return false;
+
+    // Opening a second telemetry-bearing video means "compare these": preserve
+    // the first as active and put the newly opened recording beside it.
+    if (raw->isVideo() && primarySession_ && primarySession_->isVideo() &&
+        primarySession_ != raw) {
+        setCompare(raw, bestId);
+    } else {
         setPrimary(raw, bestId);
         viewStart_ = 0.0;
         viewEnd_ = 1.0;
     }
     ready_ = true;
     emit readyChanged();
-    emit sessionsChanged();
+    if (added) emit sessionsChanged();
+    return true;
 }
 
 void TelemetryStore::clearSessions() {
@@ -1110,6 +1111,13 @@ void TelemetryStore::setChannelHeight(int v) {
     channelHeight_ = v;
     savePreferences();
     emit channelHeightChanged();
+}
+
+void TelemetryStore::setVideoMuted(bool muted) {
+    if (muted == videoMuted_) return;
+    videoMuted_ = muted;
+    savePreferences();
+    emit videoMutedChanged();
 }
 
 void TelemetryStore::setViewStart(double v) {
@@ -2417,6 +2425,66 @@ double TelemetryStore::primaryVideoTime() const {
         (unified->time[high] - unified->time[low]) * (position - double(low));
     for (const LapEntry& lap : session->laps()) {
         if (lap.lapId == primaryLap_)
+            return source->mediaTimeOffsetSec() + lap.startTime + relativeTime;
+    }
+    return 0.0;
+}
+
+QUrl TelemetryStore::compareVideoSource() const {
+    if (!compareSession_ || !compareSession_->isVideo()) return {};
+    return QUrl::fromLocalFile(compareSession_->path());
+}
+
+double TelemetryStore::compareVideoTime() const {
+    if (!compareSession_ || !compareSession_->isVideo() || compareLap_ < 0)
+        return 0.0;
+    auto* session = const_cast<SessionHandle*>(compareSession_);
+    const racecraft::TelemetrySource* source = session->source();
+    const UnifiedLap* compare = compareUnified();
+    if (!source || !compare || compare->time.size() < 2) return 0.0;
+
+    // Distance alignment: find where the reference lap was when it had
+    // covered the same distance as the primary lap under the cursor.
+    const UnifiedLap* primary = primaryUnified();
+    double relativeTime = 0.0;
+    const double fraction = qBound(0.0, cursorFrac_, 1.0);
+    if (primary && primary->distance.size() > 1 &&
+        compare->distance.size() == compare->time.size() &&
+        compare->distance.size() > 1) {
+        const double position = fraction * double(primary->distance.size() - 1);
+        const size_t low = size_t(std::floor(position));
+        const size_t high = std::min(low + 1, primary->distance.size() - 1);
+        const double distance =
+            primary->distance[low] +
+            (primary->distance[high] - primary->distance[low]) *
+                (position - double(low));
+        if (distance <= compare->distance.front()) {
+            relativeTime = compare->time.front();
+        } else if (distance >= compare->distance.back()) {
+            relativeTime = compare->time.back();
+        } else {
+            const auto upper = std::lower_bound(
+                compare->distance.begin(), compare->distance.end(), distance);
+            const size_t hi = size_t(upper - compare->distance.begin());
+            const size_t lo = hi - 1;
+            const double span = compare->distance[hi] - compare->distance[lo];
+            const double local =
+                span > 0.0 ? (distance - compare->distance[lo]) / span : 0.0;
+            relativeTime = compare->time[lo] +
+                           local * (compare->time[hi] - compare->time[lo]);
+        }
+    } else {
+        // No usable distance channel: fall back to the same lap fraction.
+        const double position = fraction * double(compare->time.size() - 1);
+        const size_t low = size_t(std::floor(position));
+        const size_t high = std::min(low + 1, compare->time.size() - 1);
+        relativeTime =
+            compare->time[low] + (compare->time[high] - compare->time[low]) *
+                                     (position - double(low));
+    }
+
+    for (const LapEntry& lap : session->laps()) {
+        if (lap.lapId == compareLap_)
             return source->mediaTimeOffsetSec() + lap.startTime + relativeTime;
     }
     return 0.0;

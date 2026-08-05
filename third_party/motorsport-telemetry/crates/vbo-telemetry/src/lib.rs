@@ -151,7 +151,10 @@ impl VboFile {
         let text: &str = match std::str::from_utf8(bytes) {
             Ok(text) => text,
             Err(_) => {
-                fallback = bytes.iter().map(|&byte| char::from(byte)).collect::<String>();
+                fallback = bytes
+                    .iter()
+                    .map(|&byte| char::from(byte))
+                    .collect::<String>();
                 &fallback
             }
         };

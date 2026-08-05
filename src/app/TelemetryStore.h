@@ -226,12 +226,19 @@ class TelemetryStore : public QObject {
         QUrl primaryVideoSource READ primaryVideoSource NOTIFY selectionChanged)
     Q_PROPERTY(
         double primaryVideoTime READ primaryVideoTime NOTIFY videoTimeChanged)
+    Q_PROPERTY(
+        QUrl compareVideoSource READ compareVideoSource NOTIFY selectionChanged)
+    Q_PROPERTY(
+        double compareVideoTime READ compareVideoTime NOTIFY videoTimeChanged)
+    Q_PROPERTY(bool videoMuted READ videoMuted WRITE setVideoMuted NOTIFY
+                   videoMutedChanged)
 public:
     // Registered as the `Store` singleton of the Racecraft QML module. The
-    // instance is owned by main(), not the engine: setInstance() publishes it
-    // before the engine loads, and create() hands it out with CppOwnership.
-    static void setInstance(TelemetryStore* store);
-    static TelemetryStore* create(QQmlEngine* qmlEngine, QJSEngine* jsEngine);
+    // QML engine owns the single instance and default-constructs it while
+    // loading Main.qml; C++ reaches it with
+    // QQmlEngine::singletonInstance<TelemetryStore*>("Racecraft", "Store").
+    // Never construct a second one: it would scan sessions and write
+    // racecraft.yml behind the UI's back.
 
     explicit TelemetryStore(QObject* parent = nullptr);
     ~TelemetryStore() override;
@@ -240,7 +247,9 @@ public:
 
     Q_INVOKABLE void scan();
     Q_INVOKABLE void addSessionDirectory(const QString& dirPath);
-    Q_INVOKABLE void openFile(const QString& filePath);
+    /// Open one telemetry source. Returns false when the file is valid media
+    /// but carries no supported telemetry, so QML can fall back to playback.
+    Q_INVOKABLE bool openFile(const QString& filePath);
     Q_INVOKABLE bool directoryExists(const QString& dirPath) const;
     Q_INVOKABLE QString configFilePath() const;
     Q_INVOKABLE void removeSessionDirectory(const QString& dirPath);
@@ -356,6 +365,12 @@ public:
     QString compareSessionKey() const;
     QUrl primaryVideoSource() const;
     double primaryVideoTime() const;
+    // Reference-lap recording, distance-aligned to the primary cursor so a
+    // side-by-side view shows both cars at the same point on track.
+    QUrl compareVideoSource() const;
+    double compareVideoTime() const;
+    bool videoMuted() const { return videoMuted_; }
+    void setVideoMuted(bool muted);
     QStringList sessionDirectoriesList() const { return sessionDirs_; }
 
 signals:
@@ -372,6 +387,7 @@ signals:
     void referenceAlignmentChanged();
     void trackAtlasChanged();
     void videoTimeChanged();
+    void videoMutedChanged();
 
 private:
     SessionHandle* findSession(const QString& key) const;
@@ -409,6 +425,7 @@ private:
     int channelHeight_ = 110;
     bool editingCorners_ = false;
     bool ready_ = false;
+    bool videoMuted_ = false;
     double referenceAlignment_ = 0.0;
     QSet<QString> closedTracks_;
 

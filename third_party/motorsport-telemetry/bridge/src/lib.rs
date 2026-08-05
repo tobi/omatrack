@@ -85,8 +85,11 @@ fn build_handle(src: Box<dyn TelemetrySource>) -> Box<BridgeFile> {
 
 /// Open a telemetry file by path (format dispatched from extension).
 /// Returns a handle, or NULL on error (see `rc_last_error`).
+///
+/// # Safety
+/// `path` must be NULL or a valid NUL-terminated C string.
 #[no_mangle]
-pub extern "C" fn rc_open(path: *const c_char) -> *mut c_void {
+pub unsafe extern "C" fn rc_open(path: *const c_char) -> *mut c_void {
     if path.is_null() {
         set_error("rc_open: null path");
         return std::ptr::null_mut();
@@ -108,6 +111,9 @@ pub extern "C" fn rc_open(path: *const c_char) -> *mut c_void {
 }
 
 /// Free a handle returned by `rc_open`. Safe to call with NULL.
+///
+/// # Safety
+/// `handle` must be NULL or a handle from `rc_open` that has not been closed.
 #[no_mangle]
 pub unsafe extern "C" fn rc_close(handle: *mut c_void) {
     if !handle.is_null() {
@@ -145,6 +151,11 @@ pub extern "C" fn rc_format(handle: *mut c_void) -> *const c_char {
     }
 }
 
+/// Media time offset of the source in ns, written to `out`.
+///
+/// # Safety
+/// `handle` must be NULL or a live `rc_open` handle, and `out` must point to a
+/// writable `i64`.
 #[no_mangle]
 pub unsafe extern "C" fn rc_media_time_offset_ns(
     handle: *mut c_void,
@@ -290,6 +301,10 @@ pub extern "C" fn rc_chunk_sample_count(handle: *mut c_void, index: usize, chunk
 /// Decode `[start, start+n)` samples of one chunk into `out`.
 /// Returns the number of samples actually written (may be less than `n` when
 /// the chunk ends early). `out` must have room for `n` doubles.
+///
+/// # Safety
+/// `handle` must be NULL or a live `rc_open` handle, and `out` must point to
+/// `n` writable doubles.
 #[no_mangle]
 pub unsafe extern "C" fn rc_decode_range(
     handle: *mut c_void,
@@ -326,6 +341,10 @@ pub unsafe extern "C" fn rc_decode_range(
 /// Samples are emitted in chunk order (which is also time order). Returns the
 /// total number of samples written; `out` must have room for
 /// `rc_channel_sample_count` doubles.
+///
+/// # Safety
+/// `handle` must be NULL or a live `rc_open` handle, and `out` must point to
+/// `capacity` writable doubles.
 #[no_mangle]
 pub unsafe extern "C" fn rc_channel_decode_all(
     handle: *mut c_void,
@@ -361,6 +380,10 @@ pub unsafe extern "C" fn rc_channel_decode_all(
 
 /// Sample a channel at an absolute time in ns with linear interpolation.
 /// Writes the value to `out` and returns 1 on success, 0 when out of range.
+///
+/// # Safety
+/// `handle` must be NULL or a live `rc_open` handle, and `out` must point to a
+/// writable double.
 #[no_mangle]
 pub unsafe extern "C" fn rc_sample_at(
     handle: *mut c_void,

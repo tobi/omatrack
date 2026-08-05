@@ -41,16 +41,25 @@ bool racecraft::autotest::install(QQmlApplicationEngine& engine,
         !qgetenv("RACECRAFT_AUTOTEST_BRAKE_SYNC").isEmpty();
     const bool autotestCornerEdit =
         !qgetenv("RACECRAFT_AUTOTEST_CORNER_EDIT").isEmpty();
+    const bool autotestDualVideo =
+        !qgetenv("RACECRAFT_AUTOTEST_DUAL_VIDEO").isEmpty();
     const bool autotestWindows =
         !qgetenv("RACECRAFT_AUTOTEST_WINDOWS").isEmpty();
     const QString startupVideoPath = qEnvironmentVariable("RACECRAFT_VIDEO");
+    const QString secondVideoPath =
+        qEnvironmentVariable("RACECRAFT_AUTOTEST_SECOND_VIDEO");
+    const bool sequentialVideoReady =
+        secondVideoPath.isEmpty() ||
+        (store.openFile(secondVideoPath) &&
+         store.primaryVideoSource().toLocalFile() == startupVideoPath &&
+         store.compareVideoSource().toLocalFile() == secondVideoPath);
     const QString shotPath = QString::fromUtf8(autotestShot);
     QTimer::singleShot(
         200, &engine,
         [&store, &engine, shotPath, startupVideoPath, autotestCompare,
          autotestWindows, autotestHover, autotestSelection, autotestAlignment,
          autotestZoom, autotestCorner, autotestRename, autotestBrakeSync,
-         autotestCornerEdit]() {
+         autotestCornerEdit, autotestDualVideo, sequentialVideoReady]() {
             const QVariantList groups = store.trackGroups();
             for (const QVariant& gv : groups) {
                 const QVariantMap g = gv.toMap();
@@ -181,7 +190,6 @@ bool racecraft::autotest::install(QQmlApplicationEngine& engine,
                                             .toString() ==
                                         QStringLiteral("Autotest Kink");
                                 store.deleteCorner(added);
-                                store.setEditingCorners(true);
                                 // A right-click must open the Material menu:
                                 // a QWidget QMenu would abort this process.
                                 bool menuReady = false;
@@ -196,36 +204,38 @@ bool racecraft::autotest::install(QQmlApplicationEngine& engine,
                                             QEvent::MouseButtonPress, spot,
                                             spot, spot, Qt::RightButton,
                                             Qt::RightButton, Qt::NoModifier);
-                                        QCoreApplication::sendEvent(trace,
-                                                                    &press);
-                                        QObject* menu =
-                                            root->findChild<QObject*>(
-                                                QStringLiteral("cornerMenu"));
-                                        menuReady =
-                                            menu &&
-                                            menu->property("visible").toBool();
-                                        if (menu)
-                                            QMetaObject::invokeMethod(menu,
-                                                                      "close");
-                                        // Same path with editing off must
-                                        // open the channel menu instead.
+                                        auto popupVisible = [&](const char*
+                                                                    name) {
+                                            QCoreApplication::sendEvent(trace,
+                                                                        &press);
+                                            // Opening runs through the
+                                            // event loop; sample after it
+                                            // settles.
+                                            QCoreApplication::processEvents();
+                                            QObject* popup =
+                                                root->findChild<QObject*>(
+                                                    QLatin1String(name));
+                                            const bool shown =
+                                                popup &&
+                                                popup->property("visible")
+                                                    .toBool();
+                                            if (popup)
+                                                QMetaObject::invokeMethod(
+                                                    popup, "close");
+                                            QCoreApplication::processEvents();
+                                            return shown;
+                                        };
                                         store.setEditingCorners(false);
-                                        QCoreApplication::sendEvent(trace,
-                                                                    &press);
-                                        QObject* channels =
-                                            root->findChild<QObject*>(
-                                                QStringLiteral("channelMenu"));
                                         const bool channelReady =
-                                            channels &&
-                                            channels->property("visible")
-                                                .toBool();
-                                        if (channels)
-                                            QMetaObject::invokeMethod(channels,
-                                                                      "close");
-                                        qWarning() << "AUTOTEST channel menu:"
-                                                   << channelReady;
-                                        menuReady = menuReady && channelReady;
+                                            popupVisible("channelMenu");
                                         store.setEditingCorners(true);
+                                        const bool cornerReady =
+                                            popupVisible("cornerMenu");
+                                        qWarning()
+                                            << "AUTOTEST channel menu:"
+                                            << channelReady
+                                            << "corner menu:" << cornerReady;
+                                        menuReady = channelReady && cornerReady;
                                     }
                                 }
                                 qWarning()
@@ -446,11 +456,28 @@ bool racecraft::autotest::install(QQmlApplicationEngine& engine,
                                     });
                                 keyTimer->start();
                             }
+                            if (autotestDualVideo) {
+                                // Reparent the live OpenGL video stage into
+                                // fullscreen and back before final assertions.
+                                QTimer::singleShot(4000, &engine, [&engine]() {
+                                    for (QObject* root : engine.rootObjects())
+                                        QMetaObject::invokeMethod(
+                                            root, "videoSetFullscreen",
+                                            Q_ARG(QVariant, QVariant(true)));
+                                });
+                                QTimer::singleShot(4700, &engine, [&engine]() {
+                                    for (QObject* root : engine.rootObjects())
+                                        QMetaObject::invokeMethod(
+                                            root, "videoSetFullscreen",
+                                            Q_ARG(QVariant, QVariant(false)));
+                                });
+                            }
                             QTimer::singleShot(
-                                2500, &engine,
+                                autotestDualVideo ? 7000 : 2500, &engine,
                                 [&store, &engine, shotPath, startupVideoPath,
                                  autotestWindows, autotestRename,
-                                 autotestBrakeSync, autotestCornerEdit]() {
+                                 autotestBrakeSync, autotestCornerEdit,
+                                 autotestDualVideo, sequentialVideoReady]() {
                                     QList<QQuickWindow*> windows;
                                     for (QObject* root : engine.rootObjects()) {
                                         if (auto* window =
@@ -582,6 +609,102 @@ bool racecraft::autotest::install(QQmlApplicationEngine& engine,
                                     }
                                     qWarning() << "AUTOTEST gps available:"
                                                << store.hasGpsData();
+                                    bool dualVideoReady = true;
+                                    if (autotestDualVideo) {
+                                        QObject* root =
+                                            engine.rootObjects().isEmpty()
+                                                ? nullptr
+                                                : engine.rootObjects().first();
+                                        auto* primary =
+                                            root ? root->findChild<
+                                                       MpvVideoItem*>(
+                                                       QStringLiteral(
+                                                           "videoPlayer"))
+                                                 : nullptr;
+                                        auto* reference =
+                                            root ? root->findChild<
+                                                       MpvVideoItem*>(
+                                                       QStringLiteral(
+                                                           "videoPlayerReferenc"
+                                                           "e"))
+                                                 : nullptr;
+                                        const double target =
+                                            store.compareVideoTime();
+                                        const double error =
+                                            reference
+                                                ? std::abs(
+                                                      reference->position() -
+                                                      target)
+                                                : -1.0;
+                                        auto* controls =
+                                            root ? root->findChild<QQuickItem*>(
+                                                       QStringLiteral(
+                                                           "videoControls"))
+                                                 : nullptr;
+                                        const bool fullscreenRestored =
+                                            root &&
+                                            !root->property("videoFullscreen")
+                                                 .toBool();
+                                        const bool chromeReady =
+                                            controls &&
+                                            controls->findChild<QQuickItem*>(
+                                                QStringLiteral(
+                                                    "videoPlayPauseButton")) &&
+                                            root->findChild<QQuickItem*>(
+                                                QStringLiteral(
+                                                    "videoMuteButton")) &&
+                                            controls->findChild<QQuickItem*>(
+                                                QStringLiteral(
+                                                    "videoFullscreenButton"));
+                                        dualVideoReady =
+                                            root &&
+                                            root->property("dualVideo")
+                                                .toBool() &&
+                                            primary && primary->ready() &&
+                                            primary->loaded() &&
+                                            primary->duration() > 0.0 &&
+                                            reference && reference->ready() &&
+                                            reference->loaded() &&
+                                            reference->duration() > 0.0 &&
+                                            primary->source() !=
+                                                reference->source() &&
+                                            reference->muted() &&
+                                            primary->paused() ==
+                                                reference->paused() &&
+                                            error <= 0.5 &&
+                                            fullscreenRestored && chromeReady &&
+                                            sequentialVideoReady;
+                                        qWarning()
+                                            << "AUTOTEST dual video:"
+                                            << dualVideoReady << "primary"
+                                            << (primary ? primary->source()
+                                                              .fileName()
+                                                        : QString())
+                                            << (primary ? primary->position()
+                                                        : -1.0)
+                                            << "reference"
+                                            << (reference ? reference->source()
+                                                                .fileName()
+                                                          : QString())
+                                            << (reference
+                                                    ? reference->position()
+                                                    : -1.0)
+                                            << "target" << target << "error"
+                                            << error << "loaded"
+                                            << (primary && primary->loaded())
+                                            << (reference &&
+                                                reference->loaded())
+                                            << "paused"
+                                            << (primary ? primary->paused()
+                                                        : false)
+                                            << (reference ? reference->paused()
+                                                          : false)
+                                            << "store"
+                                            << store.primaryVideoSource()
+                                                   .fileName()
+                                            << store.compareVideoSource()
+                                                   .fileName();
+                                    }
                                     bool cornerMutationReady = true;
                                     bool cornerEscapeReady = true;
                                     if (autotestCornerEdit) {
@@ -637,7 +760,8 @@ bool racecraft::autotest::install(QQmlApplicationEngine& engine,
                                     }
                                     videoReady = videoReady && renameReady &&
                                                  cornerMutationReady &&
-                                                 cornerEscapeReady;
+                                                 cornerEscapeReady &&
+                                                 dualVideoReady;
                                     const int exitCode =
                                         videoReady             ? 0
                                         : !cornerMutationReady ? 3

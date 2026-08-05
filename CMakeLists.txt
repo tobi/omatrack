@@ -42,3 +42,7 @@ add_subdirectory(third_party)
 add_subdirectory(src/core)
 add_subdirectory(src/app)
 add_subdirectory(cli)
+
+# Formatting and static-analysis gates. Included last: it wires targets that
+# qt_add_qml_module and the Rust workspace create in the subdirectories above.
+include(cmake/RacecraftLint.cmake)

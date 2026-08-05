@@ -16,6 +16,9 @@ ApplicationWindow {
     // Supplied by QQmlApplicationEngine::setInitialProperties in main().
     required property bool autotestWindows
     property var directoryRows: []
+    // Side by side only when the reference lap has its own recording and the
+    // primary video is telemetry-linked, so both can be distance-aligned.
+    readonly property bool dualVideo: telemetryVideoActive && Store.compareVideoSource.toString() !== "" && Store.compareVideoSource.toString() !== Store.primaryVideoSource.toString()
     property var expandedDates: ({})
 
     // Session-tree expansion state, keyed by track name and by track+date.
@@ -25,11 +28,16 @@ ApplicationWindow {
     // traces, and the telemetry directories listed in the drawer. Each is
     // refreshed from the matching Store signal in the Connections block below.
     property var filmstripSessions: []
+    // Rapid selection changes update one pending source instead of queuing
+    // stale callLater closures that can reopen the previous recording.
+    property url pendingVideoSource: ""
     property string referenceSessionKey: ""
     property string referenceSessionName: ""
     property bool sidebarVisible: true
     required property url startupVideo
     property bool telemetryVideoActive: false
+    property bool videoFullscreen: false
+    property int videoRestoreVisibility: Window.Windowed
     property bool videoVisible: false
 
     function addDir(p): void {
@@ -68,6 +76,17 @@ ApplicationWindow {
     function dismissCornerPopover() {
         cornerWindow.hide();
     }
+    function formatMediaTime(seconds) {
+        if (!isFinite(seconds) || seconds < 0)
+            seconds = 0;
+        const total = Math.floor(seconds);
+        const hours = Math.floor(total / 3600);
+        const minutes = Math.floor((total % 3600) / 60);
+        const secs = total % 60;
+        const paddedMinutes = (hours > 0 && minutes < 10 ? "0" : "") + minutes;
+        const paddedSeconds = (secs < 10 ? "0" : "") + secs;
+        return hours > 0 ? hours + ":" + paddedMinutes + ":" + paddedSeconds : minutes + ":" + paddedSeconds;
+    }
     function lapStripEntry(key, reference) {
         const laps = Store.lapsForSession(key);
         const info = sessionInfoForKey(key);
@@ -98,6 +117,12 @@ ApplicationWindow {
         driverRenameDialog.mappingKey = mappingKey;
         driverRenameField.text = displayName || "";
         driverRenameDialog.open();
+    }
+    function openPendingVideo() {
+        const source = pendingVideoSource;
+        if (source.toString() === "" || videoPlayer.source.toString() === source.toString())
+            return;
+        videoPlayer.openMedia(source);
     }
     function rebuildTree() {
         if (!Store.ready)
@@ -233,7 +258,8 @@ ApplicationWindow {
         videoVisible = true;
         if (root.width < 1000)
             sidebarVisible = false;
-        Qt.callLater(() => videoPlayer.openMedia(source));
+        pendingVideoSource = source;
+        Qt.callLater(root.openPendingVideo);
     }
     function stripBadgeText(strip, lapTime) {
         let parts = [strip.reference ? "⇄ REF" : "RUN"];
@@ -242,6 +268,31 @@ ApplicationWindow {
         if (lapTime !== "")
             parts.push(lapTime);
         return parts.join(" · ");
+    }
+    function syncReferenceSource() {
+        const ref = videoReference();
+        if (!ref)
+            return;
+        const source = Store.compareVideoSource;
+        if (source.toString() === "") {
+            if (ref.source.toString() !== "")
+                ref.closeMedia();
+            return;
+        }
+        if (ref.source.toString() !== source.toString())
+            ref.openMedia(source);
+        else
+            syncReferenceVideo(true);
+    }
+    function syncReferenceVideo(force) {
+        const ref = videoReference();
+        if (!ref || !ref.loaded)
+            return;
+        const target = Store.compareVideoTime;
+        if (target <= 0)
+            return;
+        if (force || Math.abs(ref.position - target) > 0.2)
+            ref.seek(target);
     }
     function syncTelemetryVideo() {
         const source = Store.primaryVideoSource;
@@ -253,10 +304,14 @@ ApplicationWindow {
             }
             return;
         }
-        if (!telemetryVideoActive || videoPlayer.source.toString() !== source.toString())
+        if (!telemetryVideoActive || videoPlayer.source.toString() !== source.toString()) {
             showVideo(source, true);
-        else
+        } else {
+            // Cancel any deferred open queued by an intermediate selection.
+            pendingVideoSource = source;
             seekVideoToTelemetry();
+        }
+        syncReferenceSource();
     }
     function toLocalPath(value) {
         const text = value.toString();
@@ -271,6 +326,44 @@ ApplicationWindow {
             return;
         Store.clearCompare();
         Store.selectLap(key, lap.lapId);
+    }
+    function videoFileName(source) {
+        const text = source.toString();
+        if (text === "")
+            return "";
+        return decodeURIComponent(text.substring(text.lastIndexOf("/") + 1));
+    }
+    // ── reference recording ─────────────────────────────────────────
+    // The reference video is driven by the telemetry cursor, distance aligned
+    // against the primary lap. While playing, both recordings run in real time
+    // and drift is corrected periodically; while paused every cursor move
+    // seeks it exactly.
+    function videoReference() {
+        return videoReferenceLoader.player;
+    }
+    function videoSetFullscreen(on) {
+        if (on === videoFullscreen)
+            return;
+        if (on) {
+            videoVisible = true;
+            videoRestoreVisibility = root.visibility;
+            videoFullscreen = true;
+            root.visibility = Window.FullScreen;
+        } else {
+            videoFullscreen = false;
+            root.visibility = videoRestoreVisibility;
+        }
+    }
+    function videoToggleMuted() {
+        if (videoPlayer.loaded)
+            Store.videoMuted = !Store.videoMuted;
+    }
+    function videoTogglePaused() {
+        if (!videoPlayer.loaded)
+            return;
+        videoPlayer.togglePaused();
+        if (!videoPlayer.paused)
+            syncReferenceVideo(true);
     }
 
     Material.accent: Style.accentColor
@@ -291,6 +384,7 @@ ApplicationWindow {
     // ══ header ══════════════════════════════════════════════════════
     header: AppHeader {
         sidebarVisible: root.sidebarVisible
+        visible: !root.videoFullscreen
 
         onChannelsRequested: {
             channelsWindow.refresh();
@@ -330,6 +424,279 @@ ApplicationWindow {
             root.sidebarVisible = false;
     }
 
+    // One item tree with two homes: docked above the traces, or filling the
+    // window. Reparenting stays inside this window so both libmpv items retain
+    // the shared OpenGL scene-graph context.
+    Item {
+        id: videoFullscreenSlot
+
+        anchors.fill: parent
+        visible: root.videoFullscreen
+        z: 9000
+    }
+    Rectangle {
+        id: videoStage
+
+        anchors.fill: parent
+        clip: true
+        color: Style.videoLetterboxColor
+        objectName: "videoStage"
+        parent: root.videoFullscreen ? videoFullscreenSlot : videoStageSlot
+
+        HoverHandler {
+            id: videoStageHover
+        }
+        Timer {
+            interval: 500
+            repeat: true
+            running: root.dualVideo && videoPlayer.loaded && !videoPlayer.paused
+
+            onTriggered: root.syncReferenceVideo(false)
+        }
+        RowLayout {
+            anchors.fill: parent
+            spacing: root.dualVideo ? 2 : 0
+
+            Item {
+                Layout.fillHeight: true
+                Layout.fillWidth: true
+
+                MpvVideoItem {
+                    id: videoPlayer
+
+                    anchors.fill: parent
+                    muted: Store.videoMuted
+                    objectName: "videoPlayer"
+
+                    onLoadedChanged: {
+                        if (loaded && root.telemetryVideoActive) {
+                            Qt.callLater(() => {
+                                videoPlayer.paused = true;
+                                root.seekVideoToTelemetry();
+                            });
+                        }
+                    }
+                    onPositionChanged: {
+                        if (root.telemetryVideoActive && loaded && !paused)
+                            Store.setCursorFromVideoTime(position);
+                    }
+                }
+                Label {
+                    anchors.left: parent.left
+                    anchors.leftMargin: root.dualVideo ? 44 : 6
+                    anchors.top: parent.top
+                    bottomPadding: 2
+                    color: Style.accentColor
+                    font.bold: true
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: 8
+                    leftPadding: 4
+                    rightPadding: 4
+                    text: "ACTIVE  " + root.videoFileName(Store.primaryVideoSource)
+                    topPadding: 2
+                    visible: root.dualVideo
+
+                    background: Rectangle {
+                        color: Qt.rgba(0, 0, 0, 0.55)
+                    }
+                }
+                Column {
+                    anchors.centerIn: parent
+                    spacing: 8
+                    visible: videoPlayer.errorString !== "" || !videoPlayer.loaded
+                    width: Math.min(parent.width - 32, 360)
+
+                    Label {
+                        color: videoPlayer.errorString !== "" ? Style.redColor : Style.mutedTextColor
+                        font.family: Style.monoFontFamily
+                        font.pixelSize: 10
+                        horizontalAlignment: Text.AlignHCenter
+                        text: videoPlayer.errorString !== "" ? videoPlayer.errorString : videoPlayer.ready ? "Loading video…" : "Preparing video renderer…"
+                        width: parent.width
+                        wrapMode: Text.Wrap
+                    }
+                    Button {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: "Open video"
+                        visible: videoPlayer.source.toString() === ""
+
+                        onClicked: videoFileDialog.open()
+                    }
+                }
+            }
+            Item {
+                Layout.fillHeight: true
+                Layout.fillWidth: true
+                visible: root.dualVideo
+
+                Loader {
+                    id: videoReferenceLoader
+
+                    readonly property MpvVideoItem player: item as MpvVideoItem
+
+                    active: root.dualVideo
+                    anchors.fill: parent
+
+                    sourceComponent: Component {
+                        MpvVideoItem {
+                            muted: true
+                            objectName: "videoPlayerReference"
+
+                            onLoadedChanged: {
+                                if (loaded)
+                                    Qt.callLater(() => {
+                                        paused = videoPlayer.paused;
+                                        root.syncReferenceVideo(true);
+                                    });
+                            }
+                        }
+                    }
+
+                    onLoaded: root.syncReferenceSource()
+                }
+                Connections {
+                    function onPausedChanged(): void {
+                        const ref = videoReferenceLoader.player;
+                        if (ref && ref.paused !== videoPlayer.paused)
+                            ref.paused = videoPlayer.paused;
+                    }
+
+                    target: videoReferenceLoader.player
+                }
+                Connections {
+                    function onPausedChanged(): void {
+                        const ref = root.videoReference();
+                        if (!ref || !ref.loaded)
+                            return;
+                        ref.paused = videoPlayer.paused;
+                        if (!videoPlayer.paused)
+                            root.syncReferenceVideo(true);
+                    }
+
+                    target: videoPlayer
+                }
+                Label {
+                    anchors.left: parent.left
+                    anchors.margins: 6
+                    anchors.top: parent.top
+                    bottomPadding: 2
+                    color: Style.orangeColor
+                    font.bold: true
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: 8
+                    leftPadding: 4
+                    rightPadding: 4
+                    text: "⇄ REFERENCE  " + root.videoFileName(Store.compareVideoSource)
+                    topPadding: 2
+
+                    background: Rectangle {
+                        color: Qt.rgba(0, 0, 0, 0.55)
+                    }
+                }
+                Label {
+                    anchors.centerIn: parent
+                    color: Style.mutedTextColor
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: 10
+                    text: videoReferenceLoader.player !== null && videoReferenceLoader.player.errorString !== "" ? videoReferenceLoader.player.errorString : "Loading reference video…"
+                    visible: videoReferenceLoader.player !== null && !videoReferenceLoader.player.loaded
+                }
+            }
+        }
+        MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            enabled: videoPlayer.loaded
+
+            onClicked: {
+                videoPane.forceActiveFocus();
+                root.videoTogglePaused();
+            }
+        }
+        ToolButton {
+            ToolTip.text: videoPlayer.muted ? "Enable audio (M)" : "Mute audio (M)"
+            ToolTip.visible: hovered
+            anchors.left: parent.left
+            anchors.margins: 6
+            anchors.top: parent.top
+            enabled: videoPlayer.loaded
+            height: 28
+            objectName: "videoMuteButton"
+            text: videoPlayer.muted ? "🔇" : "🔊"
+            width: 32
+            z: 2
+
+            onClicked: root.videoToggleMuted()
+        }
+        Rectangle {
+            id: videoControls
+
+            anchors.bottom: parent.bottom
+            anchors.left: parent.left
+            anchors.right: parent.right
+            color: Qt.rgba(0, 0, 0, 0.78)
+            height: 40
+            objectName: "videoControls"
+            opacity: videoPlayer.loaded && (videoStageHover.hovered || videoControlsHover.hovered) ? 1 : 0
+            visible: opacity > 0.01
+
+            Behavior on opacity {
+                NumberAnimation {
+                    duration: 110
+                }
+            }
+
+            HoverHandler {
+                id: videoControlsHover
+            }
+            MouseArea {
+                anchors.fill: parent
+            }
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 8
+                anchors.rightMargin: 8
+                spacing: 4
+
+                ToolButton {
+                    Layout.preferredWidth: 54
+                    ToolTip.text: root.dualVideo ? "Play/pause both recordings (Space)" : "Play/pause (Space)"
+                    ToolTip.visible: hovered
+                    implicitWidth: 54
+                    leftPadding: 2
+                    objectName: "videoPlayPauseButton"
+                    rightPadding: 2
+                    text: videoPlayer.paused ? "Play" : "Pause"
+
+                    onClicked: root.videoTogglePaused()
+                }
+                Item {
+                    Layout.fillWidth: true
+                }
+                Label {
+                    color: Style.mutedTextColor
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: 9
+                    text: root.formatMediaTime(videoPlayer.position) + " / " + root.formatMediaTime(videoPlayer.duration)
+                }
+                Item {
+                    Layout.fillWidth: true
+                }
+                ToolButton {
+                    Layout.preferredWidth: 48
+                    ToolTip.text: root.videoFullscreen ? "Leave fullscreen (Esc)" : "Fullscreen (F)"
+                    ToolTip.visible: hovered
+                    implicitWidth: 48
+                    leftPadding: 2
+                    objectName: "videoFullscreenButton"
+                    rightPadding: 2
+                    text: root.videoFullscreen ? "Exit" : "Full"
+
+                    onClicked: root.videoSetFullscreen(!root.videoFullscreen)
+                }
+            }
+        }
+    }
     ListModel {
         id: treeModel
     }
@@ -348,6 +715,7 @@ ApplicationWindow {
         }
         function onVideoTimeChanged(): void {
             root.seekVideoToTelemetry();
+            root.syncReferenceVideo(videoPlayer.paused);
         }
 
         target: Store
@@ -466,7 +834,11 @@ ApplicationWindow {
         nameFilters: ["Video (*.mp4 *.MP4 *.mov *.MOV *.mkv *.MKV *.avi *.AVI *.m4v *.webm)", "All files (*)"]
         title: "Open onboard video"
 
-        onAccepted: root.showVideo(videoFileDialog.file)
+        onAccepted: {
+            const path = root.toLocalPath(videoFileDialog.file);
+            if (!Store.openFile(path))
+                root.showVideo(videoFileDialog.file, false);
+        }
     }
     Dialog {
         id: driverRenameDialog
@@ -842,7 +1214,7 @@ ApplicationWindow {
                         enabled: videoPane.visible && videoPlayer.loaded
                         sequence: "Space"
 
-                        onActivated: videoPlayer.togglePaused()
+                        onActivated: root.videoTogglePaused()
                     }
                     Shortcut {
                         enabled: videoPane.visible && videoPlayer.loaded
@@ -855,6 +1227,24 @@ ApplicationWindow {
                         sequence: "Right"
 
                         onActivated: root.seekVideoRelative(15)
+                    }
+                    Shortcut {
+                        enabled: videoPane.visible && videoPlayer.loaded
+                        sequence: "M"
+
+                        onActivated: root.videoToggleMuted()
+                    }
+                    Shortcut {
+                        enabled: videoPane.visible && videoPlayer.loaded
+                        sequence: "F"
+
+                        onActivated: root.videoSetFullscreen(!root.videoFullscreen)
+                    }
+                    Shortcut {
+                        enabled: root.videoFullscreen
+                        sequence: "Escape"
+
+                        onActivated: root.videoSetFullscreen(false)
                     }
                     ColumnLayout {
                         anchors.fill: parent
@@ -915,6 +1305,8 @@ ApplicationWindow {
                                     text: "×"
 
                                     onClicked: {
+                                        if (root.videoFullscreen)
+                                            root.videoSetFullscreen(false);
                                         videoPlayer.closeMedia();
                                         root.telemetryVideoActive = false;
                                         root.videoVisible = false;
@@ -922,66 +1314,15 @@ ApplicationWindow {
                                 }
                             }
                         }
-                        Rectangle {
-                            id: videoSurface
+                        // Docked home of videoStage; the stage itself is at
+                        // window scope so it can move fullscreen without
+                        // rebuilding either libmpv render context.
+                        Item {
+                            id: videoStageSlot
 
                             Layout.fillHeight: true
                             Layout.fillWidth: true
-                            clip: true
-                            color: Style.videoLetterboxColor
-
-                            MpvVideoItem {
-                                id: videoPlayer
-
-                                anchors.fill: parent
-                                objectName: "videoPlayer"
-
-                                onLoadedChanged: {
-                                    if (loaded && root.telemetryVideoActive) {
-                                        Qt.callLater(() => {
-                                            videoPlayer.paused = true;
-                                            root.seekVideoToTelemetry();
-                                        });
-                                    }
-                                }
-                                onPositionChanged: {
-                                    if (root.telemetryVideoActive && loaded && !paused)
-                                        Store.setCursorFromVideoTime(position);
-                                }
-                            }
-                            MouseArea {
-                                anchors.fill: parent
-                                cursorShape: Qt.PointingHandCursor
-                                enabled: videoPlayer.loaded
-
-                                onClicked: {
-                                    videoPane.forceActiveFocus();
-                                    videoPlayer.togglePaused();
-                                }
-                            }
-                            Column {
-                                anchors.centerIn: parent
-                                spacing: 8
-                                visible: videoPlayer.errorString !== "" || !videoPlayer.loaded
-                                width: Math.min(parent.width - 32, 360)
-
-                                Label {
-                                    color: videoPlayer.errorString !== "" ? Style.redColor : Style.mutedTextColor
-                                    font.family: Style.monoFontFamily
-                                    font.pixelSize: 10
-                                    horizontalAlignment: Text.AlignHCenter
-                                    text: videoPlayer.errorString !== "" ? videoPlayer.errorString : videoPlayer.ready ? "Loading video…" : "Preparing video renderer…"
-                                    width: parent.width
-                                    wrapMode: Text.Wrap
-                                }
-                                Button {
-                                    anchors.horizontalCenter: parent.horizontalCenter
-                                    text: "Open video"
-                                    visible: videoPlayer.source.toString() === ""
-
-                                    onClicked: videoFileDialog.open()
-                                }
-                            }
+                            objectName: "videoStageSlot"
                         }
                     }
                 }
