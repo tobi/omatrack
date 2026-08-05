@@ -43,7 +43,6 @@ else()
   message(WARNING "clang-format not found: C++ formatting is unchecked")
 endif()
 
-
 # ── clang-tidy (opt-in) ─────────────────────────────────────────────
 # The curated set in .clang-tidy still reports findings in the existing
 # sources, so tidy is not part of `lint` yet: turning it on by default would
@@ -104,6 +103,19 @@ add_dependencies(lint qml_lint)
 add_test(NAME lint-qml
   COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target all_qmllint)
 set_tests_properties(lint-qml PROPERTIES LABELS lint)
+
+# ── QML invariants qmllint does not cover ───────────────────────────
+set(QML_PRAGMA_CHECK_SCRIPT ${CMAKE_SOURCE_DIR}/cmake/QmlPragmaCheck.cmake)
+add_custom_target(qml_pragma_check
+  COMMAND ${CMAKE_COMMAND} "-DFILES=${RACECRAFT_QML_SOURCES}"
+          -P ${QML_PRAGMA_CHECK_SCRIPT}
+  COMMENT "ComponentBehavior: Bound in every QML file"
+  VERBATIM)
+add_dependencies(lint qml_pragma_check)
+add_test(NAME lint-qml-pragma
+  COMMAND ${CMAKE_COMMAND} "-DFILES=${RACECRAFT_QML_SOURCES}"
+          -P ${QML_PRAGMA_CHECK_SCRIPT})
+set_tests_properties(lint-qml-pragma PROPERTIES LABELS lint)
 
 # ── rust ────────────────────────────────────────────────────────────
 # rust_clippy is defined with the vendored workspace in third_party/.

@@ -137,7 +137,7 @@ ApplicationWindow {
             Item {
                 Layout.fillWidth: true
             }
-            Button {
+            CompactButton {
                 text: "Close"
 
                 onClicked: channelsWindow.hide()

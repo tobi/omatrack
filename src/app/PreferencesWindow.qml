@@ -124,7 +124,7 @@ ApplicationWindow {
                 font.pixelSize: 9
                 text: Store.trackAtlasStatus
             }
-            Button {
+            CompactButton {
                 text: "Update now"
 
                 onClicked: Store.refreshTrackAtlas()
@@ -146,7 +146,7 @@ ApplicationWindow {
                 font.pixelSize: 9
                 text: "stored in " + Store.configFilePath()
             }
-            Button {
+            CompactButton {
                 text: "Rescan"
 
                 onClicked: {
@@ -159,7 +159,7 @@ ApplicationWindow {
             Layout.fillWidth: true
             spacing: 6
 
-            TextField {
+            CompactTextField {
                 id: settingsDir
 
                 Layout.fillWidth: true
@@ -167,12 +167,12 @@ ApplicationWindow {
 
                 onAccepted: settingsAddDir.clicked()
             }
-            Button {
+            CompactButton {
                 text: "Browse…"
 
                 onClicked: settingsFolderDialog.open()
             }
-            Button {
+            CompactButton {
                 id: settingsAddDir
 
                 enabled: settingsDir.text !== ""
@@ -218,7 +218,7 @@ ApplicationWindow {
                     text: "MISSING"
                     visible: !Store.directoryExists(dirRow.modelData)
                 }
-                Button {
+                CompactButton {
                     Layout.preferredHeight: 30
                     text: "Remove"
 
@@ -245,7 +245,7 @@ ApplicationWindow {
             Layout.fillWidth: true
             spacing: 6
 
-            TextField {
+            CompactTextField {
                 id: mappingNameField
 
                 Layout.fillWidth: true
@@ -257,7 +257,7 @@ ApplicationWindow {
                         preferencesWindow.mappingEditName = text;
                 }
             }
-            Button {
+            CompactButton {
                 enabled: preferencesWindow.mappingEditKey !== "" && mappingNameField.text.trim() !== ""
                 text: "Save"
 
@@ -314,7 +314,7 @@ ApplicationWindow {
                     text: mappingRow.modelData.display
                     visible: preferencesWindow.mappingEditKey !== mappingRow.modelData.key
                 }
-                TextField {
+                CompactTextField {
                     Layout.fillWidth: true
                     text: preferencesWindow.mappingEditName
                     visible: preferencesWindow.mappingEditKey === mappingRow.modelData.key
@@ -355,7 +355,7 @@ ApplicationWindow {
             Item {
                 Layout.fillWidth: true
             }
-            Button {
+            CompactButton {
                 text: "Close"
 
                 onClicked: preferencesWindow.hide()

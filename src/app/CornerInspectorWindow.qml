@@ -135,7 +135,7 @@ ApplicationWindow {
             orientation: ListView.Horizontal
             spacing: 4
 
-            ScrollBar.horizontal: ScrollBar {
+            ScrollBar.horizontal: ThinScrollBar {
             }
             delegate: Rectangle {
                 id: cornerPickerDelegate
@@ -170,14 +170,14 @@ ApplicationWindow {
             Layout.fillWidth: true
             spacing: 6
 
-            Button {
+            CompactButton {
                 checkable: true
                 checked: Store.editingCorners
                 text: Store.editingCorners ? "Editing zones" : "Edit zones"
 
                 onClicked: Store.setEditingCorners(checked)
             }
-            Button {
+            CompactButton {
                 enabled: Store.editingCorners
                 text: "Add zone"
 
@@ -192,7 +192,7 @@ ApplicationWindow {
                     }
                 }
             }
-            Button {
+            CompactButton {
                 enabled: Store.editingCorners
                 text: "Auto-generate"
 
@@ -226,7 +226,7 @@ ApplicationWindow {
                 model: cornerWindow.cornerZoneRows
                 spacing: 3
 
-                ScrollBar.vertical: ScrollBar {
+                ScrollBar.vertical: ThinScrollBar {
                 }
                 delegate: RowLayout {
                     id: zoneRow
@@ -238,13 +238,11 @@ ApplicationWindow {
                     spacing: 5
                     width: ListView.view.width - 12
 
-                    TextField {
+                    CompactTextField {
                         id: zoneNameField
 
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 28
-                        font.pixelSize: 10
-                        selectByMouse: true
+                        font.pixelSize: Style.smallFontSize
                         text: zoneRow.modelData.name
 
                         onEditingFinished: {
@@ -254,15 +252,13 @@ ApplicationWindow {
                                 text = zones[zoneRow.index].name;
                         }
                     }
-                    TextField {
+                    CompactTextField {
                         id: zoneStartField
 
-                        Layout.preferredHeight: 28
-                        Layout.preferredWidth: 74
+                        Layout.preferredWidth: 66
                         font.family: Style.monoFontFamily
-                        font.pixelSize: 10
+                        font.pixelSize: Style.smallFontSize
                         horizontalAlignment: Text.AlignRight
-                        selectByMouse: true
                         text: (zoneRow.modelData.start * 100).toFixed(2)
 
                         validator: DoubleValidator {
@@ -277,15 +273,13 @@ ApplicationWindow {
                         font.pixelSize: 10
                         text: "→"
                     }
-                    TextField {
+                    CompactTextField {
                         id: zoneEndField
 
-                        Layout.preferredHeight: 28
-                        Layout.preferredWidth: 74
+                        Layout.preferredWidth: 66
                         font.family: Style.monoFontFamily
-                        font.pixelSize: 10
+                        font.pixelSize: Style.smallFontSize
                         horizontalAlignment: Text.AlignRight
-                        selectByMouse: true
                         text: (zoneRow.modelData.end * 100).toFixed(2)
 
                         validator: DoubleValidator {
@@ -547,7 +541,7 @@ ApplicationWindow {
             Layout.fillWidth: true
             spacing: 6
 
-            Button {
+            CompactButton {
                 checkable: true
                 checked: Store.editingCorners
                 text: "Edit zones"
@@ -557,7 +551,7 @@ ApplicationWindow {
             Item {
                 Layout.fillWidth: true
             }
-            Button {
+            CompactButton {
                 text: "Close"
 
                 onClicked: cornerWindow.hide()

@@ -19,12 +19,15 @@ qt_add_qml_module(racecraft
   QML_FILES
     Main.qml
     RoleDot.qml
+    CompactTextField.qml
+    CompactButton.qml
     Style.qml
     AppHeader.qml
     ChannelsWindow.qml
     CornerInspectorWindow.qml
     PreferencesWindow.qml
     SessionTreeDelegate.qml
+    ThinScrollBar.qml
   SOURCES
     AutotestHarness.h AutotestHarness.cpp
     CornerGraphView.h CornerGraphView.cpp
@@ -48,6 +51,7 @@ qt_add_resources(racecraft "racecraft_assets"
     assets/corners/daytona.csv
     assets/corners/ier_daytona.csv
     assets/corners/lilski_sebring.csv
+    assets/qtquickcontrols2.conf
 )
 
 target_link_libraries(racecraft PRIVATE
