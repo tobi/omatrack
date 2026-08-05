@@ -21,12 +21,12 @@ ApplicationWindow {
     id: cornerWindow
 
     property real cornerDamperShift: 0
-    readonly property real damperCornerStartMeters: Number(cornerWindow.selectedCorner.damperCornerStartMeters || 0)
-    readonly property real damperWindowMeters: Number(cornerWindow.selectedCorner.damperWindowMeters || 1)
 
     // Owned caches.
     property var cornerRows: []
     property var cornerZoneRows: []
+    readonly property real damperCornerStartMeters: Number(cornerWindow.selectedCorner.damperCornerStartMeters || 0)
+    readonly property real damperWindowMeters: Number(cornerWindow.selectedCorner.damperWindowMeters || 1)
     readonly property var selectedCorner: cornerWindow.cornerRows.length > 0 ? cornerWindow.cornerRows[Math.min(cornerWindow.selectedCornerIndex, cornerWindow.cornerRows.length - 1)] : ({})
 
     // Set by Main.qml before the window is shown.

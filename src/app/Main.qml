@@ -32,35 +32,6 @@ ApplicationWindow {
     property bool telemetryVideoActive: false
     property bool videoVisible: false
 
-    function activateSession(key, name) {
-        const selectedLap = bestLapForSession(key);
-        if (!selectedLap)
-            return;
-        const currentKey = activeSessionKey !== "" ? activeSessionKey : Store.primarySessionKey;
-        const currentReference = referenceSessionKey !== "" ? referenceSessionKey : Store.compareSessionKey;
-
-        if (currentKey === "") {
-            Store.clearCompare();
-            Store.selectLap(key, selectedLap.lapId);
-            return;
-        }
-        if (key === currentKey) {
-            if (currentReference !== "")
-                Store.clearCompare();
-            return;
-        }
-        if (key === currentReference) {
-            Store.clearCompare();
-            Store.selectLap(key, selectedLap.lapId);
-            return;
-        }
-
-        const referenceKey = currentReference !== "" ? currentReference : currentKey;
-        const referenceLap = bestLapForSession(referenceKey);
-        Store.selectLap(key, selectedLap.lapId);
-        if (referenceLap)
-            Store.compareLap(referenceKey, referenceLap.lapId);
-    }
     function addDir(p): void {
         const path = root.toLocalPath(p);
         if (path === "")
@@ -76,7 +47,10 @@ ApplicationWindow {
             if (laps[i].isFastest)
                 return laps[i];
         for (let i = 0; i < laps.length; ++i)
-            if (!laps[i].isOutlap)
+            if (laps[i].countsForBest)
+                return laps[i];
+        for (let i = 0; i < laps.length; ++i)
+            if (laps[i].isComplete)
                 return laps[i];
         return laps.length > 0 ? laps[0] : null;
     }
@@ -242,6 +216,10 @@ ApplicationWindow {
             Store.clearCompare();
     }
     function setSessionReference(key) {
+        if (key === root.referenceSessionKey) {
+            Store.clearCompare();
+            return;
+        }
         if (activeSessionKey === "" || key === activeSessionKey) {
             useSessionAlone(key);
             return;
@@ -818,7 +796,7 @@ ApplicationWindow {
                             referenceSessionKey: root.referenceSessionKey
 
                             onDriverRenameRequested: (mappingKey, driver) => root.openDriverRename(mappingKey, driver)
-                            onSessionActivated: (key, name) => root.activateSession(key, name)
+                            onSessionActivated: key => root.setSessionActive(key)
                             onSessionIsolated: key => root.useSessionAlone(key)
                             onSetActiveRequested: key => root.setSessionActive(key)
                             onSetReferenceRequested: key => root.setSessionReference(key)

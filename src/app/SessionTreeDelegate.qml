@@ -40,7 +40,7 @@ Item {
     required property string stem
 
     signal driverRenameRequested(string mappingKey, string driver)
-    signal sessionActivated(string key, string name)
+    signal sessionActivated(string key)
     signal sessionIsolated(string key)
     signal setActiveRequested(string key)
     signal setReferenceRequested(string key)
@@ -59,8 +59,9 @@ Item {
     RowLayout {
         anchors.fill: parent
         anchors.leftMargin: 4 + row.indent * 8
-        anchors.rightMargin: 4
+        anchors.rightMargin: row.role === "session" ? 46 : 4
         spacing: 4
+        z: 1
 
         Label {
             Layout.preferredWidth: 10
@@ -127,14 +128,6 @@ Item {
                 visible: row.role !== "session"
             }
         }
-        Label {
-            color: row.referenceSession ? Style.orangeColor : Style.accentColor
-            font.bold: true
-            font.family: Style.monoFontFamily
-            font.pixelSize: 8
-            text: row.referenceSession ? "⇄ REF" : "ACTIVE"
-            visible: row.activeSession || row.referenceSession
-        }
         ToolButton {
             Layout.preferredHeight: 22
             Layout.preferredWidth: 22
@@ -144,6 +137,32 @@ Item {
             visible: row.role === "track"
 
             onClicked: Store.closeTrack(row.name)
+        }
+    }
+
+    // Above the full-row MouseArea so the dots and the track close button take
+    // their own clicks instead of activating the row.
+    Row {
+        anchors.right: parent.right
+        anchors.rightMargin: 8
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: 8
+        visible: row.role === "session"
+        z: 2
+
+        RoleDot {
+            activeColor: Style.accentColor
+            selected: row.activeSession
+            tip: "Make current lap"
+
+            onActivated: row.setActiveRequested(row.key)
+        }
+        RoleDot {
+            activeColor: Style.orangeColor
+            selected: row.referenceSession
+            tip: row.referenceSession ? "Clear reference" : "Make reference lap"
+
+            onActivated: row.setReferenceRequested(row.key)
         }
     }
     Menu {
@@ -190,6 +209,7 @@ Item {
         acceptedButtons: Qt.LeftButton | Qt.RightButton
         anchors.fill: parent
         hoverEnabled: true
+        z: 0
 
         onClicked: mouse => {
             if (mouse.button === Qt.RightButton) {
@@ -205,7 +225,7 @@ Item {
             } else if (row.role === "date") {
                 row.toggleDateRequested(row.key);
             } else if (row.role === "session") {
-                row.sessionActivated(row.key, row.name);
+                row.sessionActivated(row.key);
             }
         }
     }

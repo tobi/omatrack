@@ -16,7 +16,8 @@
 class DamperStripView : public QQuickPaintedItem {
     Q_OBJECT
     QML_ELEMENT
-    Q_PROPERTY(TelemetryStore* store READ store WRITE setStore NOTIFY storeChanged)
+    Q_PROPERTY(
+        TelemetryStore* store READ store WRITE setStore NOTIFY storeChanged)
     Q_PROPERTY(Source source READ source WRITE setSource NOTIFY sourceChanged)
     Q_PROPERTY(Series series READ series WRITE setSeries NOTIFY seriesChanged)
     Q_PROPERTY(int cornerIndex READ cornerIndex WRITE setCornerIndex NOTIFY

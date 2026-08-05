@@ -28,7 +28,8 @@ std::pair<double, double> sharedRange(const std::vector<double>& a,
         high = 1.0;
     }
     if (symmetric) {
-        const double magnitude = std::max({std::fabs(low), std::fabs(high), 1.0});
+        const double magnitude =
+            std::max({std::fabs(low), std::fabs(high), 1.0});
         low = -magnitude;
         high = magnitude;
     }
@@ -66,7 +67,8 @@ void CornerGraphView::setCornerIndex(int index) {
 void CornerGraphView::paintPanel(QPainter* painter, const Panel& panel,
                                  const QString& label) const {
     const double w = width();
-    painter->fillRect(QRectF(0.0, panel.top, w, panel.height), backgroundColor_);
+    painter->fillRect(QRectF(0.0, panel.top, w, panel.height),
+                      backgroundColor_);
     painter->setPen(QPen(gridColor_, 1.0));
     for (int line = 1; line < 4; ++line) {
         const double y = panel.top + panel.height * line / 4.0;
@@ -104,9 +106,8 @@ void CornerGraphView::paintSeries(QPainter* painter, const Panel& panel,
 }
 
 void CornerGraphView::paintAnnotation(QPainter* painter, double position,
-                                      const QString& label,
-                                      const QColor& color, double labelY,
-                                      bool dashed) const {
+                                      const QString& label, const QColor& color,
+                                      double labelY, bool dashed) const {
     if (!std::isfinite(position)) return;
     const double w = width();
     const double h = height();
@@ -135,7 +136,8 @@ void CornerGraphView::paint(QPainter* painter) {
     const double h = height();
     if (w <= 1.0 || h <= 1.0) return;
 
-    const double panelHeight = (h - kPanelGap * (kPanelCount - 1)) / kPanelCount;
+    const double panelHeight =
+        (h - kPanelGap * (kPanelCount - 1)) / kPanelCount;
     const Panel speedPanel{0.0, panelHeight};
     const Panel pedalPanel{panelHeight + kPanelGap, panelHeight};
     const Panel steeringPanel{(panelHeight + kPanelGap) * 2.0, panelHeight};
@@ -157,8 +159,7 @@ void CornerGraphView::paint(QPainter* painter) {
                 1.1);
     paintSeries(painter, pedalPanel, primary.throttle, 0.0, 1.0, throttleColor_,
                 1.7);
-    const double brakeMax =
-        std::max({primary.maxBrake, compare.maxBrake, 1.0});
+    const double brakeMax = std::max({primary.maxBrake, compare.maxBrake, 1.0});
     paintSeries(painter, pedalPanel, compare.brake, 0.0, brakeMax,
                 compareBrakeColor_, 1.1);
     paintSeries(painter, pedalPanel, primary.brake, 0.0, brakeMax, brakeColor_,

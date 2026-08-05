@@ -38,9 +38,10 @@ static int cmdParse(const std::string& path) {
     auto laps = src->detectLaps();
     printf("laps: %zu\n", laps.size());
     for (size_t i = 0; i < laps.size(); ++i) {
-        printf("  %s  %8.3fs -> %8.3fs  %s\n",
+        printf("  #%d %s  %8.3fs -> %8.3fs  %s\n", laps[i].id,
                formatLapTime(laps[i].timeMs).c_str(), laps[i].startTime,
-               laps[i].endTime, laps[i].id == 0 ? "(0 = partial/outlap)" : "");
+               laps[i].endTime,
+               laps[i].complete ? "" : "(partial: out/in fragment)");
     }
 
     int failures = 0;

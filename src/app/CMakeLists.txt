@@ -18,6 +18,7 @@ qt_add_qml_module(racecraft
   VERSION 1.0
   QML_FILES
     Main.qml
+    RoleDot.qml
     Style.qml
     AppHeader.qml
     ChannelsWindow.qml

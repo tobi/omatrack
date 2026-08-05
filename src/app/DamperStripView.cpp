@@ -94,7 +94,8 @@ void DamperStripView::paint(QPainter* painter) {
         // Both traces share one scale so a shift reads as a shift.
         low = std::numeric_limits<double>::infinity();
         double high = -std::numeric_limits<double>::infinity();
-        for (const std::vector<double>* set : {&damper.primary, &damper.compare})
+        for (const std::vector<double>* set :
+             {&damper.primary, &damper.compare})
             for (double value : *set) {
                 low = std::min(low, value);
                 high = std::max(high, value);

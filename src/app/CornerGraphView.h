@@ -21,23 +21,27 @@
 class CornerGraphView : public QQuickPaintedItem {
     Q_OBJECT
     QML_ELEMENT
-    Q_PROPERTY(TelemetryStore* store READ store WRITE setStore NOTIFY storeChanged)
+    Q_PROPERTY(
+        TelemetryStore* store READ store WRITE setStore NOTIFY storeChanged)
     Q_PROPERTY(int cornerIndex READ cornerIndex WRITE setCornerIndex NOTIFY
                    cornerIndexChanged)
-    Q_PROPERTY(QColor backgroundColor MEMBER backgroundColor_ NOTIFY paletteChanged)
+    Q_PROPERTY(
+        QColor backgroundColor MEMBER backgroundColor_ NOTIFY paletteChanged)
     Q_PROPERTY(QColor gridColor MEMBER gridColor_ NOTIFY paletteChanged)
     Q_PROPERTY(QColor labelColor MEMBER labelColor_ NOTIFY paletteChanged)
     Q_PROPERTY(QColor dimColor MEMBER dimColor_ NOTIFY paletteChanged)
     Q_PROPERTY(QColor speedColor MEMBER speedColor_ NOTIFY paletteChanged)
     Q_PROPERTY(QColor throttleColor MEMBER throttleColor_ NOTIFY paletteChanged)
     Q_PROPERTY(QColor brakeColor MEMBER brakeColor_ NOTIFY paletteChanged)
-    Q_PROPERTY(QColor compareBrakeColor MEMBER compareBrakeColor_ NOTIFY paletteChanged)
+    Q_PROPERTY(QColor compareBrakeColor MEMBER compareBrakeColor_ NOTIFY
+                   paletteChanged)
     Q_PROPERTY(QColor steeringColor MEMBER steeringColor_ NOTIFY paletteChanged)
     Q_PROPERTY(QColor compareColor MEMBER compareColor_ NOTIFY paletteChanged)
     Q_PROPERTY(QColor turnInColor MEMBER turnInColor_ NOTIFY paletteChanged)
     Q_PROPERTY(QColor apexColor MEMBER apexColor_ NOTIFY paletteChanged)
     Q_PROPERTY(QColor pickupColor MEMBER pickupColor_ NOTIFY paletteChanged)
-    Q_PROPERTY(QString monoFontFamily MEMBER monoFontFamily_ NOTIFY paletteChanged)
+    Q_PROPERTY(
+        QString monoFontFamily MEMBER monoFontFamily_ NOTIFY paletteChanged)
 
 public:
     explicit CornerGraphView(QQuickItem* parent = nullptr);

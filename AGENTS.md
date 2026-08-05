@@ -82,7 +82,8 @@ wins on load. Caches (Track Atlas snapshot, thumbnails) stay outside the file.
 - Infer inexpensive metadata from filenames/folders before parsing samples.
 - Group the library as Track → Date → Session → Laps.
 - Detect lap boundaries from the best available beacon, lap-time, lap-number, or lap-distance signal.
-- Mark outlaps and fastest laps and cache parsed/unified laps lazily per session.
+- Classify every detected lap: leading/trailing recording fragments and crossing pairs implausibly shorter than the session median are incomplete (`Out`/`In`/`Frag`), and complete laps far above the session median are pit in/out laps. Only representative laps (`LapEntry::countsForBest`) feed fastest-lap marks, sidebar best times, and default lap selection.
+- Cache parsed/unified laps lazily per session.
 - Persist telemetry directories and user-facing aliases in `racecraft.yml`; `~/Documents/Telemetry` is the default directory on a fresh install.
 
 ### Normalization and analysis
