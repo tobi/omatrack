@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install native dependencies
         run: |
           sudo apt-get update
@@ -44,7 +44,7 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install MSYS2 toolchain and dependencies
         uses: msys2/setup-msys2@v2
         with:
@@ -63,7 +63,9 @@ jobs:
             mingw-w64-ucrt-x86_64-qt6-declarative
             mingw-w64-ucrt-x86_64-rust
       - name: Configure
-        run: cmake --preset ci
+        run: |
+          export PKG_CONFIG_SYSROOT_DIR="$(cygpath -m /)"
+          cmake --preset ci
       - name: Build
         run: cmake --build --preset ci
       - name: Test

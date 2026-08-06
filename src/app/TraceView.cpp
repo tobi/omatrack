@@ -622,7 +622,9 @@ const TraceView::ChannelGeometry& TraceView::geometryFor(
             }
             previousY = y;
         }
+#if QT_VERSION >= QT_VERSION_CHECK(6, 10, 0)
         path.setCachingEnabled(true);
+#endif
     };
     buildPath(primaryData, geometry.primaryLine, false);
     buildPath(compareData, geometry.compareLine, true);
@@ -634,7 +636,9 @@ const TraceView::ChannelGeometry& TraceView::geometryFor(
         geometry.primaryFill.lineTo(last.x, 1.0);
         geometry.primaryFill.lineTo(first.x, 1.0);
         geometry.primaryFill.closeSubpath();
+#if QT_VERSION >= QT_VERSION_CHECK(6, 10, 0)
         geometry.primaryFill.setCachingEnabled(true);
+#endif
     }
 
     constexpr int rasterWidth = 4096;
