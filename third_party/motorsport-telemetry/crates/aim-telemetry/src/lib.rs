@@ -1100,6 +1100,7 @@ mod tests {
             .unwrap();
         assert!((file.decode(speed, 0, 0) - 0.137_477).abs() < 1e-6);
         assert_eq!(file.decode(satellites, 0, 0), 9.0);
+        drop(file);
         std::fs::write(&path, fixture_mp4(false)).unwrap();
         assert!(matches!(
             AimFile::open(&path),
