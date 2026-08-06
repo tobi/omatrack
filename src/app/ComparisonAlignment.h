@@ -35,11 +35,10 @@ struct ComparisonAlignmentResult {
 // loop. Returns an empty result (empty basis, zero anchors) when either lap is
 // too short to align.
 ComparisonAlignmentResult computeComparisonAlignment(
-    const omatrack::UnifiedLap& primary,
-    const omatrack::UnifiedLap& compare);
+    const omatrack::UnifiedLap& primary, const omatrack::UnifiedLap& compare);
 
 // Map a (basis, gpsAnchors) pair to the confidence label exposed to QML:
 // "NONE" (no alignment), "HIGH" (GPS-anchored with enough anchors), "MED"
 // (speed landmarks or validated lap distance), or "LOW" (everything else).
 QString comparisonAlignmentConfidenceLabel(const QString& basis,
-                                            int gpsAnchors);
+                                           int gpsAnchors);

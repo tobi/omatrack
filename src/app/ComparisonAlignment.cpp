@@ -143,8 +143,7 @@ QVector<double> speedLandmarkAlignment(const omatrack::UnifiedLap& primary,
 }  // namespace
 
 ComparisonAlignmentResult computeComparisonAlignment(
-    const omatrack::UnifiedLap& primary,
-    const omatrack::UnifiedLap& compare) {
+    const omatrack::UnifiedLap& primary, const omatrack::UnifiedLap& compare) {
     ComparisonAlignmentResult result;
     if (primary.time.size() < 2 || compare.time.size() < 2) return result;
 
@@ -167,18 +166,16 @@ ComparisonAlignmentResult computeComparisonAlignment(
                            (position - double(low));
             }
 
-            const double target = compare.distance.front() +
-                                  progress * (compare.distance.back() -
-                                              compare.distance.front());
-            const auto upper = std::lower_bound(
-                compare.distance.begin(), compare.distance.end(), target);
-            if (upper == compare.distance.begin())
-                return compare.time.front();
+            const double target =
+                compare.distance.front() +
+                progress * (compare.distance.back() - compare.distance.front());
+            const auto upper = std::lower_bound(compare.distance.begin(),
+                                                compare.distance.end(), target);
+            if (upper == compare.distance.begin()) return compare.time.front();
             if (upper == compare.distance.end()) return compare.time.back();
             const size_t high = size_t(upper - compare.distance.begin());
             const size_t low = high - 1;
-            const double span =
-                compare.distance[high] - compare.distance[low];
+            const double span = compare.distance[high] - compare.distance[low];
             const double local =
                 span > 0.0 ? (target - compare.distance[low]) / span : 0.0;
             return compare.time[low] +
@@ -230,8 +227,7 @@ ComparisonAlignmentResult computeComparisonAlignment(
     if (gpsAvailable) {
         constexpr double kMetersPerDegree = 111320.0;
         const size_t anchorStep = size_t(std::max(1, primary.sampleRate / 2));
-        const size_t searchRadius =
-            size_t(std::max(1, compare.sampleRate * 8));
+        const size_t searchRadius = size_t(std::max(1, compare.sampleRate * 8));
         for (size_t i = 0; i < primary.time.size(); i += anchorStep) {
             const double primaryAccuracy = primary.gpsPositionAccuracy[i];
             const double latitude = primary.gpsLat[i];
@@ -274,12 +270,12 @@ ComparisonAlignmentResult computeComparisonAlignment(
                                    compare.gpsPositionAccuracy[best] + 8.0));
             if (bestDistance > acceptance) continue;
             if (!anchors.empty() &&
-                compare.time[best] <= result.time[qsizetype(
-                                           anchors.back().primaryIndex)] +
-                                           anchors.back().correction)
+                compare.time[best] <=
+                    result.time[qsizetype(anchors.back().primaryIndex)] +
+                        anchors.back().correction)
                 continue;
-            anchors.push_back({i, compare.time[best] -
-                                      result.time[qsizetype(i)]});
+            anchors.push_back(
+                {i, compare.time[best] - result.time[qsizetype(i)]});
         }
     }
 
@@ -345,13 +341,12 @@ ComparisonAlignmentResult computeComparisonAlignment(
                 std::clamp(result.time[qsizetype(i)] + correction,
                            compare.time.front(), compare.time.back());
             if (i > 0)
-                result.time[qsizetype(i)] =
-                    std::max(result.time[qsizetype(i)],
-                             result.time[qsizetype(i - 1)]);
+                result.time[qsizetype(i)] = std::max(
+                    result.time[qsizetype(i)], result.time[qsizetype(i - 1)]);
         }
         result.gpsAnchors = gpsAnchorCount;
-        result.basis =
-            speedLandmarks ? QStringLiteral("GPS anchored · speed landmarks")
+        result.basis = speedLandmarks
+                           ? QStringLiteral("GPS anchored · speed landmarks")
                            : QStringLiteral("GPS anchored · wheel/GPS speed");
     }
 
@@ -359,8 +354,7 @@ ComparisonAlignmentResult computeComparisonAlignment(
     size_t high = 1;
     for (qsizetype i = 0; i < result.time.size(); ++i) {
         const double time = result.time[i];
-        while (high < compare.time.size() && compare.time[high] < time)
-            ++high;
+        while (high < compare.time.size() && compare.time[high] < time) ++high;
         if (high >= compare.time.size()) {
             result.fraction[i] = 1.0;
         } else if (time <= compare.time.front()) {
@@ -378,7 +372,7 @@ ComparisonAlignmentResult computeComparisonAlignment(
 }
 
 QString comparisonAlignmentConfidenceLabel(const QString& basis,
-                                            int gpsAnchors) {
+                                           int gpsAnchors) {
     if (basis.isEmpty()) return QStringLiteral("NONE");
     if (gpsAnchors >= 8) return QStringLiteral("HIGH");
     if (basis.contains(QStringLiteral("speed landmarks")) ||

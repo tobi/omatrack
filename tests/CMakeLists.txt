@@ -47,7 +47,6 @@ target_link_libraries(apptypes-test PRIVATE
 add_test(NAME apptypes-test COMMAND apptypes-test)
 set_tests_properties(apptypes-test PROPERTIES LABELS unit)
 
-
 # ── alignment-test ──────────────────────────────────────────────────
 # Drives the pure comparison-alignment helper (computeComparisonAlignment)
 # with synthetic omatrack::UnifiedLap inputs. Compiles the helper .cpp

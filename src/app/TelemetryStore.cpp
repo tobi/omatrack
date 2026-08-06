@@ -2482,12 +2482,12 @@ void TelemetryStore::ensureComparisonAlignment() const {
         return;
 
     // The pure helper owns every threshold and fallback; the store stays the
-    // QML-facing cache owner and copies the result into its mutable caches.
-    const ComparisonAlignmentResult result =
+    // QML-facing cache owner and moves the result into its mutable caches.
+    ComparisonAlignmentResult result =
         computeComparisonAlignment(*primary, *compare);
-    comparisonAlignmentTime_ = result.time;
-    comparisonAlignmentFraction_ = result.fraction;
-    comparisonAlignmentBasis_ = result.basis;
+    comparisonAlignmentTime_ = std::move(result.time);
+    comparisonAlignmentFraction_ = std::move(result.fraction);
+    comparisonAlignmentBasis_ = std::move(result.basis);
     comparisonGpsAnchors_ = result.gpsAnchors;
 }
 

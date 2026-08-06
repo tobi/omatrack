@@ -188,13 +188,23 @@ class GpsAffineAlignmentTest : public QObject {
 private slots:
     void distributedGpsRefinesSpeedLandmarks() {
         const int N = 300;
+        constexpr int kGpsShiftSamples = 10;
         auto primary = makeLap(N, 50, true, false, false, true);
         auto compare = primary;
+        for (int i = 0; i < N; ++i) {
+            // The same position occurs later on the compare lap. GPS anchors
+            // must therefore apply a measurable non-zero time correction
+            // rather than merely relabeling the speed-landmark result.
+            const double shiftedIndex = double(i - kGpsShiftSamples);
+            compare.gpsLat[i] = 40.0 + 0.0001 * shiftedIndex;
+            compare.gpsLon[i] = -80.0 + 0.0001 * shiftedIndex;
+        }
         const auto result = computeComparisonAlignment(primary, compare);
 
         QCOMPARE(result.basis, QStringLiteral("GPS anchored · speed landmarks"));
         QVERIFY(result.gpsAnchors >= 8);
         QVERIFY(result.time.size() == qsizetype(N));
+        QVERIFY(result.time[N / 2] > compare.time[N / 2] + 0.1);
         QVERIFY(monotonicNonDecreasing(result.time));
         QVERIFY(withinRange(result.time, compare.time.front(), compare.time.back()));
         QVERIFY(withinRange(result.fraction, 0.0, 1.0));
