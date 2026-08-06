@@ -46,3 +46,20 @@ target_link_libraries(apptypes-test PRIVATE
   omatrack_warnings)
 add_test(NAME apptypes-test COMMAND apptypes-test)
 set_tests_properties(apptypes-test PROPERTIES LABELS unit)
+
+
+# ── alignment-test ──────────────────────────────────────────────────
+# Drives the pure comparison-alignment helper (computeComparisonAlignment)
+# with synthetic omatrack::UnifiedLap inputs. Compiles the helper .cpp
+# directly alongside the test so no QML/GUI or session parsing is needed;
+# only the Qt-free core (omatrack_core) and Qt6::Test are linked.
+qt_add_executable(alignment-test AlignmentTest.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/ComparisonAlignment.cpp)
+target_include_directories(alignment-test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(alignment-test PRIVATE
+  omatrack_core
+  Qt6::Test
+  Qt6::Core
+  omatrack_warnings)
+add_test(NAME alignment-test COMMAND alignment-test)
+set_tests_properties(alignment-test PROPERTIES LABELS unit)

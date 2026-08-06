@@ -33,6 +33,7 @@ qt_add_qml_module(omatrack
     DamperStripView.h DamperStripView.cpp
     MpvVideoItem.h MpvVideoItem.cpp
     OmarchyTheme.h OmarchyTheme.cpp
+    ComparisonAlignment.h ComparisonAlignment.cpp
     TelemetryStore.h TelemetryStore.cpp
     TraceView.h TraceView.cpp
     YamlConfig.h YamlConfig.cpp
