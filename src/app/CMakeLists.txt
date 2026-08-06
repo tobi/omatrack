@@ -62,8 +62,8 @@ qt_add_resources(omatrack "omatrack_branding"
 target_link_libraries(omatrack PRIVATE
   omatrack_core
   omatrack_warnings
-  PkgConfig::LIBYAML
-  PkgConfig::LIBMPV
+  omatrack_yaml
+  omatrack_mpv
   Qt6::Quick
   Qt6::QuickControls2
   Qt6::Widgets

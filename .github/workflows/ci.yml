@@ -58,12 +58,11 @@ jobs:
             mingw-w64-ucrt-x86_64-libyaml
             mingw-w64-ucrt-x86_64-mpv
             mingw-w64-ucrt-x86_64-ninja
-            mingw-w64-ucrt-x86_64-pkgconf
             mingw-w64-ucrt-x86_64-qt6-base
             mingw-w64-ucrt-x86_64-qt6-declarative
             mingw-w64-ucrt-x86_64-rust
       - name: Configure
-        run: cmake --preset ci -DPKG_CONFIG_ARGN=--define-prefix
+        run: cmake --preset ci
       - name: Build
         run: cmake --build --preset ci
       - name: Test

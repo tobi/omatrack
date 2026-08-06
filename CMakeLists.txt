@@ -21,9 +21,37 @@ endif()
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS
   Core Gui Quick QuickControls2 Widgets Qml Network)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(LIBMPV REQUIRED IMPORTED_TARGET mpv)
-pkg_check_modules(LIBYAML REQUIRED IMPORTED_TARGET yaml-0.1)
+if(WIN32)
+  get_filename_component(OMATRACK_TOOLCHAIN_BIN_DIR
+    "${CMAKE_CXX_COMPILER}" DIRECTORY)
+  get_filename_component(OMATRACK_TOOLCHAIN_PREFIX
+    "${OMATRACK_TOOLCHAIN_BIN_DIR}" DIRECTORY)
+  find_path(OMATRACK_MPV_INCLUDE_DIR mpv/client.h
+    HINTS "${OMATRACK_TOOLCHAIN_PREFIX}/include" REQUIRED)
+  find_library(OMATRACK_MPV_LIBRARY mpv
+    HINTS "${OMATRACK_TOOLCHAIN_PREFIX}/lib" REQUIRED)
+  find_path(OMATRACK_YAML_INCLUDE_DIR yaml.h
+    HINTS "${OMATRACK_TOOLCHAIN_PREFIX}/include" REQUIRED)
+  find_library(OMATRACK_YAML_LIBRARY yaml
+    HINTS "${OMATRACK_TOOLCHAIN_PREFIX}/lib" REQUIRED)
+
+  add_library(omatrack_mpv INTERFACE)
+  target_include_directories(omatrack_mpv INTERFACE
+    "${OMATRACK_MPV_INCLUDE_DIR}")
+  target_link_libraries(omatrack_mpv INTERFACE "${OMATRACK_MPV_LIBRARY}")
+  add_library(omatrack_yaml INTERFACE)
+  target_include_directories(omatrack_yaml INTERFACE
+    "${OMATRACK_YAML_INCLUDE_DIR}")
+  target_link_libraries(omatrack_yaml INTERFACE "${OMATRACK_YAML_LIBRARY}")
+else()
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(LIBMPV REQUIRED IMPORTED_TARGET mpv)
+  pkg_check_modules(LIBYAML REQUIRED IMPORTED_TARGET yaml-0.1)
+  add_library(omatrack_mpv INTERFACE)
+  target_link_libraries(omatrack_mpv INTERFACE PkgConfig::LIBMPV)
+  add_library(omatrack_yaml INTERFACE)
+  target_link_libraries(omatrack_yaml INTERFACE PkgConfig::LIBYAML)
+endif()
 
 qt_standard_project_setup(REQUIRES 6.5)
 

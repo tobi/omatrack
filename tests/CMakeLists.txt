@@ -27,7 +27,7 @@ target_include_directories(yamlconfig-test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(yamlconfig-test PRIVATE
   Qt6::Test
   Qt6::Core
-  PkgConfig::LIBYAML
+  omatrack_yaml
   omatrack_warnings)
 add_test(NAME yamlconfig-test COMMAND yamlconfig-test)
 set_tests_properties(yamlconfig-test PROPERTIES LABELS unit)
