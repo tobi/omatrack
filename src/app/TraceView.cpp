@@ -14,9 +14,10 @@
 #include <QWheelEvent>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
-using namespace racecraft;
+using namespace omatrack;
 
 namespace {
 
@@ -43,16 +44,10 @@ QColor alpha(QColor c, int a) {
     return c;
 }
 
-// racecraft driver/track colors (approximated Material-flavored)
-const QMap<QString, QColor>& driverColorMap() {
-    static const QMap<QString, QColor> m = {
-        {"mj", QColor(0xef, 0xbe, 0x3f)}, {"hm", QColor(0x40, 0xd1, 0x70)},
-        {"st", QColor(0x40, 0x8f, 0xe0)}, {"tl", QColor(0xd1, 0x61, 0xd1)},
-        {"cm", QColor(0xe0, 0x40, 0x40)}, {"mb", QColor(0xbf, 0xbf, 0xbf)},
-        {"sh", QColor(0x40, 0xd1, 0xd1)}, {"??", QColor(0x80, 0x80, 0x80)},
-    };
-    return m;
-}
+constexpr std::array<QRgb, 7> kDriverColors = {
+    qRgb(0xef, 0xbe, 0x3f), qRgb(0x40, 0xd1, 0x70), qRgb(0x40, 0x8f, 0xe0),
+    qRgb(0xd1, 0x61, 0xd1), qRgb(0xe0, 0x40, 0x40), qRgb(0xbf, 0xbf, 0xbf),
+    qRgb(0x40, 0xd1, 0xd1)};
 
 }  // namespace
 
@@ -115,7 +110,7 @@ void TraceView::invalidateGeometry() {
 
 void TraceView::rebuildChannelSpecs() {
     channelSpecs_.clear();
-    // ordered like racecraft: delta on top, then main channels
+    // ordered like omatrack: delta on top, then main channels
     auto add = [&](const QString& key, const QString& title,
                    const QString& unit, QColor color, Clamp clamp, bool filled,
                    bool dots, const QString& field) {
@@ -223,10 +218,9 @@ const std::vector<double>* TraceView::fieldFor(const UnifiedLap& lap,
 
 QColor TraceView::colorForDriver() const {
     if (!store_ || !store_->primarySession()) return QColor(0x80, 0x80, 0x80);
-    QString tag = store_->primarySession()->driver().toLower();
-    // driver() returns display name; map by driverTag would be better, but name
-    // contains enough signal; fall back to hash for stability.
-    return driverColorMap().value(tag, QColor(0x80, 0x80, 0x80));
+    const QString driver = store_->primarySession()->driver().toCaseFolded();
+    if (driver.isEmpty()) return QColor(0x80, 0x80, 0x80);
+    return QColor::fromRgb(kDriverColors[qHash(driver) % kDriverColors.size()]);
 }
 
 // ── paint ───────────────────────────────────────────────────────────

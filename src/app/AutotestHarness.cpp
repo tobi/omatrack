@@ -1,4 +1,4 @@
-// Offscreen self-test harness, armed only when RACECRAFT_AUTOTEST is set.
+// Offscreen self-test harness, armed only when OMATRACK_AUTOTEST is set.
 // See AGENTS.md for the flag matrix; this is the project's acceptance surface.
 
 #include <QGuiApplication>
@@ -24,31 +24,31 @@
 
 #include "AutotestHarness.h"
 
-bool racecraft::autotest::install(QQmlApplicationEngine& engine,
-                                  TelemetryStore& store) {
-    const QByteArray autotestShot = qgetenv("RACECRAFT_AUTOTEST");
+bool omatrack::autotest::install(QQmlApplicationEngine& engine,
+                                 TelemetryStore& store) {
+    const QByteArray autotestShot = qgetenv("OMATRACK_AUTOTEST");
     if (autotestShot.isEmpty()) return false;
     const bool autotestCompare =
-        !qgetenv("RACECRAFT_AUTOTEST_COMPARE").isEmpty();
-    const bool autotestHover = !qgetenv("RACECRAFT_AUTOTEST_HOVER").isEmpty();
+        !qgetenv("OMATRACK_AUTOTEST_COMPARE").isEmpty();
+    const bool autotestHover = !qgetenv("OMATRACK_AUTOTEST_HOVER").isEmpty();
     const bool autotestSelection =
-        !qgetenv("RACECRAFT_AUTOTEST_SELECTION").isEmpty();
+        !qgetenv("OMATRACK_AUTOTEST_SELECTION").isEmpty();
     const bool autotestAlignment =
-        !qgetenv("RACECRAFT_AUTOTEST_ALIGNMENT").isEmpty();
-    const bool autotestZoom = !qgetenv("RACECRAFT_AUTOTEST_ZOOM").isEmpty();
-    const bool autotestCorner = !qgetenv("RACECRAFT_AUTOTEST_CORNER").isEmpty();
-    const bool autotestRename = !qgetenv("RACECRAFT_AUTOTEST_RENAME").isEmpty();
+        !qgetenv("OMATRACK_AUTOTEST_ALIGNMENT").isEmpty();
+    const bool autotestZoom = !qgetenv("OMATRACK_AUTOTEST_ZOOM").isEmpty();
+    const bool autotestCorner = !qgetenv("OMATRACK_AUTOTEST_CORNER").isEmpty();
+    const bool autotestRename = !qgetenv("OMATRACK_AUTOTEST_RENAME").isEmpty();
     const bool autotestBrakeSync =
-        !qgetenv("RACECRAFT_AUTOTEST_BRAKE_SYNC").isEmpty();
+        !qgetenv("OMATRACK_AUTOTEST_BRAKE_SYNC").isEmpty();
     const bool autotestCornerEdit =
-        !qgetenv("RACECRAFT_AUTOTEST_CORNER_EDIT").isEmpty();
+        !qgetenv("OMATRACK_AUTOTEST_CORNER_EDIT").isEmpty();
     const bool autotestDualVideo =
-        !qgetenv("RACECRAFT_AUTOTEST_DUAL_VIDEO").isEmpty();
+        !qgetenv("OMATRACK_AUTOTEST_DUAL_VIDEO").isEmpty();
     const bool autotestWindows =
-        !qgetenv("RACECRAFT_AUTOTEST_WINDOWS").isEmpty();
-    const QString startupVideoPath = qEnvironmentVariable("RACECRAFT_VIDEO");
+        !qgetenv("OMATRACK_AUTOTEST_WINDOWS").isEmpty();
+    const QString startupVideoPath = qEnvironmentVariable("OMATRACK_VIDEO");
     const QString secondVideoPath =
-        qEnvironmentVariable("RACECRAFT_AUTOTEST_SECOND_VIDEO");
+        qEnvironmentVariable("OMATRACK_AUTOTEST_SECOND_VIDEO");
     const bool sequentialVideoReady =
         secondVideoPath.isEmpty() ||
         (store.openFile(secondVideoPath) &&
@@ -86,7 +86,7 @@ bool racecraft::autotest::install(QQmlApplicationEngine& engine,
                                 !store.primaryVideoSource().isEmpty())
                                 store.setCursorFrac(0.5);
                             if (autotestBrakeSync) {
-                                const racecraft::UnifiedLap* lap =
+                                const omatrack::UnifiedLap* lap =
                                     store.primaryUnified();
                                 if (lap && lap->brake.size() > 1) {
                                     for (size_t sample = 1;
@@ -169,7 +169,7 @@ bool racecraft::autotest::install(QQmlApplicationEngine& engine,
                             }
                             if (!comparisonSelected) store.clearCompare();
                             // Never clobber Track Atlas ranges or a saved
-                            // racecraft.yml override with brake-zone guesses.
+                            // omatrack.yml override with brake-zone guesses.
                             if (store.cornerList().isEmpty())
                                 store.autoGenerateCorners();
                             if (autotestCornerEdit &&
@@ -595,7 +595,7 @@ bool racecraft::autotest::install(QQmlApplicationEngine& engine,
                                                     << "error" << error;
                                                 videoReady =
                                                     videoReady && error <= 0.1;
-                                                const racecraft::UnifiedLap*
+                                                const omatrack::UnifiedLap*
                                                     lap =
                                                         store.primaryUnified();
                                                 if (autotestBrakeSync) {

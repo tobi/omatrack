@@ -1,11 +1,11 @@
 pragma ComponentBehavior: Bound
+import Omatrack
 import Qt.labs.platform as Platform
 
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
-import Racecraft
 
 ApplicationWindow {
     id: root
@@ -433,7 +433,7 @@ ApplicationWindow {
     height: 800
     minimumHeight: 480
     minimumWidth: 720
-    title: "Racecraft"
+    title: "Omatrack"
     visible: true
     width: 1280
 

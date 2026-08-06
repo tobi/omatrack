@@ -1,4 +1,5 @@
 pragma ComponentBehavior: Bound
+import Omatrack
 
 // Desktop-sized push button.
 //
@@ -7,7 +8,6 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls
-import Racecraft
 
 Button {
     bottomPadding: 0

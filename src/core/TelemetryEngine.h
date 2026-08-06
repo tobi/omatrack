@@ -1,8 +1,8 @@
-// racecraft-qt core telemetry engine.
+// Omatrack core telemetry engine.
 //
 // Parsing is delegated to the vendored Rust crates from
-// duckdb_motorsport_telemetry via the C ABI bridge (rc_* functions). This
-// file ports racecraft's *analysis* layer (channel mapping, lap detection,
+// duckdb_motorsport_telemetry via the C ABI bridge (`omatrack_*` functions).
+// This file ports Omatrack's analysis layer (channel mapping, lap detection,
 // 50 Hz UnifiedLap unification) from MoTecParser.swift on top of the raw
 // channels the bridge exposes.
 //
@@ -17,7 +17,7 @@
 #include <string>
 #include <vector>
 
-namespace racecraft {
+namespace omatrack {
 
 // ── raw channel (as decoded from the file) ─────────────────────────
 
@@ -101,7 +101,7 @@ public:
     /// Returns false when out of range.
     bool sampleAt(size_t channelIdx, double timeSec, double* out) const;
 
-    /// Map channel concepts to channel indices (racecraft channelMappings).
+    /// Map channel concepts to channel indices (omatrack channelMappings).
     std::map<std::string, int> mapChannels() const;
 
     /// Detect laps using the PDS beacon/splits heuristics.
@@ -113,8 +113,11 @@ public:
     /// Build a 50 Hz UnifiedLap over [startTime, endTime].
     UnifiedLap unifyLap(double startTime, double endTime) const;
 
-private:
+    // Public so tests can populate channels_ with synthetic data without
+    // going through the Rust bridge. Production code uses open().
     TelemetrySource() = default;
+
+private:
     void* handle_ = nullptr;
     std::string path_;
     std::string format_;
@@ -141,4 +144,4 @@ std::vector<Lap> detectLapsLightweight(const std::string& path,
 std::vector<double> resample(const std::vector<double>& values, double srcFreq,
                              double targetFreq, double duration);
 
-}  // namespace racecraft
+}  // namespace omatrack

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-cosworth-pds">
+    <comment>Pi/Cosworth telemetry session</comment>
+    <glob pattern="*.pds"/>
+    <glob pattern="*.PDS"/>
+  </mime-type>
+  <mime-type type="application/x-motec-ld">
+    <comment>MoTeC telemetry session</comment>
+    <glob pattern="*.ld"/>
+    <glob pattern="*.LD"/>
+    <glob pattern="*.ldx"/>
+    <glob pattern="*.LDX"/>
+  </mime-type>
+  <mime-type type="application/x-racelogic-vbo">
+    <comment>Racelogic VBOX telemetry session</comment>
+    <glob pattern="*.vbo"/>
+    <glob pattern="*.VBO"/>
+  </mime-type>
+</mime-info>

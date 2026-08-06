@@ -1,5 +1,6 @@
 pragma ComponentBehavior: Bound
 pragma Singleton
+import Omatrack
 
 // Single source of truth for palette and typography.
 //
@@ -9,7 +10,6 @@ pragma Singleton
 // them, which keeps one visual language and lets qmllint resolve the access.
 
 import QtQuick
-import Racecraft
 
 QtObject {
     id: style

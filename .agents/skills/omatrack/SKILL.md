@@ -1,13 +1,13 @@
 ---
-name: racecraft-qt
+name: omatrack
 description: >-
-  Racecraft-specific Qt 6 / QML working rules, tooling paths, and known
+  Omatrack-specific Qt 6 / QML working rules, tooling paths, and known
   deviations. Use whenever touching src/app/*.qml, the C++ Quick items,
   the CMake build, or the Rust parser workspace in this repository — before
   applying generic Qt advice from the qt-qml / qt-cpp-review skills.
 ---
 
-# Racecraft Qt/QML working rules
+# Omatrack Qt/QML working rules
 
 Read `AGENTS.md` for product and layer boundaries. This skill only covers the
 Qt-specific mechanics that AGENTS.md does not: which binary to run, which
@@ -107,11 +107,11 @@ heuristic pre-filter only.
 ```sh
 cmake --build build --parallel
 QT_QPA_PLATFORM=offscreen QT_FORCE_STDERR_LOGGING=1 \
-  RACECRAFT_AUTOTEST=/tmp/racecraft.png \
-  ./build/racecraft ~/Documents/Telemetry/<event>
+  OMATRACK_AUTOTEST=/tmp/omatrack.png \
+  ./build/omatrack ~/Documents/Telemetry/<event>
 ```
 
-`RACECRAFT_AUTOTEST_WINDOWS=1` writes `<base>_window.png`,
+`OMATRACK_AUTOTEST_WINDOWS=1` writes `<base>_window.png`,
 `<base>_cornerWindow.png`, `<base>_channelsWindow.png`, and
 `<base>_settingsWindow.png` **instead of** the base path — a missing base PNG
 under that flag is expected, not a failure. `_HOVER=1` / `_ZOOM=1` print
@@ -122,5 +122,5 @@ Always look at the PNG. Timings do not catch stale comparison state or
 illegible density. A native (non-offscreen) run is mandatory for anything
 touching `MpvVideoItem`, palette integration, or fonts.
 
-Treat `~/Documents/Telemetry` as read-only source data. Never point
-`racecraft-cli unify` at it — that writes a CSV beside the input.
+Treat `~/Documents/Telemetry` as read-only source data. `omatrack-cli unify`
+must write through `--output` to a copied fixture or disposable destination.

@@ -1,7 +1,7 @@
 // TraceView — custom-painted telemetry trace canvas.
 //
 // QPainter-based rendering on a QQuickPaintedItem so the Qt Quick Material UI
-// can host it while keeping racecraft's canvas drawing semantics. Renders the
+// can host it while keeping omatrack's canvas drawing semantics. Renders the
 // unified 50 Hz lap channels (speed, throttle, brake, steering, gear, dampers,
 // delta-time), a shared cursor, zoom/pan viewport, and corner zones with
 // drag-to-edit.
@@ -24,7 +24,7 @@
 
 class TelemetryStore;
 
-namespace racecraft {
+namespace omatrack {
 struct UnifiedLap;
 }
 
@@ -120,11 +120,11 @@ private:
     void invalidateStaticLayer();
     void invalidateGeometry();
     const ChannelGeometry& geometryFor(const ChannelSpec& spec,
-                                       const racecraft::UnifiedLap* primary,
-                                       const racecraft::UnifiedLap* compare);
+                                       const omatrack::UnifiedLap* primary,
+                                       const omatrack::UnifiedLap* compare);
     void paintChannel(QPainter& p, const ChannelSpec& spec, const QRectF& rect,
-                      int index, const racecraft::UnifiedLap* primary,
-                      const racecraft::UnifiedLap* compare,
+                      int index, const omatrack::UnifiedLap* primary,
+                      const omatrack::UnifiedLap* compare,
                       const std::vector<double>* primaryField,
                       const std::vector<double>* compareField);
     void paintDelta(QPainter& p, const QRectF& rect);
@@ -137,7 +137,7 @@ private:
     void showCornerMenu(const QPointF& position);
     bool isSticky(const QString& key) const;
     double rowHeightFor(const ChannelSpec& spec) const;
-    const std::vector<double>* fieldFor(const racecraft::UnifiedLap& lap,
+    const std::vector<double>* fieldFor(const omatrack::UnifiedLap& lap,
                                         const QString& field) const;
     QColor colorForDriver() const;
 

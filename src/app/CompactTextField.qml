@@ -1,4 +1,5 @@
 pragma ComponentBehavior: Bound
+import Omatrack
 
 // Desktop-sized text input.
 //
@@ -8,7 +9,6 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls
-import Racecraft
 
 TextField {
     bottomPadding: 2

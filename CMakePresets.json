@@ -19,6 +19,15 @@
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
     },
     {
+      "name": "acceptance",
+      "displayName": "Release with GUI acceptance harness",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build-acceptance",
+      "cacheVariables": {
+        "OMATRACK_ENABLE_AUTOTEST_HARNESS": "ON"
+      }
+    },
+    {
       "name": "debug",
       "displayName": "Debug",
       "description": "Debug build with QT_QML_DEBUG for qmlprofiler/qmlpreview.",
@@ -35,11 +44,48 @@
         "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
         "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
       }
+    },
+    {
+      "name": "ci",
+      "displayName": "Continuous integration",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build-ci",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
     }
   ],
   "buildPresets": [
     { "name": "release", "configurePreset": "release" },
+    { "name": "acceptance", "configurePreset": "acceptance" },
     { "name": "debug", "configurePreset": "debug" },
-    { "name": "asan", "configurePreset": "asan" }
+    { "name": "asan", "configurePreset": "asan" },
+    { "name": "ci", "configurePreset": "ci", "jobs": 2 }
+  ],
+  "testPresets": [
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "acceptance",
+      "configurePreset": "acceptance",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "ci",
+      "configurePreset": "ci",
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 2 }
+    }
   ]
 }

@@ -1,13 +1,13 @@
 //! C ABI bridge exposing the vendored duckdb_motorsport_telemetry parsers
-//! (AiM aimd MP4, Cosworth/Pi PDS, MoTeC LD, VBO) to racecraft-qt.
+//! (AiM aimd MP4, Cosworth/Pi PDS, MoTeC LD, VBO) to Omatrack.
 //!
 //! Design notes (bulk-first):
-//! - `rc_decode_range` pulls a contiguous run of decoded samples across one
+//! - `omatrack_decode_range` pulls a contiguous run of decoded samples across one
 //!   chunk in a single FFI call; the C++ side caches whole channel arrays.
-//! - `rc_sample_at` exists only for cheap per-cursor readouts.
-//! - Strings returned by `rc_channel_name`/`rc_channel_unit` are owned by the
-//!   handle and valid until `rc_close`.
-//! - Errors are reported via `rc_last_error` (thread-local) and non-zero/handle
+//! - `omatrack_sample_at` exists only for cheap per-cursor readouts.
+//! - Strings returned by `omatrack_channel_name`/`omatrack_channel_unit` are owned by the
+//!   handle and valid until `omatrack_close`.
+//! - Errors are reported via `omatrack_last_error` (thread-local) and non-zero/handle
 //!   return codes; no panics cross the FFI boundary.
 
 use std::cell::RefCell;
@@ -84,38 +84,38 @@ fn build_handle(src: Box<dyn TelemetrySource>) -> Box<BridgeFile> {
 // ── handling ─────────────────────────────────────────────────────────
 
 /// Open a telemetry file by path (format dispatched from extension).
-/// Returns a handle, or NULL on error (see `rc_last_error`).
+/// Returns a handle, or NULL on error (see `omatrack_last_error`).
 ///
 /// # Safety
 /// `path` must be NULL or a valid NUL-terminated C string.
 #[no_mangle]
-pub unsafe extern "C" fn rc_open(path: *const c_char) -> *mut c_void {
+pub unsafe extern "C" fn omatrack_open(path: *const c_char) -> *mut c_void {
     if path.is_null() {
-        set_error("rc_open: null path");
+        set_error("omatrack_open: null path");
         return std::ptr::null_mut();
     }
     let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
         Ok(s) => s,
         Err(_) => {
-            set_error("rc_open: path is not valid UTF-8");
+            set_error("omatrack_open: path is not valid UTF-8");
             return std::ptr::null_mut();
         }
     };
     match parse_path(Path::new(path_str)) {
         Ok(src) => Box::into_raw(build_handle(src)) as *mut c_void,
         Err(e) => {
-            set_error(format!("rc_open: {e}"));
+            set_error(format!("omatrack_open: {e}"));
             std::ptr::null_mut()
         }
     }
 }
 
-/// Free a handle returned by `rc_open`. Safe to call with NULL.
+/// Free a handle returned by `omatrack_open`. Safe to call with NULL.
 ///
 /// # Safety
-/// `handle` must be NULL or a handle from `rc_open` that has not been closed.
+/// `handle` must be NULL or a handle from `omatrack_open` that has not been closed.
 #[no_mangle]
-pub unsafe extern "C" fn rc_close(handle: *mut c_void) {
+pub unsafe extern "C" fn omatrack_close(handle: *mut c_void) {
     if !handle.is_null() {
         drop(Box::from_raw(handle as *mut BridgeFile));
     }
@@ -123,14 +123,14 @@ pub unsafe extern "C" fn rc_close(handle: *mut c_void) {
 
 /// Thread-local error string from the last failing call.
 #[no_mangle]
-pub extern "C" fn rc_last_error() -> *const c_char {
+pub extern "C" fn omatrack_last_error() -> *const c_char {
     LAST_ERROR.with(|cell| cell.borrow().as_ptr())
 }
 
 // ── metadata ─────────────────────────────────────────────────────────
 
 #[no_mangle]
-pub extern "C" fn rc_format(handle: *mut c_void) -> *const c_char {
+pub extern "C" fn omatrack_format(handle: *mut c_void) -> *const c_char {
     match as_file(handle) {
         Some(f) => {
             static AIMD: &[u8] = b"aimd\0";
@@ -154,10 +154,10 @@ pub extern "C" fn rc_format(handle: *mut c_void) -> *const c_char {
 /// Media time offset of the source in ns, written to `out`.
 ///
 /// # Safety
-/// `handle` must be NULL or a live `rc_open` handle, and `out` must point to a
+/// `handle` must be NULL or a live `omatrack_open` handle, and `out` must point to a
 /// writable `i64`.
 #[no_mangle]
-pub unsafe extern "C" fn rc_media_time_offset_ns(
+pub unsafe extern "C" fn omatrack_media_time_offset_ns(
     handle: *mut c_void,
     out: *mut i64,
 ) -> std::os::raw::c_int {
@@ -174,12 +174,12 @@ pub unsafe extern "C" fn rc_media_time_offset_ns(
 }
 
 #[no_mangle]
-pub extern "C" fn rc_channel_count(handle: *mut c_void) -> usize {
+pub extern "C" fn omatrack_channel_count(handle: *mut c_void) -> usize {
     as_file(handle).map(|f| f.src.channels().len()).unwrap_or(0)
 }
 
 #[no_mangle]
-pub extern "C" fn rc_channel_name(handle: *mut c_void, index: usize) -> *const c_char {
+pub extern "C" fn omatrack_channel_name(handle: *mut c_void, index: usize) -> *const c_char {
     match as_file(handle) {
         Some(f) => f
             .names
@@ -191,7 +191,7 @@ pub extern "C" fn rc_channel_name(handle: *mut c_void, index: usize) -> *const c
 }
 
 #[no_mangle]
-pub extern "C" fn rc_channel_unit(handle: *mut c_void, index: usize) -> *const c_char {
+pub extern "C" fn omatrack_channel_unit(handle: *mut c_void, index: usize) -> *const c_char {
     match as_file(handle) {
         Some(f) => f
             .units
@@ -203,7 +203,7 @@ pub extern "C" fn rc_channel_unit(handle: *mut c_void, index: usize) -> *const c
 }
 
 #[no_mangle]
-pub extern "C" fn rc_channel_type_code(handle: *mut c_void, index: usize) -> u32 {
+pub extern "C" fn omatrack_channel_type_code(handle: *mut c_void, index: usize) -> u32 {
     match as_file(handle) {
         Some(f) => f
             .src
@@ -216,7 +216,7 @@ pub extern "C" fn rc_channel_type_code(handle: *mut c_void, index: usize) -> u32
 }
 
 #[no_mangle]
-pub extern "C" fn rc_channel_duration_ns(handle: *mut c_void, index: usize) -> u64 {
+pub extern "C" fn omatrack_channel_duration_ns(handle: *mut c_void, index: usize) -> u64 {
     match as_file(handle) {
         Some(f) => f
             .src
@@ -229,7 +229,7 @@ pub extern "C" fn rc_channel_duration_ns(handle: *mut c_void, index: usize) -> u
 }
 
 #[no_mangle]
-pub extern "C" fn rc_channel_sample_count(handle: *mut c_void, index: usize) -> u64 {
+pub extern "C" fn omatrack_channel_sample_count(handle: *mut c_void, index: usize) -> u64 {
     match as_file(handle) {
         Some(f) => f
             .src
@@ -242,7 +242,7 @@ pub extern "C" fn rc_channel_sample_count(handle: *mut c_void, index: usize) -> 
 }
 
 #[no_mangle]
-pub extern "C" fn rc_channel_chunk_count(handle: *mut c_void, index: usize) -> usize {
+pub extern "C" fn omatrack_channel_chunk_count(handle: *mut c_void, index: usize) -> usize {
     match as_file(handle) {
         Some(f) => f
             .src
@@ -255,7 +255,7 @@ pub extern "C" fn rc_channel_chunk_count(handle: *mut c_void, index: usize) -> u
 }
 
 #[no_mangle]
-pub extern "C" fn rc_chunk_period_ns(handle: *mut c_void, index: usize, chunk: usize) -> u64 {
+pub extern "C" fn omatrack_chunk_period_ns(handle: *mut c_void, index: usize, chunk: usize) -> u64 {
     match as_file(handle) {
         Some(f) => f
             .src
@@ -269,7 +269,11 @@ pub extern "C" fn rc_chunk_period_ns(handle: *mut c_void, index: usize, chunk: u
 }
 
 #[no_mangle]
-pub extern "C" fn rc_chunk_time_base_ns(handle: *mut c_void, index: usize, chunk: usize) -> u64 {
+pub extern "C" fn omatrack_chunk_time_base_ns(
+    handle: *mut c_void,
+    index: usize,
+    chunk: usize,
+) -> u64 {
     match as_file(handle) {
         Some(f) => f
             .src
@@ -283,7 +287,11 @@ pub extern "C" fn rc_chunk_time_base_ns(handle: *mut c_void, index: usize, chunk
 }
 
 #[no_mangle]
-pub extern "C" fn rc_chunk_sample_count(handle: *mut c_void, index: usize, chunk: usize) -> u64 {
+pub extern "C" fn omatrack_chunk_sample_count(
+    handle: *mut c_void,
+    index: usize,
+    chunk: usize,
+) -> u64 {
     match as_file(handle) {
         Some(f) => f
             .src
@@ -303,10 +311,10 @@ pub extern "C" fn rc_chunk_sample_count(handle: *mut c_void, index: usize, chunk
 /// the chunk ends early). `out` must have room for `n` doubles.
 ///
 /// # Safety
-/// `handle` must be NULL or a live `rc_open` handle, and `out` must point to
+/// `handle` must be NULL or a live `omatrack_open` handle, and `out` must point to
 /// `n` writable doubles.
 #[no_mangle]
-pub unsafe extern "C" fn rc_decode_range(
+pub unsafe extern "C" fn omatrack_decode_range(
     handle: *mut c_void,
     index: usize,
     chunk: usize,
@@ -340,13 +348,13 @@ pub unsafe extern "C" fn rc_decode_range(
 /// Decode one logical multichunk channel into a single contiguous buffer.
 /// Samples are emitted in chunk order (which is also time order). Returns the
 /// total number of samples written; `out` must have room for
-/// `rc_channel_sample_count` doubles.
+/// `omatrack_channel_sample_count` doubles.
 ///
 /// # Safety
-/// `handle` must be NULL or a live `rc_open` handle, and `out` must point to
+/// `handle` must be NULL or a live `omatrack_open` handle, and `out` must point to
 /// `capacity` writable doubles.
 #[no_mangle]
-pub unsafe extern "C" fn rc_channel_decode_all(
+pub unsafe extern "C" fn omatrack_channel_decode_all(
     handle: *mut c_void,
     index: usize,
     out: *mut f64,
@@ -382,10 +390,10 @@ pub unsafe extern "C" fn rc_channel_decode_all(
 /// Writes the value to `out` and returns 1 on success, 0 when out of range.
 ///
 /// # Safety
-/// `handle` must be NULL or a live `rc_open` handle, and `out` must point to a
+/// `handle` must be NULL or a live `omatrack_open` handle, and `out` must point to a
 /// writable double.
 #[no_mangle]
-pub unsafe extern "C" fn rc_sample_at(
+pub unsafe extern "C" fn omatrack_sample_at(
     handle: *mut c_void,
     index: usize,
     time_ns: u64,
@@ -408,7 +416,7 @@ pub unsafe extern "C" fn rc_sample_at(
 }
 
 #[no_mangle]
-pub extern "C" fn rc_sample_time_ns(
+pub extern "C" fn omatrack_sample_time_ns(
     handle: *mut c_void,
     index: usize,
     chunk: usize,
@@ -426,8 +434,8 @@ mod tests {
 
     #[test]
     fn ffi_smoke_open_null_and_free() {
-        // rc_close(NULL) must not crash.
-        unsafe { rc_close(std::ptr::null_mut()) };
+        // omatrack_close(NULL) must not crash.
+        unsafe { omatrack_close(std::ptr::null_mut()) };
         assert!(as_file(std::ptr::null_mut()).is_none());
     }
 }

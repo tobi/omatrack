@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
-project(racecraft_qt VERSION 0.1.0 LANGUAGES CXX)
+project(omatrack VERSION 0.1.0 LANGUAGES CXX)
+include(GNUInstallDirs)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -10,7 +11,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-# Binaries stay at the top of the build tree: ./build/racecraft, ./build/racecraft-cli.
+# Binaries stay at the top of the build tree: ./build/omatrack, ./build/omatrack-cli.
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
 find_program(CCACHE_PROGRAM ccache)
@@ -32,17 +33,22 @@ set(QT_QML_GENERATE_QMLLS_INI ON)
 
 # Warnings are opt-in per target so Qt-generated sources and the vendored Rust
 # bridge are not held to them.
-add_library(racecraft_warnings INTERFACE)
-target_compile_options(racecraft_warnings INTERFACE
+add_library(omatrack_warnings INTERFACE)
+target_compile_options(omatrack_warnings INTERFACE
   -Wall -Wextra -Wno-unused-parameter)
 
 enable_testing()
+option(OMATRACK_ENABLE_AUTOTEST_HARNESS
+  "Compile the state-mutating GUI acceptance harness" OFF)
 
 add_subdirectory(third_party)
 add_subdirectory(src/core)
 add_subdirectory(src/app)
 add_subdirectory(cli)
+add_subdirectory(tests)
 
 # Formatting and static-analysis gates. Included last: it wires targets that
 # qt_add_qml_module and the Rust workspace create in the subdirectories above.
-include(cmake/RacecraftLint.cmake)
+include(cmake/OmatrackLint.cmake)
+install(FILES README.md LICENSE THIRD_PARTY_NOTICES.md
+  DESTINATION ${CMAKE_INSTALL_DOCDIR})

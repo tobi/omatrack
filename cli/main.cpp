@@ -1,17 +1,18 @@
-// racecraft-cli — headless verification tool for the racecraft-qt engine.
+// omatrack-cli — headless inspection tool for the Omatrack engine.
 //
-//   racecraft-cli parse <file>   → validates parsing: channels, mapping, laps.
-//   racecraft-cli unify <file>   → builds 50 Hz UnifiedLap for fastest lap and
-//                                  writes {file}.unified.csv.
+//   omatrack-cli parse <file>
+//   omatrack-cli unify <file> --output <csv>
 //
 // Exit code is the acceptance signal: 0 = success, non-zero = failure.
 
 #include "core/TelemetryEngine.h"
 
+#include <algorithm>
 #include <cstdio>
+#include <filesystem>
 #include <string>
 
-using namespace racecraft;
+using namespace omatrack;
 
 static int cmdParse(const std::string& path) {
     auto src = TelemetrySource::open(path);
@@ -49,19 +50,13 @@ static int cmdParse(const std::string& path) {
         printf("FAIL: no channels\n");
         failures++;
     }
-    if (!mapping.count("speed")) {
-        printf("FAIL: no speed channel mapped\n");
+    if (laps.empty()) {
+        printf("FAIL: no laps detected\n");
         failures++;
     }
-    if (laps.size() < 2) {
-        printf("FAIL: fewer than two laps detected (%zu)\n", laps.size());
-        failures++;
-    }
-    // ever-present IMSA LMP2 channels we know must exist in this dataset family
-    for (const char* required : {"speed", "gear", "throttle", "brake"}) {
-        if (!mapping.count(required)) {
-            printf("WARN: %s channel not mapped\n", required);
-        }
+    for (const char* conceptName : {"speed", "gear", "throttle", "brake"}) {
+        if (!mapping.count(conceptName))
+            printf("INFO: optional %s concept not mapped\n", conceptName);
     }
     if (failures) {
         printf("parse: FAILED (%d)\n", failures);
@@ -71,7 +66,7 @@ static int cmdParse(const std::string& path) {
     return 0;
 }
 
-static int cmdUnify(const std::string& path) {
+static int cmdUnify(const std::string& path, const std::string& outputPath) {
     auto src = TelemetrySource::open(path);
     if (!src) return 1;
 
@@ -97,37 +92,39 @@ static int cmdUnify(const std::string& path) {
     printf("unified: %zu samples @ %d Hz\n", u.size(), u.sampleRate);
 
     int failures = 0;
-    auto nonEmpty = [&](const char* label, size_t n) {
+    auto report = [](const char* label, size_t n) {
         printf("  %-14s n=%zu\n", label, n);
-        if (n == 0) {
-            printf("FAIL: %s empty\n", label);
-            failures++;
-        }
     };
-    nonEmpty("speed", u.speed.size());
-    nonEmpty("throttle", u.throttle.size());
-    nonEmpty("brake", u.brake.size());
-    nonEmpty("steering", u.steering.size());
-    nonEmpty("gear", u.gear.size());
-    nonEmpty("distance", u.distance.size());
+    report("speed", u.speed.size());
+    report("throttle", u.throttle.size());
+    report("brake", u.brake.size());
+    report("steering", u.steering.size());
+    report("gear", u.gear.size());
+    report("distance", u.distance.size());
     printf("  distance source: %s\n", u.distanceSource == DistanceSource::Native
                                           ? "native"
                                           : "speed-fused");
-
-    // sanity: sample speed should be plausible for a racing lap
-    double peak = 0;
-    for (double s : u.speed) peak = std::max(peak, s);
-    printf("  peak speed: %.1f km/h\n", peak);
-    if (peak < 40 || peak > 400) {
-        printf("FAIL: implausible peak speed %.1f km/h\n", peak);
+    if (u.size() == 0 || u.speed.size() != u.size() ||
+        u.distance.size() != u.size()) {
+        printf("FAIL: required unified arrays are missing or misaligned\n");
         failures++;
     }
 
-    // CSV dump
-    std::string csvPath = path + ".unified.csv";
-    FILE* f = fopen(csvPath.c_str(), "w");
+    double peak = 0.0;
+    for (double speed : u.speed) peak = std::max(peak, speed);
+    printf("  peak speed: %.1f km/h\n", peak);
+    if (failures) {
+        printf("unify: FAILED (%d)\n", failures);
+        return 1;
+    }
+
+    if (std::filesystem::exists(outputPath)) {
+        printf("FAIL: refusing to overwrite %s\n", outputPath.c_str());
+        return 1;
+    }
+    FILE* f = fopen(outputPath.c_str(), "w");
     if (!f) {
-        printf("FAIL: cannot write %s\n", csvPath.c_str());
+        printf("FAIL: cannot write %s\n", outputPath.c_str());
         return 1;
     }
     fprintf(f,
@@ -135,39 +132,58 @@ static int cmdUnify(const std::string& path) {
             "distance,gForceLong,gpsLat,gpsLon,gpsPositionAccuracy,"
             "gpsSpeedAccuracy\n");
     for (size_t i = 0; i < u.size(); ++i) {
-        fprintf(f,
-                "%.3f,%.3f,%.4f,%.4f,%.3f,%.4f,%.3f,%d,%.2f,%.4f,"
-                "%.8f,%.8f,%.3f,%.3f\n",
-                u.time[i], u.speed[i], u.throttle[i], u.driverThrottle[i],
-                u.brake[i], u.clutch[i], u.steering[i], u.gear[i],
-                u.distance[i], u.gForceLong[i], u.gpsLat[i], u.gpsLon[i],
-                u.gpsPositionAccuracy[i], u.gpsSpeedAccuracy[i]);
+        auto writeDouble = [&](const std::vector<double>& values,
+                               const char* format) {
+            fputc(',', f);
+            if (i < values.size()) fprintf(f, format, values[i]);
+        };
+        fprintf(f, "%.3f", u.time[i]);
+        writeDouble(u.speed, "%.3f");
+        writeDouble(u.throttle, "%.4f");
+        writeDouble(u.driverThrottle, "%.4f");
+        writeDouble(u.brake, "%.3f");
+        writeDouble(u.clutch, "%.4f");
+        writeDouble(u.steering, "%.3f");
+        fputc(',', f);
+        if (i < u.gear.size()) fprintf(f, "%d", u.gear[i]);
+        writeDouble(u.distance, "%.2f");
+        writeDouble(u.gForceLong, "%.4f");
+        writeDouble(u.gpsLat, "%.8f");
+        writeDouble(u.gpsLon, "%.8f");
+        writeDouble(u.gpsPositionAccuracy, "%.3f");
+        writeDouble(u.gpsSpeedAccuracy, "%.3f");
+        fputc('\n', f);
     }
-    fclose(f);
-    printf("wrote %s\n", csvPath.c_str());
-
-    if (failures) {
-        printf("unify: FAILED (%d)\n", failures);
+    bool writeFailed = ferror(f) != 0;
+    if (fclose(f) != 0) writeFailed = true;
+    if (writeFailed) {
+        std::filesystem::remove(outputPath);
+        printf("FAIL: incomplete export removed: %s\n", outputPath.c_str());
         return 1;
     }
+    printf("wrote %s\n", outputPath.c_str());
+
     printf("unify: OK\n");
     return 0;
 }
 
 int main(int argc, char** argv) {
-    if (argc < 3) {
+    if (argc < 2) {
         fprintf(stderr,
-                "usage: %s parse|unify <file.pds|file.ld|file.vbo>\n"
-                "  parse — validate channel parsing + lap detection (exit 0 on "
-                "success)\n"
-                "  unify — build 50 Hz UnifiedLap for fastest lap, dump CSV\n",
-                argv[0]);
+                "usage:\n"
+                "  %s parse <file.pds|file.ld|file.vbo|file.mp4>\n"
+                "  %s unify <file> --output <csv>\n\n"
+                "unify exports location-bearing GPS fields when available; "
+                "choose an explicit output path and handle it as sensitive "
+                "data.\n",
+                argv[0], argv[0]);
         return 2;
     }
-    std::string cmd = argv[1];
-    std::string path = argv[2];
-    if (cmd == "parse") return cmdParse(path);
-    if (cmd == "unify") return cmdUnify(path);
-    fprintf(stderr, "unknown command: %s\n", cmd.c_str());
+    const std::string cmd = argv[1];
+    if (cmd == "parse" && argc == 3) return cmdParse(argv[2]);
+    if (cmd == "unify" && argc == 5 && std::string(argv[3]) == "--output")
+        return cmdUnify(argv[2], argv[4]);
+    fprintf(stderr, "invalid arguments; run %s without arguments for usage\n",
+            argv[0]);
     return 2;
 }

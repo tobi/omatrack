@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Omatrack
+GenericName=Telemetry Workstation
+TryExec=omatrack
+Comment=Cross-format motorsport telemetry analysis
+Exec=omatrack %f
+Icon=io.github.tobi.omatrack
+Terminal=false
+Categories=Utility;Engineering;
+MimeType=application/x-cosworth-pds;application/x-motec-ld;application/x-racelogic-vbo;
+StartupNotify=true
+Keywords=telemetry;motorsport;racing;data;video;
+StartupWMClass=omatrack

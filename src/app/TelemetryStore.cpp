@@ -3,6 +3,7 @@
 #include "core/TelemetryEngine.h"
 #include "YamlConfig.h"
 
+#include <QCoreApplication>
 #include <QDebug>
 #include <QDateTime>
 #include <QDir>
@@ -19,15 +20,14 @@
 #include <QRegularExpression>
 #include <QSslError>
 #include <QSaveFile>
-#include <QScopeGuard>
 #include <QSettings>
+#include <QScopeGuard>
 #include <QStandardPaths>
 #include <QTextStream>
 #include <QTimer>
 #include <QUrl>
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <limits>
 #include <utility>
@@ -38,6 +38,24 @@ constexpr int kTrackAtlasCheckIntervalMs = 6 * 60 * 60 * 1000;
 constexpr double kPi = 3.14159265358979323846;
 const QUrl kTrackAtlasUrl(QStringLiteral(
     "https://raw.githubusercontent.com/tobi/track-atlas/main/tracks.jsonl"));
+QString legacyAppDataPath() {
+    return QStandardPaths::writableLocation(
+               QStandardPaths::GenericDataLocation) +
+           QStringLiteral("/racecraft/racecraft-qt");
+}
+QString telemetryPathForInput(const QString& path) {
+    if (QFileInfo(path).suffix().compare(QStringLiteral("ldx"),
+                                         Qt::CaseInsensitive) != 0)
+        return path;
+    QString stem = path;
+    stem.chop(3);
+    for (const QString& extension :
+         {QStringLiteral("ld"), QStringLiteral("LD")}) {
+        const QString companion = stem + extension;
+        if (QFileInfo::exists(companion)) return companion;
+    }
+    return {};
+}
 
 QString normalizeAtlasName(QString value) {
     value = value.toLower();
@@ -98,8 +116,8 @@ bool yamlBool(const QVariant& value, bool fallback) {
     return fallback;
 }
 
-QVector<double> speedLandmarkAlignment(const racecraft::UnifiedLap& primary,
-                                       const racecraft::UnifiedLap& compare) {
+QVector<double> speedLandmarkAlignment(const omatrack::UnifiedLap& primary,
+                                       const omatrack::UnifiedLap& compare) {
     if (primary.speed.size() != primary.time.size() ||
         compare.speed.size() != compare.time.size() ||
         primary.speed.size() < 3 || compare.speed.size() < 3)
@@ -222,10 +240,9 @@ QVector<double> speedLandmarkAlignment(const racecraft::UnifiedLap& primary,
     }
     return result;
 }
-
 }  // namespace
 
-using namespace racecraft;
+using namespace omatrack;
 
 // ── SessionHandle ───────────────────────────────────────────────────
 
@@ -235,11 +252,12 @@ SessionHandle::SessionHandle(const QString& path) : path_(path) {
     SessionMeta meta =
         sessionMetaFromFilename(fi.completeBaseName().toStdString());
     venue_ = QString::fromStdString(meta.venue);
-    driver_ = QString::fromStdString(meta.driverName);
     vehicle_ = QString::fromStdString(meta.vehicleId);
     time_ = QString::fromStdString(meta.time);
     driverId_ = QString::fromStdString(meta.driverTag);
-    driver_ = QStringLiteral("Driver id %1").arg(driverId_);
+    driver_ = driverId_.isEmpty()
+                  ? QStringLiteral("Unknown driver")
+                  : QStringLiteral("Driver id %1").arg(driverId_);
     const QString stem = fi.completeBaseName();
     QRegularExpression carPattern(QStringLiteral("(?:^|[_ ])Car(\\d+)"),
                                   QRegularExpression::CaseInsensitiveOption);
@@ -251,17 +269,11 @@ SessionHandle::SessionHandle(const QString& path) : path_(path) {
         const QRegularExpressionMatch hashMatch = hashPattern.match(stem);
         if (hashMatch.hasMatch()) carNumber_ = hashMatch.captured(1);
     }
-    QRegularExpression classPattern(QStringLiteral("(LMP\\d+|GT[0-9A-Z]+)"),
-                                    QRegularExpression::CaseInsensitiveOption);
-    const QRegularExpressionMatch classMatch = classPattern.match(stem);
-    carClass_ =
-        classMatch.hasMatch() ? classMatch.captured(1).toUpper() : vehicle_;
 
-    // Track: prefer bundled venue knowledge; fall back to a folder name token.
-    track_ = venue_;
-    if (track_.isEmpty()) {
-        track_ = fi.dir().dirName();
-    }
+    // Until Track Atlas resolves the layout, use the containing folder as the
+    // generic track label. Filename-specific venue assumptions belong in user
+    // configuration, not the analysis core.
+    track_ = venue_.isEmpty() ? fi.dir().dirName() : venue_;
     date_ = QString::fromStdString(meta.date);
     if (date_.isEmpty()) {
         date_ = "Unknown";
@@ -362,7 +374,7 @@ QString SessionHandle::bestLapTime() {
                : QStringLiteral("—");
 }
 
-const racecraft::TelemetrySource* SessionHandle::source() {
+const omatrack::TelemetrySource* SessionHandle::source() {
     ensureSource();
     return src_.get();
 }
@@ -372,7 +384,7 @@ const QVector<LapEntry>& SessionHandle::laps() {
     return laps_;
 }
 
-std::shared_ptr<const racecraft::UnifiedLap> SessionHandle::unifiedLap(
+std::shared_ptr<const omatrack::UnifiedLap> SessionHandle::unifiedLap(
     int lapId) {
     ensureSource();
     if (!src_) return nullptr;
@@ -395,7 +407,7 @@ std::shared_ptr<const racecraft::UnifiedLap> SessionHandle::unifiedLap(
 TelemetryStore::TelemetryStore(QObject* parent) : QObject(parent) {
     loadPreferences();
     loadChannelsConfig();
-    // A fresh install gets a real racecraft.yml immediately, so the defaults
+    // A fresh install gets a real omatrack.yml immediately, so the defaults
     // are visible and hand-editable instead of implicit.
     if (YamlConfig::instance().isFresh()) savePreferences();
 
@@ -419,63 +431,103 @@ TelemetryStore::TelemetryStore(QObject* parent) : QObject(parent) {
 TelemetryStore::~TelemetryStore() = default;
 
 void TelemetryStore::loadPreferences() {
-    // racecraft.yml is the source of truth. QSettings is read only to migrate
-    // a pre-YAML install; nothing is written back to it.
     YamlConfig& config = YamlConfig::instance();
-    QSettings s;
-    QStringList dirs =
-        config.value(QStringLiteral("telemetry_dirs")).toStringList();
-    if (dirs.isEmpty()) dirs = s.value("sessionDirs").toStringList();
-    if (dirs.isEmpty())
-        dirs.append(QDir::homePath() + QStringLiteral("/Documents/Telemetry"));
-    for (const QString& d : dirs)
-        if (!sessionDirs_.contains(d)) sessionDirs_.append(d);
+    if (config.isFresh()) {
+        // Read the pre-YAML store only during first-run migration. The
+        // organization/application names are explicit because the process now
+        // identifies as Omatrack and default QSettings would point elsewhere.
+        const QString legacyOrganization =
+            QCoreApplication::organizationName().endsWith(
+                QStringLiteral("-autotest"))
+                ? QStringLiteral("racecraft-autotest")
+                : QStringLiteral("racecraft");
+        QSettings legacy(QSettings::NativeFormat, QSettings::UserScope,
+                         legacyOrganization, QStringLiteral("racecraft-qt"));
+        legacy.setFallbacksEnabled(false);
+        if (!legacy.allKeys().isEmpty()) {
+            config.setValue(QStringLiteral("telemetry_dirs"),
+                            legacy.value(QStringLiteral("sessionDirs")));
+            config.setValue(QStringLiteral("view/channel_height"),
+                            legacy.value(QStringLiteral("channelHeight"), 110));
+            config.setValue(QStringLiteral("video/muted"),
+                            legacy.value(QStringLiteral("videoMuted"), false));
+            config.setMap(
+                {QStringLiteral("selection")},
+                QVariantMap{
+                    {QStringLiteral("primary_key"),
+                     legacy.value(QStringLiteral("lastPrimaryKey"))},
+                    {QStringLiteral("primary_lap"),
+                     legacy.value(QStringLiteral("lastPrimaryLap"), -1)},
+                    {QStringLiteral("compare_key"),
+                     legacy.value(QStringLiteral("lastCompareKey"))},
+                    {QStringLiteral("compare_lap"),
+                     legacy.value(QStringLiteral("lastCompareLap"), -1)}});
 
-    channelHeight_ = config
-                         .value(QStringLiteral("view/channel_height"),
-                                s.value("channelHeight", 110))
-                         .toInt();
+            auto importStringGroup = [&legacy](const QString& group) {
+                QVariantMap values;
+                legacy.beginGroup(group);
+                for (const QString& key : legacy.childKeys())
+                    values.insert(key, legacy.value(key));
+                legacy.endGroup();
+                return values;
+            };
+            config.setMap({QStringLiteral("driver_aliases")},
+                          importStringGroup(QStringLiteral("driverAliases")));
+            config.setMap({QStringLiteral("driver_mappings")},
+                          importStringGroup(QStringLiteral("driverMappings")));
+
+            QVariantMap channels;
+            legacy.beginGroup(QStringLiteral("channels"));
+            const bool currentPalette =
+                legacy.value(QStringLiteral("_paletteSchema"), 1).toInt() >= 3;
+            for (const QString& key : legacy.childGroups()) {
+                legacy.beginGroup(key);
+                QVariantMap channel;
+                if (legacy.contains(QStringLiteral("visible")))
+                    channel.insert(QStringLiteral("visible"),
+                                   legacy.value(QStringLiteral("visible")));
+                if (currentPalette && legacy.contains(QStringLiteral("color")))
+                    channel.insert(QStringLiteral("color"),
+                                   legacy.value(QStringLiteral("color")));
+                if (legacy.contains(QStringLiteral("weight")))
+                    channel.insert(QStringLiteral("weight"),
+                                   legacy.value(QStringLiteral("weight")));
+                legacy.endGroup();
+                if (!channel.isEmpty()) channels.insert(key, channel);
+            }
+            legacy.endGroup();
+            config.setMap({QStringLiteral("channels")}, channels);
+        }
+    }
+    const QVariant configuredDirs =
+        config.value(QStringLiteral("telemetry_dirs"));
+    const QStringList dirs =
+        configuredDirs.isValid()
+            ? configuredDirs.toStringList()
+            : QStringList{QDir::homePath() +
+                          QStringLiteral("/Documents/Telemetry")};
+    for (const QString& directory : dirs)
+        if (!sessionDirs_.contains(directory)) sessionDirs_.append(directory);
+
+    channelHeight_ =
+        config.value(QStringLiteral("view/channel_height"), 110).toInt();
     videoMuted_ = yamlBool(config.value(QStringLiteral("video/muted")), false);
     const QVariantMap selection = config.map({QStringLiteral("selection")});
-    lastPrimaryKey_ =
-        selection
-            .value(QStringLiteral("primary_key"), s.value("lastPrimaryKey"))
-            .toString();
+    lastPrimaryKey_ = selection.value(QStringLiteral("primary_key")).toString();
     lastPrimaryLap_ =
-        selection
-            .value(QStringLiteral("primary_lap"), s.value("lastPrimaryLap", -1))
-            .toInt();
-    lastCompareKey_ =
-        selection
-            .value(QStringLiteral("compare_key"), s.value("lastCompareKey"))
-            .toString();
+        selection.value(QStringLiteral("primary_lap"), -1).toInt();
+    lastCompareKey_ = selection.value(QStringLiteral("compare_key")).toString();
     lastCompareLap_ =
-        selection
-            .value(QStringLiteral("compare_lap"), s.value("lastCompareLap", -1))
-            .toInt();
+        selection.value(QStringLiteral("compare_lap"), -1).toInt();
 
     const QVariantMap aliases = config.map({QStringLiteral("driver_aliases")});
-    if (aliases.isEmpty()) {
-        s.beginGroup("driverAliases");
-        for (const QString& key : s.childKeys())
-            driverAliases_.insert(key, s.value(key).toString());
-        s.endGroup();
-    } else {
-        for (auto it = aliases.cbegin(); it != aliases.cend(); ++it)
-            driverAliases_.insert(it.key(), it.value().toString());
-    }
+    for (auto it = aliases.cbegin(); it != aliases.cend(); ++it)
+        driverAliases_.insert(it.key(), it.value().toString());
 
     const QVariantMap mappings =
         config.map({QStringLiteral("driver_mappings")});
-    if (mappings.isEmpty()) {
-        s.beginGroup("driverMappings");
-        for (const QString& key : s.childKeys())
-            driverMappings_.insert(key, s.value(key).toString());
-        s.endGroup();
-    } else {
-        for (auto it = mappings.cbegin(); it != mappings.cend(); ++it)
-            driverMappings_.insert(it.key(), it.value().toString());
-    }
+    for (auto it = mappings.cbegin(); it != mappings.cend(); ++it)
+        driverMappings_.insert(it.key(), it.value().toString());
 }
 
 void TelemetryStore::savePreferences() {
@@ -549,7 +601,13 @@ QString TelemetryStore::trackAtlasCachePath() const {
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
         QStringLiteral("/track-atlas");
     QDir().mkpath(directory);
-    return directory + QStringLiteral("/tracks.jsonl");
+    const QString current = directory + QStringLiteral("/tracks.jsonl");
+    if (!QFile::exists(current)) {
+        const QString legacy =
+            legacyAppDataPath() + QStringLiteral("/track-atlas/tracks.jsonl");
+        if (QFile::exists(legacy)) QFile::copy(legacy, current);
+    }
+    return current;
 }
 
 bool TelemetryStore::parseTrackAtlas(const QByteArray& payload) {
@@ -593,13 +651,19 @@ void TelemetryStore::refreshTrackAtlas() { updateTrackAtlas(true); }
 
 void TelemetryStore::updateTrackAtlas(bool force) {
     const QFileInfo cache(trackAtlasCachePath());
+    if (!force && cache.exists()) {
+        const qint64 ageSeconds =
+            cache.lastModified().secsTo(QDateTime::currentDateTimeUtc());
+        if (ageSeconds >= 0 && ageSeconds < kTrackAtlasMaxAgeSeconds) return;
+    }
 
     trackAtlasStatus_ = QStringLiteral("Updating track-atlas…");
     emit trackAtlasChanged();
     QNetworkRequest request(kTrackAtlasUrl);
-    request.setHeader(QNetworkRequest::UserAgentHeader,
-                      QStringLiteral("racecraft-qt/0.1"));
-    request.setTransferTimeout(std::chrono::seconds{15});
+    request.setHeader(
+        QNetworkRequest::UserAgentHeader,
+        QStringLiteral("Omatrack/") + QCoreApplication::applicationVersion());
+    request.setTransferTimeout(15000);
     QNetworkReply* reply = atlasNetwork_->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         const auto cleanup = qScopeGuard([reply]() { reply->deleteLater(); });
@@ -630,7 +694,6 @@ void TelemetryStore::updateTrackAtlas(bool force) {
 void TelemetryStore::scan() {
     closedTracks_.clear();
     scannedSessionPaths_.clear();
-    scannedSessionIdentities_.clear();
     clearSessions();
     for (const QString& dir : sessionDirs_) scanDirectory(dir);
     if (!lastPrimaryKey_.isEmpty()) {
@@ -667,23 +730,12 @@ void TelemetryStore::scanDirectory(const QString& dir) {
     QStringList paths;
     while (it.hasNext()) {
         it.next();
-        QString path = it.filePath();
-        const QFileInfo info(path);
-        if (info.suffix().compare("ldx", Qt::CaseInsensitive) == 0) {
-            QString companion = path;
-            companion.chop(3);
-            companion += "ld";
-            if (!QFileInfo::exists(companion)) continue;
-            path = companion;
-        }
+        const QString path = telemetryPathForInput(it.filePath());
+        if (path.isEmpty()) continue;
         const QFileInfo resolved(path);
         const QString canonical = resolved.canonicalFilePath().isEmpty()
                                       ? resolved.absoluteFilePath()
                                       : resolved.canonicalFilePath();
-        QString identity = resolved.completeBaseName().toLower();
-        identity.remove(QRegularExpression(QStringLiteral("-\\d+$")));
-        if (scannedSessionIdentities_.contains(identity)) continue;
-        scannedSessionIdentities_.insert(identity);
         if (scannedSessionPaths_.contains(canonical)) continue;
         scannedSessionPaths_.insert(canonical);
         if (!paths.contains(canonical)) paths.append(canonical);
@@ -710,12 +762,13 @@ void TelemetryStore::removeSessionDirectory(const QString& dirPath) {
 
 bool TelemetryStore::openFile(const QString& filePath) {
     if (filePath.isEmpty() || !QFileInfo::exists(filePath)) return false;
-    QString telemetryPath = filePath;
-    if (QFileInfo(filePath).suffix().compare("ldx", Qt::CaseInsensitive) == 0) {
-        telemetryPath.chop(3);
-        telemetryPath += "ld";
-    }
-    if (!QFileInfo::exists(telemetryPath)) return false;
+    const QString resolvedPath = telemetryPathForInput(filePath);
+    if (resolvedPath.isEmpty() || !QFileInfo::exists(resolvedPath))
+        return false;
+    const QFileInfo resolved(resolvedPath);
+    const QString telemetryPath = resolved.canonicalFilePath().isEmpty()
+                                      ? resolved.absoluteFilePath()
+                                      : resolved.canonicalFilePath();
 
     SessionHandle* raw = findSession(telemetryPath);
     bool added = false;
@@ -779,7 +832,7 @@ bool TelemetryStore::directoryExists(const QString& dirPath) const {
 // True when the active lap carries usable GPS: the damper-alignment tool is
 // only the fallback for sessions that cannot be aligned positionally.
 bool TelemetryStore::hasGpsData() const {
-    const racecraft::UnifiedLap* lap = primaryUnified();
+    const omatrack::UnifiedLap* lap = primaryUnified();
     if (!lap || lap->gpsLat.size() < 2 ||
         lap->gpsLat.size() != lap->gpsLon.size())
         return false;
@@ -1072,36 +1125,9 @@ void TelemetryStore::loadCornersForPrimary() {
     if (!primarySession_) return;
 
     corners_ = atlasCornersForPrimary();
-    QString trackKey = primarySession_->track().toLower();
-    trackKey.remove(QRegularExpression(QStringLiteral("[^a-z0-9]")));
-    if (corners_.isEmpty()) {
-        for (const QString& bundled :
-             {QStringLiteral("lilski_sebring"), QStringLiteral("ier_daytona"),
-              QStringLiteral("daytona")}) {
-            if (!trackKey.contains(bundled) && !bundled.contains(trackKey))
-                continue;
-            QFile file(QStringLiteral(":/corners/") + bundled +
-                       QStringLiteral(".csv"));
-            if (file.open(QIODevice::ReadOnly)) {
-                const auto lines = QString::fromUtf8(file.readAll())
-                                       .split('\n', Qt::SkipEmptyParts);
-                for (int i = 1; i < lines.size(); ++i) {
-                    const auto parts = lines[i].split(',');
-                    if (parts.size() < 3) continue;
-                    CornerZone corner;
-                    corner.name = parts[0].trimmed();
-                    if (ignoredImportedCorner(corner.name)) continue;
-                    corner.start = parts[1].trimmed().toDouble();
-                    corner.end = parts[2].trimmed().toDouble();
-                    corners_.append(corner);
-                }
-            }
-            break;
-        }
-    }
 
     migrateLegacyCorners(primarySession_->track());
-    // A local edit wins over Track Atlas: the override lives in racecraft.yml
+    // A local edit wins over Track Atlas: the override lives in omatrack.yml
     // under the track key and is written the moment the user changes a zone.
     const QVariantList overrides =
         YamlConfig::instance()
@@ -1306,7 +1332,7 @@ void TelemetryStore::setCursorFromVideoTime(double mediaTime) {
     if (!std::isfinite(mediaTime) || !primarySession_ ||
         !primarySession_->isVideo() || primaryLap_ < 0)
         return;
-    const racecraft::TelemetrySource* source = primarySession_->source();
+    const omatrack::TelemetrySource* source = primarySession_->source();
     if (!source) return;
     const UnifiedLap* unified = primaryUnified();
     if (!unified || unified->time.size() < 2) return;
@@ -1456,17 +1482,23 @@ void TelemetryStore::autoGenerateCorners() {
 }
 
 // One-time import of the pre-YAML per-track corner CSV so existing local
-// edits survive the move to racecraft.yml.
+// edits survive the move to omatrack.yml.
 void TelemetryStore::migrateLegacyCorners(const QString& track) {
     const QStringList path = cornerConfigPath(track);
     YamlConfig& config = YamlConfig::instance();
     if (!config.value(path).toList().isEmpty()) return;
     QString safeName = track.toLower();
     safeName.replace(' ', '_').replace('-', '_');
-    QFile legacy(
-        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
-        QStringLiteral("/") + safeName + QStringLiteral(".csv"));
-    if (!legacy.open(QIODevice::ReadOnly)) return;
+    QFile legacy;
+    const QStringList roots{
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation),
+        legacyAppDataPath()};
+    for (const QString& root : roots) {
+        legacy.setFileName(root + QStringLiteral("/") + safeName +
+                           QStringLiteral(".csv"));
+        if (legacy.open(QIODevice::ReadOnly)) break;
+    }
+    if (!legacy.isOpen()) return;
     QVariantList zones;
     const auto lines =
         QString::fromUtf8(legacy.readAll()).split('\n', Qt::SkipEmptyParts);
@@ -1484,7 +1516,7 @@ void TelemetryStore::migrateLegacyCorners(const QString& track) {
     config.save();
 }
 
-// racecraft.yml path for one track's corner override.
+// omatrack.yml path for one track's corner override.
 QStringList TelemetryStore::cornerConfigPath(const QString& track) {
     QString key = track.toLower();
     key.replace(' ', '_').replace('-', '_');
@@ -2116,9 +2148,9 @@ void TelemetryStore::setCornerName(int index, const QString& name) {
     if (index < 0 || index >= corners_.size()) return;
     const QString trimmed = name.trimmed();
     if (trimmed.isEmpty() || trimmed == corners_[index].name) return;
-    // The overlay CSV is comma-separated, one corner per line.
+    // Corner labels are single-line UI text; YAML safely quotes punctuation.
     QString sanitized = trimmed;
-    sanitized.replace(',', ' ').replace('\n', ' ');
+    sanitized.replace('\r', ' ').replace('\n', ' ');
     corners_[index].name = sanitized;
     emit cornersChanged();
     saveCorners();
@@ -2184,7 +2216,7 @@ const std::vector<double>* TelemetryStore::extraChannelData(
     auto cached = extraChannelCache_.constFind(cacheKey);
     if (cached != extraChannelCache_.cend()) return cached.value().get();
 
-    const racecraft::TelemetrySource* source = session->source();
+    const omatrack::TelemetrySource* source = session->source();
     if (!source) return nullptr;
     const QString rawName = key.mid(4);
     int channelIndex = -1;
@@ -2233,9 +2265,9 @@ QVariantList TelemetryStore::channelSettings() const {
                                {"weight", channelWeight(key)}});
     }
     if (primarySession_) {
-        const racecraft::TelemetrySource* source = primarySession_->source();
+        const omatrack::TelemetrySource* source = primarySession_->source();
         if (source) {
-            for (const racecraft::RawChannel& channel : source->channels()) {
+            for (const omatrack::RawChannel& channel : source->channels()) {
                 if (channel.samples.size() < 2) continue;
                 const QString key = QStringLiteral("raw:") +
                                     QString::fromStdString(channel.name);
@@ -2387,13 +2419,13 @@ void TelemetryStore::setDriverAlias(const QString& detected,
 
 // ── unified access ──────────────────────────────────────────────────
 
-const racecraft::UnifiedLap* TelemetryStore::primaryUnified() const {
+const omatrack::UnifiedLap* TelemetryStore::primaryUnified() const {
     if (!primarySession_ || primaryLap_ < 0) return nullptr;
     auto u = primarySession_->unifiedLap(primaryLap_);
     return u ? u.get() : nullptr;
 }
 
-const racecraft::UnifiedLap* TelemetryStore::compareUnified() const {
+const omatrack::UnifiedLap* TelemetryStore::compareUnified() const {
     if (!compareSession_ || compareLap_ < 0) return nullptr;
     auto u = compareSession_->unifiedLap(compareLap_);
     return u ? u.get() : nullptr;
@@ -2529,7 +2561,7 @@ double TelemetryStore::primaryVideoTime() const {
     if (!primarySession_ || !primarySession_->isVideo() || primaryLap_ < 0)
         return 0.0;
     auto* session = const_cast<SessionHandle*>(primarySession_);
-    const racecraft::TelemetrySource* source = session->source();
+    const omatrack::TelemetrySource* source = session->source();
     const UnifiedLap* unified = primaryUnified();
     if (!source || !unified || unified->time.empty()) return 0.0;
     const double position =
@@ -2626,9 +2658,9 @@ void TelemetryStore::ensureComparisonAlignment() const {
     comparisonAlignmentBasis_ =
         speedLandmarks
             ? QStringLiteral("speed landmarks")
-            : (primary->distanceSource == racecraft::DistanceSource::Native &&
+            : (primary->distanceSource == omatrack::DistanceSource::Native &&
                        compare->distanceSource ==
-                           racecraft::DistanceSource::Native
+                           omatrack::DistanceSource::Native
                    ? QStringLiteral("validated lap distance")
                    : QStringLiteral("wheel/GPS speed"));
 
@@ -2857,7 +2889,7 @@ double TelemetryStore::compareVideoTime() const {
     if (!compareSession_ || !compareSession_->isVideo() || compareLap_ < 0)
         return 0.0;
     auto* session = const_cast<SessionHandle*>(compareSession_);
-    const racecraft::TelemetrySource* source = session->source();
+    const omatrack::TelemetrySource* source = session->source();
     const UnifiedLap* primary = primaryUnified();
     if (!source || !primary || primary->time.size() < 2) return 0.0;
 

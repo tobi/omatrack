@@ -1,4 +1,5 @@
 pragma ComponentBehavior: Bound
+import Omatrack
 
 // Corner analysis inspector (separate Material window).
 //
@@ -15,7 +16,6 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
-import Racecraft
 
 ApplicationWindow {
     id: cornerWindow

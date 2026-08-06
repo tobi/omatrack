@@ -1,4 +1,5 @@
 pragma ComponentBehavior: Bound
+import Omatrack
 import Qt.labs.platform as Platform
 
 // Preferences window: driver mappings, telemetry directories, and Track Atlas
@@ -14,7 +15,6 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
-import Racecraft
 
 ApplicationWindow {
     id: preferencesWindow
@@ -69,7 +69,7 @@ ApplicationWindow {
     minimumHeight: 560
     minimumWidth: 700
     objectName: "settingsWindow"
-    title: "Racecraft Preferences"
+    title: "Omatrack Preferences"
     visible: false
     width: 820
 

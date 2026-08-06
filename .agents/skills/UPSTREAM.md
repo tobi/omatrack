@@ -29,5 +29,5 @@ done
 cp /tmp/qt-agent-skills/LICENSE .agents/skills/LICENSE.qt-agent-skills
 ```
 
-Then update the pinned commit above. `racecraft-qt/` is ours — never overwrite
-it from upstream.
+Then update the pinned commit above. `omatrack/` is ours — never overwrite it
+from upstream.

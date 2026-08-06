@@ -1,10 +1,11 @@
-// Implementation of the racecraft-qt core telemetry engine.
+// Implementation of the Omatrack core telemetry engine.
 //
-// Ports the racecraft analysis layer (MoTecParser.swift + TelemetryUtils)
+// Ports the Omatrack analysis layer (MoTecParser.swift + TelemetryUtils)
 // on top of the Rust parsing bridge. Parsing itself is delegated to the
 // vendored duckdb_motorsport_telemetry crates.
 
-#include "TelemetryEngine.h"
+#include "TelemetryEngineInternal.h"
+#include "omatrack_bridge.h"
 
 #include <algorithm>
 #include <cctype>
@@ -14,30 +15,9 @@
 #include <limits>
 #include <set>
 
-extern "C" {
-// C ABI bridge (third_party/motorsport-telemetry/bridge/src/lib.rs)
-void* rc_open(const char* path);
-void rc_close(void* handle);
-const char* rc_last_error();
-const char* rc_format(void* handle);
-int rc_media_time_offset_ns(void* handle, int64_t* out);
-size_t rc_channel_count(void* handle);
-const char* rc_channel_name(void* handle, size_t index);
-const char* rc_channel_unit(void* handle, size_t index);
-uint32_t rc_channel_type_code(void* handle, size_t index);
-uint64_t rc_channel_duration_ns(void* handle, size_t index);
-uint64_t rc_channel_sample_count(void* handle, size_t index);
-size_t rc_channel_chunk_count(void* handle, size_t index);
-uint64_t rc_chunk_period_ns(void* handle, size_t index, size_t chunk);
-size_t rc_channel_decode_all(void* handle, size_t index, double* out,
-                             size_t capacity);
-int rc_sample_at(void* handle, size_t index, uint64_t time_ns, int linear,
-                 double* out);
-}
+namespace omatrack {
 
-namespace racecraft {
-
-namespace {
+namespace detail {
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr int kDefaultSampleRate = 50;
@@ -304,7 +284,9 @@ int dominantDriverId(const std::vector<double>& values) {
     return bestId;
 }
 
-}  // namespace
+}  // namespace detail
+
+using namespace detail;
 
 // ── public helpers ──────────────────────────────────────────────────
 
@@ -353,53 +335,6 @@ SessionMeta sessionMetaFromFilename(const std::string& stem) {
             meta.time = buf;
         }
     }
-    static const std::map<std::string, std::string> codeMap = {
-        {"SEB", "Sebring"},      {"DAY", "Daytona"},
-        {"WGL", "Watkins Glen"}, {"MOS", "Mosport"},
-        {"RA", "Road America"},  {"RAM", "Road America"},
-        {"ATL", "Road Atlanta"}, {"IND", "Indianapolis"}};
-    // split stem on underscore
-    std::vector<std::string> tokens;
-    size_t start = 0;
-    while (start <= stem.size()) {
-        size_t end = stem.find('_', start);
-        if (end == std::string::npos) end = stem.size();
-        if (end > start) tokens.push_back(stem.substr(start, end - start));
-        start = end + 1;
-    }
-    std::string venueCode;
-    for (auto& t : tokens) {
-        if (codeMap.count(t)) {
-            venueCode = t;
-            break;
-        }
-    }
-    meta.venue = venueCode.empty() ? venueCode : codeMap.at(venueCode);
-    for (auto& t : tokens) {
-        if (t.find("LMP") != std::string::npos ||
-            t.find("MQ") != std::string::npos) {
-            meta.vehicleId = t;
-            break;
-        }
-    }
-    static const std::map<std::string, std::pair<std::string, std::string>>
-        driverTags = {{"_MJ_", {"Mikkel Jensen", "mj"}},
-                      {"_HM_", {"Hunter McElrea", "hm"}},
-                      {"_ST_", {"Steven Thomas", "st"}},
-                      {"_TL_", {"Tobi Lütke", "tl"}},
-                      {"_CM_", {"Charles Melesi", "cm"}},
-                      {"_MB_", {"Mathias Beche", "mb"}},
-                      {"_DH_", {"DHH", "dh"}},
-                      {"_SH_", {"Steven Holloway", "sh"}}};
-    meta.driverName = "Unknown";
-    meta.driverTag = "??";
-    for (auto& [key, val] : driverTags) {
-        if (stem.find(key) != std::string::npos) {
-            meta.driverName = val.first;
-            meta.driverTag = val.second;
-            break;
-        }
-    }
     meta.eventName = stem;
     return meta;
 }
@@ -408,22 +343,22 @@ SessionMeta sessionMetaFromFilename(const std::string& stem) {
 
 std::unique_ptr<TelemetrySource> TelemetrySource::open(
     const std::string& path) {
-    void* handle = rc_open(path.c_str());
+    void* handle = omatrack_open(path.c_str());
     if (!handle) {
-        const char* err = rc_last_error();
-        fprintf(stderr, "racecraft: failed to open %s: %s\n", path.c_str(),
+        const char* err = omatrack_last_error();
+        fprintf(stderr, "omatrack: failed to open %s: %s\n", path.c_str(),
                 err ? err : "unknown");
         return nullptr;
     }
     std::unique_ptr<TelemetrySource> src(new TelemetrySource());
     src->handle_ = handle;
     src->path_ = path;
-    const char* fmt = rc_format(handle);
+    const char* fmt = omatrack_format(handle);
     src->format_ = fmt ? fmt : "";
     int64_t mediaTimeOffsetNs = 0;
-    if (rc_media_time_offset_ns(handle, &mediaTimeOffsetNs))
+    if (omatrack_media_time_offset_ns(handle, &mediaTimeOffsetNs))
         src->mediaTimeOffsetSec_ = double(mediaTimeOffsetNs) / 1e9;
-    size_t n = rc_channel_count(handle);
+    size_t n = omatrack_channel_count(handle);
     src->channels_.reserve(n);
     const std::string lower = [&] {
         std::string s(path);
@@ -434,19 +369,19 @@ std::unique_ptr<TelemetrySource> TelemetrySource::open(
     bool isPds = lower.size() > 4 && lower.substr(lower.size() - 4) == ".pds";
     for (size_t i = 0; i < n; ++i) {
         RawChannel ch;
-        const char* name = rc_channel_name(handle, i);
-        const char* unit = rc_channel_unit(handle, i);
+        const char* name = omatrack_channel_name(handle, i);
+        const char* unit = omatrack_channel_unit(handle, i);
         ch.name = name ? name : "";
         ch.unit = unit ? unit : "";
-        ch.sampleTypeCode = rc_channel_type_code(handle, i);
-        ch.durationSec = double(rc_channel_duration_ns(handle, i)) / 1e9;
-        uint64_t period = rc_chunk_period_ns(handle, i, 0);
+        ch.sampleTypeCode = omatrack_channel_type_code(handle, i);
+        ch.durationSec = double(omatrack_channel_duration_ns(handle, i)) / 1e9;
+        uint64_t period = omatrack_chunk_period_ns(handle, i, 0);
         ch.frequencyHz = period > 0 ? 1e9 / double(period) : 0.0;
-        uint64_t count = rc_channel_sample_count(handle, i);
+        uint64_t count = omatrack_channel_sample_count(handle, i);
         ch.samples.resize((size_t)count);
         if (count > 0) {
-            size_t written = rc_channel_decode_all(handle, i, ch.samples.data(),
-                                                   (size_t)count);
+            size_t written = omatrack_channel_decode_all(
+                handle, i, ch.samples.data(), (size_t)count);
             ch.samples.resize(written);
         }
         // PDS stores SI values; keep physical units as-is (port: no formula).
@@ -457,14 +392,15 @@ std::unique_ptr<TelemetrySource> TelemetrySource::open(
 }
 
 TelemetrySource::~TelemetrySource() {
-    if (handle_) rc_close(handle_);
+    if (handle_) omatrack_close(handle_);
 }
 
 bool TelemetrySource::sampleAt(size_t channelIdx, double timeSec,
                                double* out) const {
     if (channelIdx >= channels_.size() || !out) return false;
     uint64_t timeNs = (uint64_t)std::llround(timeSec * 1e9);
-    return rc_sample_at(handle_, channelIdx, timeNs, /*linear=*/1, out) != 0;
+    return omatrack_sample_at(handle_, channelIdx, timeNs, /*linear=*/1, out) !=
+           0;
 }
 
 std::map<std::string, int> TelemetrySource::mapChannels() const {
@@ -584,15 +520,15 @@ std::vector<Lap> TelemetrySource::detectLaps() const {
 }
 
 std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
-    void* handle = rc_open(path.c_str());
+    void* handle = omatrack_open(path.c_str());
     if (!handle) return {};
 
-    const size_t channelCount = rc_channel_count(handle);
+    const size_t channelCount = omatrack_channel_count(handle);
     auto firstId = [&](const std::vector<std::string>& aliases) -> int {
         for (const std::string& alias : aliases) {
             const std::string normalizedAlias = normalizeChannelName(alias);
             for (size_t i = 0; i < channelCount; ++i) {
-                const char* name = rc_channel_name(handle, i);
+                const char* name = omatrack_channel_name(handle, i);
                 if (name && normalizeChannelName(name) == normalizedAlias)
                     return int(i);
             }
@@ -601,7 +537,7 @@ std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
             const std::string normalizedAlias = normalizeChannelName(alias);
             if (normalizedAlias.size() < 4) continue;
             for (size_t i = 0; i < channelCount; ++i) {
-                const char* name = rc_channel_name(handle, i);
+                const char* name = omatrack_channel_name(handle, i);
                 if (name && normalizeChannelName(name).find(normalizedAlias) !=
                                 std::string::npos)
                     return int(i);
@@ -612,14 +548,15 @@ std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
     auto decodeRaw = [&](int id) {
         std::pair<std::vector<double>, int> result;
         if (id < 0) return result;
-        const uint64_t count = rc_channel_sample_count(handle, size_t(id));
+        const uint64_t count =
+            omatrack_channel_sample_count(handle, size_t(id));
         result.first.resize(size_t(count));
         if (count > 0) {
-            const size_t written = rc_channel_decode_all(
+            const size_t written = omatrack_channel_decode_all(
                 handle, size_t(id), result.first.data(), size_t(count));
             result.first.resize(written);
         }
-        const uint64_t period = rc_chunk_period_ns(handle, size_t(id), 0);
+        const uint64_t period = omatrack_chunk_period_ns(handle, size_t(id), 0);
         result.second =
             period > 0 ? std::max(1, int(std::lround(1e9 / period))) : 1;
         return result;
@@ -627,11 +564,11 @@ std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
     auto sampleRegular = [&](int id) {
         std::pair<std::vector<double>, int> result;
         if (id < 0) return result;
-        const uint64_t period = rc_chunk_period_ns(handle, size_t(id), 0);
+        const uint64_t period = omatrack_chunk_period_ns(handle, size_t(id), 0);
         result.second =
             period > 0 ? std::max(1, int(std::lround(1e9 / period))) : 1;
         const double duration =
-            double(rc_channel_duration_ns(handle, size_t(id))) / 1e9;
+            double(omatrack_channel_duration_ns(handle, size_t(id))) / 1e9;
         const size_t count =
             size_t(std::ceil(duration * double(result.second)));
         result.first.reserve(count);
@@ -639,7 +576,8 @@ std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
             double value = 0.0;
             const uint64_t timeNs = uint64_t(
                 std::llround(double(index) * 1e9 / double(result.second)));
-            if (!rc_sample_at(handle, size_t(id), timeNs, 1, &value)) break;
+            if (!omatrack_sample_at(handle, size_t(id), timeNs, 1, &value))
+                break;
             result.first.push_back(value);
         }
         return result;
@@ -668,8 +606,8 @@ std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
 
     double maxDuration = 0.0;
     for (size_t i = 0; i < channelCount; ++i)
-        maxDuration = std::max(maxDuration,
-                               double(rc_channel_duration_ns(handle, i)) / 1e9);
+        maxDuration = std::max(
+            maxDuration, double(omatrack_channel_duration_ns(handle, i)) / 1e9);
 
     std::vector<double> splits;
     if (!beacon.empty()) splits = pdsBeaconSplits(beacon, beaconFreq);
@@ -685,7 +623,7 @@ std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
         laps = pdsApplyPreviousLapTimes(laps, previousLapTime,
                                         std::max(1, previousFreq));
 
-    rc_close(handle);
+    omatrack_close(handle);
     return laps;
 }
 
@@ -968,4 +906,4 @@ std::vector<double> resample(const std::vector<double>& values, double srcFreq,
     return out;
 }
 
-}  // namespace racecraft
+}  // namespace omatrack

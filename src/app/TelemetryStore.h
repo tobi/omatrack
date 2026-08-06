@@ -1,6 +1,6 @@
-// Qt object model bridging the racecraft core engine to QML.
+// Qt object model bridging the omatrack core engine to QML.
 //
-// Mirrors racecraft's TelemetryStore architecture: lazy per-file
+// Mirrors omatrack's TelemetryStore architecture: lazy per-file
 // SessionHandles, Track→Date→Session→Laps grouping, primary/compare lap
 // selection, cursor + viewport state, corner zones, and channel display
 // configuration.
@@ -22,11 +22,11 @@
 #include <memory>
 #include <vector>
 
-namespace racecraft {
+namespace omatrack {
 class TelemetrySource;
 struct UnifiedLap;
 struct Lap;
-}  // namespace racecraft
+}  // namespace omatrack
 
 class SessionHandle;
 class TelemetryStore;
@@ -137,9 +137,9 @@ public:
     const QString& path() const { return path_; }
     QString stem() const;
 
-    const racecraft::TelemetrySource* source();
+    const omatrack::TelemetrySource* source();
     const QVector<LapEntry>& laps();
-    std::shared_ptr<const racecraft::UnifiedLap> unifiedLap(int lapId);
+    std::shared_ptr<const omatrack::UnifiedLap> unifiedLap(int lapId);
     QString sessionKey() const;
     bool isVideo() const {
         return path_.endsWith(QStringLiteral(".mp4"), Qt::CaseInsensitive);
@@ -165,11 +165,11 @@ private:
     void ensureSource();
     void ensureLapSummary();
     void applyEventDriverId(int eventDriverId);
-    void populateLaps(const std::vector<racecraft::Lap>& detected);
+    void populateLaps(const std::vector<omatrack::Lap>& detected);
     QString path_;
-    std::unique_ptr<racecraft::TelemetrySource> src_;
+    std::unique_ptr<omatrack::TelemetrySource> src_;
     QVector<LapEntry> laps_;
-    QHash<int, std::shared_ptr<const racecraft::UnifiedLap>> unifiedCache_;
+    QHash<int, std::shared_ptr<const omatrack::UnifiedLap>> unifiedCache_;
     QString time_;
     QString driverId_;
     QString track_;
@@ -241,12 +241,12 @@ class TelemetryStore : public QObject {
     Q_PROPERTY(bool videoMuted READ videoMuted WRITE setVideoMuted NOTIFY
                    videoMutedChanged)
 public:
-    // Registered as the `Store` singleton of the Racecraft QML module. The
+    // Registered as the `Store` singleton of the Omatrack QML module. The
     // QML engine owns the single instance and default-constructs it while
     // loading Main.qml; C++ reaches it with
-    // QQmlEngine::singletonInstance<TelemetryStore*>("Racecraft", "Store").
+    // QQmlEngine::singletonInstance<TelemetryStore*>("Omatrack", "Store").
     // Never construct a second one: it would scan sessions and write
-    // racecraft.yml behind the UI's back.
+    // omatrack.yml behind the UI's back.
 
     explicit TelemetryStore(QObject* parent = nullptr);
     ~TelemetryStore() override;
@@ -326,8 +326,8 @@ public:
     Q_INVOKABLE QString driverDisplayName(const QString& sessionKey) const;
 
     // ── data access for the trace canvas ───────────────────────────
-    const racecraft::UnifiedLap* primaryUnified() const;
-    const racecraft::UnifiedLap* compareUnified() const;
+    const omatrack::UnifiedLap* primaryUnified() const;
+    const omatrack::UnifiedLap* compareUnified() const;
     const SessionHandle* primarySession() const { return primarySession_; }
     const SessionHandle* compareSession() const { return compareSession_; }
     int primaryLapIndex() const { return primaryLap_; }
@@ -423,7 +423,6 @@ private:
     double compareFractionForPrimaryFraction(double fraction) const;
     QStringList sessionDirs_;
     QSet<QString> scannedSessionPaths_;
-    QSet<QString> scannedSessionIdentities_;
     QHash<QString, QString> driverMappings_;
     QString lastPrimaryKey_;
     QString lastCompareKey_;

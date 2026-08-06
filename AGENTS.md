@@ -1,8 +1,8 @@
-# Racecraft agent guide
+# Omatrack agent guide
 
 ## Mission
 
-Racecraft is a native racing-telemetry workstation. Its primary target is Linux under Omarchy, built with Qt 6, Qt Quick, and Material controls. It should turn heterogeneous logger files into a coherent, driver-facing model of sessions, laps, channels, tracks, corners, and corner complexes.
+Omatrack is a native racing-telemetry workstation. Its primary target is Linux under Omarchy, built with Qt 6, Qt Quick, and Material controls. It should turn heterogeneous logger files into a coherent, driver-facing model of sessions, laps, channels, tracks, corners, and corner complexes.
 
 This is not a single-format file viewer or a generic chart demo. The product direction is a full telemetry system that can ingest every major race format through one analysis pipeline. The current parser bridge supports Pi/Cosworth `.pds`, MoTeC `.ld` (with `.ldx` treated as a companion), Racelogic `.vbo`, and AiM `aimd` telemetry embedded in `.mp4`; that is the starting set, not the intended limit.
 
@@ -57,12 +57,12 @@ Telemetry and onboard-video inputs are immutable evidence. Never rewrite, rename
 
 [Track Atlas](https://github.com/tobi/track-atlas) is the upstream source of track/layout identity, real geometry, label layers, corner points, `corner_ranges`, and `corner_complexes`. Consume its schema; do not create a competing local track schema or duplicate curated metadata in application code.
 
-Network access is an enhancement, not a boot requirement. Cache upstream data, continue to work offline, and fail back cleanly. Bundled corner CSV files are compatibility fallbacks, not the long-term source of truth.
+Network access is an enhancement, not a boot requirement. Cache upstream data, skip refreshes while the cache is less than 24 hours old, continue to work offline, and fail back cleanly without fabricated corner metadata. Do not bundle track or corner datasets without documented redistribution rights and attribution.
 
-### Configuration lives in racecraft.yml
+### Configuration lives in omatrack.yml
 
-All user configuration state belongs in `racecraft.yml`
-(`$XDG_CONFIG_HOME/racecraft/racecraft.yml`, else `~/.config/racecraft/racecraft.yml`).
+All user configuration state belongs in `omatrack.yml`
+(`$XDG_CONFIG_HOME/omatrack/omatrack.yml`, else `~/.config/omatrack/omatrack.yml`).
 It is the single source of truth for telemetry directories, channel display,
 driver naming, last selection, and per-track corner overrides, and it is meant
 to be read, diffed, and hand-edited. Never add a second configuration store,
@@ -70,7 +70,7 @@ and never write configuration into telemetry, caches, or `QSettings`.
 
 Upstream data is not configuration. Track Atlas is used as-is by default; the
 moment a user edits corner zones for a track, the whole resulting zone list is
-copied out to `tracks.<track>.corners` in `racecraft.yml` and that override
+copied out to `tracks.<track>.corners` in `omatrack.yml` and that override
 wins on load. Caches (Track Atlas snapshot, thumbnails) stay outside the file.
 
 ## Feature model
@@ -84,7 +84,7 @@ wins on load. Caches (Track Atlas snapshot, thumbnails) stay outside the file.
 - Detect lap boundaries from the best available beacon, lap-time, lap-number, or lap-distance signal.
 - Classify every detected lap: leading/trailing recording fragments and crossing pairs implausibly shorter than the session median are incomplete (`Out`/`In`/`Frag`), and complete laps far above the session median are pit in/out laps. Only representative laps (`LapEntry::countsForBest`) feed fastest-lap marks, sidebar best times, and default lap selection.
 - Cache parsed/unified laps lazily per session.
-- Persist telemetry directories and user-facing aliases in `racecraft.yml`; `~/Documents/Telemetry` is the default directory on a fresh install.
+- Persist telemetry directories and user-facing aliases in `omatrack.yml`; `~/Documents/Telemetry` is the default directory on a fresh install.
 
 ### Normalization and analysis
 
@@ -115,11 +115,11 @@ Native lap distance is accepted only when its continuity and total agree with in
 
 - Open MP4, MOV, MKV, AVI, M4V, and WebM video inside the main analysis workspace; an MP4 containing an AiM `aimd` track is also a telemetry session.
 - Render through libmpv's OpenGL Render API in `MpvVideoItem`; never spawn the mpv CLI or embed a foreign native window.
-- Place video in the resizable section above the traces. Playback chrome stays minimal: the top-left speaker button toggles persisted audio mute, Space toggles playback, Left seeks 5 seconds back, and Right seeks 15 seconds forward. Store the mute preference under `video.muted` in `racecraft.yml`.
+- Place video in the resizable section above the traces. Playback chrome stays minimal: the top-left speaker button toggles persisted audio mute, Space toggles playback, Left seeks 5 seconds back, and Right seeks 15 seconds forward. Store the mute preference under `video.muted` in `omatrack.yml`.
 - Selecting an AiM video session selects its fastest lap and pauses at the telemetry cursor. Cursor seeks map to media time, and active playback advances the telemetry cursor. Primary/reference video consumes the same cached track-station map as traces and delta: speed landmarks provide the base map, only well-distributed accurate GPS matches correct it, and the UI reports the resulting confidence. Continuous playback uses bounded rate correction rather than periodic hard seeks. Derive each MP4 offset from valid AiM record timestamps and track presentation times; never infer a packet clock from undocumented bytes.
 - Treat video files as read-only. Parsing and playback must never rewrite embedded telemetry or media.
 - Qt Quick must use the OpenGL graphics API before the first window because `QQuickFramebufferObject` and libmpv share that context.
-- `RACECRAFT_VIDEO=/path/to/video` first attempts to open a telemetry-bearing MP4 session, falls back to standalone playback, and is also used by the GUI acceptance harness.
+- `OMATRACK_VIDEO=/path/to/video` first attempts to open a telemetry-bearing MP4 session, falls back to standalone playback, and is also used by the GUI acceptance harness.
 
 ### Corner intelligence
 
@@ -130,13 +130,13 @@ Native lap distance is accepted only when its continuity and total agree with in
 - Provide single-lap and primary/reference summaries: time, entry/apex/exit speed, gear, steering, brake/lift/turn-in/apex/throttle points, deltas, and trace excerpts.
 - Support automatic brake-zone fallback, direct range editing, add/rename/delete of zones, and local user overrides when authoritative data is unavailable.
 - Draw corner traces with surrounding context: at least a 500 m window around the zone, more approach before it and a longer exit after it, with the context dimmed and the selected zone kept at full contrast between its boundaries.
-- Keep Track Atlas cache refresh and offline fallback explicit in preferences; corner edits are copied into `racecraft.yml` as a per-track override.
+- Keep Track Atlas cache refresh and offline fallback explicit in preferences; corner edits are copied into `omatrack.yml` as a per-track override.
 
 The current implementation imports `corner_ranges` and exposes a corner inspector. `corner_complexes`, full geometry, and the rest of the Track Atlas range layers are product requirements still to be carried through the application model; extend the model rather than overloading `CornerZone` until it loses meaning.
 
 ### Headless tools and automation
 
-`racecraft-cli` is the headless acceptance surface for parsing, mapping, lap detection, and 50 Hz unification. The GUI also has screenshot and paint-benchmark modes driven by `RACECRAFT_AUTOTEST*` environment variables.
+`omatrack-cli` is the headless acceptance surface for parsing, mapping, lap detection, and 50 Hz unification. The GUI also has screenshot and paint-benchmark modes driven by `OMATRACK_AUTOTEST*` environment variables.
 
 ## Architecture
 
@@ -168,25 +168,25 @@ headless acceptance                sessions, state, cache, Track Atlas
 ### Build graph
 
 CMake is driven through `CMakePresets.json` (Ninja + ccache): `release` builds
-into `./build`, `debug` into `./build-debug` with `QT_QML_DEBUG` so
-`qmlprofiler`/`qmlpreview` can attach, and `asan` into `./build-asan`.
-`third_party/CMakeLists.txt` compiles every vendored Rust crate into
-`libracecraft_bridge.a`, tracking all `*.rs`/`Cargo.toml` files so a decoder
-change actually triggers a rebuild, and registers one CTest per crate
-(`ctest -R rust-`). `src/core` builds the Qt-free `racecraft_core`, linked by
-both `cli/racecraft-cli` and the Qt app. `src/app/CMakeLists.txt` declares the
-`Racecraft` QML module via `qt_add_qml_module`: QML documents and the C++ types
-they import live in that one directory, which is what gives `qmllint`, `qmlls`,
-and ahead-of-time `qmlcachegen` a resolvable `import Racecraft`. Fonts and the
-compatibility corner CSVs are a plain `qt_add_resources` payload under
-`src/app/assets`, keeping the historic `:/fonts` and `:/corners` prefixes.
-Warnings (`-Wall -Wextra`) come from the `racecraft_warnings` interface target.
+into `./build`, `debug` into `./build-debug` with `QT_QML_DEBUG`, `asan` into
+`./build-asan`, and `acceptance` into `./build-acceptance` with the
+state-mutating GUI acceptance harness explicitly enabled. Production builds
+must not contain that harness. `third_party/CMakeLists.txt` compiles every
+vendored Rust crate into a configuration-local Cargo target directory under
+the CMake build tree, tracks all `*.rs`/`Cargo.toml` files, and registers one
+CTest per crate (`ctest -R rust-`). `src/core` builds the Qt-free
+`omatrack_core`, linked by both `cli/omatrack-cli` and the Qt app.
+`src/app/CMakeLists.txt` declares the `Omatrack` QML module through
+`qt_add_qml_module`; QML documents and imported C++ types live together so
+`qmllint`, `qmlls`, and `qmlcachegen` resolve `import Omatrack`. Geist fonts
+and Qt Quick Controls configuration are the only bundled data resources.
+Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
 
 ### Layer responsibilities
 
 | Layer | Paths | Owns | Must not own |
 |---|---|---|---|
-| Vendor parsers | `third_party/motorsport-telemetry/crates/` | File validation, memory mapping, chunks, typed decoding, vendor metadata | Qt, UI state, racecraft-specific presentation |
+| Vendor parsers | `third_party/motorsport-telemetry/crates/` | File validation, memory mapping, chunks, typed decoding, vendor metadata | Qt, UI state, omatrack-specific presentation |
 | C ABI | `third_party/motorsport-telemetry/bridge/` | Extension dispatch, opaque handles, bulk decode, stable strings, thread-local errors | Analysis policy or exceptions/panics crossing FFI |
 | Core | `src/core/TelemetryEngine.*` | Channel mapping, units, lap detection, resampling, `UnifiedLap` | Qt types, QML, settings, network access |
 | Session/store | `src/app/TelemetryStore.*` | Lazy session handles, selection, cached GPS/speed track-station alignment, comparison, viewport, preferences, Track Atlas, corner analysis | Pixel-level paint loops or vendor byte parsing |
@@ -194,7 +194,7 @@ Warnings (`-Wall -Wextra`) come from the `racecraft_warnings` interface target.
 | Video renderer | `src/app/MpvVideoItem.*` | libmpv lifecycle, OpenGL FBO rendering, playback state, and exact seek | Telemetry extraction, session association, or QML layout policy |
 | QML UI | `src/app/*.qml` | Material windows, layout, delegates, controls, high-level orchestration | Full telemetry loops, duplicated analysis, format branches |
 | Bootstrap | `src/app/main.cpp` | Qt startup, style, fonts, store ownership, initial properties, module load | Product analysis, autotest behaviour |
-| Acceptance harness | `src/app/AutotestHarness.*` | Every `RACECRAFT_AUTOTEST*` mode | Anything a normal launch executes |
+| Acceptance harness | `src/app/AutotestHarness.*` | Every `OMATRACK_AUTOTEST*` mode | Anything a normal launch executes |
 | CLI | `cli/main.cpp` | Reproducible headless acceptance and inspection | A second analysis implementation |
 
 ### Core data contracts
@@ -208,7 +208,7 @@ Warnings (`-Wall -Wextra`) come from the `racecraft_warnings` interface target.
 
 ### Invariants
 
-1. `racecraft_core` remains Qt-free and usable by the CLI.
+1. `omatrack_core` remains Qt-free and usable by the CLI.
 2. The UI never branches on telemetry format. Add a parser or mapping; do not add `.pds`/`.ld` special cases to QML.
 3. Unified channel arrays share the lap’s 50 Hz absolute-time grid. Keep their lengths aligned with `time`; sample through the source clock so late channel starts, dropped samples, and acquisition gaps cannot shift events.
 4. Unified distance starts at zero and is monotonic.
@@ -243,10 +243,10 @@ Warnings (`-Wall -Wextra`) come from the `racecraft_warnings` interface target.
 - New file format or source encoding: add/extend a Rust parser crate and expose only generic capabilities through the bridge.
 - New cross-format channel or unit rule: `TelemetryEngine` and `UnifiedLap`.
 - New lap/corner comparison metric: C++ analysis in the store/core, exposed as compact view data.
-- New persistent user preference: `TelemetryStore` + `racecraft.yml` through `YamlConfig`; never `QSettings`, and never write it into telemetry.
+- New persistent user preference: `TelemetryStore` + `omatrack.yml` through `YamlConfig`; never `QSettings`, and never write it into telemetry.
 - New Material control, inspector, or layout: QML.
 - New high-frequency visual: `TraceView` or another focused C++ Quick item, with measured frame cost.
-- New track metadata: contribute it to Track Atlas. Racecraft should consume the upstream result.
+- New track metadata: contribute it to Track Atlas. Omatrack should consume the upstream result.
 - New Track Atlas layer support: parse it into a typed application model, retaining IDs, labels, ranges, members, and landmarks.
 
 Do not fix parser ambiguity with filename-specific UI conditionals. Do not copy analysis into JavaScript for convenience. Do not move cold UI layout into C++ without a measured reason.
@@ -256,16 +256,17 @@ Do not fix parser ambiguity with filename-specific UI conditionals. Do not copy 
 Requirements: CMake 3.21+, `pkg-config`, libmpv and libyaml development files, a C++17 compiler, Qt 6.5+ (`Core`, `Gui`, `Quick`, `QuickControls2`, `Widgets`, `Qml`, `Network`), and Rust/Cargo 1.84+.
 
 ```sh
-cmake --preset release          # Ninja + ccache into ./build
-cmake --build build --parallel
+cmake --preset release
+cmake --build --preset release
 
-./build/racecraft /path/to/telemetry-directory
-RACECRAFT_VIDEO=/path/to/onboard.mp4 ./build/racecraft /path/to/telemetry-directory
-./build/racecraft-cli parse /path/to/copied-session.pds
-./build/racecraft-cli unify /path/to/copied-session.pds
+./build/omatrack /path/to/telemetry-directory
+OMATRACK_VIDEO=/path/to/onboard.mp4 ./build/omatrack /path/to/telemetry-directory
+./build/omatrack-cli parse /path/to/copied-session.pds
+./build/omatrack-cli unify /path/to/copied-session.pds \
+  --output /tmp/session.unified.csv
 ```
 
-`racecraft-cli unify` writes `<input>.unified.csv` beside the input. Run it only on a copied fixture or in a location where generated output is acceptable; never use raw event telemetry as a disposable test fixture.
+`omatrack-cli unify` requires an explicit output path, refuses to overwrite it, and includes GPS coordinates when available. Treat the exported CSV as sensitive location data.
 
 Other presets: `debug` (`./build-debug`, `QT_QML_DEBUG` for `qmlprofiler`) and
 `asan` (`./build-asan`, ASan + UBSan).
@@ -274,16 +275,16 @@ Checks. Every linter is a CMake target and a CTest entry, so one command covers
 formatting, static analysis, and the parser tests:
 
 ```sh
-ctest --test-dir build            # 11 entries: 5 lint + 6 Rust crates
-ctest --test-dir build -L lint    # linters only
-cmake --build build --target lint  # same linters as build targets
+ctest --preset release
+ctest --test-dir build -L lint
+cmake --build --preset release --target lint
 ```
 
 The individual targets stay available: `cpp_format_check` / `cpp_format`
 (clang-format), `qml_format_check` / `qml_format` (qmlformat via
 `cmake/QmlFormatCheck.cmake`, since qmlformat has no `--check`), `qml_lint`
 (drives the generated `all_qmllint`), `rust_clippy`, and `rust_format_check`.
-Configure with `-DRACECRAFT_CLANG_TIDY=ON` to add `cpp_tidy` and the
+Configure with `-DOMATRACK_CLANG_TIDY=ON` to add `cpp_tidy` and the
 `lint-cpp-tidy` test; the curated set in `.clang-tidy` still reports findings in
 the existing sources, so it is opt-in until those are burned down.
 
@@ -309,9 +310,9 @@ Use real, copied telemetry for the format and behavior being changed. Synthetic 
 
 ### Parser, bridge, or core
 
-1. Build `racecraft-cli`.
-2. Run `racecraft-cli parse` on each affected format; inspect format, mapped channels, and detected laps.
-3. Run `racecraft-cli unify` when mapping, units, resampling, distance, or lap bounds changed; inspect sample count and physical plausibility.
+1. Build `omatrack-cli`.
+2. Run `omatrack-cli parse` on each affected format; inspect format, mapped channels, and detected laps.
+3. Run `omatrack-cli unify` when mapping, units, resampling, distance, or lap bounds changed; inspect sample count and physical plausibility.
 4. Run the relevant Rust crate tests, then the workspace tests for shared-trait or bridge changes.
 
 ### Store, Track Atlas, or comparison logic
@@ -323,34 +324,38 @@ Use real, copied telemetry for the format and behavior being changed. Synthetic 
 
 ### UI and renderer
 
-The base autotest opens the first session’s fastest lap, renders the app, saves a screenshot, and exits:
+The production `release` preset excludes the GUI acceptance harness. Configure
+the dedicated preset before running UI automation; the base autotest opens the
+first session’s fastest lap, renders the app, saves a screenshot, and exits:
 
 ```sh
+cmake --preset acceptance
+cmake --build --preset acceptance
 QT_QPA_PLATFORM=offscreen \
 QT_FORCE_STDERR_LOGGING=1 \
-RACECRAFT_AUTOTEST=/tmp/racecraft.png \
-./build/racecraft /path/to/copied-telemetry
+OMATRACK_AUTOTEST=/tmp/omatrack.png \
+./build-acceptance/omatrack /path/to/copied-telemetry
 ```
 
 Add feature flags as needed:
 
-- `RACECRAFT_AUTOTEST_COMPARE=1`
-- `RACECRAFT_AUTOTEST_WINDOWS=1`
-- `RACECRAFT_AUTOTEST_SELECTION=1`
-- `RACECRAFT_AUTOTEST_ALIGNMENT=1`
-- `RACECRAFT_AUTOTEST_CORNER=1`
-- `RACECRAFT_AUTOTEST_HOVER=1`
-- `RACECRAFT_AUTOTEST_ZOOM=1`
-- `RACECRAFT_AUTOTEST_RENAME=1`
-- `RACECRAFT_AUTOTEST_BRAKE_SYNC=1`
-- `RACECRAFT_AUTOTEST_CORNER_EDIT=1`
-- `RACECRAFT_VIDEO=/path/to/onboard.mp4`
+- `OMATRACK_AUTOTEST_COMPARE=1`
+- `OMATRACK_AUTOTEST_WINDOWS=1`
+- `OMATRACK_AUTOTEST_SELECTION=1`
+- `OMATRACK_AUTOTEST_ALIGNMENT=1`
+- `OMATRACK_AUTOTEST_CORNER=1`
+- `OMATRACK_AUTOTEST_HOVER=1`
+- `OMATRACK_AUTOTEST_ZOOM=1`
+- `OMATRACK_AUTOTEST_RENAME=1`
+- `OMATRACK_AUTOTEST_BRAKE_SYNC=1`
+- `OMATRACK_AUTOTEST_CORNER_EDIT=1`
+- `OMATRACK_VIDEO=/path/to/onboard.mp4`
 
 `HOVER` and `ZOOM` print average paint time. Treat 16.67 ms as the hard 60 fps ceiling and 8.33 ms as the design target for continuous interaction. Inspect the screenshot as well; timing alone cannot catch illegible density, overlap, incorrect colors, or stale comparison state.
 
 For visual work, also run the app in the target Linux/Omarchy desktop. Offscreen output does not verify native palette integration, font rendering, window behavior, pointer feel, or high-refresh animation.
 
-Embedded libmpv playback must be verified on the native Linux/Omarchy OpenGL scene graph. The offscreen platform can capture the surrounding QML but does not establish the shared `QQuickFramebufferObject` render context. When `RACECRAFT_VIDEO` is set, the native autotest exits non-zero unless the player is ready, the file is loaded, duration is available, the default volume is 75%, keyboard seeks remain mapped, playback advances the telemetry cursor, and media time stays aligned. `RACECRAFT_AUTOTEST_BRAKE_SYNC=1` pauses on a real heavy-braking sample so the telemetry cursor can be checked against the video's own lap timer and brake graphic. `RACECRAFT_AUTOTEST_RENAME=1` exercises the driver rename dialog and persistence path.
+Embedded libmpv playback must be verified on the native Linux/Omarchy OpenGL scene graph. The offscreen platform can capture the surrounding QML but does not establish the shared `QQuickFramebufferObject` render context. When `OMATRACK_VIDEO` is set, the native autotest exits non-zero unless the player is ready, the file is loaded, duration is available, the default volume is 75%, keyboard seeks remain mapped, playback advances the telemetry cursor, and media time stays aligned. `OMATRACK_AUTOTEST_BRAKE_SYNC=1` pauses on a real heavy-braking sample so the telemetry cursor can be checked against the video's own lap timer and brake graphic. `OMATRACK_AUTOTEST_RENAME=1` exercises the driver rename dialog and persistence path.
 
 ## Current boundaries to keep explicit
 
@@ -378,7 +383,7 @@ Embedded libmpv playback must be verified on the native Linux/Omarchy OpenGL sce
 - `sessionStartUnixTime()`/`hasGlobalTime()` do not currently provide global session time.
 - The GUI is file-based post-session analysis today. Future live or database-backed work must preserve the same normalized core instead of bypassing it.
 - The app embeds one video. An `aimd` MP4 self-associates playback with its telemetry and clock offset; persisted associations between separate files and multi-video alignment are not implemented.
-- Configuration migrates from the pre-YAML `QSettings` store and from per-track corner CSVs on first run; the legacy stores are read once and never written again.
+- Configuration migrates from the pre-YAML `QSettings` store, the pre-rename `racecraft.yml`/Track Atlas cache, and per-track corner CSVs on first run; legacy stores are read only and left untouched.
 
 ## Definition of done
 

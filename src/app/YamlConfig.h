@@ -1,9 +1,10 @@
 // YAML-backed application configuration.
 //
-// `racecraft.yml` is the single source of truth for user configuration:
+// `omatrack.yml` is the single source of truth for user configuration:
 // telemetry directories, channel display, driver naming, last selection, and
-// per-track corner overrides. It lives at $XDG_CONFIG_HOME/racecraft (or
-// ~/.config/racecraft) so it can be read, diffed, and edited by hand.
+// per-track corner overrides. It lives under the platform's standard
+// configuration directory (or `$XDG_CONFIG_HOME` when set) so it can be read,
+// diffed, and edited by hand.
 //
 // Track Atlas data, decoded telemetry, and caches stay out of it: the file
 // holds only what the user chose, never what an upstream source provided.
@@ -14,14 +15,14 @@
 #include <QVariant>
 #include <QVariantMap>
 
-namespace racecraft {
+namespace omatrack {
 
 class YamlConfig {
 public:
     /// Process-wide document. Loaded once, saved explicitly.
     static YamlConfig& instance();
 
-    /// Absolute path of racecraft.yml (parent directory is created).
+    /// Absolute path of omatrack.yml (parent directory is created).
     static QString filePath();
 
     /// Read a value addressed by nested map keys; keys are used verbatim.
@@ -46,14 +47,21 @@ public:
 
     /// True when the file did not exist at load time (fresh install).
     bool isFresh() const { return fresh_; }
+    /// Existing malformed/unreadable configuration is never overwritten.
+    bool isWritable() const { return writable_; }
+    QString errorString() const { return errorString_; }
+    // Public so tests can create instances pointed at a temp config dir.
+    // Production code uses instance().
+    YamlConfig();
 
 private:
-    YamlConfig();
     void load();
 
     QVariantMap root_;
     bool fresh_ = false;
+    bool writable_ = true;
+    QString errorString_;
     bool dirty_ = false;
 };
 
-}  // namespace racecraft
+}  // namespace omatrack

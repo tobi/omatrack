@@ -1,4 +1,5 @@
 pragma ComponentBehavior: Bound
+import Omatrack
 
 // Trace channel configuration: per-channel visibility, color, and lane weight.
 //
@@ -9,7 +10,6 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
-import Racecraft
 
 ApplicationWindow {
     id: channelsWindow

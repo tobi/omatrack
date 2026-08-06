@@ -1,14 +1,26 @@
-// libyaml-backed loader/serializer for racecraft.yml.
+// libyaml-backed loader/serializer for omatrack.yml.
 #include "YamlConfig.h"
 
 #include <yaml.h>
 
 #include <QDir>
+#include <QDebug>
 #include <QFile>
 #include <QSaveFile>
+#include <QStandardPaths>
 
-namespace racecraft {
+namespace omatrack {
 namespace {
+QString configBasePath() {
+    const QString override = qEnvironmentVariable("XDG_CONFIG_HOME");
+    return override.isEmpty() ? QStandardPaths::writableLocation(
+                                    QStandardPaths::GenericConfigLocation)
+                              : override;
+}
+
+QString legacyFilePath() {
+    return configBasePath() + QStringLiteral("/racecraft/racecraft.yml");
+}
 
 // ── emit ────────────────────────────────────────────────────────────
 
@@ -209,25 +221,50 @@ YamlConfig& YamlConfig::instance() {
 }
 
 QString YamlConfig::filePath() {
-    QString base = qEnvironmentVariable("XDG_CONFIG_HOME");
-    if (base.isEmpty()) base = QDir::home().filePath(QStringLiteral(".config"));
-    const QString dir = base + QStringLiteral("/racecraft");
+    const QString dir = configBasePath() + QStringLiteral("/omatrack");
     QDir().mkpath(dir);
-    return dir + QStringLiteral("/racecraft.yml");
+    return dir + QStringLiteral("/omatrack.yml");
 }
 
 YamlConfig::YamlConfig() { load(); }
 
 void YamlConfig::load() {
-    QFile file(filePath());
-    if (!file.exists()) {
-        fresh_ = true;
+    const QString currentPath = filePath();
+    QString sourcePath = currentPath;
+    if (!QFile::exists(sourcePath)) {
+        sourcePath = legacyFilePath();
+        if (!QFile::exists(sourcePath)) {
+            fresh_ = true;
+            return;
+        }
+    }
+
+    QFile file(sourcePath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        writable_ = false;
+        errorString_ = QStringLiteral("Cannot read configuration: %1")
+                           .arg(file.errorString());
+        qWarning().noquote() << errorString_;
         return;
     }
-    if (!file.open(QIODevice::ReadOnly)) return;
     bool ok = false;
     QVariantMap parsed = deserialize(file.readAll(), &ok);
-    if (ok) root_ = parsed;
+    if (!ok) {
+        writable_ = false;
+        errorString_ =
+            QStringLiteral(
+                "Configuration is invalid and will not be overwritten: %1")
+                .arg(file.fileName());
+        qWarning().noquote() << errorString_;
+        return;
+    }
+    root_ = parsed;
+    if (sourcePath != currentPath) {
+        // Import the pre-rename YAML document once. Future writes use only
+        // Omatrack's path, leaving the legacy file untouched as a backup.
+        dirty_ = true;
+        save();
+    }
 }
 
 QVariant YamlConfig::value(const QStringList& path,
@@ -305,12 +342,16 @@ void YamlConfig::remove(const QStringList& path) {
 }
 
 void YamlConfig::save() {
+    if (!writable_) {
+        qWarning().noquote() << errorString_;
+        return;
+    }
     if (!dirty_) return;
     const QByteArray bytes = serialize(root_);
     if (bytes.isEmpty()) return;
     QSaveFile file(filePath());
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) return;
-    file.write("# racecraft configuration. Edited by the app and by hand.\n");
+    file.write("# omatrack configuration. Edited by the app and by hand.\n");
     file.write(bytes);
     if (file.commit()) {
         dirty_ = false;
@@ -318,4 +359,4 @@ void YamlConfig::save() {
     }
 }
 
-}  // namespace racecraft
+}  // namespace omatrack

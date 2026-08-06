@@ -1,4 +1,5 @@
 pragma ComponentBehavior: Bound
+import Omatrack
 
 // Application header bar: brand, live session context (track / driver / lap /
 // comparison), the imperative cursor readout, and the overflow actions menu.
@@ -12,7 +13,6 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
-import Racecraft
 
 ToolBar {
     id: appBar
@@ -77,7 +77,7 @@ ToolBar {
             font.family: Style.monoFontFamily
             font.letterSpacing: 1.2
             font.pixelSize: 13
-            text: "RACECRAFT"
+            text: "OMATRACK"
         }
         Rectangle {
             Layout.preferredHeight: 28

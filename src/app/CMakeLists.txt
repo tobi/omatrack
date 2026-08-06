@@ -1,11 +1,11 @@
-# The Racecraft QML module.
+# The Omatrack QML module.
 #
 # QML documents and the C++ types they import live in this one directory, which
 # is what qt_add_qml_module expects: SOURCES are scanned for QML_ELEMENT /
 # QML_SINGLETON, so qmllint, qmlls, and qmlcachegen all resolve
-# `import Racecraft` without any extra configuration.
+# `import Omatrack` without any extra configuration.
 
-qt_add_executable(racecraft
+qt_add_executable(omatrack
   main.cpp)
 
 # `pragma Singleton` alone is not enough: the qmldir entry comes from this
@@ -13,8 +13,8 @@ qt_add_executable(racecraft
 # ordinary type.
 set_source_files_properties(Style.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
-qt_add_qml_module(racecraft
-  URI Racecraft
+qt_add_qml_module(omatrack
+  URI Omatrack
   VERSION 1.0
   QML_FILES
     Main.qml
@@ -29,7 +29,6 @@ qt_add_qml_module(racecraft
     SessionTreeDelegate.qml
     ThinScrollBar.qml
   SOURCES
-    AutotestHarness.h AutotestHarness.cpp
     CornerGraphView.h CornerGraphView.cpp
     DamperStripView.h DamperStripView.cpp
     MpvVideoItem.h MpvVideoItem.cpp
@@ -38,25 +37,30 @@ qt_add_qml_module(racecraft
     TraceView.h TraceView.cpp
     YamlConfig.h YamlConfig.cpp
 )
+if(OMATRACK_ENABLE_AUTOTEST_HARNESS)
+  target_sources(omatrack PRIVATE AutotestHarness.h AutotestHarness.cpp)
+  target_compile_definitions(omatrack PRIVATE
+    OMATRACK_ENABLE_AUTOTEST_HARNESS=1)
+endif()
 
-# Fonts and the compatibility corner CSVs are plain payload, not QML; a normal
-# resource keeps their historic `:/fonts` and `:/corners` prefixes.
-qt_add_resources(racecraft "racecraft_assets"
+# Fonts and Qt Quick Controls configuration are bundled application resources.
+qt_add_resources(omatrack "omatrack_assets"
   PREFIX "/"
   BASE assets
   FILES
     assets/fonts/Geist-Variable.ttf
     assets/fonts/GeistMono-Variable.ttf
     assets/fonts/OFL.txt
-    assets/corners/daytona.csv
-    assets/corners/ier_daytona.csv
-    assets/corners/lilski_sebring.csv
     assets/qtquickcontrols2.conf
 )
+qt_add_resources(omatrack "omatrack_branding"
+  PREFIX "/"
+  BASE ${CMAKE_SOURCE_DIR}
+  FILES ${CMAKE_SOURCE_DIR}/assets/omatrack.svg)
 
-target_link_libraries(racecraft PRIVATE
-  racecraft_core
-  racecraft_warnings
+target_link_libraries(omatrack PRIVATE
+  omatrack_core
+  omatrack_warnings
   PkgConfig::LIBYAML
   PkgConfig::LIBMPV
   Qt6::Quick
@@ -66,5 +70,30 @@ target_link_libraries(racecraft PRIVATE
   Qt6::Network)
 
 # qmlprofiler and qmlpreview can only attach to a QML-debug-enabled binary.
-target_compile_definitions(racecraft PRIVATE
+target_compile_definitions(omatrack PRIVATE
+  OMATRACK_VERSION="${PROJECT_VERSION}"
   $<$<NOT:$<CONFIG:Release>>:QT_QML_DEBUG>)
+
+install(TARGETS omatrack
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+  BUNDLE DESTINATION .)
+
+if(UNIX AND NOT APPLE)
+  install(FILES
+    ${CMAKE_SOURCE_DIR}/packaging/linux/io.github.tobi.omatrack.desktop
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+  install(FILES ${CMAKE_SOURCE_DIR}/assets/omatrack.svg
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps
+    RENAME io.github.tobi.omatrack.svg)
+  install(FILES ${CMAKE_SOURCE_DIR}/packaging/linux/omatrack.xml
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/mime/packages)
+  install(FILES
+    ${CMAKE_SOURCE_DIR}/packaging/linux/io.github.tobi.omatrack.metainfo.xml
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
+endif()
+
+qt_generate_deploy_qml_app_script(
+  TARGET omatrack
+  OUTPUT_SCRIPT omatrack_deploy_script
+  NO_UNSUPPORTED_PLATFORM_ERROR)
+install(SCRIPT ${omatrack_deploy_script})

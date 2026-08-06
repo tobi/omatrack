@@ -7,12 +7,19 @@
 # (`ctest -R rust-`).
 
 set(RUST_WORKSPACE ${CMAKE_CURRENT_SOURCE_DIR}/motorsport-telemetry)
-set(RUST_TARGET_DIR ${RUST_WORKSPACE}/target)
-set(RUST_STATICLIB ${RUST_TARGET_DIR}/release/libracecraft_bridge.a)
+set(RUST_TARGET_DIR ${CMAKE_BINARY_DIR}/cargo-target)
+set(RUST_TARGET_DIR ${RUST_TARGET_DIR} PARENT_SCOPE)
+set(RUST_STATICLIB
+  ${RUST_TARGET_DIR}/release/${CMAKE_STATIC_LIBRARY_PREFIX}omatrack_bridge${CMAKE_STATIC_LIBRARY_SUFFIX})
+
+if(MSVC)
+  message(FATAL_ERROR
+    "Windows builds currently require the MSYS2 UCRT64 MinGW toolchain")
+endif()
 
 
 # Cargo package names, in dependency order. `motorsport-telemetry-core` carries
-# the shared traits and value types; `racecraft-bridge` re-exports every
+# the shared traits and value types; `omatrack-bridge` re-exports every
 # decoder through the C ABI.
 set(RUST_CRATES
   motorsport-telemetry-core
@@ -20,7 +27,7 @@ set(RUST_CRATES
   aim-telemetry
   motec-telemetry
   vbo-telemetry
-  racecraft-bridge)
+  omatrack-bridge)
 
 # Depend on every Rust source, not a hand-picked subset: a stale list silently
 # skips rebuilds when a decoder changes. CONFIGURE_DEPENDS re-runs the glob when
@@ -36,7 +43,8 @@ list(APPEND RUST_SOURCES
 
 add_custom_command(
   OUTPUT ${RUST_STATICLIB}
-  COMMAND cargo build --release --manifest-path ${RUST_WORKSPACE}/Cargo.toml
+  COMMAND ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${RUST_TARGET_DIR}
+          cargo build --release --manifest-path ${RUST_WORKSPACE}/Cargo.toml
   WORKING_DIRECTORY ${RUST_WORKSPACE}
   DEPENDS ${RUST_SOURCES}
   COMMENT "Building Rust telemetry parsers (${RUST_CRATES} + bridge)"
@@ -44,27 +52,36 @@ add_custom_command(
 
 add_custom_target(rust_bridge DEPENDS ${RUST_STATICLIB})
 
-add_library(racecraft_rust_bridge STATIC IMPORTED GLOBAL)
-set_target_properties(racecraft_rust_bridge PROPERTIES
+add_library(omatrack_rust_bridge STATIC IMPORTED GLOBAL)
+set_target_properties(omatrack_rust_bridge PROPERTIES
   IMPORTED_LOCATION ${RUST_STATICLIB})
-add_dependencies(racecraft_rust_bridge rust_bridge)
+add_dependencies(omatrack_rust_bridge rust_bridge)
 
 # The archive is pulled in whole: its exports are reached only through the C
 # ABI, so the linker cannot see the references that keep them alive.
-target_link_directories(racecraft_rust_bridge INTERFACE ${RUST_TARGET_DIR}/release)
-target_link_options(racecraft_rust_bridge INTERFACE
-  -Wl,--whole-archive -lracecraft_bridge -Wl,--no-whole-archive)
-target_link_libraries(racecraft_rust_bridge INTERFACE pthread dl m)
+target_link_directories(omatrack_rust_bridge INTERFACE ${RUST_TARGET_DIR}/release)
+target_link_options(omatrack_rust_bridge INTERFACE
+  -Wl,--whole-archive -lomatrack_bridge -Wl,--no-whole-archive)
+if(WIN32)
+  target_link_libraries(omatrack_rust_bridge INTERFACE
+    ws2_32 userenv advapi32 bcrypt ntdll)
+else()
+  target_link_libraries(omatrack_rust_bridge INTERFACE pthread dl m)
+endif()
 
 # One CTest entry per crate so a format regression names the format.
 foreach(crate IN LISTS RUST_CRATES)
   add_test(NAME rust-${crate}
-    COMMAND cargo test --release -p ${crate} --manifest-path ${RUST_WORKSPACE}/Cargo.toml)
+    COMMAND ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${RUST_TARGET_DIR}
+            cargo test --release -p ${crate}
+            --manifest-path ${RUST_WORKSPACE}/Cargo.toml)
 endforeach()
 
 # Lint target; not part of `all` because clippy is slower than a build.
 add_custom_target(rust_clippy
-  COMMAND cargo clippy --release --all-targets --manifest-path ${RUST_WORKSPACE}/Cargo.toml -- -D warnings
+  COMMAND ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${RUST_TARGET_DIR}
+          cargo clippy --release --all-targets
+          --manifest-path ${RUST_WORKSPACE}/Cargo.toml -- -D warnings
   WORKING_DIRECTORY ${RUST_WORKSPACE}
   COMMENT "cargo clippy over the vendored parser workspace"
   VERBATIM)

@@ -1,5 +1,5 @@
 # Static analysis for the C++ sources. Opt-in: configure with
-# -DRACECRAFT_CLANG_TIDY=ON to add the `cpp_tidy` target and the
+# -DOMATRACK_CLANG_TIDY=ON to add the `cpp_tidy` target and the
 # `lint-cpp-tidy` test.
 #
 # The disabled checks are deliberate:

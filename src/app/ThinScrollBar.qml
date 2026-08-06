@@ -1,4 +1,5 @@
 pragma ComponentBehavior: Bound
+import Omatrack
 
 // Compact scrollbar for dense lists.
 //
@@ -9,7 +10,6 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls
-import Racecraft
 
 ScrollBar {
     id: bar

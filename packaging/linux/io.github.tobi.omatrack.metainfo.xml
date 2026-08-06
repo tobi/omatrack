@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.tobi.omatrack</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Omatrack</name>
+  <developer id="io.github.tobi">
+    <name>Tobi</name>
+  </developer>
+  <summary>Cross-format motorsport telemetry analysis</summary>
+  <description>
+    <p>Omatrack is a native telemetry workstation for drivers and engineers. It normalizes heterogeneous logger formats into one lap model for trace overlays, distance-aligned delta, corner analysis, and synchronized onboard video.</p>
+    <ul>
+      <li>Reads Pi/Cosworth PDS, MoTeC LD, Racelogic VBO, and AiM MP4 telemetry</li>
+      <li>Compares laps with or without usable GPS</li>
+      <li>Keeps source telemetry and video immutable</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.tobi.omatrack.desktop</launchable>
+  <provides>
+    <binary>omatrack</binary>
+  </provides>
+  <url type="homepage">https://github.com/tobi/omatrack</url>
+  <url type="bugtracker">https://github.com/tobi/omatrack/issues</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-08-05">
+      <description><p>Initial public development release.</p></description>
+    </release>
+  </releases>
+</component>
