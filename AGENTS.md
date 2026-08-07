@@ -78,12 +78,20 @@ wins on load. Caches (Track Atlas snapshot, thumbnails) stay outside the file.
 ### Ingestion and session library
 
 - Recursively scan configured directories and open individual telemetry files.
+- Run directory discovery and lightweight lap-summary parsing off the UI thread;
+  expose `TelemetryStore::loading` so every session-library surface can retain
+  its current data and show progress while a replacement snapshot is built.
+- Persist the library index under `QStandardPaths::CacheLocation`: a bounded
+  path/size/prefix fingerprint keys lap summaries and unsupported-video
+  classification, writes are atomic, and entries expire after 90 days.
 - Dispatch formats through the Rust parser workspace.
 - Infer inexpensive metadata from filenames/folders before parsing samples.
 - Group the library as Track → Date → Session → Laps.
 - Detect lap boundaries from the best available beacon, lap-time, lap-number, or lap-distance signal.
 - Classify every detected lap: leading/trailing recording fragments and crossing pairs implausibly shorter than the session median are incomplete (`Out`/`In`/`Frag`), and complete laps far above the session median are pit in/out laps. Only representative laps (`LapEntry::countsForBest`) feed fastest-lap marks, sidebar best times, and default lap selection.
-- Cache parsed/unified laps lazily per session.
+- Cache parsed/unified laps lazily per session. Opening and normalizing active
+  and reference laps runs on the worker pool; `TelemetryStore::lapLoading`
+  drives feedback, and per-role generations discard stale rapid selections.
 - Persist telemetry directories and user-facing aliases in `omatrack.yml`; `~/Documents/Telemetry` is the default directory on a fresh install.
 
 ### Normalization and analysis
@@ -253,7 +261,7 @@ Do not fix parser ambiguity with filename-specific UI conditionals. Do not copy 
 
 ## Build and run
 
-Requirements: CMake 3.21+, `pkg-config`, libmpv and libyaml development files, a C++17 compiler, Qt 6.5+ (`Core`, `Gui`, `Quick`, `QuickControls2`, `Widgets`, `Qml`, `Network`), and Rust/Cargo 1.84+.
+Requirements: CMake 3.21+, `pkg-config`, libmpv and libyaml development files, a C++17 compiler, Qt 6.5+ (`Core`, `Gui`, `Quick`, `QuickControls2`, `Qml`, `Network`), and Rust/Cargo 1.84+.
 
 ```sh
 cmake --preset release
@@ -349,6 +357,8 @@ Add feature flags as needed:
 - `OMATRACK_AUTOTEST_RENAME=1`
 - `OMATRACK_AUTOTEST_BRAKE_SYNC=1`
 - `OMATRACK_AUTOTEST_CORNER_EDIT=1`
+- `OMATRACK_AUTOTEST_LOADING=1`
+- `OMATRACK_AUTOTEST_LAP_LOADING=1`
 - `OMATRACK_VIDEO=/path/to/onboard.mp4`
 
 `HOVER` and `ZOOM` print average paint time. Treat 16.67 ms as the hard 60 fps ceiling and 8.33 ms as the design target for continuous interaction. Inspect the screenshot as well; timing alone cannot catch illegible density, overlap, incorrect colors, or stale comparison state.

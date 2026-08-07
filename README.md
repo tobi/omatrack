@@ -11,6 +11,22 @@ Omatrack is a Qt 6 workstation for drivers and engineers who need one analysis w
 
 Omatrack is under active development. Linux is the primary desktop target; Windows is built and tested in CI.
 
+## Screenshots
+
+### Distance-aligned lap comparison
+
+![Omatrack comparison workspace with primary and reference telemetry traces](docs/screenshots/lap-comparison.webp)
+
+Shared cursor readouts, proportional lap strips, range selection, delta, and
+manual damper alignment all use the same normalized lap model.
+
+### Corner analysis
+
+![Omatrack corner analysis comparing braking, turn-in, apex, and throttle pickup](docs/screenshots/corner-analysis.webp)
+
+Corner metrics and trace excerpts keep the primary and reference laps aligned
+through braking, turn-in, apex, and throttle pickup.
+
 ## Current capabilities
 
 - Open Pi/Cosworth `.pds`, MoTeC `.ld`, Racelogic `.vbo`, and AiM `aimd` telemetry embedded in `.mp4`.
@@ -45,7 +61,7 @@ Vendor decoding stays in Rust. Cross-format racing analysis stays in the Qt-free
 - CMake 3.21+
 - Ninja
 - C++17 compiler
-- Qt 6.5+ with Core, Gui, Quick, Quick Controls 2, Widgets, QML, and Network
+- Qt 6.5+ with Core, Gui, Quick, Quick Controls 2, QML, and Network
 - libmpv development files
 - libyaml development files
 - Rust/Cargo 1.84+
