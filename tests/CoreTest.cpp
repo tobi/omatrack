@@ -49,9 +49,7 @@ private slots:
 class FormatLapTimeTest : public QObject {
     Q_OBJECT
 private slots:
-    void subMinute() {
-        QCOMPARE(formatLapTime(83550), QString("1:23.550"));
-    }
+    void subMinute() { QCOMPARE(formatLapTime(83550), QString("1:23.550")); }
     void exactlyOneMinute() {
         QCOMPARE(formatLapTime(60000), QString("1:00.000"));
     }
@@ -59,9 +57,7 @@ private slots:
         QCOMPARE(formatLapTime(23450), QString("0:23.450"));
     }
     void zero() { QCOMPARE(formatLapTime(0), QString("0:00.000")); }
-    void multiMinute() {
-        QCOMPARE(formatLapTime(183550), QString("3:03.550"));
-    }
+    void multiMinute() { QCOMPARE(formatLapTime(183550), QString("3:03.550")); }
     void roundsToMilliseconds() {
         // 1:23.551 — printf %.3f rounds 23.5510 to 3 decimals
         QCOMPARE(formatLapTime(83551), QString("1:23.551"));
@@ -104,15 +100,12 @@ private slots:
 class ResampleTest : public QObject {
     Q_OBJECT
 private slots:
-    void emptyInput() {
-        QVERIFY(resample({}, 100, 50, 1.0).empty());
-    }
+    void emptyInput() { QVERIFY(resample({}, 100, 50, 1.0).empty()); }
     void sameFreqIsIdentity() {
         std::vector<double> v{1, 2, 3, 4, 5};
         auto out = resample(v, 100, 100, 0.04);
         QCOMPARE(out.size(), size_t(5));
-        for (size_t i = 0; i < v.size(); ++i)
-            QCOMPARE(out[i], v[i]);
+        for (size_t i = 0; i < v.size(); ++i) QCOMPARE(out[i], v[i]);
     }
     void linearUpsampling() {
         // 2 samples at 10 Hz over 0.1 s: values [0, 10]
@@ -121,7 +114,7 @@ private slots:
         auto out = resample(v, 10, 20, 0.1);
         QCOMPARE(out.size(), size_t(3));
         QCOMPARE(out[0], 0.0);
-        QCOMPARE(out[1], 5.0);   // midpoint
+        QCOMPARE(out[1], 5.0);  // midpoint
         QCOMPARE(out[2], 10.0);
     }
     void linearDownsampling() {
@@ -140,6 +133,12 @@ private slots:
         auto out = resample(v, 100, 50, 0.1);
         QCOMPARE(out.size(), size_t(6));
         for (double s : out) QCOMPARE(s, 42.0);
+    }
+    void rejectsInvalidDomains() {
+        const std::vector<double> values{1.0, 2.0};
+        QVERIFY(resample(values, 0.0, 50.0, 1.0).empty());
+        QVERIFY(resample(values, 50.0, 0.0, 1.0).empty());
+        QVERIFY(resample(values, 50.0, 50.0, 0.0).empty());
     }
 };
 
@@ -210,9 +209,9 @@ private slots:
         // within cluster gap = max(1, 10/2) = 5 samples, so it's skipped.
         std::vector<double> v(20, 0.0);
         v[5] = 100;
-        v[6] = 0;   // drop → split at 0.6
+        v[6] = 0;  // drop → split at 0.6
         v[8] = 100;
-        v[9] = 0;   // drop → 9-6=3 < 5, skipped
+        v[9] = 0;  // drop → 9-6=3 < 5, skipped
         auto splits = pdsLapTimeSplits(v, 10);
         QCOMPARE(splits.size(), size_t(1));
         QCOMPARE(splits[0], 0.6);
@@ -243,6 +242,49 @@ private slots:
     void tooShort() {
         std::vector<double> v{1.0};
         QVERIFY(pdsLapNumberSplits(v, 10).empty());
+    }
+    void rejectsSkippedCounterValues() {
+        const std::vector<double> values{13.0, 0.0, 14.0, 14.0, 15.0};
+        const std::vector<double> splits = pdsLapNumberSplits(values, 10);
+        QCOMPARE(splits.size(), size_t(1));
+        QCOMPARE(splits.front(), 0.4);
+    }
+    void ignoresCounterRestartFromZero() {
+        const std::vector<double> values{13.0, 0.0, 1.0, 1.0};
+        QVERIFY(pdsLapNumberSplits(values, 10).empty());
+    }
+    void activeCounterBlocksTimerFallback() {
+        const std::vector<double> counterValues{13.0, 13.0, 0.0, 1.0};
+        QVERIFY(lapNumberCarriesState(counterValues));
+
+        const std::vector<double> selected =
+            selectLapSplits({}, {105.2}, true, {2.3, 13.5, 25.4}, {});
+        QCOMPARE(selected.size(), size_t(1));
+        QCOMPARE(selected.front(), 105.2);
+    }
+    void zeroCounterAllowsTimerFallback() {
+        const std::vector<double> counterValues(20, 0.0);
+        QVERIFY(!lapNumberCarriesState(counterValues));
+
+        const std::vector<double> selected =
+            selectLapSplits({}, {}, false, {90.0, 180.0}, {});
+        QCOMPARE(selected.size(), size_t(2));
+        QCOMPARE(selected.front(), 90.0);
+        QCOMPARE(selected.back(), 180.0);
+    }
+    void counterCrossingsBeatTimerResets() {
+        const std::vector<double> selected = selectLapSplits(
+            {}, {100.0, 200.0}, true, {12.0, 27.0, 43.0}, {101.0, 201.0});
+        QCOMPARE(selected.size(), size_t(2));
+        QCOMPARE(selected.front(), 100.0);
+        QCOMPARE(selected.back(), 200.0);
+    }
+    void activeCounterBeatsBeaconCrossings() {
+        const std::vector<double> selected =
+            selectLapSplits({90.0, 180.0}, {100.0, 200.0}, true, {}, {});
+        QCOMPARE(selected.size(), size_t(2));
+        QCOMPARE(selected.front(), 100.0);
+        QCOMPARE(selected.back(), 200.0);
     }
 };
 
@@ -332,6 +374,71 @@ private slots:
         // -5 and 200 are outside (0, 120), leaving only {60} → fragment
         QCOMPARE(laps.size(), size_t(1));
         QVERIFY(!laps[0].complete);
+    }
+    void previousLapMillisecondsConfirmCrossing() {
+        const std::vector<Lap> laps{Lap{0, 10.0, 128.0, 118000.0, true}};
+        std::vector<double> previousTimes(131, 0.0);
+        previousTimes[128] = 117831.0;
+
+        const std::vector<Lap> confirmed =
+            pdsApplyPreviousLapTimes(laps, previousTimes, 1);
+        QVERIFY(confirmed.front().complete);
+        QCOMPARE(confirmed.front().timeMs, 117831.0);
+    }
+    void mismatchedPreviousLapMarksFragmentIncomplete() {
+        const std::vector<Lap> laps{Lap{0, 491.5, 510.3, 18800.0, true}};
+        std::vector<double> previousTimes(513, 0.0);
+        previousTimes[510] = 30500.0;
+
+        const std::vector<Lap> confirmed =
+            pdsApplyPreviousLapTimes(laps, previousTimes, 1);
+        QVERIFY(!confirmed.front().complete);
+        QCOMPARE(confirmed.front().timeMs, 18800.0);
+    }
+    void authoritativeCounterSurvivesMismatchedPreviousLap() {
+        const std::vector<Lap> laps{Lap{0, 491.5, 510.3, 18800.0, true}};
+        std::vector<double> previousTimes(513, 0.0);
+        previousTimes[510] = 30500.0;
+
+        const std::vector<Lap> confirmed =
+            pdsApplyPreviousLapTimes(laps, previousTimes, 1, false);
+        QVERIFY(confirmed.front().complete);
+        QCOMPARE(confirmed.front().timeMs, 18800.0);
+    }
+    void shortPositionCoverageMarksFragmentIncomplete() {
+        const std::vector<Lap> laps{Lap{0, 0.0, 99.0, 99000.0, true},
+                                    Lap{1, 101.0, 200.0, 99000.0, true}};
+        std::vector<double> position(201, 0.0);
+        for (int i = 0; i <= 99; ++i) position[size_t(i)] = double(i);
+        for (int i = 100; i <= 200; ++i)
+            position[size_t(i)] = 40.0 + double(i - 100) * 0.2;
+
+        const std::vector<Lap> checked =
+            pdsApplyLapDistanceCoverage(laps, position, 1);
+        QVERIFY(checked[0].complete);
+        QVERIFY(!checked[1].complete);
+    }
+    void cumulativeDistanceDoesNotRejectLaps() {
+        const std::vector<Lap> laps{Lap{0, 0.0, 100.0, 100000.0, true},
+                                    Lap{1, 100.0, 200.0, 100000.0, true}};
+        std::vector<double> cumulative(201, 0.0);
+        for (int i = 0; i <= 200; ++i) cumulative[size_t(i)] = double(i);
+
+        const std::vector<Lap> checked =
+            pdsApplyLapDistanceCoverage(laps, cumulative, 1);
+        QVERIFY(checked[0].complete);
+        QVERIFY(checked[1].complete);
+    }
+    void missingDistanceCoverageIsUnverifiable() {
+        const std::vector<Lap> laps{Lap{0, 0.0, 90.0, 90000.0, true},
+                                    Lap{1, 120.0, 210.0, 90000.0, true}};
+        std::vector<double> position(100, 0.0);
+        for (int i = 0; i < 100; ++i) position[size_t(i)] = double(i);
+
+        const std::vector<Lap> checked =
+            pdsApplyLapDistanceCoverage(laps, position, 1);
+        QVERIFY(checked[0].complete);
+        QVERIFY(checked[1].complete);
     }
 };
 
@@ -464,8 +571,8 @@ private slots:
         src.channels() = {empty, real};
 
         auto mapping = src.mapChannels();
-        QVERIFY(!mapping.count("speed"));   // empty channel skipped
-        QVERIFY(mapping.count("throttle")); // non-empty matched
+        QVERIFY(!mapping.count("speed"));    // empty channel skipped
+        QVERIFY(mapping.count("throttle"));  // non-empty matched
     }
 
     void mapChannelsNoMatchReturnsEmpty() {
@@ -499,22 +606,70 @@ private slots:
         QCOMPARE(src.detectDriverId(), 0);
     }
 
-    void channelFrequencyAndDurationAreAccessible() {
-        // detectLaps() uses sampleAt() which needs a bridge handle, so it
-        // can't be exercised with synthetic data. But the channel metadata
-        // (frequency, duration, sample count) that detectLaps reads via the
-        // series() lambda IS testable.
+    void sampleAtInterpolatesSyntheticChannels() {
         TelemetrySource src;
-        RawChannel ch;
-        ch.name = "lap_beacon_trig";
-        ch.frequencyHz = 100;
-        ch.durationSec = 300.0;
-        ch.samples = std::vector<double>(30000, 0.0);
-        src.channels() = {ch};
+        RawChannel channel;
+        channel.samples = {0.0, 10.0, 20.0};
+        channel.frequencyHz = 2.0;
+        channel.durationSec = 1.0;
+        src.channels() = {channel};
 
-        QCOMPARE(src.channels()[0].frequencyHz, 100.0);
-        QCOMPARE(src.channels()[0].durationSec, 300.0);
-        QCOMPARE(src.channels()[0].samples.size(), size_t(30000));
+        double value = 0.0;
+        QVERIFY(src.sampleAt(0, 0.25, &value));
+        QCOMPARE(value, 5.0);
+        QVERIFY(!src.sampleAt(0, 1.5, &value));
+    }
+
+    void detectLapsUsesSyntheticCounter() {
+        TelemetrySource src;
+        RawChannel counter;
+        counter.name = "Lap Number";
+        counter.frequencyHz = 1.0;
+        counter.durationSec = 45.0;
+        counter.samples.insert(counter.samples.end(), 15, 1.0);
+        counter.samples.insert(counter.samples.end(), 15, 2.0);
+        counter.samples.insert(counter.samples.end(), 15, 3.0);
+        src.channels() = {counter};
+
+        const std::vector<Lap> laps = src.detectLaps();
+        QVERIFY(std::any_of(laps.begin(), laps.end(),
+                            [](const Lap& lap) { return lap.complete; }));
+    }
+
+    void unifyLapNormalizesSyntheticChannels() {
+        TelemetrySource src;
+        RawChannel speed;
+        speed.name = "Speed";
+        speed.unit = "km/h";
+        speed.samples = {0.0, 100.0, 200.0};
+        speed.frequencyHz = 2.0;
+        speed.durationSec = 1.0;
+        RawChannel throttle = speed;
+        throttle.name = "Throttle";
+        throttle.unit = "%";
+        throttle.samples = {0.0, 50.0, 100.0};
+        RawChannel latitude = speed;
+        latitude.name = "GPS Latitude";
+        latitude.unit = "rad";
+        latitude.samples = {1.0, 1.0, 1.0};
+        RawChannel longitude = latitude;
+        longitude.name = "GPS Longitude";
+        longitude.unit = "deg";
+        longitude.samples = {2.0, 2.0, 2.0};
+        src.channels() = {speed, throttle, latitude, longitude};
+
+        const UnifiedLap lap = src.unifyLap(0.0, 1.0);
+        QCOMPARE(lap.size(), size_t(51));
+        QCOMPARE(lap.speed[25], 100.0);
+        QCOMPARE(lap.throttle[25], 0.5);
+        QVERIFY(std::fabs(lap.gpsLat[25] - 57.29577951308232) < 1e-9);
+        QCOMPARE(lap.gpsLon[25], 2.0);
+    }
+
+    void unifyLapRejectsDegenerateBounds() {
+        TelemetrySource src;
+        QVERIFY(src.unifyLap(1.0, 1.0).size() == 0);
+        QVERIFY(src.unifyLap(2.0, 1.0).size() == 0);
     }
 
     void defaultConstructedSourceIsSafe() {
@@ -535,18 +690,54 @@ private slots:
 // class; a custom main ensures every Q_OBJECT class is executed.
 int main(int argc, char* argv[]) {
     int status = 0;
-    { NormalizeChannelNameTest t; status |= QTest::qExec(&t, argc, argv); }
-    { FormatLapTimeTest t; status |= QTest::qExec(&t, argc, argv); }
-    { SessionMetaFromFilenameTest t; status |= QTest::qExec(&t, argc, argv); }
-    { ResampleTest t; status |= QTest::qExec(&t, argc, argv); }
-    { BeaconSplitsTest t; status |= QTest::qExec(&t, argc, argv); }
-    { LapTimeSplitsTest t; status |= QTest::qExec(&t, argc, argv); }
-    { LapNumberSplitsTest t; status |= QTest::qExec(&t, argc, argv); }
-    { DistanceSplitsTest t; status |= QTest::qExec(&t, argc, argv); }
-    { BuildLapsFromSplitsTest t; status |= QTest::qExec(&t, argc, argv); }
-    { ScoreChannelMatchTest t; status |= QTest::qExec(&t, argc, argv); }
-    { DominantDriverIdTest t; status |= QTest::qExec(&t, argc, argv); }
-    { SyntheticSourceTest t; status |= QTest::qExec(&t, argc, argv); }
+    {
+        NormalizeChannelNameTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        FormatLapTimeTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        SessionMetaFromFilenameTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        ResampleTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        BeaconSplitsTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        LapTimeSplitsTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        LapNumberSplitsTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        DistanceSplitsTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        BuildLapsFromSplitsTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        ScoreChannelMatchTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        DominantDriverIdTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        SyntheticSourceTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
     return status;
 }
 #include "CoreTest.moc"

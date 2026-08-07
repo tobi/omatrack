@@ -15,8 +15,12 @@
 using namespace omatrack;
 
 static int cmdParse(const std::string& path) {
-    auto src = TelemetrySource::open(path);
-    if (!src) return 1;
+    std::string error;
+    auto src = TelemetrySource::open(path, &error);
+    if (!src) {
+        std::fprintf(stderr, "omatrack-cli: %s\n", error.c_str());
+        return 1;
+    }
 
     printf("format: %s\n", src->formatName().c_str());
     if (src->formatName() == "aimd")
@@ -67,8 +71,12 @@ static int cmdParse(const std::string& path) {
 }
 
 static int cmdUnify(const std::string& path, const std::string& outputPath) {
-    auto src = TelemetrySource::open(path);
-    if (!src) return 1;
+    std::string error;
+    auto src = TelemetrySource::open(path, &error);
+    if (!src) {
+        std::fprintf(stderr, "omatrack-cli: %s\n", error.c_str());
+        return 1;
+    }
 
     auto laps = src->detectLaps();
     if (laps.empty()) {

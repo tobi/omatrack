@@ -11,6 +11,11 @@ extern "C" {
 
 void* omatrack_open(const char* path);
 void omatrack_close(void* handle);
+/*
+ * Returns the calling thread's last bridge error. The pointer remains valid
+ * only on that thread and until its next failing omatrack_* call. Copy the
+ * string before invoking another bridge function that may fail.
+ */
 const char* omatrack_last_error(void);
 const char* omatrack_format(void* handle);
 int omatrack_media_time_offset_ns(void* handle, int64_t* out);

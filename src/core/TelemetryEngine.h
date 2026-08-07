@@ -87,7 +87,8 @@ struct SessionMeta {
 
 class TelemetrySource {
 public:
-    static std::unique_ptr<TelemetrySource> open(const std::string& path);
+    static std::unique_ptr<TelemetrySource> open(const std::string& path,
+                                                 std::string* error = nullptr);
     ~TelemetrySource();
 
     const std::string& path() const { return path_; }

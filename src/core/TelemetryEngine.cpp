@@ -116,12 +116,39 @@ std::vector<double> pdsLapNumberSplits(const std::vector<double>& values,
     std::vector<double> splits;
     if (freq <= 0 || values.size() < 2) return splits;
     int prev = std::llround(values[0]);
+    bool prevValid = prev > 0;
     for (size_t i = 1; i < values.size(); ++i) {
         int current = std::llround(values[i]);
-        if (current > prev) splits.push_back(double(i) / double(freq));
+        if (current <= 0) {
+            prevValid = false;
+            continue;
+        }
+        // Logger dropouts often appear as zero before the counter restarts.
+        // Recovery establishes a new baseline; it is not a start/finish trip.
+        if (prevValid && current == prev + 1)
+            splits.push_back(double(i) / double(freq));
         prev = current;
+        prevValid = true;
     }
     return splits;
+}
+
+bool lapNumberCarriesState(const std::vector<double>& values) {
+    return std::any_of(values.begin(), values.end(), [](double value) {
+        return std::isfinite(value) && std::llround(value) > 0;
+    });
+}
+
+std::vector<double> selectLapSplits(const std::vector<double>& beaconSplits,
+                                    const std::vector<double>& lapNumberSplits,
+                                    bool lapNumberActive,
+                                    const std::vector<double>& lapTimeSplits,
+                                    const std::vector<double>& distanceSplits) {
+    if (lapNumberActive) return lapNumberSplits;
+    if (beaconSplits.size() >= 2) return beaconSplits;
+    if (lapTimeSplits.size() >= 2) return lapTimeSplits;
+    if (distanceSplits.size() >= 2) return distanceSplits;
+    return {};
 }
 
 std::vector<double> pdsDistanceSplits(const std::vector<double>& values,
@@ -141,7 +168,8 @@ std::vector<double> pdsDistanceSplits(const std::vector<double>& values,
 }
 
 std::vector<Lap> buildLapsFromSplits(const std::vector<double>& splitTimesIn,
-                                     double duration) {
+                                     double duration,
+                                     bool rejectShortCrossings) {
     std::vector<Lap> result;
     if (duration <= 0) return result;
     std::set<double> filtered;
@@ -186,7 +214,8 @@ std::vector<Lap> buildLapsFromSplits(const std::vector<double>& splitTimesIn,
     const double minLapSeconds =
         medianIsEvidence ? median * 0.5 : std::max(median * 0.5, 30.0);
     for (Bound& bound : lapBounds)
-        if (bound.complete && bound.end - bound.start < minLapSeconds)
+        if (rejectShortCrossings && bound.complete &&
+            bound.end - bound.start < minLapSeconds)
             bound.complete = false;
     for (size_t i = 0; i < lapBounds.size(); ++i) {
         result.push_back(Lap{int(i), lapBounds[i].start, lapBounds[i].end,
@@ -198,58 +227,109 @@ std::vector<Lap> buildLapsFromSplits(const std::vector<double>& splitTimesIn,
 
 std::vector<Lap> pdsApplyPreviousLapTimes(
     const std::vector<Lap>& laps,
-    const std::vector<double>& previousLapTimeValues, int freq) {
+    const std::vector<double>& previousLapTimeValues, int freq,
+    bool rejectMismatches) {
     if (laps.empty() || previousLapTimeValues.empty() || freq <= 0) return laps;
     auto samplePrevLapTime = [&](double time) -> double {
-        int center = int(std::llround(time * double(freq)));
-        struct Best {
-            int delta;
-            double value;
+        const int center = int(std::llround(time * double(freq)));
+        auto seconds = [](double value) {
+            if (!std::isfinite(value)) return -1.0;
+            if (value > 1000.0 && value < 600000.0) value /= 1000.0;
+            return value > 1.0 && value < 600.0 ? value : -1.0;
         };
-        Best best{-1, 0.0};
         for (int delta = 0; delta <= 2; ++delta) {
-            bool found = false;
             for (int sign : {-1, 1}) {
-                int idx = center + sign * delta;
+                const int idx = center + sign * delta;
                 if (idx < 0 || idx >= int(previousLapTimeValues.size()))
                     continue;
-                double value = previousLapTimeValues[idx];
-                if (!(value > 1 && value < 600)) continue;
-                if (best.delta < 0 || delta < best.delta) {
-                    best = {delta, value};
-                    found = true;
-                }
-                if (delta == 0) return value;
+                const double value = seconds(previousLapTimeValues[idx]);
+                if (value > 0.0) return value;
             }
-            (void)found;
         }
-        return best.delta >= 0 ? best.value : -1.0;
+        return -1.0;
     };
     std::vector<Lap> out = laps;
     for (auto& lap : out) {
-        double prevLapSec = samplePrevLapTime(lap.endTime);
-        if (prevLapSec < 0) continue;
-        double fallbackSec = lap.timeMs / 1000.0;
-        if (std::fabs(prevLapSec - fallbackSec) > 30) continue;
+        const double prevLapSec = samplePrevLapTime(lap.endTime);
+        if (prevLapSec < 0.0) continue;
+        const double crossingSec = lap.endTime - lap.startTime;
+        const double tolerance = std::max(3.0, crossingSec * 0.15);
+        if (std::fabs(prevLapSec - crossingSec) > tolerance) {
+            if (rejectMismatches) lap.complete = false;
+            continue;
+        }
         lap.timeMs = prevLapSec * 1000.0;
+    }
+    return out;
+}
+
+std::vector<Lap> pdsApplyLapDistanceCoverage(
+    const std::vector<Lap>& laps, const std::vector<double>& lapDistanceValues,
+    int freq) {
+    if (laps.empty() || lapDistanceValues.size() < 2 || freq <= 0) return laps;
+
+    auto range = [&](size_t begin, size_t end) {
+        double low = std::numeric_limits<double>::infinity();
+        double high = -std::numeric_limits<double>::infinity();
+        end = std::min(end, lapDistanceValues.size());
+        for (size_t i = begin; i < end; ++i) {
+            const double value = lapDistanceValues[i];
+            if (!std::isfinite(value)) continue;
+            low = std::min(low, value);
+            high = std::max(high, value);
+        }
+        return high >= low ? high - low : 0.0;
+    };
+
+    const double sessionRange = range(0, lapDistanceValues.size());
+    if (!(sessionRange > 0.0)) return laps;
+
+    std::vector<double> coverage(laps.size(), -1.0);
+    double maxCoverage = 0.0;
+    for (size_t i = 0; i < laps.size(); ++i) {
+        if (!laps[i].complete) continue;
+        const size_t begin =
+            size_t(std::max(0.0, std::floor(laps[i].startTime * double(freq))));
+        const size_t end = size_t(
+            std::max(0.0, std::ceil(laps[i].endTime * double(freq)) + 1.0));
+        if (begin >= lapDistanceValues.size() || end > lapDistanceValues.size())
+            continue;
+        coverage[i] = range(begin, end) / sessionRange;
+        maxCoverage = std::max(maxCoverage, coverage[i]);
+    }
+
+    // A session-cumulative distance channel cannot validate individual laps:
+    // no one crossing pair spans most of its total range.
+    if (maxCoverage < 0.75) return laps;
+
+    std::vector<Lap> out = laps;
+    for (size_t i = 0; i < out.size(); ++i) {
+        if (out[i].complete && coverage[i] >= 0.0 &&
+            coverage[i] < maxCoverage * 0.5)
+            out[i].complete = false;
     }
     return out;
 }
 
 // ── channel mapping scoring (port of MoTecParser) ───────────────────
 
-int scoreChannelMatch(const std::string& channelName, const std::string& alias,
-                      int aliasPriority) {
-    const std::string nChannel = normalizeChannelName(channelName);
-    const std::string nAlias = normalizeChannelName(alias);
-    if (nChannel.empty() || nAlias.empty())
+int scoreNormalizedChannelMatch(const std::string& channelName,
+                                const std::string& alias, int aliasPriority) {
+    if (channelName.empty() || alias.empty())
         return std::numeric_limits<int>::min();
-    if (nChannel == nAlias) return 10000 - aliasPriority;
-    if (nAlias.size() >= 4 && nChannel.find(nAlias) != std::string::npos)
+    if (channelName == alias) return 10000 - aliasPriority;
+    if (alias.size() >= 4 && channelName.find(alias) != std::string::npos)
         return 7000 - aliasPriority;
-    if (nAlias.size() >= 6 && nAlias.find(nChannel) != std::string::npos)
+    if (channelName.size() >= 4 && alias.find(channelName) != std::string::npos)
         return 6000 - aliasPriority;
     return std::numeric_limits<int>::min();
+}
+
+int scoreChannelMatch(const std::string& channelName, const std::string& alias,
+                      int aliasPriority) {
+    return scoreNormalizedChannelMatch(normalizeChannelName(channelName),
+                                       normalizeChannelName(alias),
+                                       aliasPriority);
 }
 
 // Driver-ID channel aliases, shared by the loaded-source and lightweight paths.
@@ -341,13 +421,14 @@ SessionMeta sessionMetaFromFilename(const std::string& stem) {
 
 // ── TelemetrySource ─────────────────────────────────────────────────
 
-std::unique_ptr<TelemetrySource> TelemetrySource::open(
-    const std::string& path) {
+std::unique_ptr<TelemetrySource> TelemetrySource::open(const std::string& path,
+                                                       std::string* error) {
     void* handle = omatrack_open(path.c_str());
     if (!handle) {
-        const char* err = omatrack_last_error();
-        fprintf(stderr, "omatrack: failed to open %s: %s\n", path.c_str(),
-                err ? err : "unknown");
+        if (error) {
+            const char* message = omatrack_last_error();
+            *error = message ? message : "Unknown telemetry parser error";
+        }
         return nullptr;
     }
     std::unique_ptr<TelemetrySource> src(new TelemetrySource());
@@ -360,13 +441,6 @@ std::unique_ptr<TelemetrySource> TelemetrySource::open(
         src->mediaTimeOffsetSec_ = double(mediaTimeOffsetNs) / 1e9;
     size_t n = omatrack_channel_count(handle);
     src->channels_.reserve(n);
-    const std::string lower = [&] {
-        std::string s(path);
-        std::transform(s.begin(), s.end(), s.begin(),
-                       [](unsigned char c) { return std::tolower(c); });
-        return s;
-    }();
-    bool isPds = lower.size() > 4 && lower.substr(lower.size() - 4) == ".pds";
     for (size_t i = 0; i < n; ++i) {
         RawChannel ch;
         const char* name = omatrack_channel_name(handle, i);
@@ -384,8 +458,6 @@ std::unique_ptr<TelemetrySource> TelemetrySource::open(
                 handle, i, ch.samples.data(), (size_t)count);
             ch.samples.resize(written);
         }
-        // PDS stores SI values; keep physical units as-is (port: no formula).
-        (void)isPds;
         src->channels_.push_back(std::move(ch));
     }
     return src;
@@ -397,22 +469,47 @@ TelemetrySource::~TelemetrySource() {
 
 bool TelemetrySource::sampleAt(size_t channelIdx, double timeSec,
                                double* out) const {
-    if (channelIdx >= channels_.size() || !out) return false;
-    uint64_t timeNs = (uint64_t)std::llround(timeSec * 1e9);
-    return omatrack_sample_at(handle_, channelIdx, timeNs, /*linear=*/1, out) !=
-           0;
+    if (channelIdx >= channels_.size() || !out || !std::isfinite(timeSec) ||
+        timeSec < 0.0)
+        return false;
+    if (handle_) {
+        const uint64_t timeNs = uint64_t(std::llround(timeSec * 1e9));
+        return omatrack_sample_at(handle_, channelIdx, timeNs, /*linear=*/1,
+                                  out) != 0;
+    }
+
+    const RawChannel& channel = channels_[channelIdx];
+    if (channel.samples.empty() || !(channel.frequencyHz > 0.0)) return false;
+    const double position = timeSec * channel.frequencyHz;
+    if (position < 0.0 || position > double(channel.samples.size() - 1))
+        return false;
+    const size_t low = size_t(std::floor(position));
+    const size_t high = std::min(low + 1, channel.samples.size() - 1);
+    const double fraction = position - double(low);
+    *out = channel.samples[low] +
+           (channel.samples[high] - channel.samples[low]) * fraction;
+    return true;
 }
 
 std::map<std::string, int> TelemetrySource::mapChannels() const {
     std::map<std::string, int> mapping;
-    for (auto& [fieldName, aliases] : channelMappings()) {
+    std::vector<std::string> normalizedChannels;
+    normalizedChannels.reserve(channels_.size());
+    for (const RawChannel& channel : channels_)
+        normalizedChannels.push_back(normalizeChannelName(channel.name));
+
+    for (const auto& [fieldName, aliases] : channelMappings()) {
+        std::vector<std::string> normalizedAliases;
+        normalizedAliases.reserve(aliases.size());
+        for (const std::string& alias : aliases)
+            normalizedAliases.push_back(normalizeChannelName(alias));
         int bestScore = std::numeric_limits<int>::min();
         int best = -1;
         for (size_t c = 0; c < channels_.size(); ++c) {
             if (channels_[c].samples.empty()) continue;
             for (size_t a = 0; a < aliases.size(); ++a) {
-                int score =
-                    scoreChannelMatch(channels_[c].name, aliases[a], (int)a);
+                const int score = scoreNormalizedChannelMatch(
+                    normalizedChannels[c], normalizedAliases[a], int(a));
                 if (score > bestScore) {
                     bestScore = score;
                     best = int(c);
@@ -476,14 +573,23 @@ std::vector<Lap> TelemetrySource::detectLaps() const {
             std::max(1, int(std::lround(channel.frequencyHz)));
         const size_t count =
             size_t(std::ceil(channel.durationSec * double(frequency)));
-        std::vector<double> values;
-        values.reserve(count);
+        std::vector<double> values(count, 0.0);
+        bool sampled = false;
+        double lastValue = 0.0;
         for (size_t index = 0; index < count; ++index) {
             double value = 0.0;
             const double time = double(index) / double(frequency);
-            if (!sampleAt(size_t(id), time, &value)) break;
-            values.push_back(value);
+            if (sampleAt(size_t(id), time, &value)) {
+                if (!sampled)
+                    std::fill(values.begin(), values.begin() + index, value);
+                sampled = true;
+                lastValue = value;
+            } else if (sampled) {
+                value = lastValue;
+            }
+            values[index] = value;
         }
+        if (!sampled) return {};
         return {std::move(values), frequency};
     };
 
@@ -491,7 +597,7 @@ std::vector<Lap> TelemetrySource::detectLaps() const {
     int lapNumberId = firstId({"lap number"});
     int lapDistanceId = firstId({"lap distance corrected", "lap distance"});
     int lapTimeId = firstId({"lap time"});
-    int previousLapTimeId = firstId({"previous lap time"});
+    int previousLapTimeId = firstId({"previous lap time", "previous lt"});
 
     auto [lapBeacon, beaconFreq] = series(lapBeaconId);
     auto [lapNumber, numberFreq] = series(lapNumberId);
@@ -503,25 +609,37 @@ std::vector<Lap> TelemetrySource::detectLaps() const {
     for (const RawChannel& channel : channels_)
         maxDuration = std::max(maxDuration, channel.durationSec);
 
-    std::vector<double> splitTimes;
-    if (!lapBeacon.empty()) splitTimes = pdsBeaconSplits(lapBeacon, beaconFreq);
-    if (splitTimes.size() < 2 && !lapTime.empty())
-        splitTimes = pdsLapTimeSplits(lapTime, timeFreq);
-    if (splitTimes.size() < 2 && !lapNumber.empty())
-        splitTimes = pdsLapNumberSplits(lapNumber, numberFreq);
-    if (splitTimes.size() < 2 && !lapDistance.empty())
-        splitTimes = pdsDistanceSplits(lapDistance, distanceFreq);
+    const std::vector<double> beaconSplits =
+        pdsBeaconSplits(lapBeacon, beaconFreq);
+    const std::vector<double> lapNumberSplits =
+        pdsLapNumberSplits(lapNumber, numberFreq);
+    const bool lapNumberIsAuthority = lapNumberCarriesState(lapNumber);
+    const std::vector<double> splitTimes =
+        selectLapSplits(beaconSplits, lapNumberSplits, lapNumberIsAuthority,
+                        pdsLapTimeSplits(lapTime, timeFreq),
+                        pdsDistanceSplits(lapDistance, distanceFreq));
 
+    // Counter increments define boundaries, but a double trigger can still
+    // create an impossible crossing pair. Keep the shared short-lap rejection
+    // so such candidates never participate in best-lap selection.
     std::vector<Lap> laps = buildLapsFromSplits(splitTimes, maxDuration);
     if (!prevLapTime.empty())
-        laps =
-            pdsApplyPreviousLapTimes(laps, prevLapTime, std::max(1, prevFreq));
+        laps = pdsApplyPreviousLapTimes(
+            laps, prevLapTime, std::max(1, prevFreq), !lapNumberIsAuthority);
+    if (!lapNumberIsAuthority && !lapDistance.empty())
+        laps = pdsApplyLapDistanceCoverage(laps, lapDistance,
+                                           std::max(1, distanceFreq));
     return laps;
 }
 
 std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
-    void* handle = omatrack_open(path.c_str());
-    if (!handle) return {};
+    const auto closeBridge = [](void* handle) {
+        if (handle) omatrack_close(handle);
+    };
+    std::unique_ptr<void, decltype(closeBridge)> bridge(
+        omatrack_open(path.c_str()), closeBridge);
+    if (!bridge) return {};
+    void* handle = bridge.get();
 
     const size_t channelCount = omatrack_channel_count(handle);
     auto firstId = [&](const std::vector<std::string>& aliases) -> int {
@@ -571,15 +689,25 @@ std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
             double(omatrack_channel_duration_ns(handle, size_t(id))) / 1e9;
         const size_t count =
             size_t(std::ceil(duration * double(result.second)));
-        result.first.reserve(count);
+        result.first.assign(count, 0.0);
+        bool sampled = false;
+        double lastValue = 0.0;
         for (size_t index = 0; index < count; ++index) {
             double value = 0.0;
             const uint64_t timeNs = uint64_t(
                 std::llround(double(index) * 1e9 / double(result.second)));
-            if (!omatrack_sample_at(handle, size_t(id), timeNs, 1, &value))
-                break;
-            result.first.push_back(value);
+            if (omatrack_sample_at(handle, size_t(id), timeNs, 1, &value)) {
+                if (!sampled)
+                    std::fill(result.first.begin(),
+                              result.first.begin() + index, value);
+                sampled = true;
+                lastValue = value;
+            } else if (sampled) {
+                value = lastValue;
+            }
+            result.first[index] = value;
         }
+        if (!sampled) result.first.clear();
         return result;
     };
 
@@ -589,7 +717,7 @@ std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
     const int lapDistanceId =
         firstId({"lap distance corrected", "lap distance"});
     const int lapTimeId = firstId({"lap time"});
-    const int previousLapTimeId = firstId({"previous lap time"});
+    const int previousLapTimeId = firstId({"previous lap time", "previous lt"});
     const int driverIdChannel = firstId(driverIdAliases());
 
     auto [driverValues, driverFreq] = decodeRaw(driverIdChannel);
@@ -609,37 +737,43 @@ std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
         maxDuration = std::max(
             maxDuration, double(omatrack_channel_duration_ns(handle, i)) / 1e9);
 
-    std::vector<double> splits;
-    if (!beacon.empty()) splits = pdsBeaconSplits(beacon, beaconFreq);
-    if (splits.size() < 2 && !lapTime.empty())
-        splits = pdsLapTimeSplits(lapTime, timeFreq);
-    if (splits.size() < 2 && !lapNumber.empty())
-        splits = pdsLapNumberSplits(lapNumber, numberFreq);
-    if (splits.size() < 2 && !lapDistance.empty())
-        splits = pdsDistanceSplits(lapDistance, distanceFreq);
+    const std::vector<double> beaconSplits =
+        pdsBeaconSplits(beacon, beaconFreq);
+    const std::vector<double> lapNumberSplits =
+        pdsLapNumberSplits(lapNumber, numberFreq);
+    const bool lapNumberIsAuthority = lapNumberCarriesState(lapNumber);
+    const std::vector<double> splits =
+        selectLapSplits(beaconSplits, lapNumberSplits, lapNumberIsAuthority,
+                        pdsLapTimeSplits(lapTime, timeFreq),
+                        pdsDistanceSplits(lapDistance, distanceFreq));
 
     std::vector<Lap> laps = buildLapsFromSplits(splits, maxDuration);
     if (!previousLapTime.empty())
         laps = pdsApplyPreviousLapTimes(laps, previousLapTime,
-                                        std::max(1, previousFreq));
+                                        std::max(1, previousFreq),
+                                        !lapNumberIsAuthority);
+    if (!lapNumberIsAuthority && !lapDistance.empty())
+        laps = pdsApplyLapDistanceCoverage(laps, lapDistance,
+                                           std::max(1, distanceFreq));
 
-    omatrack_close(handle);
     return laps;
 }
 
 UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime) const {
+    if (!std::isfinite(startTime) || !std::isfinite(endTime) ||
+        !(endTime > startTime))
+        return {};
+    const double duration = endTime - startTime;
+    if (duration > double(std::numeric_limits<int>::max() - 1) /
+                       double(kDefaultSampleRate))
+        return {};
+    const int nSamples = int(duration * kDefaultSampleRate) + 1;
     auto mapping = mapChannels();
-
-    auto has = [&](const std::string& f) { return mapping.count(f) != 0; };
-
-    double duration = endTime - startTime;
-    int nSamples = int(duration * kDefaultSampleRate) + 1;
-
     // Sample each channel on the shared 50 Hz absolute-time grid. Source
     // chunks may start late or contain acquisition gaps; slicing flattened
     // arrays by index silently shifts every event after a gap.
     std::map<std::string, std::vector<double>> resampled;
-    std::map<std::string, const RawChannel*> resampledCh;
+    std::map<std::string, std::string> channelUnits;
     for (auto& [field, idx] : mapping) {
         const RawChannel& channel = channels_[idx];
         if (channel.samples.empty()) continue;
@@ -657,8 +791,8 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime) const {
             }
         }
         if (!sampled) continue;
+        channelUnits[field] = lowerTrimmed(channel.unit);
         resampled[field] = std::move(values);
-        resampledCh[field] = &channel;
     }
 
     auto get = [&](const std::string& f, int i) -> double {
@@ -666,10 +800,47 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime) const {
         if (it == resampled.end() || i >= (int)it->second.size()) return 0;
         return it->second[i];
     };
-    auto unitOf = [&](const std::string& f) -> std::string {
-        auto it = resampledCh.find(f);
-        return it != resampledCh.end() ? lowerTrimmed(it->second->unit) : "";
+    const std::string emptyUnit;
+    auto unitOf = [&](const std::string& f) -> const std::string& {
+        const auto it = channelUnits.find(f);
+        return it != channelUnits.end() ? it->second : emptyUnit;
     };
+    auto pedalFactor = [](const std::string& unit) {
+        if (unit == "rad") return 1.0 / 1.7453292519943295;
+        if (unit == "deg") return 0.01;
+        return 1.0;
+    };
+    auto speedFactor = [&](const std::string& field, double fallback) {
+        const auto it = speedUnits().find(unitOf(field));
+        return it != speedUnits().end() ? it->second : fallback;
+    };
+
+    const bool hasSpeed = resampled.count("speed") != 0;
+    const bool hasBrake = resampled.count("brake") != 0;
+    const bool hasGpsSpeedAccuracy = resampled.count("gps_speed_accuracy") != 0;
+    const double wheelSpeedFactor =
+        speedFactor("speed", format_ == "aimd" ? 1.0 : 3.6);
+    const double throttleFactor = pedalFactor(unitOf("throttle"));
+    const double clutchFactor = pedalFactor(unitOf("clutch"));
+    const double driverThrottleFactor = pedalFactor(unitOf("driver_throttle"));
+    const auto brakeUnit = brakeUnits().find(unitOf("brake"));
+    const double brakeFactor =
+        brakeUnit != brakeUnits().end() ? brakeUnit->second : 1.0;
+    const double steeringFactor =
+        unitOf("steering") == "rad" ? 180.0 / kPi : 1.0;
+    const bool gpsLatRadians = unitOf("gps_lat") == "rad";
+    const bool gpsLonRadians = unitOf("gps_lon") == "rad";
+    double positionAccuracyFactor = 1.0;
+    if (unitOf("gps_position_accuracy") == "cm")
+        positionAccuracyFactor = 0.01;
+    else if (unitOf("gps_position_accuracy") == "mm")
+        positionAccuracyFactor = 0.001;
+    else if (unitOf("gps_position_accuracy") == "ft")
+        positionAccuracyFactor = 0.3048;
+    const double gpsSpeedAccuracyFactor =
+        speedFactor("gps_speed_accuracy", 3.6) / 3.6;
+    const double gpsSpeedFactor =
+        speedFactor("gps_speed", format_ == "aimd" ? 3.6 : 1.0) / 3.6;
 
     int gearOffset = 0;
     auto gearIt = resampled.find("gear");
@@ -712,68 +883,34 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime) const {
         unified.time.push_back(double(i) * dt);
 
         // speed → km/h
-        if (has("speed")) {
-            std::string u = unitOf("speed");
-            auto su = speedUnits().find(u);
-            double factor = su != speedUnits().end()
-                                ? su->second
-                                : (format_ == "aimd" ? 1.0 : 3.6);
-            unified.speed.push_back(get("speed", i) * factor);
-        } else {
-            unified.speed.push_back(0);
-        }
+        unified.speed.push_back(hasSpeed ? get("speed", i) * wheelSpeedFactor
+                                         : 0.0);
 
-        // throttle → 0-1
-        double th = get("throttle", i);
-        std::string thu = unitOf("throttle");
-        if (thu == "rad")
-            th /= 1.7453292519943295;
-        else if (thu == "deg")
-            th /= 100;
+        // driver controls → normalized ranges / physical pressure
+        double th = get("throttle", i) * throttleFactor;
         if (th > 1.5) th /= 100;
-        unified.throttle.push_back(std::max(0.0, std::min(1.0, th)));
+        unified.throttle.push_back(std::clamp(th, 0.0, 1.0));
 
-        // brake → bar
-        if (has("brake")) {
-            std::string u = unitOf("brake");
-            auto bu = brakeUnits().find(u);
-            double factor = bu != brakeUnits().end() ? bu->second : 1.0;
-            unified.brake.push_back(std::max(0.0, get("brake", i) * factor));
+        if (hasBrake) {
+            unified.brake.push_back(
+                std::max(0.0, get("brake", i) * brakeFactor));
         } else {
             double bp = get("brake_pos", i);
             if (bp > 1.5) bp /= 100;
             unified.brake.push_back(std::max(0.0, bp * 100));
         }
 
-        // clutch → 0-1
-        double clutch = get("clutch", i);
-        std::string cu = unitOf("clutch");
-        if (cu == "rad")
-            clutch /= 1.7453292519943295;
-        else if (cu == "deg")
-            clutch /= 100;
+        double clutch = get("clutch", i) * clutchFactor;
         if (clutch > 1.5) clutch /= 100;
-        unified.clutch.push_back(std::max(0.0, std::min(1.0, clutch)));
+        unified.clutch.push_back(std::clamp(clutch, 0.0, 1.0));
 
-        // steering → deg
-        double steer = get("steering", i);
-        std::string su2 = unitOf("steering");
-        if (su2 == "rad") steer *= 180.0 / kPi;
-        unified.steering.push_back(steer);
-
-        // gear
+        unified.steering.push_back(get("steering", i) * steeringFactor);
         unified.gear.push_back(
             std::max(0, int(std::llround(get("gear", i))) - gearOffset));
 
-        // driver throttle
-        double dth = get("driver_throttle", i);
-        std::string dtu = unitOf("driver_throttle");
-        if (dtu == "rad")
-            dth /= 1.7453292519943295;
-        else if (dtu == "deg")
-            dth /= 100;
+        double dth = get("driver_throttle", i) * driverThrottleFactor;
         if (dth > 1.5) dth /= 100;
-        unified.driverThrottle.push_back(std::max(0.0, std::min(1.0, dth)));
+        unified.driverThrottle.push_back(std::clamp(dth, 0.0, 1.0));
 
         unified.gForceLong.push_back(get("g_long", i));
         unified.damperFL.push_back(get("damper_fl", i));
@@ -781,40 +918,19 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime) const {
         unified.damperRL.push_back(get("damper_rl", i));
         unified.damperRR.push_back(get("damper_rr", i));
 
-        // GPS: radians → degrees when unit says rad
+        // GPS coordinates and quality metadata
         double rawLat = get("gps_lat", i);
         double rawLon = get("gps_lon", i);
-        if (unitOf("gps_lat").find("rad") != std::string::npos) {
-            rawLat *= 180.0 / kPi;
-            rawLon *= 180.0 / kPi;
-        }
+        if (gpsLatRadians) rawLat *= 180.0 / kPi;
+        if (gpsLonRadians) rawLon *= 180.0 / kPi;
         unified.gpsLat.push_back(rawLat);
         unified.gpsLon.push_back(rawLon);
-        double positionAccuracy = get("gps_position_accuracy", i);
-        const std::string positionAccuracyUnit =
-            unitOf("gps_position_accuracy");
-        if (positionAccuracyUnit == "cm")
-            positionAccuracy *= 0.01;
-        else if (positionAccuracyUnit == "mm")
-            positionAccuracy *= 0.001;
-        else if (positionAccuracyUnit == "ft")
-            positionAccuracy *= 0.3048;
-        unified.gpsPositionAccuracy.push_back(std::max(0.0, positionAccuracy));
-
-        double speedAccuracy = get("gps_speed_accuracy", i);
-        const auto speedAccuracyUnit =
-            speedUnits().find(unitOf("gps_speed_accuracy"));
-        if (speedAccuracyUnit != speedUnits().end())
-            speedAccuracy *= speedAccuracyUnit->second / 3.6;
-        unified.gpsSpeedAccuracy.push_back(std::max(0.0, speedAccuracy));
-
-        double gpsSpeed = get("gps_speed", i);
-        const auto gpsSpeedUnit = speedUnits().find(unitOf("gps_speed"));
-        if (gpsSpeedUnit != speedUnits().end())
-            gpsSpeed *= gpsSpeedUnit->second / 3.6;
-        else if (format_ != "aimd")
-            gpsSpeed /= 3.6;
-        gpsSpeedMps.push_back(std::max(0.0, gpsSpeed));
+        unified.gpsPositionAccuracy.push_back(std::max(
+            0.0, get("gps_position_accuracy", i) * positionAccuracyFactor));
+        unified.gpsSpeedAccuracy.push_back(std::max(
+            0.0, get("gps_speed_accuracy", i) * gpsSpeedAccuracyFactor));
+        gpsSpeedMps.push_back(
+            std::max(0.0, get("gps_speed", i) * gpsSpeedFactor));
     }
 
     // Distance propagates from wheel/vehicle speed at 50 Hz. GPS Doppler
@@ -828,7 +944,7 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime) const {
         double gpsWeight = 0.0;
         if (gps > 0.0) {
             const double accuracy = unified.gpsSpeedAccuracy[size_t(i)];
-            if (has("gps_speed_accuracy") && accuracy > 0.0) {
+            if (hasGpsSpeedAccuracy && accuracy > 0.0) {
                 gpsWeight = std::clamp((1.5 - accuracy) / 1.25, 0.0, 1.0) * 0.5;
             } else {
                 gpsWeight = 0.2;
@@ -890,9 +1006,14 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime) const {
 std::vector<double> resample(const std::vector<double>& values, double srcFreq,
                              double targetFreq, double duration) {
     std::vector<double> out;
-    if (values.empty()) return out;
+    if (values.empty() || !std::isfinite(srcFreq) ||
+        !std::isfinite(targetFreq) || !std::isfinite(duration) ||
+        !(srcFreq > 0.0) || !(targetFreq > 0.0) || !(duration > 0.0))
+        return out;
     if (std::fabs(srcFreq - targetFreq) < 1e-9) return values;
-    int nOut = int(duration * targetFreq) + 1;
+    if (duration > double(std::numeric_limits<int>::max() - 1) / targetFreq)
+        return out;
+    const int nOut = int(duration * targetFreq) + 1;
     out.reserve(nOut);
     int maxIdx = (int)values.size() - 1;
     for (int i = 0; i < nOut; ++i) {
