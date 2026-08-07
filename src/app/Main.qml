@@ -1159,8 +1159,6 @@ ApplicationWindow {
     }
     PreferencesWindow {
         id: settingsWindow
-
-        onDriverRenameRequested: (mappingKey, displayName) => root.openDriverRename(mappingKey, displayName)
     }
     ToolTip {
         id: pointerTooltip

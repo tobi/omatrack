@@ -26,6 +26,9 @@ qt_add_qml_module(omatrack
     ChannelsWindow.qml
     CornerInspectorWindow.qml
     PreferencesWindow.qml
+    PreferencesDriversPage.qml
+    PreferencesLibraryPage.qml
+    PreferencesTrackDataPage.qml
     SessionTreeDelegate.qml
     TrackAssignmentDialog.qml
     ThinScrollBar.qml
