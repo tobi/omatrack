@@ -17,13 +17,32 @@ jobs:
     name: Linux
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
     steps:
       - uses: actions/checkout@v5
       - name: Install native dependencies
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends --yes \
-            clang-format libmpv-dev libyaml-dev ninja-build pkg-config
+            ccache clang-format libmpv-dev libyaml-dev ninja-build pkg-config
+      - name: Restore Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            build-ci/cargo-target
+          key: cargo-${{ runner.os }}-${{ hashFiles('third_party/motorsport-telemetry/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ hashFiles('third_party/motorsport-telemetry/Cargo.lock') }}-
+            cargo-${{ runner.os }}-
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: ccache-${{ runner.os }}-
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
@@ -40,6 +59,8 @@ jobs:
     name: Windows
     runs-on: windows-2025
     timeout-minutes: 45
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
     defaults:
       run:
         shell: msys2 {0}
@@ -55,12 +76,30 @@ jobs:
             mingw-w64-ucrt-x86_64-clang-tools-extra
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-ccache
             mingw-w64-ucrt-x86_64-libyaml
             mingw-w64-ucrt-x86_64-mpv
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-qt6-base
             mingw-w64-ucrt-x86_64-qt6-declarative
             mingw-w64-ucrt-x86_64-rust
+      - name: Restore Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            build-ci/cargo-target
+          key: cargo-${{ runner.os }}-${{ hashFiles('third_party/motorsport-telemetry/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ hashFiles('third_party/motorsport-telemetry/Cargo.lock') }}-
+            cargo-${{ runner.os }}-
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: ccache-${{ runner.os }}-
       - name: Configure
         run: cmake --preset ci
       - name: Build
