@@ -526,4 +526,5 @@ private:
     int comparisonGpsAnchors_ = 0;
 
     friend class TraceView;
+    friend class VideoTelemetryHud;
 };

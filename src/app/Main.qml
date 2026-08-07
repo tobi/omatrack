@@ -48,6 +48,10 @@ ApplicationWindow {
     required property url startupVideo
     property bool telemetryVideoActive: false
     property bool videoFullscreen: false
+    // 0 = both, 1 = active/left, 2 = reference/right. The docked workspace
+    // always shows both recordings; this selector is a fullscreen aid.
+    property int videoFullscreenLayout: 0
+    property bool videoOverlayVisible: true
     property int videoRestoreVisibility: Window.Windowed
     property bool videoVisible: false
 
@@ -480,6 +484,7 @@ ApplicationWindow {
             return;
         if (on) {
             videoVisible = true;
+            videoFullscreenLayout = dualVideo ? 0 : 1;
             videoRestoreVisibility = root.visibility;
             videoFullscreen = true;
             root.visibility = Window.FullScreen;
@@ -590,11 +595,12 @@ ApplicationWindow {
         }
         RowLayout {
             anchors.fill: parent
-            spacing: root.dualVideo ? 2 : 0
+            spacing: root.dualVideo && (!root.videoFullscreen || root.videoFullscreenLayout === 0) ? 2 : 0
 
             Item {
                 Layout.fillHeight: true
                 Layout.fillWidth: true
+                visible: !root.videoFullscreen || !root.dualVideo || root.videoFullscreenLayout !== 2
 
                 MpvVideoItem {
                     id: videoPlayer
@@ -662,7 +668,7 @@ ApplicationWindow {
             Item {
                 Layout.fillHeight: true
                 Layout.fillWidth: true
-                visible: root.dualVideo
+                visible: root.dualVideo && (!root.videoFullscreen || root.videoFullscreenLayout !== 1)
 
                 Loader {
                     id: videoReferenceLoader
@@ -823,6 +829,59 @@ ApplicationWindow {
 
                     onClicked: root.videoTogglePaused()
                 }
+                Row {
+                    Layout.preferredHeight: 30
+                    spacing: 2
+                    visible: root.videoFullscreen && root.dualVideo
+
+                    ToolButton {
+                        ToolTip.text: "Show active video"
+                        ToolTip.visible: hovered
+                        checkable: true
+                        checked: root.videoFullscreenLayout === 1
+                        height: 30
+                        text: "Left"
+                        width: 48
+
+                        onClicked: root.videoFullscreenLayout = 1
+                    }
+                    ToolButton {
+                        ToolTip.text: "Show both videos"
+                        ToolTip.visible: hovered
+                        checkable: true
+                        checked: root.videoFullscreenLayout === 0
+                        height: 30
+                        text: "Both"
+                        width: 48
+
+                        onClicked: root.videoFullscreenLayout = 0
+                    }
+                    ToolButton {
+                        ToolTip.text: "Show reference video"
+                        ToolTip.visible: hovered
+                        checkable: true
+                        checked: root.videoFullscreenLayout === 2
+                        height: 30
+                        text: "Right"
+                        width: 48
+
+                        onClicked: root.videoFullscreenLayout = 2
+                    }
+                }
+                ToolButton {
+                    Layout.preferredWidth: 48
+                    ToolTip.text: root.videoOverlayVisible ? "Hide telemetry overlay (O)" : "Show telemetry overlay (O)"
+                    ToolTip.visible: hovered
+                    checkable: true
+                    checked: root.videoOverlayVisible
+                    implicitWidth: 48
+                    leftPadding: 2
+                    rightPadding: 2
+                    text: "HUD"
+                    visible: root.videoFullscreen && root.telemetryVideoActive
+
+                    onClicked: root.videoOverlayVisible = !root.videoOverlayVisible
+                }
                 Item {
                     Layout.fillWidth: true
                 }
@@ -848,6 +907,11 @@ ApplicationWindow {
                     onClicked: root.videoSetFullscreen(!root.videoFullscreen)
                 }
             }
+        }
+        VideoTelemetryOverlay {
+            id: videoTelemetryOverlay
+
+            visible: root.videoFullscreen && root.videoOverlayVisible && root.telemetryVideoActive && videoPlayer.loaded
         }
     }
     ListModel {
@@ -1514,7 +1578,13 @@ ApplicationWindow {
                         enabled: videoPane.visible && videoPlayer.loaded
                         sequence: "Right"
 
-                        onActivated: root.seekVideoRelative(15)
+                        onActivated: root.seekVideoRelative(5)
+                    }
+                    Shortcut {
+                        enabled: root.videoFullscreen && root.telemetryVideoActive
+                        sequence: "O"
+
+                        onActivated: root.videoOverlayVisible = !root.videoOverlayVisible
                     }
                     Shortcut {
                         enabled: videoPane.visible && videoPlayer.loaded

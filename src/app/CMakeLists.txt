@@ -29,6 +29,7 @@ qt_add_qml_module(omatrack
     SessionTreeDelegate.qml
     TrackAssignmentDialog.qml
     ThinScrollBar.qml
+    VideoTelemetryOverlay.qml
   SOURCES
     CornerGraphView.h CornerGraphView.cpp
     DamperStripView.h DamperStripView.cpp
@@ -38,6 +39,7 @@ qt_add_qml_module(omatrack
     SessionMetadataCache.h SessionMetadataCache.cpp
     TelemetryStore.h TelemetryStore.cpp
     TraceView.h TraceView.cpp
+    VideoTelemetryHud.h VideoTelemetryHud.cpp
     YamlConfig.h YamlConfig.cpp
 )
 if(OMATRACK_ENABLE_AUTOTEST_HARNESS)
