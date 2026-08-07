@@ -35,6 +35,7 @@ QtObject {
     readonly property color dimTextColor: Theme.colors.dark_foreground || desktopPalette.mid
     readonly property int fontSize: 11
     readonly property color foregroundColor: Theme.colors.foreground || desktopPalette.windowText
+    readonly property color graphDimColor: Qt.rgba(0, 0, 0, 0.58)
     readonly property color greenColor: Theme.colors.green || "#a7c080"
     readonly property int iconButtonSize: 24
     readonly property color magentaColor: Theme.colors.magenta || "#d699b6"
@@ -42,6 +43,7 @@ QtObject {
     readonly property color mutedTextColor: Theme.colors.light_foreground || desktopPalette.midlight
     readonly property color orangeColor: Theme.colors.orange || "#e09d7f"
     readonly property color redColor: Theme.colors.red || "#e67e80"
+    readonly property color referenceSelectionColor: Qt.rgba(224 / 255, 157 / 255, 127 / 255, 0.14)
     readonly property int scrollBarWidth: 6
     readonly property color selectionColor: Theme.colors.selection || desktopPalette.highlight
     readonly property int smallControlHeight: 20

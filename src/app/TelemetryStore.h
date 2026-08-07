@@ -20,6 +20,8 @@
 #include <QVariantList>
 
 #include <memory>
+#include <cmath>
+#include <limits>
 #include <vector>
 
 namespace omatrack {
@@ -34,6 +36,11 @@ class QNetworkAccessManager;
 class QTimer;
 class QQmlEngine;
 class QJSEngine;
+template <typename T>
+class QFutureWatcher;
+struct SessionScanResult;
+struct SessionLapLoadResult;
+struct FileOpenResult;
 
 // ── damper alignment ────────────────────────────────────────────────
 
@@ -131,15 +138,16 @@ struct LapEntry {
 
 class SessionHandle {
 public:
-    explicit SessionHandle(const QString& path);
+    explicit SessionHandle(const QString& path,
+                           const QJsonObject& cachedMetadata = {});
     ~SessionHandle();
 
     const QString& path() const { return path_; }
     QString stem() const;
 
-    const omatrack::TelemetrySource* source();
-    const QVector<LapEntry>& laps();
-    std::shared_ptr<const omatrack::UnifiedLap> unifiedLap(int lapId);
+    const omatrack::TelemetrySource* source() const { return src_.get(); }
+    const QVector<LapEntry>& laps() const { return laps_; }
+    std::shared_ptr<const omatrack::UnifiedLap> unifiedLap(int lapId) const;
     QString sessionKey() const;
     bool isVideo() const {
         return path_.endsWith(QStringLiteral(".mp4"), Qt::CaseInsensitive);
@@ -156,15 +164,28 @@ public:
     QString venue() const { return venue_; }
     QString carNumber() const { return carNumber_; }
     QString carClass() const { return carClass_; }
+    bool hasGpsLocation() const {
+        return std::isfinite(gpsLatitude_) && std::isfinite(gpsLongitude_);
+    }
+    double gpsLatitude() const { return gpsLatitude_; }
+    double gpsLongitude() const { return gpsLongitude_; }
     QString driverMappingKey() const {
         return carNumber_ + QStringLiteral("|") + carClass_ +
                QStringLiteral("|") + driverId_;
     }
 
+    bool hasSummary() const { return summaryLoaded_; }
+    bool loadSummaryForIndex();
+    QJsonObject metadataForCache() const;
+    void adoptLoadedLap(int lapId,
+                        std::unique_ptr<omatrack::TelemetrySource> source,
+                        std::shared_ptr<const omatrack::UnifiedLap> unified);
+
 private:
-    void ensureSource();
+    void applyCachedMetadata(const QJsonObject& metadata);
     void ensureLapSummary();
     void applyEventDriverId(int eventDriverId);
+    void captureGpsLocation(const omatrack::TelemetrySource& source);
     void populateLaps(const std::vector<omatrack::Lap>& detected);
     QString path_;
     std::unique_ptr<omatrack::TelemetrySource> src_;
@@ -181,7 +202,8 @@ private:
     QString driver_;
     QString vehicle_;
     QString venue_;
-    bool loaded_ = false;
+    double gpsLatitude_ = std::numeric_limits<double>::quiet_NaN();
+    double gpsLongitude_ = std::numeric_limits<double>::quiet_NaN();
 };
 
 // ── store (root model exposed to QML) ───────────────────────────────
@@ -191,6 +213,8 @@ class TelemetryStore : public QObject {
     QML_NAMED_ELEMENT(Store)
     QML_SINGLETON
     Q_PROPERTY(bool ready READ ready NOTIFY readyChanged)
+    Q_PROPERTY(bool loading READ loading NOTIFY loadingChanged)
+    Q_PROPERTY(bool lapLoading READ lapLoading NOTIFY lapLoadingChanged)
     Q_PROPERTY(bool comparing READ comparing NOTIFY selectionChanged)
     Q_PROPERTY(bool editingCorners READ editingCorners WRITE setEditingCorners
                    NOTIFY editingCornersChanged)
@@ -255,9 +279,9 @@ public:
 
     Q_INVOKABLE void scan();
     Q_INVOKABLE void addSessionDirectory(const QString& dirPath);
-    /// Open one telemetry source. Returns false when the file is valid media
-    /// but carries no supported telemetry, so QML can fall back to playback.
-    Q_INVOKABLE bool openFile(const QString& filePath);
+    /// Queue one telemetry source for indexing and lap loading. Ordinary video
+    /// is reported through standaloneVideoRequested after background probing.
+    Q_INVOKABLE void openFile(const QString& filePath);
     Q_INVOKABLE bool directoryExists(const QString& dirPath) const;
     Q_INVOKABLE QString configFilePath() const;
     Q_INVOKABLE void removeSessionDirectory(const QString& dirPath);
@@ -266,6 +290,13 @@ public:
     Q_INVOKABLE QVariantList
     trackGroups() const;  // nested: track → dates → sessions → laps
     Q_INVOKABLE void refreshTrackAtlas();
+    Q_INVOKABLE QVariantList trackAtlasChoices() const;
+    Q_INVOKABLE QString
+    detectedTrackForSession(const QString& sessionKey) const;
+    Q_INVOKABLE QString
+    assignedTrackForSession(const QString& sessionKey) const;
+    Q_INVOKABLE void setSessionTrackAssignment(const QString& sessionKey,
+                                               const QString& atlasSlug);
 
     // ── selection ──────────────────────────────────────────────────
     Q_INVOKABLE void selectLap(const QString& sessionKey, int lapId);
@@ -347,6 +378,10 @@ public:
     QString trackAtlasStatus() const { return trackAtlasStatus_; }
 
     bool ready() const { return ready_; }
+    bool loading() const { return loading_; }
+    bool lapLoading() const {
+        return primaryLapLoading_ || compareLapLoading_ || fileOpenLoading_;
+    }
     bool comparing() const { return compareSession_ != nullptr; }
     bool editingCorners() const { return editingCorners_; }
     double cursorFrac() const { return cursorFrac_; }
@@ -387,6 +422,8 @@ public:
 
 signals:
     void readyChanged();
+    void loadingChanged();
+    void lapLoadingChanged();
     void selectionChanged();
     void editingCornersChanged();
     void cursorFracChanged();
@@ -400,14 +437,26 @@ signals:
     void trackAtlasChanged();
     void videoTimeChanged();
     void videoMutedChanged();
+    void standaloneVideoRequested(const QUrl& source);
 
 private:
     SessionHandle* findSession(const QString& key) const;
     void setPrimary(SessionHandle* session, int lapId);
     void setCompare(SessionHandle* session, int lapId);
-    void scanDirectory(const QString& dir);
+    void requestLapLoad(SessionHandle* session, int lapId, bool compare);
+    void startNextFileOpen();
+    void setPrimaryLapLoading(bool loading);
+    void setCompareLapLoading(bool loading);
+    QString sessionIndexCachePath() const;
+    void startSessionScan();
+    void finishSessionScan();
     void loadPreferences();
     QString driverDisplay(const SessionHandle* session) const;
+    QString assignedTrackSlug(const SessionHandle* session) const;
+    QString detectedAtlasSlug(const SessionHandle* session) const;
+    QString resolvedTrackSlug(const SessionHandle* session) const;
+    QString displayTrack(const SessionHandle* session) const;
+    static QString trackAssignmentKey(const SessionHandle* session);
     void savePreferences();
     void loadChannelsConfig();
 
@@ -418,18 +467,23 @@ private:
     void updateTrackAtlas(bool force);
     QString trackAtlasCachePath() const;
     void invalidateComparisonAlignment();
-    void ensureComparisonAlignment() const;
+    void rebuildComparisonAlignment();
     double compareTimeForPrimaryFraction(double fraction) const;
     double compareFractionForPrimaryFraction(double fraction) const;
     QStringList sessionDirs_;
-    QSet<QString> scannedSessionPaths_;
+    QFutureWatcher<std::shared_ptr<SessionScanResult>>* scanWatcher_ = nullptr;
+    QSet<QString> scanExtraPaths_;
     QHash<QString, QString> driverMappings_;
+    QHash<QString, QString> trackAssignments_;
     QString lastPrimaryKey_;
     QString lastCompareKey_;
     int lastPrimaryLap_ = -1;
     int lastCompareLap_ = -1;
     std::vector<std::unique_ptr<SessionHandle>> sessions_;
     SessionHandle* primarySession_ = nullptr;
+    QStringList pendingFileOpens_;
+    quint64 primaryLoadGeneration_ = 0;
+    quint64 compareLoadGeneration_ = 0;
     SessionHandle* compareSession_ = nullptr;
     int primaryLap_ = -1;
     int compareLap_ = -1;
@@ -440,6 +494,11 @@ private:
     int channelHeight_ = 110;
     bool editingCorners_ = false;
     bool ready_ = false;
+    bool loading_ = false;
+    bool rescanPending_ = false;
+    bool primaryLapLoading_ = false;
+    bool compareLapLoading_ = false;
+    bool fileOpenLoading_ = false;
     bool videoMuted_ = false;
     double referenceAlignment_ = 0.0;
     QSet<QString> closedTracks_;
@@ -461,11 +520,10 @@ private:
     mutable DamperAlignment damperAlignment_;
     mutable bool damperAlignmentValid_ = false;
     mutable bool deltaCacheValid_ = false;
-    mutable QVector<double> comparisonAlignmentTime_;
-    mutable QVector<double> comparisonAlignmentFraction_;
-    mutable QString comparisonAlignmentBasis_;
-    mutable int comparisonGpsAnchors_ = 0;
-    mutable bool comparisonAlignmentValid_ = false;
+    QVector<double> comparisonAlignmentTime_;
+    QVector<double> comparisonAlignmentFraction_;
+    QString comparisonAlignmentBasis_;
+    int comparisonGpsAnchors_ = 0;
 
     friend class TraceView;
 };

@@ -1,16 +1,19 @@
 #include "TelemetryStore.h"
 
 #include "ComparisonAlignment.h"
+#include "SessionMetadataCache.h"
 #include "core/TelemetryEngine.h"
 #include "YamlConfig.h"
 
 #include <QCoreApplication>
 #include <QDebug>
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
+#include <QFutureWatcher>
 #include <QJsonArray>
 #include <QJSEngine>
 #include <QJsonDocument>
@@ -18,6 +21,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QPointer>
 #include <QRegularExpression>
 #include <QSslError>
 #include <QSaveFile>
@@ -27,6 +31,7 @@
 #include <QTextStream>
 #include <QTimer>
 #include <QUrl>
+#include <QtConcurrent/QtConcurrentRun>
 
 #include <algorithm>
 #include <cmath>
@@ -38,6 +43,7 @@ constexpr qint64 kTrackAtlasMaxAgeSeconds = 24 * 60 * 60;
 constexpr int kTrackAtlasCheckIntervalMs = 6 * 60 * 60 * 1000;
 const QUrl kTrackAtlasUrl(QStringLiteral(
     "https://raw.githubusercontent.com/tobi/track-atlas/main/tracks.jsonl"));
+QPointer<TelemetryStore> s_storeInstance;
 QString legacyAppDataPath() {
     return QStandardPaths::writableLocation(
                QStandardPaths::GenericDataLocation) +
@@ -57,19 +63,34 @@ QString telemetryPathForInput(const QString& path) {
     return {};
 }
 
+QDate sessionDate(const SessionHandle* session) {
+    if (!session) return {};
+    QDate date =
+        QDate::fromString(session->date(), QStringLiteral("dd/MM/yyyy"));
+    if (date.isValid()) return date;
+    return QDate::fromString(QFileInfo(session->path()).dir().dirName(),
+                             Qt::ISODate);
+}
+
 QString normalizeAtlasName(QString value) {
     value = value.toLower();
     value.remove(QRegularExpression(QStringLiteral("[^a-z0-9]")));
     return value;
 }
 
-bool ignoredImportedCorner(const QString& name) {
-    QString normalized = name.trimmed().toLower();
-    normalized.remove(QRegularExpression(QStringLiteral("[^a-z0-9]")));
-    return normalized == QStringLiteral("5") ||
-           normalized == QStringLiteral("6") ||
-           normalized == QStringLiteral("turn5") ||
-           normalized == QStringLiteral("turn6");
+double geoDistanceKm(double firstLat, double firstLon, double secondLat,
+                     double secondLon) {
+    constexpr double kEarthRadiusKm = 6371.0088;
+    constexpr double kRadiansPerDegree = 3.14159265358979323846 / 180.0;
+    const double lat1 = firstLat * kRadiansPerDegree;
+    const double lat2 = secondLat * kRadiansPerDegree;
+    const double deltaLat = (secondLat - firstLat) * kRadiansPerDegree;
+    const double deltaLon = (secondLon - firstLon) * kRadiansPerDegree;
+    const double sinLat = std::sin(deltaLat * 0.5);
+    const double sinLon = std::sin(deltaLon * 0.5);
+    const double a =
+        sinLat * sinLat + std::cos(lat1) * std::cos(lat2) * sinLon * sinLon;
+    return 2.0 * kEarthRadiusKm * std::asin(std::sqrt(std::clamp(a, 0.0, 1.0)));
 }
 
 QColor defaultChannelColor(const QString& key) {
@@ -122,11 +143,13 @@ using namespace omatrack;
 
 // ── SessionHandle ───────────────────────────────────────────────────
 
-SessionHandle::SessionHandle(const QString& path) : path_(path) {
+SessionHandle::SessionHandle(const QString& path,
+                             const QJsonObject& cachedMetadata)
+    : path_(path) {
     // Resolve track + metadata eagerly from filename only (cheap, no parse).
-    QFileInfo fi(path);
-    SessionMeta meta =
-        sessionMetaFromFilename(fi.completeBaseName().toStdString());
+    const QFileInfo info(path);
+    const SessionMeta meta =
+        sessionMetaFromFilename(info.completeBaseName().toStdString());
     venue_ = QString::fromStdString(meta.venue);
     vehicle_ = QString::fromStdString(meta.vehicleId);
     time_ = QString::fromStdString(meta.time);
@@ -134,14 +157,15 @@ SessionHandle::SessionHandle(const QString& path) : path_(path) {
     driver_ = driverId_.isEmpty()
                   ? QStringLiteral("Unknown driver")
                   : QStringLiteral("Driver id %1").arg(driverId_);
-    const QString stem = fi.completeBaseName();
-    QRegularExpression carPattern(QStringLiteral("(?:^|[_ ])Car(\\d+)"),
-                                  QRegularExpression::CaseInsensitiveOption);
-    QRegularExpressionMatch carMatch = carPattern.match(stem);
+    const QString stem = info.completeBaseName();
+    const QRegularExpression carPattern(
+        QStringLiteral("(?:^|[_ ])Car(\\d+)"),
+        QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpressionMatch carMatch = carPattern.match(stem);
     if (carMatch.hasMatch()) {
         carNumber_ = carMatch.captured(1);
     } else {
-        QRegularExpression hashPattern(QStringLiteral("#(\\d+)"));
+        const QRegularExpression hashPattern(QStringLiteral("#(\\d+)"));
         const QRegularExpressionMatch hashMatch = hashPattern.match(stem);
         if (hashMatch.hasMatch()) carNumber_ = hashMatch.captured(1);
     }
@@ -149,18 +173,22 @@ SessionHandle::SessionHandle(const QString& path) : path_(path) {
     // Until Track Atlas resolves the layout, use the containing folder as the
     // generic track label. Filename-specific venue assumptions belong in user
     // configuration, not the analysis core.
-    track_ = venue_.isEmpty() ? fi.dir().dirName() : venue_;
+    track_ = venue_.isEmpty() ? info.dir().dirName() : venue_;
     date_ = QString::fromStdString(meta.date);
     if (date_.isEmpty()) {
-        date_ = "Unknown";
+        const QDate folderDate =
+            QDate::fromString(info.dir().dirName(), Qt::ISODate);
+        date_ = folderDate.isValid()
+                    ? folderDate.toString(QStringLiteral("dd/MM/yyyy"))
+                    : QStringLiteral("Unknown");
     }
+    applyCachedMetadata(cachedMetadata);
 }
 
 SessionHandle::~SessionHandle() = default;
 
 QString SessionHandle::stem() const {
-    QFileInfo fi(path_);
-    return fi.completeBaseName();
+    return QFileInfo(path_).completeBaseName();
 }
 
 QString SessionHandle::sessionKey() const { return path_; }
@@ -196,7 +224,7 @@ void SessionHandle::populateLaps(const std::vector<Lap>& detected) {
         for (LapEntry& entry : laps_)
             if (entry.isComplete && entry.timeMs > limit) entry.isPitLap = true;
     }
-    double fastest = 1e18;
+    double fastest = std::numeric_limits<double>::max();
     int fastestId = -1;
     for (const LapEntry& entry : laps_) {
         if (entry.countsForBest() && entry.timeMs < fastest) {
@@ -225,19 +253,150 @@ void SessionHandle::ensureLapSummary() {
     applyEventDriverId(eventDriverId);
 }
 
-void SessionHandle::ensureSource() {
-    if (src_) return;
-    src_ = TelemetrySource::open(path_.toStdString());
-    if (!src_) return;
-    if (!summaryLoaded_) populateLaps(src_->detectLaps());
-    // Formats reached through the loaded source (video-backed sessions are
-    // decoded during the scan) never run the lightweight driver-id pass.
-    applyEventDriverId(src_->detectDriverId());
-    loaded_ = true;
+bool SessionHandle::loadSummaryForIndex() {
+    if (summaryLoaded_) return true;
+    if (!isVideo()) {
+        ensureLapSummary();
+        return true;
+    }
+    std::unique_ptr<TelemetrySource> source =
+        TelemetrySource::open(path_.toStdString());
+    if (!source) return false;
+    populateLaps(source->detectLaps());
+    applyEventDriverId(source->detectDriverId());
+    captureGpsLocation(*source);
+    return true;
+}
+
+void SessionHandle::captureGpsLocation(const TelemetrySource& source) {
+    const auto mapping = source.mapChannels();
+    const auto latitudeIt = mapping.find("gps_lat");
+    const auto longitudeIt = mapping.find("gps_lon");
+    if (latitudeIt == mapping.end() || longitudeIt == mapping.end()) return;
+
+    const int latitudeId = latitudeIt->second;
+    const int longitudeId = longitudeIt->second;
+    const auto& channels = source.channels();
+    if (latitudeId < 0 || longitudeId < 0 ||
+        latitudeId >= int(channels.size()) ||
+        longitudeId >= int(channels.size()))
+        return;
+    const RawChannel& latitudeChannel = channels[size_t(latitudeId)];
+    const RawChannel& longitudeChannel = channels[size_t(longitudeId)];
+    const double duration =
+        std::min(latitudeChannel.durationSec, longitudeChannel.durationSec);
+    if (!(duration > 0.0)) return;
+
+    const bool latitudeRadians =
+        QString::fromStdString(latitudeChannel.unit)
+            .trimmed()
+            .compare(QStringLiteral("rad"), Qt::CaseInsensitive) == 0;
+    const bool longitudeRadians =
+        QString::fromStdString(longitudeChannel.unit)
+            .trimmed()
+            .compare(QStringLiteral("rad"), Qt::CaseInsensitive) == 0;
+    constexpr double kDegreesPerRadian = 180.0 / 3.14159265358979323846;
+    std::vector<double> latitudes;
+    std::vector<double> longitudes;
+    for (int sample = 1; sample <= 19; ++sample) {
+        const double time = duration * double(sample) / 20.0;
+        double latitude = 0.0;
+        double longitude = 0.0;
+        if (!source.sampleAt(size_t(latitudeId), time, &latitude) ||
+            !source.sampleAt(size_t(longitudeId), time, &longitude))
+            continue;
+        if (latitudeRadians) latitude *= kDegreesPerRadian;
+        if (longitudeRadians) longitude *= kDegreesPerRadian;
+        if (!std::isfinite(latitude) || !std::isfinite(longitude) ||
+            std::fabs(latitude) > 90.0 || std::fabs(longitude) > 180.0 ||
+            (std::fabs(latitude) < 0.001 && std::fabs(longitude) < 0.001))
+            continue;
+        latitudes.push_back(latitude);
+        longitudes.push_back(longitude);
+    }
+    if (latitudes.empty()) return;
+    std::sort(latitudes.begin(), latitudes.end());
+    std::sort(longitudes.begin(), longitudes.end());
+    gpsLatitude_ = latitudes[latitudes.size() / 2];
+    gpsLongitude_ = longitudes[longitudes.size() / 2];
+}
+
+void SessionHandle::applyCachedMetadata(const QJsonObject& metadata) {
+    // Version 6 also derives session dates from ISO-named event folders so
+    // automatic track identity can span consecutive event days.
+    if (metadata.value(QStringLiteral("version")).toInt() != 6) return;
+    time_ = metadata.value(QStringLiteral("time")).toString(time_);
+    driverId_ = metadata.value(QStringLiteral("driverId")).toString(driverId_);
+    track_ = metadata.value(QStringLiteral("track")).toString(track_);
+    date_ = metadata.value(QStringLiteral("date")).toString(date_);
+    carNumber_ =
+        metadata.value(QStringLiteral("carNumber")).toString(carNumber_);
+    carClass_ = metadata.value(QStringLiteral("carClass")).toString(carClass_);
+    driver_ = metadata.value(QStringLiteral("driver")).toString(driver_);
+    vehicle_ = metadata.value(QStringLiteral("vehicle")).toString(vehicle_);
+    venue_ = metadata.value(QStringLiteral("venue")).toString(venue_);
+    gpsLatitude_ = metadata.value(QStringLiteral("gpsLatitude"))
+                       .toDouble(std::numeric_limits<double>::quiet_NaN());
+    gpsLongitude_ = metadata.value(QStringLiteral("gpsLongitude"))
+                        .toDouble(std::numeric_limits<double>::quiet_NaN());
+    driverIdResolved_ =
+        metadata.value(QStringLiteral("driverIdResolved")).toBool(false);
+
+    laps_.clear();
+    const QJsonArray laps = metadata.value(QStringLiteral("laps")).toArray();
+    laps_.reserve(laps.size());
+    for (const QJsonValue& value : laps) {
+        if (!value.isObject()) continue;
+        const QJsonObject object = value.toObject();
+        LapEntry lap;
+        lap.lapId = object.value(QStringLiteral("id")).toInt();
+        lap.startTime = object.value(QStringLiteral("start")).toDouble();
+        lap.endTime = object.value(QStringLiteral("end")).toDouble();
+        lap.timeMs = object.value(QStringLiteral("timeMs")).toDouble();
+        lap.label = object.value(QStringLiteral("label")).toString();
+        lap.timeText = object.value(QStringLiteral("timeText")).toString();
+        lap.isFastest = object.value(QStringLiteral("fastest")).toBool();
+        lap.isComplete = object.value(QStringLiteral("complete")).toBool(true);
+        lap.isPitLap = object.value(QStringLiteral("pit")).toBool();
+        laps_.append(lap);
+    }
+    summaryLoaded_ = true;
+}
+
+QJsonObject SessionHandle::metadataForCache() const {
+    QJsonArray laps;
+    for (const LapEntry& lap : laps_) {
+        laps.append(QJsonObject{
+            {QStringLiteral("id"), lap.lapId},
+            {QStringLiteral("start"), lap.startTime},
+            {QStringLiteral("end"), lap.endTime},
+            {QStringLiteral("timeMs"), lap.timeMs},
+            {QStringLiteral("label"), lap.label},
+            {QStringLiteral("timeText"), lap.timeText},
+            {QStringLiteral("fastest"), lap.isFastest},
+            {QStringLiteral("complete"), lap.isComplete},
+            {QStringLiteral("pit"), lap.isPitLap},
+        });
+    }
+    return QJsonObject{
+        {QStringLiteral("version"), 6},
+        {QStringLiteral("time"), time_},
+        {QStringLiteral("driverId"), driverId_},
+        {QStringLiteral("track"), track_},
+        {QStringLiteral("date"), date_},
+        {QStringLiteral("carNumber"), carNumber_},
+        {QStringLiteral("carClass"), carClass_},
+        {QStringLiteral("driver"), driver_},
+        {QStringLiteral("vehicle"), vehicle_},
+        {QStringLiteral("venue"), venue_},
+        {QStringLiteral("gpsLatitude"), gpsLatitude_},
+        {QStringLiteral("gpsLongitude"), gpsLongitude_},
+        {QStringLiteral("driverIdResolved"), driverIdResolved_},
+        {QStringLiteral("laps"), laps},
+    };
 }
 
 double SessionHandle::bestLapMs() {
-    ensureLapSummary();
     for (const LapEntry& entry : laps_)
         if (entry.isFastest) return entry.timeMs;
     return 0.0;
@@ -250,37 +409,189 @@ QString SessionHandle::bestLapTime() {
                : QStringLiteral("—");
 }
 
-const omatrack::TelemetrySource* SessionHandle::source() {
-    ensureSource();
-    return src_.get();
-}
-
-const QVector<LapEntry>& SessionHandle::laps() {
-    ensureSource();
-    return laps_;
-}
-
 std::shared_ptr<const omatrack::UnifiedLap> SessionHandle::unifiedLap(
-    int lapId) {
-    ensureSource();
-    if (!src_) return nullptr;
-    auto it = unifiedCache_.find(lapId);
-    if (it != unifiedCache_.end()) return it.value();
-    for (const auto& l : laps_) {
-        if (l.lapId == lapId) {
-            auto u = std::make_shared<UnifiedLap>(
-                src_->unifyLap(l.startTime, l.endTime));
-            if (u->size() == 0) return nullptr;
-            unifiedCache_.insert(lapId, u);
-            return u;
+    int lapId) const {
+    return unifiedCache_.value(lapId);
+}
+
+void SessionHandle::adoptLoadedLap(int lapId,
+                                   std::unique_ptr<TelemetrySource> source,
+                                   std::shared_ptr<const UnifiedLap> unified) {
+    if (!source || !unified || unified->size() == 0) return;
+    applyEventDriverId(source->detectDriverId());
+    if (!hasGpsLocation()) captureGpsLocation(*source);
+    src_ = std::move(source);
+    unifiedCache_.insert(lapId, std::move(unified));
+}
+
+struct SessionScanResult {
+    std::vector<std::unique_ptr<SessionHandle>> sessions;
+    int cacheHits = 0;
+    int cacheMisses = 0;
+    qint64 elapsedMs = 0;
+};
+
+struct SessionLapLoadResult {
+    QString sessionKey;
+    int lapId = -1;
+    std::unique_ptr<TelemetrySource> source;
+    std::shared_ptr<const UnifiedLap> unified;
+    QString error;
+};
+
+struct FileOpenResult {
+    QString path;
+    std::unique_ptr<SessionHandle> handle;
+    std::shared_ptr<SessionLapLoadResult> lap;
+    bool standaloneVideo = false;
+};
+
+namespace {
+struct IndexedSession {
+    std::unique_ptr<SessionHandle> handle;
+    bool unsupportedVideo = false;
+};
+
+IndexedSession indexSession(const QString& path, SessionMetadataCache& cache,
+                            int* cacheHits = nullptr,
+                            int* cacheMisses = nullptr) {
+    const QString fingerprint = SessionMetadataCache::fingerprint(path);
+    const SessionMetadataCache::Lookup cached = cache.lookup(fingerprint);
+    if (cached.found && !cached.supported) {
+        if (cacheHits) ++*cacheHits;
+        IndexedSession result;
+        result.unsupportedVideo = true;
+        return result;
+    }
+    if (cached.found) {
+        auto handle = std::make_unique<SessionHandle>(path, cached.metadata);
+        if (handle->hasSummary()) {
+            if (cacheHits) ++*cacheHits;
+            IndexedSession result;
+            result.handle = std::move(handle);
+            return result;
         }
     }
-    return nullptr;
+
+    if (cacheMisses) ++*cacheMisses;
+    auto handle = std::make_unique<SessionHandle>(path);
+    const bool supported = handle->loadSummaryForIndex();
+    cache.store(fingerprint, path, supported,
+                supported ? handle->metadataForCache() : QJsonObject{});
+    IndexedSession result;
+    if (!supported) {
+        result.unsupportedVideo = handle->isVideo();
+        return result;
+    }
+    result.handle = std::move(handle);
+    return result;
 }
+
+const LapEntry* bestLap(const SessionHandle& session) {
+    const LapEntry* fallback = nullptr;
+    for (const LapEntry& lap : session.laps()) {
+        if (!fallback && lap.isComplete) fallback = &lap;
+        if (lap.isFastest) return &lap;
+    }
+    return fallback;
+}
+
+std::shared_ptr<SessionLapLoadResult> loadSessionLap(const QString& path,
+                                                     const QString& sessionKey,
+                                                     const LapEntry& lap) {
+    auto result = std::make_shared<SessionLapLoadResult>();
+    result->sessionKey = sessionKey;
+    result->lapId = lap.lapId;
+    std::string error;
+    result->source = TelemetrySource::open(path.toStdString(), &error);
+    if (!result->source) {
+        result->error = error.empty()
+                            ? QStringLiteral("Unable to open telemetry source")
+                            : QString::fromStdString(error);
+        return result;
+    }
+    auto unified = std::make_shared<UnifiedLap>(
+        result->source->unifyLap(lap.startTime, lap.endTime));
+    if (unified->size() == 0) {
+        result->error = QStringLiteral("Unable to normalize selected lap");
+        result->source.reset();
+        return result;
+    }
+    result->unified = std::move(unified);
+    return result;
+}
+
+std::shared_ptr<SessionScanResult> scanSessionDirectories(
+    const QStringList& directories, const QSet<QString>& extraPaths,
+    const QString& cachePath) {
+    QElapsedTimer timer;
+    timer.start();
+    auto result = std::make_shared<SessionScanResult>();
+    SessionMetadataCache cache(cachePath);
+    QSet<QString> uniquePaths = extraPaths;
+    const QStringList filters{"*.pds", "*.PDS", "*.ld",  "*.LD",  "*.ldx",
+                              "*.LDX", "*.vbo", "*.VBO", "*.mp4", "*.MP4"};
+    for (const QString& directory : directories) {
+        QDirIterator it(directory, filters, QDir::Files,
+                        QDirIterator::Subdirectories);
+        while (it.hasNext()) {
+            it.next();
+            const QString path = telemetryPathForInput(it.filePath());
+            if (path.isEmpty()) continue;
+            const QFileInfo resolved(path);
+            const QString canonical = resolved.canonicalFilePath().isEmpty()
+                                          ? resolved.absoluteFilePath()
+                                          : resolved.canonicalFilePath();
+            uniquePaths.insert(canonical);
+        }
+    }
+
+    QStringList paths(uniquePaths.cbegin(), uniquePaths.cend());
+    std::sort(paths.begin(), paths.end());
+    result->sessions.reserve(size_t(paths.size()));
+    for (const QString& path : paths) {
+        IndexedSession indexed =
+            indexSession(path, cache, &result->cacheHits, &result->cacheMisses);
+        if (indexed.handle)
+            result->sessions.push_back(std::move(indexed.handle));
+    }
+    cache.save();
+    result->elapsedMs = timer.elapsed();
+    return result;
+}
+
+std::shared_ptr<FileOpenResult> openIndexedFile(const QString& path,
+                                                const QString& cachePath) {
+    auto result = std::make_shared<FileOpenResult>();
+    result->path = path;
+    SessionMetadataCache cache(cachePath);
+    IndexedSession indexed = indexSession(path, cache);
+    cache.save();
+    if (!indexed.handle) {
+        result->standaloneVideo = indexed.unsupportedVideo;
+        return result;
+    }
+    const LapEntry* lap = bestLap(*indexed.handle);
+    if (!lap) {
+        result->standaloneVideo = indexed.handle->isVideo();
+        return result;
+    }
+    result->lap = loadSessionLap(path, indexed.handle->sessionKey(), *lap);
+    result->handle = std::move(indexed.handle);
+    return result;
+}
+}  // namespace
 
 // ── TelemetryStore ──────────────────────────────────────────────────
 
 TelemetryStore::TelemetryStore(QObject* parent) : QObject(parent) {
+    if (s_storeInstance)
+        qFatal("Only one TelemetryStore may exist in a process");
+    s_storeInstance = this;
+    scanWatcher_ = new QFutureWatcher<std::shared_ptr<SessionScanResult>>(this);
+    connect(scanWatcher_,
+            &QFutureWatcher<std::shared_ptr<SessionScanResult>>::finished, this,
+            &TelemetryStore::finishSessionScan);
     loadPreferences();
     loadChannelsConfig();
     // A fresh install gets a real omatrack.yml immediately, so the defaults
@@ -301,10 +612,12 @@ TelemetryStore::TelemetryStore(QObject* parent) : QObject(parent) {
     loadTrackAtlasCache();
     QTimer::singleShot(0, this, [this]() { updateTrackAtlas(false); });
 
-    if (!sessionDirs_.isEmpty()) scan();
+    scan();
 }
 
-TelemetryStore::~TelemetryStore() = default;
+TelemetryStore::~TelemetryStore() {
+    if (s_storeInstance == this) s_storeInstance.clear();
+}
 
 void TelemetryStore::loadPreferences() {
     YamlConfig& config = YamlConfig::instance();
@@ -404,6 +717,12 @@ void TelemetryStore::loadPreferences() {
         config.map({QStringLiteral("driver_mappings")});
     for (auto it = mappings.cbegin(); it != mappings.cend(); ++it)
         driverMappings_.insert(it.key(), it.value().toString());
+
+    const QVariantMap trackAssignments =
+        config.map({QStringLiteral("track_assignments")});
+    for (auto it = trackAssignments.cbegin(); it != trackAssignments.cend();
+         ++it)
+        trackAssignments_.insert(it.key(), it.value().toString());
 }
 
 void TelemetryStore::savePreferences() {
@@ -428,6 +747,12 @@ void TelemetryStore::savePreferences() {
     for (auto it = driverMappings_.cbegin(); it != driverMappings_.cend(); ++it)
         mappings.insert(it.key(), it.value());
     config.setMap({QStringLiteral("driver_mappings")}, mappings);
+
+    QVariantMap trackAssignments;
+    for (auto it = trackAssignments_.cbegin(); it != trackAssignments_.cend();
+         ++it)
+        trackAssignments.insert(it.key(), it.value());
+    config.setMap({QStringLiteral("track_assignments")}, trackAssignments);
 
     QVariantMap channels = config.map({QStringLiteral("channels")});
     for (const QString& key : channelOrder_)
@@ -481,7 +806,8 @@ QString TelemetryStore::trackAtlasCachePath() const {
     if (!QFile::exists(current)) {
         const QString legacy =
             legacyAppDataPath() + QStringLiteral("/track-atlas/tracks.jsonl");
-        if (QFile::exists(legacy)) QFile::copy(legacy, current);
+        if (QFile::exists(legacy) && !QFile::copy(legacy, current))
+            qWarning() << "Unable to migrate Track Atlas cache" << legacy;
     }
     return current;
 }
@@ -506,6 +832,7 @@ bool TelemetryStore::parseTrackAtlas(const QByteArray& payload) {
     trackAtlasStatus_ =
         QStringLiteral("%1 tracks cached").arg(atlasTracks_.size());
     emit trackAtlasChanged();
+    emit sessionsChanged();
     if (primarySession_) {
         loadCornersForPrimary();
         emit cornersChanged();
@@ -514,10 +841,15 @@ bool TelemetryStore::parseTrackAtlas(const QByteArray& payload) {
 }
 
 void TelemetryStore::loadTrackAtlasCache() {
-    QFile cache(trackAtlasCachePath());
+    const QString currentPath = trackAtlasCachePath();
+    QFile cache(currentPath);
     if (!cache.open(QIODevice::ReadOnly)) {
-        trackAtlasStatus_ = QStringLiteral("No track-atlas cache");
-        return;
+        cache.setFileName(legacyAppDataPath() +
+                          QStringLiteral("/track-atlas/tracks.jsonl"));
+        if (!cache.open(QIODevice::ReadOnly)) {
+            trackAtlasStatus_ = QStringLiteral("No track-atlas cache");
+            return;
+        }
     }
     if (!parseTrackAtlas(cache.readAll()))
         trackAtlasStatus_ = QStringLiteral("Invalid track-atlas cache");
@@ -558,75 +890,97 @@ void TelemetryStore::updateTrackAtlas(bool force) {
             return;
         }
         QSaveFile output(trackAtlasCachePath());
-        if (output.open(QIODevice::WriteOnly)) {
-            output.write(payload);
-            output.commit();
+        const bool opened = output.open(QIODevice::WriteOnly);
+        const bool written =
+            opened && output.write(payload) == qsizetype(payload.size());
+        if (!written || !output.commit()) {
+            trackAtlasStatus_ =
+                QStringLiteral("Track-atlas cache write failed");
+            emit trackAtlasChanged();
         }
     });
 }
 
 // ── scanning / grouping ─────────────────────────────────────────────
 
+QString TelemetryStore::sessionIndexCachePath() const {
+    return QStandardPaths::writableLocation(QStandardPaths::CacheLocation) +
+           QStringLiteral("/session-index.json");
+}
+
 void TelemetryStore::scan() {
     closedTracks_.clear();
-    scannedSessionPaths_.clear();
+    if (loading_) {
+        rescanPending_ = true;
+        return;
+    }
+    startSessionScan();
+}
+
+void TelemetryStore::startSessionScan() {
+    if (!loading_) {
+        loading_ = true;
+        emit loadingChanged();
+    }
+    const QStringList directories = sessionDirs_;
+    const QSet<QString> extraPaths = scanExtraPaths_;
+    const QString cachePath = sessionIndexCachePath();
+    scanWatcher_->setFuture(
+        QtConcurrent::run([directories, extraPaths, cachePath]() {
+            return scanSessionDirectories(directories, extraPaths, cachePath);
+        }));
+}
+
+void TelemetryStore::finishSessionScan() {
+    const std::shared_ptr<SessionScanResult> result = scanWatcher_->result();
+    if (rescanPending_) {
+        rescanPending_ = false;
+        startSessionScan();
+        return;
+    }
+
     clearSessions();
-    for (const QString& dir : sessionDirs_) scanDirectory(dir);
+    sessions_ = std::move(result->sessions);
+    scanExtraPaths_.clear();
+    qInfo() << "Session index:" << sessions_.size() << "sessions,"
+            << result->cacheHits << "cache hits," << result->cacheMisses
+            << "misses in" << result->elapsedMs << "ms";
     if (!lastPrimaryKey_.isEmpty()) {
         SessionHandle* saved = findSession(lastPrimaryKey_);
         if (saved) {
             for (const LapEntry& lap : saved->laps()) {
                 if (lap.lapId == lastPrimaryLap_) {
-                    setPrimary(saved, lastPrimaryLap_);
+                    requestLapLoad(saved, lastPrimaryLap_, false);
                     break;
                 }
             }
         }
     }
-    if (!lastCompareKey_.isEmpty() && primarySession_) {
+    if (!lastCompareKey_.isEmpty()) {
         SessionHandle* saved = findSession(lastCompareKey_);
         if (saved) {
             for (const LapEntry& lap : saved->laps()) {
                 if (lap.lapId == lastCompareLap_) {
-                    setCompare(saved, lastCompareLap_);
+                    requestLapLoad(saved, lastCompareLap_, true);
                     break;
                 }
             }
         }
     }
-    ready_ = true;
-    emit readyChanged();
+    if (!ready_) {
+        ready_ = true;
+        emit readyChanged();
+    }
+    loading_ = false;
+    emit loadingChanged();
     emit sessionsChanged();
 }
 
-void TelemetryStore::scanDirectory(const QString& dir) {
-    const QStringList filters{"*.pds", "*.PDS", "*.ld",  "*.LD",  "*.ldx",
-                              "*.LDX", "*.vbo", "*.VBO", "*.mp4", "*.MP4"};
-    QDirIterator it(dir, filters, QDir::Files, QDirIterator::Subdirectories);
-    QStringList paths;
-    while (it.hasNext()) {
-        it.next();
-        const QString path = telemetryPathForInput(it.filePath());
-        if (path.isEmpty()) continue;
-        const QFileInfo resolved(path);
-        const QString canonical = resolved.canonicalFilePath().isEmpty()
-                                      ? resolved.absoluteFilePath()
-                                      : resolved.canonicalFilePath();
-        if (scannedSessionPaths_.contains(canonical)) continue;
-        scannedSessionPaths_.insert(canonical);
-        if (!paths.contains(canonical)) paths.append(canonical);
-    }
-    std::sort(paths.begin(), paths.end());
-    for (const QString& path : paths) {
-        auto handle = std::make_unique<SessionHandle>(path);
-        if (handle->isVideo() && !handle->source()) continue;
-        sessions_.push_back(std::move(handle));
-    }
-}
-
 void TelemetryStore::addSessionDirectory(const QString& dirPath) {
-    if (dirPath.isEmpty() || !QFileInfo::exists(dirPath)) return;
-    if (!sessionDirs_.contains(dirPath)) sessionDirs_.append(dirPath);
+    if (dirPath.isEmpty() || !QFileInfo::exists(dirPath) ||
+        sessionDirs_.contains(dirPath))
+        return;
+    sessionDirs_.append(dirPath);
     savePreferences();
     scan();
 }
@@ -636,52 +990,83 @@ void TelemetryStore::removeSessionDirectory(const QString& dirPath) {
     scan();
 }
 
-bool TelemetryStore::openFile(const QString& filePath) {
-    if (filePath.isEmpty() || !QFileInfo::exists(filePath)) return false;
+void TelemetryStore::openFile(const QString& filePath) {
+    if (filePath.isEmpty() || !QFileInfo::exists(filePath)) return;
     const QString resolvedPath = telemetryPathForInput(filePath);
-    if (resolvedPath.isEmpty() || !QFileInfo::exists(resolvedPath))
-        return false;
+    if (resolvedPath.isEmpty() || !QFileInfo::exists(resolvedPath)) return;
     const QFileInfo resolved(resolvedPath);
     const QString telemetryPath = resolved.canonicalFilePath().isEmpty()
                                       ? resolved.absoluteFilePath()
                                       : resolved.canonicalFilePath();
-
-    SessionHandle* raw = findSession(telemetryPath);
-    bool added = false;
-    if (!raw) {
-        auto handle = std::make_unique<SessionHandle>(telemetryPath);
-        raw = handle.get();
-        const auto& laps = raw->laps();
-        if (!raw->source() || laps.isEmpty()) return false;
-        sessions_.push_back(std::move(handle));
-        added = true;
+    if (loading_) {
+        scanExtraPaths_.insert(telemetryPath);
+        rescanPending_ = true;
     }
+    pendingFileOpens_.append(telemetryPath);
+    startNextFileOpen();
+}
 
-    const auto& laps = raw->laps();
-    int bestId = -1;
-    double bestMs = 1e18;
-    for (const auto& lap : laps) {
-        if (lap.countsForBest() && lap.timeMs < bestMs) {
-            bestMs = lap.timeMs;
-            bestId = lap.lapId;
-        }
+void TelemetryStore::startNextFileOpen() {
+    if (fileOpenLoading_ && pendingFileOpens_.isEmpty()) {
+        fileOpenLoading_ = false;
+        emit lapLoadingChanged();
+        return;
     }
-    if (bestId < 0) return false;
+    if (fileOpenLoading_ || pendingFileOpens_.isEmpty()) return;
+    fileOpenLoading_ = true;
+    emit lapLoadingChanged();
 
-    // Opening a second telemetry-bearing video means "compare these": preserve
-    // the first as active and put the newly opened recording beside it.
-    if (raw->isVideo() && primarySession_ && primarySession_->isVideo() &&
-        primarySession_ != raw) {
-        setCompare(raw, bestId);
-    } else {
-        setPrimary(raw, bestId);
-        viewStart_ = 0.0;
-        viewEnd_ = 1.0;
-    }
-    ready_ = true;
-    emit readyChanged();
-    if (added) emit sessionsChanged();
-    return true;
+    const QString path = pendingFileOpens_.takeFirst();
+    const QString cachePath = sessionIndexCachePath();
+    auto* watcher = new QFutureWatcher<std::shared_ptr<FileOpenResult>>(this);
+    connect(
+        watcher, &QFutureWatcher<std::shared_ptr<FileOpenResult>>::finished,
+        this, [this, watcher]() {
+            std::shared_ptr<FileOpenResult> result = watcher->result();
+            watcher->deleteLater();
+            if (result->standaloneVideo) {
+                emit standaloneVideoRequested(
+                    QUrl::fromLocalFile(result->path));
+            } else if (result->handle && result->lap &&
+                       result->lap->error.isEmpty() && result->lap->source &&
+                       result->lap->unified) {
+                SessionHandle* session = findSession(result->path);
+                bool added = false;
+                if (!session) {
+                    session = result->handle.get();
+                    sessions_.push_back(std::move(result->handle));
+                    added = true;
+                }
+                session->adoptLoadedLap(result->lap->lapId,
+                                        std::move(result->lap->source),
+                                        std::move(result->lap->unified));
+                if (added) emit sessionsChanged();
+                // Opening a second telemetry-bearing video means
+                // "compare these": preserve the first as primary.
+                if (session->isVideo() && primarySession_ &&
+                    primarySession_->isVideo() && primarySession_ != session) {
+                    setCompare(session, result->lap->lapId);
+                } else {
+                    setPrimary(session, result->lap->lapId);
+                    viewStart_ = 0.0;
+                    viewEnd_ = 1.0;
+                }
+                if (!ready_) {
+                    ready_ = true;
+                    emit readyChanged();
+                }
+            } else {
+                qWarning() << "Unable to open telemetry file" << result->path
+                           << (result->lap ? result->lap->error : QString());
+            }
+            fileOpenLoading_ = false;
+            if (pendingFileOpens_.isEmpty())
+                emit lapLoadingChanged();
+            else
+                startNextFileOpen();
+        });
+    watcher->setFuture(QtConcurrent::run(
+        [path, cachePath]() { return openIndexedFile(path, cachePath); }));
 }
 
 void TelemetryStore::clearSessions() {
@@ -690,6 +1075,10 @@ void TelemetryStore::clearSessions() {
     compareSession_ = nullptr;
     primaryLap_ = -1;
     compareLap_ = -1;
+    ++primaryLoadGeneration_;
+    ++compareLoadGeneration_;
+    setPrimaryLapLoading(false);
+    setCompareLapLoading(false);
     deltaCacheValid_ = false;
     damperAlignmentValid_ = false;
     setReferenceAlignment(0.0);
@@ -748,15 +1137,271 @@ QString TelemetryStore::driverDisplay(const SessionHandle* session) const {
     return mapped.isEmpty() ? session->driver() : mapped;
 }
 
+QString TelemetryStore::trackAssignmentKey(const SessionHandle* session) {
+    if (!session) return QString();
+    const QDate date = sessionDate(session);
+    if (date.isValid()) return date.toString(Qt::ISODate);
+    return QFileInfo(session->path()).absolutePath();
+}
+
+QString TelemetryStore::assignedTrackSlug(const SessionHandle* session) const {
+    if (!session) return QString();
+    QString slug = trackAssignments_.value(trackAssignmentKey(session));
+    // Compatibility with the first track-assignment build, which scoped the
+    // mapping to a source folder rather than an event date.
+    if (slug.isEmpty())
+        slug =
+            trackAssignments_.value(QFileInfo(session->path()).absolutePath());
+    return slug.trimmed().toLower();
+}
+
+QString TelemetryStore::detectedAtlasSlug(const SessionHandle* session) const {
+    if (!session || atlasTracks_.isEmpty()) return {};
+
+    auto nearestGpsTrack = [&](const SessionHandle* candidate) {
+        if (!candidate || !candidate->hasGpsLocation()) return QString();
+        QString nearestSlug;
+        double nearestDistance = std::numeric_limits<double>::max();
+        for (auto it = atlasTracks_.cbegin(); it != atlasTracks_.cend(); ++it) {
+            const QJsonObject location =
+                it.value().value(QStringLiteral("location")).toObject();
+            const double latitude =
+                location.value(QStringLiteral("lat"))
+                    .toDouble(std::numeric_limits<double>::quiet_NaN());
+            const double longitude =
+                location.value(QStringLiteral("lon"))
+                    .toDouble(std::numeric_limits<double>::quiet_NaN());
+            if (!std::isfinite(latitude) || !std::isfinite(longitude)) continue;
+            const double distance =
+                geoDistanceKm(candidate->gpsLatitude(),
+                              candidate->gpsLongitude(), latitude, longitude);
+            if (distance < nearestDistance) {
+                nearestDistance = distance;
+                nearestSlug = it.key();
+            }
+        }
+        // Track Atlas locations are circuit centres. A generous radius allows
+        // for coarse upstream coordinates without confusing nearby venues.
+        return nearestDistance <= 20.0 ? nearestSlug : QString();
+    };
+
+    const QString ownGpsMatch = nearestGpsTrack(session);
+    if (!ownGpsMatch.isEmpty()) return ownGpsMatch;
+
+    const QString wanted = normalizeAtlasName(session->track());
+    if (!wanted.isEmpty()) {
+        for (auto it = atlasTracks_.cbegin(); it != atlasTracks_.cend(); ++it) {
+            QStringList names{
+                it.key(), it.value().value(QStringLiteral("name")).toString()};
+            for (const QJsonValue& alias :
+                 it.value().value(QStringLiteral("aka")).toArray())
+                names.append(alias.toString());
+            for (const QString& name : names)
+                if (normalizeAtlasName(name) == wanted) return it.key();
+        }
+    }
+
+    // Some AiM recordings expose a GPS channel whose receiver payload is an
+    // invalid equator placeholder. Borrow the unambiguous venue identity from
+    // GPS-valid recordings on consecutive days in the same event folder.
+    const QDate selectedDate = sessionDate(session);
+    if (!selectedDate.isValid()) return {};
+    const QString selectedDirectory = QFileInfo(session->path()).absolutePath();
+    QDir selectedParentDirectory(selectedDirectory);
+    selectedParentDirectory.cdUp();
+    const QString selectedParent = selectedParentDirectory.absolutePath();
+    QSet<QDate> nearbyDates;
+    for (const auto& candidate : sessions_) {
+        const QString candidateDirectory =
+            QFileInfo(candidate->path()).absolutePath();
+        QDir candidateParentDirectory(candidateDirectory);
+        candidateParentDirectory.cdUp();
+        if (candidateDirectory != selectedDirectory &&
+            candidateParentDirectory.absolutePath() != selectedParent)
+            continue;
+        const QDate candidateDate = sessionDate(candidate.get());
+        if (candidateDate.isValid()) nearbyDates.insert(candidateDate);
+    }
+    QSet<QDate> eventDates{selectedDate};
+    bool expanded = true;
+    while (expanded) {
+        expanded = false;
+        for (const QDate& candidateDate : nearbyDates) {
+            if (eventDates.contains(candidateDate)) continue;
+            for (const QDate& eventDate : eventDates) {
+                if (std::abs(eventDate.daysTo(candidateDate)) != 1) continue;
+                eventDates.insert(candidateDate);
+                expanded = true;
+                break;
+            }
+            if (expanded) break;
+        }
+    }
+    QHash<QString, int> votes;
+    for (const auto& candidate : sessions_) {
+        if (!eventDates.contains(sessionDate(candidate.get()))) continue;
+        QDir candidateParentDirectory(
+            QFileInfo(candidate->path()).absolutePath());
+        candidateParentDirectory.cdUp();
+        if (candidateParentDirectory.absolutePath() != selectedParent) continue;
+        const QString slug = nearestGpsTrack(candidate.get());
+        if (!slug.isEmpty()) ++votes[slug];
+    }
+    QString votedSlug;
+    int highestVotes = 0;
+    bool tied = false;
+    for (auto it = votes.cbegin(); it != votes.cend(); ++it) {
+        if (it.value() > highestVotes) {
+            votedSlug = it.key();
+            highestVotes = it.value();
+            tied = false;
+        } else if (it.value() == highestVotes) {
+            tied = true;
+        }
+    }
+    if (!tied) return votedSlug;
+    return {};
+}
+
+QString TelemetryStore::resolvedTrackSlug(const SessionHandle* session) const {
+    const QString assigned = assignedTrackSlug(session);
+    return assigned.isEmpty() ? detectedAtlasSlug(session) : assigned;
+}
+
+QString TelemetryStore::displayTrack(const SessionHandle* session) const {
+    if (!session) return QString();
+    const QString slug = resolvedTrackSlug(session);
+    if (!slug.isEmpty()) {
+        const QJsonObject track = atlasTracks_.value(slug);
+        const QString name = track.value(QStringLiteral("name")).toString();
+        return name.isEmpty() ? slug : name;
+    }
+    return session->track();
+}
+
+QVariantList TelemetryStore::trackAtlasChoices() const {
+    QVector<QVariantMap> rows;
+    rows.reserve(atlasTracks_.size());
+    for (auto it = atlasTracks_.cbegin(); it != atlasTracks_.cend(); ++it) {
+        const QString name =
+            it.value().value(QStringLiteral("name")).toString(it.key());
+        rows.append(QVariantMap{{QStringLiteral("name"), name},
+                                {QStringLiteral("slug"), it.key()}});
+    }
+    std::sort(rows.begin(), rows.end(),
+              [](const QVariantMap& a, const QVariantMap& b) {
+                  return a.value(QStringLiteral("name")).toString() <
+                         b.value(QStringLiteral("name")).toString();
+              });
+    QVariantList result;
+    result.reserve(rows.size());
+    for (const QVariantMap& row : rows) result.append(row);
+    return result;
+}
+
+QString TelemetryStore::detectedTrackForSession(
+    const QString& sessionKey) const {
+    const SessionHandle* session = findSession(sessionKey);
+    if (!session) return {};
+    const QString slug = detectedAtlasSlug(session);
+    if (slug.isEmpty()) return session->track();
+    return atlasTracks_.value(slug)
+        .value(QStringLiteral("name"))
+        .toString(slug);
+}
+
+QString TelemetryStore::assignedTrackForSession(
+    const QString& sessionKey) const {
+    return assignedTrackSlug(findSession(sessionKey));
+}
+
+void TelemetryStore::setSessionTrackAssignment(const QString& sessionKey,
+                                               const QString& atlasSlug) {
+    SessionHandle* session = findSession(sessionKey);
+    if (!session) return;
+    const QString slug = atlasSlug.trimmed().toLower();
+    if (!slug.isEmpty() && !atlasTracks_.contains(slug)) return;
+
+    const QFileInfo selectedInfo(session->path());
+    const QString selectedDirectory = selectedInfo.absolutePath();
+    QDir selectedParentDir(selectedDirectory);
+    selectedParentDir.cdUp();
+    const QString selectedParent = selectedParentDir.absolutePath();
+    const QDate selectedDate =
+        QDate::fromString(session->date(), QStringLiteral("dd/MM/yyyy"));
+    QSet<QDate> nearbyDates;
+    if (selectedDate.isValid()) {
+        for (const auto& candidate : sessions_) {
+            const QFileInfo candidateInfo(candidate->path());
+            const QString candidateDirectory = candidateInfo.absolutePath();
+            QDir candidateParentDir(candidateDirectory);
+            candidateParentDir.cdUp();
+            const bool sameEventPath =
+                candidateDirectory == selectedDirectory ||
+                candidateParentDir.absolutePath() == selectedParent;
+            if (!sameEventPath) continue;
+            const QDate candidateDate = QDate::fromString(
+                candidate->date(), QStringLiteral("dd/MM/yyyy"));
+            if (candidateDate.isValid()) nearbyDates.insert(candidateDate);
+        }
+    }
+
+    QSet<QDate> eventDates;
+    if (selectedDate.isValid()) {
+        eventDates.insert(selectedDate);
+        bool expanded = true;
+        while (expanded) {
+            expanded = false;
+            for (const QDate& candidateDate : nearbyDates) {
+                if (eventDates.contains(candidateDate)) continue;
+                bool adjacent = false;
+                for (const QDate& eventDate : eventDates) {
+                    if (std::abs(eventDate.daysTo(candidateDate)) == 1) {
+                        adjacent = true;
+                        break;
+                    }
+                }
+                if (!adjacent) continue;
+                eventDates.insert(candidateDate);
+                expanded = true;
+                if (expanded) break;
+            }
+        }
+    }
+
+    QStringList keys;
+    if (eventDates.isEmpty()) {
+        keys.append(trackAssignmentKey(session));
+    } else {
+        for (const QDate& eventDate : eventDates)
+            keys.append(eventDate.toString(Qt::ISODate));
+    }
+    for (const QString& key : keys) {
+        if (slug.isEmpty())
+            trackAssignments_.remove(key);
+        else
+            trackAssignments_.insert(key, slug);
+    }
+    // Remove the obsolete folder-scoped value once this event is edited.
+    trackAssignments_.remove(selectedDirectory);
+    savePreferences();
+    if (primarySession_ && keys.contains(trackAssignmentKey(primarySession_))) {
+        loadCornersForPrimary();
+        emit cornersChanged();
+        emit selectionChanged();
+    }
+    emit sessionsChanged();
+}
+
 QVariantList TelemetryStore::trackGroups() const {
     QVariantList tracks;
     QStringList trackNames;
     QMap<QString, QHash<QString, QStringList>> dateSessions;
 
     for (const auto& session : sessions_) {
-        const QString track = session->track().isEmpty()
-                                  ? QStringLiteral("Unknown")
-                                  : session->track();
+        const QString resolvedTrack = displayTrack(session.get());
+        const QString track =
+            resolvedTrack.isEmpty() ? QStringLiteral("Unknown") : resolvedTrack;
         if (closedTracks_.contains(track)) continue;
         const QString date = session->date().isEmpty()
                                  ? QStringLiteral("Unknown")
@@ -851,13 +1496,16 @@ QVector<CornerZone> TelemetryStore::atlasCornersForPrimary() const {
     if (!primarySession_ || primaryLap_ < 0 || atlasTracks_.isEmpty())
         return result;
 
-    const QString wanted = normalizeAtlasName(primarySession_->track());
+    const QString assignedSlug = resolvedTrackSlug(primarySession_);
+    const QString wanted = normalizeAtlasName(
+        assignedSlug.isEmpty() ? primarySession_->track() : assignedSlug);
     if (wanted.isEmpty()) return result;
 
     QJsonObject matchedTrack;
     int bestTrackScore = std::numeric_limits<int>::max();
     for (auto it = atlasTracks_.cbegin(); it != atlasTracks_.cend(); ++it) {
         const QJsonObject track = it.value();
+        if (!assignedSlug.isEmpty() && it.key() != assignedSlug) continue;
         QStringList names{
             track.value(QStringLiteral("slug")).toString(),
             track.value(QStringLiteral("name")).toString(),
@@ -985,8 +1633,7 @@ QVector<CornerZone> TelemetryStore::atlasCornersForPrimary() const {
             fractionAtDistance(range.value(QStringLiteral("start")).toDouble());
         corner.end =
             fractionAtDistance(range.value(QStringLiteral("end")).toDouble());
-        if (!corner.name.isEmpty() && !ignoredImportedCorner(corner.name) &&
-            corner.end > corner.start)
+        if (!corner.name.isEmpty() && corner.end > corner.start)
             result.append(corner);
     }
     std::sort(result.begin(), result.end(),
@@ -1002,13 +1649,14 @@ void TelemetryStore::loadCornersForPrimary() {
 
     corners_ = atlasCornersForPrimary();
 
-    migrateLegacyCorners(primarySession_->track());
+    const QString assignedSlug = resolvedTrackSlug(primarySession_);
+    const QString cornerTrack =
+        assignedSlug.isEmpty() ? primarySession_->track() : assignedSlug;
+    migrateLegacyCorners(cornerTrack);
     // A local edit wins over Track Atlas: the override lives in omatrack.yml
     // under the track key and is written the moment the user changes a zone.
     const QVariantList overrides =
-        YamlConfig::instance()
-            .value(cornerConfigPath(primarySession_->track()))
-            .toList();
+        YamlConfig::instance().value(cornerConfigPath(cornerTrack)).toList();
     if (overrides.isEmpty()) return;
     QVector<CornerZone> loaded;
     for (const QVariant& entry : overrides) {
@@ -1027,6 +1675,93 @@ void TelemetryStore::loadCornersForPrimary() {
 
 // ── selection ───────────────────────────────────────────────────────
 
+void TelemetryStore::setPrimaryLapLoading(bool loading) {
+    if (primaryLapLoading_ == loading) return;
+    primaryLapLoading_ = loading;
+    emit lapLoadingChanged();
+}
+
+void TelemetryStore::setCompareLapLoading(bool loading) {
+    if (compareLapLoading_ == loading) return;
+    compareLapLoading_ = loading;
+    emit lapLoadingChanged();
+}
+
+void TelemetryStore::requestLapLoad(SessionHandle* session, int lapId,
+                                    bool compare) {
+    if (!session || lapId < 0) return;
+    const std::shared_ptr<const UnifiedLap> cached = session->unifiedLap(lapId);
+    if (cached) {
+        if (compare) {
+            ++compareLoadGeneration_;
+            setCompareLapLoading(false);
+            setCompare(session, lapId);
+        } else {
+            ++primaryLoadGeneration_;
+            setPrimaryLapLoading(false);
+            setPrimary(session, lapId);
+        }
+        return;
+    }
+
+    const LapEntry* wanted = nullptr;
+    for (const LapEntry& lap : session->laps()) {
+        if (lap.lapId == lapId) {
+            wanted = &lap;
+            break;
+        }
+    }
+    if (!wanted) return;
+
+    quint64 generation = 0;
+    if (compare) {
+        generation = ++compareLoadGeneration_;
+        setCompareLapLoading(true);
+    } else {
+        generation = ++primaryLoadGeneration_;
+        setPrimaryLapLoading(true);
+    }
+    const QString path = session->path();
+    const QString sessionKey = session->sessionKey();
+    const LapEntry lap = *wanted;
+    auto* watcher =
+        new QFutureWatcher<std::shared_ptr<SessionLapLoadResult>>(this);
+    connect(
+        watcher,
+        &QFutureWatcher<std::shared_ptr<SessionLapLoadResult>>::finished, this,
+        [this, watcher, compare, generation]() {
+            std::shared_ptr<SessionLapLoadResult> result = watcher->result();
+            watcher->deleteLater();
+            const quint64 currentGeneration =
+                compare ? compareLoadGeneration_ : primaryLoadGeneration_;
+            if (generation != currentGeneration) return;
+
+            SessionHandle* session = findSession(result->sessionKey);
+            if (!session || !result->error.isEmpty() || !result->source ||
+                !result->unified) {
+                qWarning() << "Unable to load lap" << result->sessionKey
+                           << result->lapId << result->error;
+                if (compare)
+                    setCompareLapLoading(false);
+                else
+                    setPrimaryLapLoading(false);
+                return;
+            }
+            session->adoptLoadedLap(result->lapId, std::move(result->source),
+                                    std::move(result->unified));
+            if (compare) {
+                setCompare(session, result->lapId);
+                setCompareLapLoading(false);
+            } else {
+                setPrimary(session, result->lapId);
+                setPrimaryLapLoading(false);
+            }
+        });
+    watcher->setFuture(QtConcurrent::run([path, sessionKey, lap]() {
+        return loadSessionLap(path, sessionKey, lap);
+    }));
+}
+
 void TelemetryStore::setPrimary(SessionHandle* session, int lapId) {
     const bool sessionChanged = primarySession_ != session;
     primarySession_ = session;
@@ -1034,6 +1769,7 @@ void TelemetryStore::setPrimary(SessionHandle* session, int lapId) {
     deltaCacheValid_ = false;
     damperAlignmentValid_ = false;
     invalidateComparisonAlignment();
+    rebuildComparisonAlignment();
     lastPrimaryKey_ = session ? session->sessionKey() : QString();
     lastPrimaryLap_ = session ? lapId : -1;
     savePreferences();
@@ -1056,25 +1792,28 @@ void TelemetryStore::setCompare(SessionHandle* session, int lapId) {
     deltaCacheValid_ = false;
     damperAlignmentValid_ = false;
     invalidateComparisonAlignment();
+    rebuildComparisonAlignment();
     if (sessionChanged) setReferenceAlignment(0.0);
     emit selectionChanged();
 }
 
 void TelemetryStore::selectLap(const QString& sessionKey, int lapId) {
-    SessionHandle* s = findSession(sessionKey);
-    if (!s) return;
-    if (primarySession_ == s && primaryLap_ == lapId) return;
-    setPrimary(s, lapId);
+    SessionHandle* session = findSession(sessionKey);
+    if (!session) return;
+    if (primarySession_ == session && primaryLap_ == lapId) return;
+    requestLapLoad(session, lapId, false);
 }
 
 void TelemetryStore::compareLap(const QString& sessionKey, int lapId) {
-    SessionHandle* s = findSession(sessionKey);
-    if (!s) return;
-    if (primarySession_ == s && primaryLap_ == lapId) return;
-    setCompare(s, lapId);
+    SessionHandle* session = findSession(sessionKey);
+    if (!session) return;
+    if (primarySession_ == session && primaryLap_ == lapId) return;
+    requestLapLoad(session, lapId, true);
 }
 
 void TelemetryStore::clearCompare() {
+    ++compareLoadGeneration_;
+    setCompareLapLoading(false);
     compareSession_ = nullptr;
     compareLap_ = -1;
     lastCompareKey_.clear();
@@ -1089,6 +1828,10 @@ void TelemetryStore::clearCompare() {
 }
 
 void TelemetryStore::clearPrimary() {
+    ++primaryLoadGeneration_;
+    ++compareLoadGeneration_;
+    setPrimaryLapLoading(false);
+    setCompareLapLoading(false);
     primarySession_ = nullptr;
     primaryLap_ = -1;
     compareSession_ = nullptr;
@@ -1109,8 +1852,7 @@ void TelemetryStore::clearPrimary() {
 
 QVariantList TelemetryStore::lapsForSession(const QString& sessionKey) const {
     QVariantList out;
-    SessionHandle* s =
-        const_cast<TelemetryStore*>(this)->findSession(sessionKey);
+    SessionHandle* s = findSession(sessionKey);
     if (!s) return out;
     for (const LapEntry& l : s->laps()) {
         out.append(
@@ -1153,11 +1895,15 @@ void TelemetryStore::setVideoMuted(bool muted) {
 }
 
 void TelemetryStore::setViewStart(double v) {
-    viewStart_ = qBound(0.0, v, 1.0);
+    v = qBound(0.0, v, 1.0);
+    if (qFuzzyCompare(viewStart_ + 1.0, v + 1.0)) return;
+    viewStart_ = v;
     emit viewChanged();
 }
 void TelemetryStore::setViewEnd(double v) {
-    viewEnd_ = qBound(0.0, v, 1.0);
+    v = qBound(0.0, v, 1.0);
+    if (qFuzzyCompare(viewEnd_ + 1.0, v + 1.0)) return;
+    viewEnd_ = v;
     emit viewChanged();
 }
 
@@ -1416,7 +2162,10 @@ void TelemetryStore::saveCorners() {
             {QStringLiteral("start"), QString::number(corner.start, 'f', 6)},
             {QStringLiteral("end"), QString::number(corner.end, 'f', 6)}});
     YamlConfig& config = YamlConfig::instance();
-    config.setValue(cornerConfigPath(primarySession_->track()), zones);
+    const QString assignedSlug = resolvedTrackSlug(primarySession_);
+    const QString cornerTrack =
+        assignedSlug.isEmpty() ? primarySession_->track() : assignedSlug;
+    config.setValue(cornerConfigPath(cornerTrack), zones);
     config.save();
 }
 QVariantList TelemetryStore::cornerList() const {
@@ -2381,7 +3130,7 @@ const QVector<double>& TelemetryStore::deltaTrace() const {
 
 QString TelemetryStore::primaryLabel() const {
     if (!primarySession_) return QString();
-    QString s = primarySession_->track();
+    QString s = displayTrack(primarySession_);
     if (s.isEmpty()) s = primarySession_->stem();
     return s;
 }
@@ -2464,12 +3213,9 @@ void TelemetryStore::invalidateComparisonAlignment() {
     comparisonAlignmentFraction_.clear();
     comparisonAlignmentBasis_.clear();
     comparisonGpsAnchors_ = 0;
-    comparisonAlignmentValid_ = false;
 }
 
-void TelemetryStore::ensureComparisonAlignment() const {
-    if (comparisonAlignmentValid_) return;
-    comparisonAlignmentValid_ = true;
+void TelemetryStore::rebuildComparisonAlignment() {
     comparisonAlignmentTime_.clear();
     comparisonAlignmentFraction_.clear();
     comparisonAlignmentBasis_.clear();
@@ -2481,8 +3227,8 @@ void TelemetryStore::ensureComparisonAlignment() const {
         compare->time.size() < 2)
         return;
 
-    // The pure helper owns every threshold and fallback; the store stays the
-    // QML-facing cache owner and moves the result into its mutable caches.
+    // Comparison alignment is static for the selected lap pair. Build it on
+    // selection, never from a paint or cursor-readout call.
     ComparisonAlignmentResult result =
         computeComparisonAlignment(*primary, *compare);
     comparisonAlignmentTime_ = std::move(result.time);
@@ -2492,23 +3238,19 @@ void TelemetryStore::ensureComparisonAlignment() const {
 }
 
 QString TelemetryStore::comparisonAlignmentBasis() const {
-    ensureComparisonAlignment();
     return comparisonAlignmentBasis_;
 }
 
 QString TelemetryStore::comparisonAlignmentConfidence() const {
-    ensureComparisonAlignment();
     return comparisonAlignmentConfidenceLabel(comparisonAlignmentBasis_,
                                               comparisonGpsAnchors_);
 }
 
 int TelemetryStore::comparisonGpsAnchors() const {
-    ensureComparisonAlignment();
     return comparisonGpsAnchors_;
 }
 
 double TelemetryStore::compareTimeForPrimaryFraction(double fraction) const {
-    ensureComparisonAlignment();
     const UnifiedLap* primary = primaryUnified();
     if (!primary ||
         comparisonAlignmentTime_.size() != qsizetype(primary->time.size()) ||
@@ -2526,7 +3268,6 @@ double TelemetryStore::compareTimeForPrimaryFraction(double fraction) const {
 
 double TelemetryStore::compareFractionForPrimaryFraction(
     double fraction) const {
-    ensureComparisonAlignment();
     if (comparisonAlignmentFraction_.size() < 2) return 0.0;
     const double position = std::clamp(fraction, 0.0, 1.0) *
                             double(comparisonAlignmentFraction_.size() - 1);
@@ -2542,7 +3283,7 @@ double TelemetryStore::compareFractionForPrimaryFraction(
 double TelemetryStore::compareVideoTime() const {
     if (!compareSession_ || !compareSession_->isVideo() || compareLap_ < 0)
         return 0.0;
-    auto* session = const_cast<SessionHandle*>(compareSession_);
+    const SessionHandle* session = compareSession_;
     const omatrack::TelemetrySource* source = session->source();
     const UnifiedLap* primary = primaryUnified();
     if (!source || !primary || primary->time.size() < 2) return 0.0;
@@ -2558,7 +3299,6 @@ double TelemetryStore::compareVideoTime() const {
 }
 
 double TelemetryStore::comparisonVideoRate() const {
-    ensureComparisonAlignment();
     const UnifiedLap* primary = primaryUnified();
     if (!primary ||
         comparisonAlignmentTime_.size() != qsizetype(primary->time.size()) ||

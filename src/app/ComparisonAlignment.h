@@ -2,12 +2,12 @@
 //
 // TelemetryStore owns the QML-facing caches (comparisonAlignmentTime_,
 // comparisonAlignmentFraction_, comparisonAlignmentBasis_, and
-// comparisonGpsAnchors_) plus the lazy ensure/invalidate lifecycle. This
-// helper owns only the calculation — speed-landmark DTW, the distance/progress
-// fallback, GPS anchor refinement, and the fraction remap — so it can be
-// exercised headless with synthetic omatrack::UnifiedLap inputs. The store
-// delegates here and copies the result into its caches, preserving every
-// threshold, basis string, anchor count, and monotonicity guarantee.
+// comparisonGpsAnchors_) and rebuilds them when the selected lap pair changes.
+// This helper owns only the calculation — speed-landmark DTW, the
+// distance/progress fallback, GPS anchor refinement, and the fraction remap —
+// so it can be exercised headless with synthetic omatrack::UnifiedLap inputs.
+// The store moves the result into its caches, preserving every threshold,
+// basis string, anchor count, and monotonicity guarantee.
 
 #pragma once
 

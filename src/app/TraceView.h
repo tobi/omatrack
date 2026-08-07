@@ -142,7 +142,7 @@ private:
     QColor colorForDriver() const;
 
     QImage deltaRaster_;
-    double deltaMaxAbs_ = 0.1;
+    double deltaMaxAbs_ = 0.001;
     QVector<CursorLane> cursorLanes_;
     QHash<QString, ChannelGeometry> geometryCache_;
     double cursorTop_ = 0.0;
@@ -161,6 +161,11 @@ private:
     double lastPanFrac_ = 0.0;
     QSet<QString> stickyChannels_;
     double secondaryScroll_ = 0.0;
+    QFont canvasFont_;
+    QFont emptyStateFont_;
+    QFont labelFont_;
+    QFont unitFont_;
+    QFont stickyFont_;
     friend class TraceCursorOverlay;
     QElapsedTimer cursorTimer_;
     mutable std::vector<double> scratch_[2];

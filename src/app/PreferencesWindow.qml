@@ -6,10 +6,8 @@ import Qt.labs.platform as Platform
 // controls.
 //
 // Owns its alias/mapping/directory row caches and refreshes them from the
-// store, so nothing upstream has to remember to push data in. Directory
-// mutations and rescans invalidate the session library via sessionsInvalidated;
-// the root wires that to rebuildTree. A rename that needs the root-owned dialog
-// is requested via driverRenameRequested.
+// store. A rename that needs the root-owned dialog is requested via
+// driverRenameRequested.
 
 import QtQuick
 import QtQuick.Controls
@@ -31,16 +29,11 @@ ApplicationWindow {
     // Emitted to open the root-owned driver rename dialog.
     signal driverRenameRequested(string mappingKey, string displayName)
 
-    // Emitted when a directory is added/removed or a rescan is requested; the
-    // root rebuilds the session tree in response.
-    signal sessionsInvalidated
-
     function addDirectory(path): void {
         const local = preferencesWindow.toLocalPath(path);
         if (local === "")
             return;
         Store.addSessionDirectory(local);
-        preferencesWindow.sessionsInvalidated();
     }
     function defaultTelemetryFolder(): url {
         const home = preferencesWindow.toLocalPath(Platform.StandardPaths.writableLocation(Platform.StandardPaths.HomeLocation));
@@ -146,13 +139,17 @@ ApplicationWindow {
                 font.pixelSize: 9
                 text: "stored in " + Store.configFilePath()
             }
+            BusyIndicator {
+                Layout.preferredHeight: 22
+                Layout.preferredWidth: 22
+                running: Store.loading
+                visible: running
+            }
             CompactButton {
+                enabled: !Store.loading
                 text: "Rescan"
 
-                onClicked: {
-                    Store.scan();
-                    preferencesWindow.sessionsInvalidated();
-                }
+                onClicked: Store.scan()
             }
         }
         RowLayout {

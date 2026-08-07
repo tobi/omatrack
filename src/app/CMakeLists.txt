@@ -27,6 +27,7 @@ qt_add_qml_module(omatrack
     CornerInspectorWindow.qml
     PreferencesWindow.qml
     SessionTreeDelegate.qml
+    TrackAssignmentDialog.qml
     ThinScrollBar.qml
   SOURCES
     CornerGraphView.h CornerGraphView.cpp
@@ -34,6 +35,7 @@ qt_add_qml_module(omatrack
     MpvVideoItem.h MpvVideoItem.cpp
     OmarchyTheme.h OmarchyTheme.cpp
     ComparisonAlignment.h ComparisonAlignment.cpp
+    SessionMetadataCache.h SessionMetadataCache.cpp
     TelemetryStore.h TelemetryStore.cpp
     TraceView.h TraceView.cpp
     YamlConfig.h YamlConfig.cpp
@@ -64,9 +66,9 @@ target_link_libraries(omatrack PRIVATE
   omatrack_warnings
   omatrack_yaml
   omatrack_mpv
+  Qt6::Concurrent
   Qt6::Quick
   Qt6::QuickControls2
-  Qt6::Widgets
   Qt6::Qml
   Qt6::Network)
 

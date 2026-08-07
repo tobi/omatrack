@@ -47,6 +47,19 @@ target_link_libraries(apptypes-test PRIVATE
 add_test(NAME apptypes-test COMMAND apptypes-test)
 set_tests_properties(apptypes-test PROPERTIES LABELS unit)
 
+# ── session-metadata-cache-test ─────────────────────────────────────
+# Verifies the bounded fingerprint contract and atomic JSON cache round-trip.
+qt_add_executable(session-metadata-cache-test SessionMetadataCacheTest.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/SessionMetadataCache.cpp)
+target_include_directories(session-metadata-cache-test PRIVATE
+  ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(session-metadata-cache-test PRIVATE
+  Qt6::Test
+  Qt6::Core
+  omatrack_warnings)
+add_test(NAME session-metadata-cache-test COMMAND session-metadata-cache-test)
+set_tests_properties(session-metadata-cache-test PROPERTIES LABELS unit)
+
 # ── alignment-test ──────────────────────────────────────────────────
 # Drives the pure comparison-alignment helper (computeComparisonAlignment)
 # with synthetic omatrack::UnifiedLap inputs. Compiles the helper .cpp
@@ -62,3 +75,12 @@ target_link_libraries(alignment-test PRIVATE
   omatrack_warnings)
 add_test(NAME alignment-test COMMAND alignment-test)
 set_tests_properties(alignment-test PROPERTIES LABELS unit)
+
+# ── CLI command contract ────────────────────────────────────────────
+# Covers usage, dispatch, exit codes, and parser-error propagation without
+# writing telemetry-derived output.
+add_test(NAME cli-contract
+  COMMAND ${CMAKE_COMMAND}
+    -DCLI=$<TARGET_FILE:omatrack-cli>
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/CliContract.cmake)
+set_tests_properties(cli-contract PROPERTIES LABELS unit)

@@ -1,4 +1,5 @@
 pragma ComponentBehavior: Bound
+import Omatrack
 
 // Current / reference selector dot used by the session tree rows.
 //
@@ -18,8 +19,16 @@ Item {
 
     signal activated
 
+    Accessible.name: dot.tip
+    Accessible.role: Accessible.Button
+    activeFocusOnTab: true
     implicitHeight: 14
     implicitWidth: 14
+
+    Accessible.onPressAction: dot.activated()
+    Keys.onEnterPressed: dot.activated()
+    Keys.onReturnPressed: dot.activated()
+    Keys.onSpacePressed: dot.activated()
 
     Rectangle {
         anchors.centerIn: parent

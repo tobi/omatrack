@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <vector>
@@ -137,6 +138,46 @@ QVector<double> speedLandmarkAlignment(const omatrack::UnifiedLap& primary,
         result[qsizetype(i)] =
             landmarkTimes[low] +
             local * (landmarkTimes[high] - landmarkTimes[low]);
+    }
+
+    // DTW deliberately runs on a bounded landmark grid, but its integer path
+    // otherwise leaks that grid into delta-time as visible 0.1 s plateaus and
+    // sharp catch-up ramps. Delta at a fixed track station is continuous, so
+    // smooth the warp offset back onto the native 50 Hz lap grid. Keep the
+    // start/finish values exact because they are alignment anchors shared by
+    // traces, cursor readouts, and video.
+    const size_t radius =
+        size_t(std::max(1, primary.sampleRate / 2));  // 0.5 s each side
+    std::vector<double> rawDelta(primary.time.size());
+    std::vector<double> smoothDelta(primary.time.size());
+    for (size_t i = 0; i < primary.time.size(); ++i)
+        rawDelta[i] = primary.time[i] - result[qsizetype(i)];
+    for (size_t i = 0; i < rawDelta.size(); ++i) {
+        const size_t begin = i > radius ? i - radius : 0;
+        const size_t end = std::min(i + radius, rawDelta.size() - 1);
+        double weighted = 0.0;
+        double weightSum = 0.0;
+        for (size_t j = begin; j <= end; ++j) {
+            const double weight =
+                double(radius + 1 -
+                       size_t(std::abs(std::ptrdiff_t(j) - std::ptrdiff_t(i))));
+            weighted += rawDelta[j] * weight;
+            weightSum += weight;
+        }
+        smoothDelta[i] = weighted / weightSum;
+    }
+    const double startCorrection = rawDelta.front() - smoothDelta.front();
+    const double finishCorrection = rawDelta.back() - smoothDelta.back();
+    for (size_t i = 0; i < primary.time.size(); ++i) {
+        const double progress = double(i) / double(primary.time.size() - 1);
+        smoothDelta[i] +=
+            startCorrection * (1.0 - progress) + finishCorrection * progress;
+        result[qsizetype(i)] =
+            std::clamp(primary.time[i] - smoothDelta[i], compare.time.front(),
+                       compare.time.back());
+        if (i > 0)
+            result[qsizetype(i)] =
+                std::max(result[qsizetype(i)], result[qsizetype(i - 1)]);
     }
     return result;
 }

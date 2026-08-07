@@ -20,7 +20,7 @@ if(CCACHE_PROGRAM)
 endif()
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS
-  Core Gui Quick QuickControls2 Widgets Qml Network)
+  Concurrent Core Gui Quick QuickControls2 Qml Network)
 if(WIN32)
   get_filename_component(OMATRACK_TOOLCHAIN_BIN_DIR
     "${CMAKE_CXX_COMPILER}" DIRECTORY)

@@ -84,6 +84,13 @@ ToolBar {
             Layout.preferredWidth: 1
             color: Style.borderColor
         }
+        BusyIndicator {
+            Layout.preferredHeight: 24
+            Layout.preferredWidth: 24
+            Material.accent: Style.accentColor
+            running: Store.lapLoading
+            visible: running
+        }
         ColumnLayout {
             Layout.fillWidth: true
             Layout.minimumWidth: 120
@@ -95,7 +102,8 @@ ToolBar {
                 elide: Text.ElideRight
                 font.bold: true
                 font.pixelSize: 12
-                text: Store.primaryLabel || "No lap selected"
+                text: Store.primaryLabel
+                visible: text !== ""
             }
             RowLayout {
                 Layout.fillWidth: true
@@ -163,7 +171,7 @@ ToolBar {
                 if (r.corner)
                     parts.push(r.corner);
                 if (Store.comparing && r.delta !== undefined)
-                    parts.push("Δ " + r.delta.toFixed(2) + "s");
+                    parts.push("Δ " + r.delta.toFixed(3) + "s");
                 readout.text = parts.join("  ·  ");
             }
 
@@ -244,9 +252,11 @@ ToolBar {
             onTriggered: Store.channelHeight = checked ? 150 : 110
         }
         MenuSeparator {
+            height: visible ? implicitHeight : 0
             visible: Store.comparing
         }
         MenuItem {
+            height: visible ? implicitHeight : 0
             text: "Clear comparison"
             visible: Store.comparing
 

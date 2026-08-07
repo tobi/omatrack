@@ -109,6 +109,43 @@ private slots:
         QCOMPARE(comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
                  QStringLiteral("MED"));
     }
+
+    void warpedProfileProducesContinuousMillisecondDelta() {
+        constexpr int N = 500;
+        auto primary = makeLap(N, 50, true, false, false, false);
+        auto compare = primary;
+        auto profile = [](double progress) {
+            return 145.0 + 48.0 * std::sin(6.0 * kPi * progress) +
+                   17.0 * std::sin(14.0 * kPi * progress + 0.4);
+        };
+        for (int i = 0; i < N; ++i) {
+            const double progress = double(i) / double(N - 1);
+            primary.speed[i] = profile(progress);
+            compare.speed[i] =
+                profile(std::clamp(progress +
+                                       0.025 * std::sin(kPi * progress),
+                                   0.0, 1.0));
+        }
+
+        const auto result = computeComparisonAlignment(primary, compare);
+        QCOMPARE(result.basis, QStringLiteral("speed landmarks"));
+        QCOMPARE(result.time.size(), qsizetype(N));
+
+        // The bounded DTW grid must not appear in the user-facing delta as
+        // 0.1 s steps. At 50 Hz, a continuous warp changes by milliseconds
+        // between samples rather than catching up by a whole sample at once.
+        double largestDeltaStep = 0.0;
+        for (int i = 1; i < N; ++i) {
+            const double previousDelta =
+                primary.time[size_t(i - 1)] - result.time[i - 1];
+            const double delta = primary.time[size_t(i)] - result.time[i];
+            largestDeltaStep =
+                std::max(largestDeltaStep, std::abs(delta - previousDelta));
+        }
+        QVERIFY2(largestDeltaStep < 0.01,
+                 qPrintable(QStringLiteral("largest delta step was %1 s")
+                                .arg(largestDeltaStep, 0, 'f', 6)));
+    }
 };
 
 // ────────────────────────────────────────────────────────────────────

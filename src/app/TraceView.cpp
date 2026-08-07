@@ -6,7 +6,6 @@
 #include <QCursor>
 #include <QFont>
 #include <QFontMetricsF>
-#include <QGraphicsSceneMouseEvent>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -52,6 +51,17 @@ constexpr std::array<QRgb, 7> kDriverColors = {
 }  // namespace
 
 TraceView::TraceView(QQuickItem* parent) : QQuickPaintedItem(parent) {
+    canvasFont_.setFamily(QStringLiteral("Geist Mono"));
+    canvasFont_.setPointSizeF(8.5);
+    emptyStateFont_.setFamily(QStringLiteral("Geist Mono"));
+    emptyStateFont_.setPointSize(11);
+    labelFont_.setFamily(QStringLiteral("Geist Mono"));
+    labelFont_.setPointSizeF(8.0);
+    labelFont_.setBold(true);
+    unitFont_.setFamily(QStringLiteral("Geist Mono"));
+    unitFont_.setPointSizeF(7.0);
+    stickyFont_.setFamily(QStringLiteral("Geist Mono"));
+    stickyFont_.setPointSize(6);
     setAcceptedMouseButtons(Qt::LeftButton | Qt::MiddleButton |
                             Qt::RightButton);
     setAcceptHoverEvents(true);
@@ -104,7 +114,7 @@ void TraceView::invalidateStaticLayer() {
 void TraceView::invalidateGeometry() {
     geometryCache_.clear();
     deltaRaster_ = QImage();
-    deltaMaxAbs_ = 0.1;
+    deltaMaxAbs_ = 0.001;
     invalidateStaticLayer();
 }
 
@@ -240,7 +250,7 @@ void TraceView::paintStatic(QPainter* painter) {
 
     if (!store_) {
         painter->setPen(kDim);
-        painter->setFont(QFont("Geist Mono", 11));
+        painter->setFont(emptyStateFont_);
         painter->drawText(boundingRect(), Qt::AlignCenter,
                           QStringLiteral("Select a session to begin"));
         return;
@@ -249,7 +259,7 @@ void TraceView::paintStatic(QPainter* painter) {
     const UnifiedLap* primary = store_->primaryUnified();
     if (!primary || primary->size() < 2) {
         painter->setPen(kDim);
-        painter->setFont(QFont("Geist Mono", 11));
+        painter->setFont(emptyStateFont_);
         painter->drawText(boundingRect(), Qt::AlignCenter,
                           QStringLiteral("Select a session to begin"));
         return;
@@ -269,9 +279,7 @@ void TraceView::paintStatic(QPainter* painter) {
     }
     if (stickyIdx.isEmpty() && scrollIdx.isEmpty()) return;
 
-    QFont canvasFont("Geist Mono");
-    canvasFont.setPointSizeF(8.5);
-    painter->setFont(canvasFont);
+    painter->setFont(canvasFont_);
 
     auto rowHeight = [&](int idx) { return rowHeightFor(channelSpecs_[idx]); };
     double stickyHeight = 0.0;
@@ -709,7 +717,7 @@ void TraceView::paintChannel(QPainter& p, const ChannelSpec& spec,
     p.setPen(QPen(alpha(kGridStrong, 110), 1));
     p.drawLine(QPointF(rect.left() - 1, rect.top()),
                QPointF(rect.left() - 1, rect.bottom()));
-    QFont labelFont("Geist Mono");
+
     if (isSticky(spec.key)) {
         const QRectF stickyButton(3, rect.top() + 4, 12, 12);
         p.setPen(QPen(alpha(isSticky(spec.key) ? traceColor : kMuted,
@@ -718,21 +726,17 @@ void TraceView::paintChannel(QPainter& p, const ChannelSpec& spec,
         p.setBrush(alpha(isSticky(spec.key) ? traceColor : kMuted,
                          isSticky(spec.key) ? 22 : 8));
         p.drawRoundedRect(stickyButton, 2, 2);
-        p.setFont(QFont("Geist Mono", 6));
+        p.setFont(stickyFont_);
         p.setPen(alpha(isSticky(spec.key) ? traceColor : kMuted,
                        isSticky(spec.key) ? 190 : 70));
         p.drawText(stickyButton, Qt::AlignCenter, QStringLiteral("S"));
     }
 
-    labelFont.setPointSizeF(8.0);
-    labelFont.setBold(true);
-    p.setFont(labelFont);
+    p.setFont(labelFont_);
     p.setPen(kMuted);
     p.drawText(QRectF(0, rect.top() + 2, kLabelW - 6, 14),
                Qt::AlignRight | Qt::AlignVCenter, spec.title);
-    labelFont.setPointSizeF(7.0);
-    labelFont.setBold(false);
-    p.setFont(labelFont);
+    p.setFont(unitFont_);
     p.setPen(kDim);
     p.drawText(QRectF(0, rect.top() + 15, kLabelW - 6, 12),
                Qt::AlignRight | Qt::AlignVCenter, spec.unit);
@@ -879,7 +883,7 @@ void TraceView::paintDelta(QPainter& p, const QRectF& rect) {
         p.setBrush(alpha(isSticky(QStringLiteral("delta")) ? kAccent : kMuted,
                          isSticky(QStringLiteral("delta")) ? 22 : 8));
         p.drawRoundedRect(stickyButton, 2, 2);
-        p.setFont(QFont("Geist Mono", 6));
+        p.setFont(stickyFont_);
         p.setPen(alpha(isSticky(QStringLiteral("delta")) ? kAccent : kMuted,
                        isSticky(QStringLiteral("delta")) ? 190 : 70));
         p.drawText(stickyButton, Qt::AlignCenter, QStringLiteral("S"));
@@ -889,16 +893,11 @@ void TraceView::paintDelta(QPainter& p, const QRectF& rect) {
     const int n = delta.size();
     if (n < 2) return;
 
-    QFont labelFont("Geist Mono");
-    labelFont.setPointSizeF(8.0);
-    labelFont.setBold(true);
-    p.setFont(labelFont);
+    p.setFont(labelFont_);
     p.setPen(kMuted);
     p.drawText(QRectF(0, rect.top() + 2, kLabelW - 6, 14),
                Qt::AlignRight | Qt::AlignVCenter, QStringLiteral("Δ Time"));
-    labelFont.setPointSizeF(7.0);
-    labelFont.setBold(false);
-    p.setFont(labelFont);
+    p.setFont(unitFont_);
     p.setPen(kDim);
     p.drawText(QRectF(0, rect.top() + 15, kLabelW - 6, 12),
                Qt::AlignRight | Qt::AlignVCenter, QStringLiteral("s"));
@@ -906,7 +905,7 @@ void TraceView::paintDelta(QPainter& p, const QRectF& rect) {
     constexpr int rasterWidth = 4096;
     constexpr int rasterHeight = 128;
     if (deltaRaster_.isNull()) {
-        deltaMaxAbs_ = 0.1;
+        deltaMaxAbs_ = 0.001;
         for (double value : delta)
             deltaMaxAbs_ = std::max(deltaMaxAbs_, std::fabs(value));
 

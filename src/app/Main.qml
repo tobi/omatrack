@@ -15,6 +15,11 @@ ApplicationWindow {
 
     // Supplied by QQmlApplicationEngine::setInitialProperties in main().
     required property bool autotestWindows
+
+    // Caches the root itself renders: the lap filmstrip, the damper-alignment
+    // traces, and the telemetry directories listed in the drawer. Each is
+    // refreshed from the matching Store signal in the Connections block below.
+    property bool deltaTraceVisible: false
     property var directoryRows: []
     // Side by side only when the reference lap has its own recording and the
     // primary video is telemetry-linked, so both can be distance-aligned.
@@ -23,14 +28,14 @@ ApplicationWindow {
 
     // Session-tree expansion state, keyed by track name and by track+date.
     property var expandedTracks: ({})
-
-    // Caches the root itself renders: the lap filmstrip, the damper-alignment
-    // traces, and the telemetry directories listed in the drawer. Each is
-    // refreshed from the matching Store signal in the Connections block below.
     property var filmstripSessions: []
     // Rapid selection changes update one pending source instead of queuing
     // stale callLater closures that can reopen the previous recording.
     property url pendingVideoSource: ""
+    property string pointerTooltipOwner: ""
+    property string pointerTooltipText: ""
+    property real pointerTooltipX: 0
+    property real pointerTooltipY: 0
     property string referenceSessionKey: ""
     property string referenceSessionName: ""
     property real referenceSyncBaseRate: 1
@@ -38,6 +43,7 @@ ApplicationWindow {
     property real referenceSyncLastPrimary: -1
     property real referenceSyncLastTarget: -1
     property string referenceSyncState: "WAIT"
+    property string sessionFilter: ""
     property bool sidebarVisible: true
     required property url startupVideo
     property bool telemetryVideoActive: false
@@ -51,7 +57,6 @@ ApplicationWindow {
             return;
         Store.addSessionDirectory(path);
         dirField.text = "";
-        root.rebuildTree();
         root.directoryRows = Store.sessionDirectories();
     }
     function bestLapForSession(key) {
@@ -81,6 +86,10 @@ ApplicationWindow {
     function dismissCornerPopover() {
         cornerWindow.hide();
     }
+    function dismissPointerTooltip(owner: string): void {
+        if (root.pointerTooltipOwner === owner)
+            root.pointerTooltipOwner = "";
+    }
     function formatMediaTime(seconds) {
         if (!isFinite(seconds) || seconds < 0)
             seconds = 0;
@@ -94,19 +103,23 @@ ApplicationWindow {
     }
     function lapStripEntry(key, reference) {
         const laps = Store.lapsForSession(key);
-        const info = sessionInfoForKey(key);
         let total = 0;
         for (let i = 0; i < laps.length; ++i)
             total += Math.max(1, laps[i].timeMs);
         return {
             sessionKey: key,
-            runName: info && info.stem !== "" ? info.stem : sessionNameForKey(key),
             driverName: Store.driverDisplayName(key),
-            bestTime: info ? info.bestTime : "",
+            bestTime: sessionInfoForKey(key)?.bestTime || "",
             reference: reference,
             laps: laps,
             totalTimeMs: Math.max(1, total)
         };
+    }
+    function movePointerTooltip(owner: string, x: real, y: real): void {
+        if (root.pointerTooltipOwner !== owner)
+            return;
+        root.pointerTooltipX = Math.max(8, Math.min(root.width - pointerTooltip.implicitWidth - 8, x + 14));
+        root.pointerTooltipY = Math.max(8, Math.min(root.height - pointerTooltip.implicitHeight - 8, y + 14));
     }
     function openCornerRename(index: int): void {
         const zones = Store.cornerList();
@@ -134,30 +147,67 @@ ApplicationWindow {
             return;
         treeModel.clear();
         const groups = Store.trackGroups();
+        const query = sessionFilter.trim().toLowerCase();
         for (let t = 0; t < groups.length; ++t) {
             const trackName = groups[t].track;
             const dates = groups[t].dates;
+            let matchingDates = [];
+            for (let d = 0; d < dates.length; ++d) {
+                let matchingSessions = [];
+                const sessions = dates[d].sessions;
+                for (let s = 0; s < sessions.length; ++s) {
+                    if (sessionMatches(sessions[s], trackName, dates[d].date, query))
+                        matchingSessions.push(sessions[s]);
+                }
+                if (matchingSessions.length > 0)
+                    matchingDates.push({
+                        date: dates[d].date,
+                        sessions: matchingSessions
+                    });
+            }
+            if (matchingDates.length === 0)
+                continue;
+            const showTrack = query !== "" || trackExpanded(trackName);
             treeModel.append({
                 role: "track",
                 name: trackName,
+                stem: "",
+                driver: "",
+                driverId: "",
+                mappingKey: "",
+                sessionTime: "",
+                bestTime: "",
+                isDriverBest: false,
+                isDayBest: false,
+                isVideo: false,
                 indent: 0,
                 key: "",
-                expanded: trackExpanded(trackName)
+                expanded: showTrack
             });
-            if (!trackExpanded(trackName))
+            if (!showTrack)
                 continue;
-            for (let d = 0; d < dates.length; ++d) {
-                const dateName = dates[d].date;
-                const sessions = dates[d].sessions;
+            for (let d = 0; d < matchingDates.length; ++d) {
+                const dateName = matchingDates[d].date;
+                const sessions = matchingDates[d].sessions;
                 const dk = dateKey(trackName, dateName);
+                const showDate = query !== "" || dateExpanded(dk);
                 treeModel.append({
                     role: "date",
                     name: dateName,
+                    stem: "",
+                    driver: "",
+                    driverId: "",
+                    mappingKey: "",
+                    sessionTime: "",
+                    bestTime: "",
+                    isDriverBest: false,
+                    isDayBest: false,
+                    isVideo: false,
                     indent: 1,
                     key: dk,
-                    expanded: dateExpanded(dk)
+                    expanded: showDate
                 });
-                if (!dateExpanded(dk))
+                if (!showDate)
                     continue;
                 for (let s = 0; s < sessions.length; ++s) {
                     const session = sessions[s];
@@ -185,17 +235,42 @@ ApplicationWindow {
             }
         }
     }
+    function refreshDeltaTraceVisible(): void {
+        root.deltaTraceVisible = Store.channelVisible("delta");
+    }
     function refreshLapStrip() {
         activeSessionKey = Store.primarySessionKey;
         referenceSessionKey = Store.compareSessionKey;
         activeSessionName = sessionNameForKey(activeSessionKey);
         referenceSessionName = sessionNameForKey(referenceSessionKey);
         let strips = [];
-        if (referenceSessionKey !== "" && referenceSessionKey !== activeSessionKey)
-            strips.push(lapStripEntry(referenceSessionKey, true));
         if (activeSessionKey !== "")
             strips.push(lapStripEntry(activeSessionKey, false));
+        if (referenceSessionKey !== "" && referenceSessionKey !== activeSessionKey)
+            strips.push(lapStripEntry(referenceSessionKey, true));
         filmstripSessions = strips;
+    }
+    function revealSession(key) {
+        if (key === "" || sessionFilter !== "")
+            return;
+        const groups = Store.trackGroups();
+        for (let t = 0; t < groups.length; ++t) {
+            const dates = groups[t].dates;
+            for (let d = 0; d < dates.length; ++d) {
+                const sessions = dates[d].sessions;
+                for (let s = 0; s < sessions.length; ++s) {
+                    if (sessions[s].key !== key)
+                        continue;
+                    let tracks = Object.assign({}, expandedTracks);
+                    tracks[groups[t].track] = true;
+                    expandedTracks = tracks;
+                    let expanded = Object.assign({}, expandedDates);
+                    expanded[dateKey(groups[t].track, dates[d].date)] = true;
+                    expandedDates = expanded;
+                    return;
+                }
+            }
+        }
     }
     function seekVideoRelative(seconds) {
         if (telemetryVideoActive)
@@ -224,6 +299,12 @@ ApplicationWindow {
             }
         }
         return null;
+    }
+    function sessionMatches(session, trackName, dateName, query) {
+        if (query === "")
+            return true;
+        const searchable = [trackName, dateName, session.stem, session.driver, session.driverId, session.carNumber, session.carClass, session.sessionTime, session.bestTime].join(" ").toLowerCase();
+        return searchable.includes(query);
     }
     function sessionNameForKey(key) {
         for (let i = 0; i < treeModel.count; ++i) {
@@ -258,6 +339,11 @@ ApplicationWindow {
         if (lap)
             Store.compareLap(key, lap.lapId);
     }
+    function showPointerTooltip(owner: string, text: string, x: real, y: real): void {
+        root.pointerTooltipOwner = owner;
+        root.pointerTooltipText = text;
+        root.movePointerTooltip(owner, x, y);
+    }
     function showVideo(source, telemetryLinked) {
         telemetryVideoActive = telemetryLinked === true;
         videoVisible = true;
@@ -265,14 +351,6 @@ ApplicationWindow {
             sidebarVisible = false;
         pendingVideoSource = source;
         Qt.callLater(root.openPendingVideo);
-    }
-    function stripBadgeText(strip, lapTime) {
-        let parts = [strip.reference ? "⇄ REF" : "RUN"];
-        if (strip.driverName !== "" && strip.driverName !== "Unknown")
-            parts.push(strip.driverName);
-        if (lapTime !== "")
-            parts.push(lapTime);
-        return parts.join(" · ");
     }
     function syncReferenceSource(): void {
         const ref = videoReference();
@@ -375,7 +453,7 @@ ApplicationWindow {
         return text.startsWith("file://") ? decodeURIComponent(text.substring(7)) : text;
     }
     function trackExpanded(name) {
-        return expandedTracks[name] !== false;
+        return expandedTracks[name] === true;
     }
     function useSessionAlone(key) {
         const lap = bestLapForSession(key);
@@ -464,6 +542,7 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
+        root.refreshDeltaTraceVisible();
         root.rebuildTree();
         root.refreshLapStrip();
         root.syncTelemetryVideo();
@@ -775,17 +854,25 @@ ApplicationWindow {
         id: treeModel
     }
     Connections {
+        function onChannelConfigChanged(): void {
+            root.refreshDeltaTraceVisible();
+        }
         function onDriverMappingsChanged(): void {
             root.rebuildTree();
         }
         function onSelectionChanged(): void {
             root.refreshLapStrip();
+            root.revealSession(Store.primarySessionKey);
+            root.rebuildTree();
             root.syncTelemetryVideo();
         }
         function onSessionsChanged(): void {
             root.rebuildTree();
             root.refreshLapStrip();
             root.directoryRows = Store.sessionDirectories();
+        }
+        function onStandaloneVideoRequested(source: url): void {
+            root.showVideo(source, false);
         }
         function onVideoTimeChanged(): void {
             root.seekVideoToTelemetry();
@@ -849,6 +936,22 @@ ApplicationWindow {
                     onClicked: fileDialog.open()
                 }
             }
+            RowLayout {
+                Layout.fillWidth: true
+                visible: Store.loading
+
+                BusyIndicator {
+                    Layout.preferredHeight: 22
+                    Layout.preferredWidth: 22
+                    running: Store.loading
+                }
+                Label {
+                    Layout.fillWidth: true
+                    color: Style.mutedTextColor
+                    font.pixelSize: 10
+                    text: "Scanning telemetry files…"
+                }
+            }
             Label {
                 color: Style.mutedTextColor
                 font.pixelSize: 12
@@ -895,11 +998,7 @@ ApplicationWindow {
         nameFilters: ["Telemetry (*.pds *.ld *.ldx *.vbo *.mp4 *.MP4)", "All files (*)"]
         title: "Open telemetry file"
 
-        onAccepted: {
-            Store.openFile(root.toLocalPath(fileDialog.file));
-            cornerWindow.refresh();
-            root.rebuildTree();
-        }
+        onAccepted: Store.openFile(root.toLocalPath(fileDialog.file))
     }
     Platform.FileDialog {
         id: videoFileDialog
@@ -908,11 +1007,7 @@ ApplicationWindow {
         nameFilters: ["Video (*.mp4 *.MP4 *.mov *.MOV *.mkv *.MKV *.avi *.AVI *.m4v *.webm)", "All files (*)"]
         title: "Open onboard video"
 
-        onAccepted: {
-            const path = root.toLocalPath(videoFileDialog.file);
-            if (!Store.openFile(path))
-                root.showVideo(videoFileDialog.file, false);
-        }
+        onAccepted: Store.openFile(root.toLocalPath(videoFileDialog.file))
     }
     Dialog {
         id: driverRenameDialog
@@ -947,6 +1042,14 @@ ApplicationWindow {
             driverRenameField.forceActiveFocus();
             driverRenameField.selectAll();
         }
+    }
+    TrackAssignmentDialog {
+        id: trackAssignmentDialog
+
+        parent: Overlay.overlay
+        width: Math.min(440, root.width - 32)
+        x: Math.round((parent.width - width) / 2)
+        y: Math.round((parent.height - height) / 2)
     }
     Dialog {
         id: cornerRenameDialog
@@ -994,7 +1097,34 @@ ApplicationWindow {
         id: settingsWindow
 
         onDriverRenameRequested: (mappingKey, displayName) => root.openDriverRename(mappingKey, displayName)
-        onSessionsInvalidated: root.rebuildTree()
+    }
+    ToolTip {
+        id: pointerTooltip
+
+        parent: Overlay.overlay
+        text: root.pointerTooltipText
+        visible: root.pointerTooltipOwner !== ""
+        x: root.pointerTooltipX
+        y: root.pointerTooltipY
+    }
+    Menu {
+        id: lapMenu
+
+        property int lapId: -1
+        property string sessionKey: ""
+
+        MenuItem {
+            enabled: lapMenu.sessionKey !== Store.primarySessionKey || lapMenu.lapId !== Store.primaryLapIndex
+            text: "Set as active lap"
+
+            onTriggered: Store.selectLap(lapMenu.sessionKey, lapMenu.lapId)
+        }
+        MenuItem {
+            enabled: lapMenu.sessionKey !== Store.primarySessionKey || lapMenu.lapId !== Store.primaryLapIndex
+            text: "Set as reference lap"
+
+            onTriggered: Store.compareLap(lapMenu.sessionKey, lapMenu.lapId)
+        }
     }
 
     // ══ body ════════════════════════════════════════════════════════
@@ -1044,41 +1174,16 @@ ApplicationWindow {
                             anchors.rightMargin: 4
                             spacing: 5
 
-                            RowLayout {
-                                Layout.fillWidth: false
-                                Layout.maximumWidth: 400
-                                Layout.preferredWidth: 400
-                                spacing: 5
-
-                                Label {
-                                    Layout.fillWidth: true
-                                    Layout.minimumWidth: 60
-                                    color: Style.foregroundColor
-                                    elide: Text.ElideMiddle
-                                    font.bold: true
-                                    font.family: Style.monoFontFamily
-                                    font.pixelSize: 9
-                                    text: sessionStrip.strip.runName
-                                }
-                                Rectangle {
-                                    Layout.preferredHeight: 16
-                                    Layout.preferredWidth: stripBadgeLabel.implicitWidth + 10
-                                    border.color: sessionStrip.strip.reference ? Style.orangeColor : Style.accentColor
-                                    border.width: 1
-                                    color: "transparent"
-                                    radius: 3
-
-                                    Label {
-                                        id: stripBadgeLabel
-
-                                        anchors.centerIn: parent
-                                        color: sessionStrip.strip.reference ? Style.orangeColor : Style.accentColor
-                                        font.bold: true
-                                        font.family: Style.monoFontFamily
-                                        font.pixelSize: 9
-                                        text: root.stripBadgeText(sessionStrip.strip, sessionStrip.selectedLapTime)
-                                    }
-                                }
+                            Label {
+                                Layout.maximumWidth: 190
+                                Layout.minimumWidth: 190
+                                Layout.preferredWidth: 190
+                                color: sessionStrip.strip.reference ? Style.orangeColor : Style.accentColor
+                                elide: Text.ElideRight
+                                font.bold: true
+                                font.family: Style.monoFontFamily
+                                font.pixelSize: 9
+                                text: (sessionStrip.strip.driverName !== "" && sessionStrip.strip.driverName !== "Unknown" ? sessionStrip.strip.driverName : "Unknown driver") + (sessionStrip.selectedLapTime !== "" ? " · " + sessionStrip.selectedLapTime : "")
                             }
                             ToolButton {
                                 Layout.preferredHeight: 24
@@ -1088,6 +1193,9 @@ ApplicationWindow {
                                 text: "×"
 
                                 onClicked: sessionStrip.strip.reference ? Store.clearCompare() : Store.clearPrimary()
+                            }
+                            Item {
+                                Layout.preferredWidth: 7
                             }
                             Item {
                                 id: proportionalLapLane
@@ -1109,6 +1217,7 @@ ApplicationWindow {
 
                                             required property var modelData
                                             property bool selectedLap: sessionStrip.strip.reference ? sessionStrip.strip.sessionKey === Store.compareSessionKey && proportionalLap.modelData.lapId === Store.compareLapIndex : sessionStrip.strip.sessionKey === Store.primarySessionKey && proportionalLap.modelData.lapId === Store.primaryLapIndex
+                                            readonly property string tooltipOwner: "lap:" + sessionStrip.strip.sessionKey + ":" + proportionalLap.modelData.lapId + ":" + sessionStrip.strip.reference
 
                                             // Bound to the Row, not `parent`:
                                             // a delegate evaluates its
@@ -1130,6 +1239,8 @@ ApplicationWindow {
                                                 height: proportionalLap.modelData.isFastest ? 2 : 0
                                             }
                                             Label {
+                                                id: proportionalLapLabel
+
                                                 anchors.fill: parent
                                                 anchors.leftMargin: 5
                                                 anchors.rightMargin: 5
@@ -1138,20 +1249,37 @@ ApplicationWindow {
                                                 font.bold: proportionalLap.selectedLap
                                                 font.family: Style.monoFontFamily
                                                 font.pixelSize: 9
-                                                text: proportionalLap.modelData.label + "  " + proportionalLap.modelData.timeText
+                                                text: proportionalLap.modelData.timeText
                                                 verticalAlignment: Text.AlignVCenter
                                             }
                                             MouseArea {
                                                 id: proportionalLapMouse
 
+                                                acceptedButtons: Qt.LeftButton | Qt.RightButton
                                                 anchors.fill: parent
                                                 hoverEnabled: true
 
-                                                onClicked: {
+                                                onClicked: mouse => {
+                                                    if (mouse.button === Qt.RightButton) {
+                                                        root.dismissPointerTooltip(proportionalLap.tooltipOwner);
+                                                        lapMenu.sessionKey = sessionStrip.strip.sessionKey;
+                                                        lapMenu.lapId = proportionalLap.modelData.lapId;
+                                                        lapMenu.popup(proportionalLap, mouse.x, mouse.y);
+                                                        return;
+                                                    }
                                                     if (sessionStrip.strip.reference)
                                                         Store.compareLap(sessionStrip.strip.sessionKey, proportionalLap.modelData.lapId);
                                                     else
                                                         Store.selectLap(sessionStrip.strip.sessionKey, proportionalLap.modelData.lapId);
+                                                }
+                                                onEntered: {
+                                                    const point = proportionalLapMouse.mapToItem(Overlay.overlay, proportionalLapMouse.mouseX, proportionalLapMouse.mouseY);
+                                                    root.showPointerTooltip(proportionalLap.tooltipOwner, proportionalLap.modelData.timeText + " · " + proportionalLap.modelData.label, point.x, point.y);
+                                                }
+                                                onExited: root.dismissPointerTooltip(proportionalLap.tooltipOwner)
+                                                onPositionChanged: mouse => {
+                                                    const point = proportionalLapMouse.mapToItem(Overlay.overlay, mouse.x, mouse.y);
+                                                    root.movePointerTooltip(proportionalLap.tooltipOwner, point.x, point.y);
                                                 }
                                             }
                                         }
@@ -1193,64 +1321,141 @@ ApplicationWindow {
 
                     Rectangle {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 38
+                        Layout.preferredHeight: 66
                         color: Style.surfaceColor
 
-                        RowLayout {
+                        ColumnLayout {
                             anchors.fill: parent
-                            anchors.leftMargin: 10
+                            anchors.leftMargin: 8
                             anchors.rightMargin: 4
+                            spacing: 0
 
-                            Label {
-                                color: Style.mutedTextColor
-                                font.bold: true
-                                font.family: Style.monoFontFamily
-                                font.letterSpacing: 0.8
-                                font.pixelSize: 10
-                                text: "SESSIONS"
-                            }
-                            Item {
+                            RowLayout {
                                 Layout.fillWidth: true
-                            }
-                            ToolButton {
-                                ToolTip.text: "Rescan session directories"
-                                ToolTip.visible: hovered
-                                text: "↻"
+                                Layout.preferredHeight: 34
 
-                                onClicked: {
-                                    Store.scan();
-                                    root.rebuildTree();
+                                Label {
+                                    color: Style.mutedTextColor
+                                    font.bold: true
+                                    font.family: Style.monoFontFamily
+                                    font.letterSpacing: 0.8
+                                    font.pixelSize: 10
+                                    text: "SESSIONS"
+                                }
+                                Item {
+                                    Layout.fillWidth: true
+                                }
+                                BusyIndicator {
+                                    Layout.preferredHeight: 22
+                                    Layout.preferredWidth: 22
+                                    running: Store.loading
+                                    visible: running
+                                }
+                                ToolButton {
+                                    ToolTip.text: "Rescan session directories"
+                                    ToolTip.visible: hovered
+                                    enabled: !Store.loading
+                                    text: "↻"
+
+                                    onClicked: Store.scan()
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 28
+                                spacing: 2
+
+                                CompactTextField {
+                                    id: sessionSearch
+
+                                    Layout.fillWidth: true
+                                    color: Style.foregroundColor
+                                    placeholderText: "Filter driver, run, car, time…"
+                                    placeholderTextColor: Style.dimTextColor
+
+                                    onTextEdited: {
+                                        root.sessionFilter = text;
+                                        sessionFilterTimer.restart();
+                                    }
+                                }
+                                ToolButton {
+                                    Layout.preferredHeight: 24
+                                    Layout.preferredWidth: 24
+                                    ToolTip.text: "Clear session filter"
+                                    ToolTip.visible: hovered
+                                    text: "×"
+                                    visible: sessionSearch.text !== ""
+
+                                    onClicked: {
+                                        sessionSearch.clear();
+                                        root.sessionFilter = "";
+                                        root.rebuildTree();
+                                    }
                                 }
                             }
                         }
                     }
-                    ListView {
-                        id: tree
+                    Timer {
+                        id: sessionFilterTimer
 
+                        interval: 120
+                        repeat: false
+
+                        onTriggered: root.rebuildTree()
+                    }
+                    Item {
                         Layout.fillHeight: true
                         Layout.fillWidth: true
-                        boundsBehavior: Flickable.StopAtBounds
-                        clip: true
-                        model: treeModel
 
-                        ScrollBar.vertical: ThinScrollBar {
-                        }
-                        delegate: SessionTreeDelegate {
-                            activeSessionKey: root.activeSessionKey
-                            referenceSessionKey: root.referenceSessionKey
+                        ListView {
+                            id: tree
 
-                            onDriverRenameRequested: (mappingKey, driver) => root.openDriverRename(mappingKey, driver)
-                            onSessionActivated: key => root.setSessionActive(key)
-                            onSessionIsolated: key => root.useSessionAlone(key)
-                            onSetActiveRequested: key => root.setSessionActive(key)
-                            onSetReferenceRequested: key => root.setSessionReference(key)
-                            onToggleDateRequested: key => {
-                                root.expandedDates[key] = !root.dateExpanded(key);
-                                root.rebuildTree();
+                            anchors.fill: parent
+                            boundsBehavior: Flickable.StopAtBounds
+                            clip: true
+                            model: treeModel
+
+                            ScrollBar.vertical: ThinScrollBar {
                             }
-                            onToggleTrackRequested: name => {
-                                root.expandedTracks[name] = !root.trackExpanded(name);
-                                root.rebuildTree();
+                            delegate: SessionTreeDelegate {
+                                activeSessionKey: root.activeSessionKey
+                                referenceSessionKey: root.referenceSessionKey
+
+                                onDriverRenameRequested: (mappingKey, driver) => root.openDriverRename(mappingKey, driver)
+                                onPointerTooltipDismissed: owner => root.dismissPointerTooltip(owner)
+                                onPointerTooltipMoved: (owner, x, y) => root.movePointerTooltip(owner, x, y)
+                                onPointerTooltipRequested: (owner, text, x, y) => root.showPointerTooltip(owner, text, x, y)
+                                onSessionActivated: key => root.setSessionActive(key)
+                                onSessionIsolated: key => root.useSessionAlone(key)
+                                onSetActiveRequested: key => root.setSessionActive(key)
+                                onSetReferenceRequested: key => root.setSessionReference(key)
+                                onToggleDateRequested: key => {
+                                    root.expandedDates[key] = !root.dateExpanded(key);
+                                    root.rebuildTree();
+                                }
+                                onToggleTrackRequested: name => {
+                                    root.expandedTracks[name] = !root.trackExpanded(name);
+                                    root.rebuildTree();
+                                }
+                                onTrackAssignmentRequested: key => trackAssignmentDialog.openForSession(key)
+                            }
+                        }
+                        Column {
+                            anchors.centerIn: parent
+                            spacing: 4
+                            visible: Store.loading
+                            z: 2
+
+                            BusyIndicator {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                objectName: "sessionLoadingIndicator"
+                                running: Store.loading
+                            }
+                            Label {
+                                color: Style.mutedTextColor
+                                font.family: Style.monoFontFamily
+                                font.pixelSize: 10
+                                text: "LOADING SESSIONS"
                             }
                         }
                     }
@@ -1263,9 +1468,20 @@ ApplicationWindow {
                 SplitView.fillWidth: true
                 orientation: Qt.Vertical
 
-                handle: Rectangle {
-                    color: Style.borderColor
-                    implicitHeight: 1
+                handle: Item {
+                    id: analysisSplitHandle
+
+                    implicitHeight: 7
+
+                    HoverHandler {
+                        cursorShape: Qt.SplitVCursor
+                    }
+                    Rectangle {
+                        anchors.centerIn: parent
+                        color: analysisSplitHandle.SplitHandle.pressed || analysisSplitHandle.SplitHandle.hovered ? Style.accentColor : Style.borderColor
+                        height: analysisSplitHandle.SplitHandle.pressed ? 3 : 1
+                        width: parent.width
+                    }
                 }
 
                 Rectangle {
@@ -1528,6 +1744,55 @@ ApplicationWindow {
                         objectName: "traceOverlay"
                         trace: trace
                         z: 1
+                    }
+                    ToolButton {
+                        ToolTip.text: Store.comparing ? (root.deltaTraceVisible ? "Hide comparison delta-time trace" : "Show comparison delta-time trace") : "Select a comparison lap to show delta time"
+                        ToolTip.visible: hovered
+                        anchors.left: parent.left
+                        anchors.top: parent.top
+                        checked: root.deltaTraceVisible
+                        enabled: Store.comparing
+                        height: 22
+                        objectName: "deltaTraceButton"
+                        text: "Δt"
+                        width: 58
+                        z: 2
+
+                        onClicked: Store.setChannelVisible("delta", !root.deltaTraceVisible)
+                    }
+                    Rectangle {
+                        anchors.fill: parent
+                        color: Qt.rgba(0, 0, 0, 0.32)
+                        visible: Store.lapLoading
+                        z: 3
+
+                        Rectangle {
+                            anchors.centerIn: parent
+                            border.color: Style.borderColor
+                            border.width: 1
+                            color: Style.surfaceColor
+                            height: 76
+                            radius: 4
+                            width: 132
+
+                            Column {
+                                anchors.centerIn: parent
+                                spacing: 4
+
+                                BusyIndicator {
+                                    Material.accent: Style.accentColor
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                    objectName: "lapLoadingIndicator"
+                                    running: Store.lapLoading
+                                }
+                                Label {
+                                    color: Style.foregroundColor
+                                    font.family: Style.monoFontFamily
+                                    font.pixelSize: 10
+                                    text: "LOADING LAP"
+                                }
+                            }
+                        }
                     }
                     ToolButton {
                         ToolTip.text: "Add or hide source channels"

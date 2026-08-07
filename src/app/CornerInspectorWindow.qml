@@ -245,12 +245,7 @@ ApplicationWindow {
                         font.pixelSize: Style.smallFontSize
                         text: zoneRow.modelData.name
 
-                        onEditingFinished: {
-                            Store.setCornerName(zoneRow.index, text);
-                            const zones = Store.cornerList();
-                            if (zoneRow.index < zones.length)
-                                text = zones[zoneRow.index].name;
-                        }
+                        onEditingFinished: Store.setCornerName(zoneRow.index, text)
                     }
                     CompactTextField {
                         id: zoneStartField
@@ -384,7 +379,7 @@ ApplicationWindow {
             compareBrakeColor: Style.orangeColor
             compareColor: Style.mutedTextColor
             cornerIndex: cornerWindow.selectedCornerIndex
-            dimColor: Qt.rgba(0, 0, 0, 0.58)
+            dimColor: Style.graphDimColor
             gridColor: Style.borderColor
             labelColor: Style.mutedTextColor
             monoFontFamily: Style.monoFontFamily

@@ -10,7 +10,6 @@ import Omatrack
 
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Controls.Material
 import QtQuick.Layouts
 
 Item {
@@ -36,10 +35,13 @@ Item {
 
     // ── model roles ───────────────────────────────────────────────
     required property string role
-    required property string sessionTime
     required property string stem
+    readonly property string tooltipOwner: "session:" + row.key
 
     signal driverRenameRequested(string mappingKey, string driver)
+    signal pointerTooltipDismissed(string owner)
+    signal pointerTooltipMoved(string owner, real x, real y)
+    signal pointerTooltipRequested(string owner, string text, real x, real y)
     signal sessionActivated(string key)
     signal sessionIsolated(string key)
     signal setActiveRequested(string key)
@@ -48,13 +50,14 @@ Item {
 
     // ── actions delegated to the root window ──────────────────────
     signal toggleTrackRequested(string name)
+    signal trackAssignmentRequested(string key)
 
     height: row.role === "track" ? 28 : row.role === "date" ? 24 : 38
     width: ListView.view.width
 
     Rectangle {
         anchors.fill: parent
-        color: row.activeSession ? Style.selectionColor : row.referenceSession ? Qt.rgba(224 / 255, 157 / 255, 127 / 255, 0.14) : row.role === "track" ? Style.surfaceColor : rowMouse.containsMouse ? Style.backgroundColor : "transparent"
+        color: row.activeSession ? Style.selectionColor : row.referenceSession ? Style.referenceSelectionColor : row.role === "track" ? Style.surfaceColor : rowMouse.containsMouse ? Style.backgroundColor : "transparent"
     }
     RowLayout {
         anchors.fill: parent
@@ -105,17 +108,30 @@ Item {
                     font.bold: row.activeSession
                     font.family: Style.uiFontFamily
                     font.pixelSize: 10
-                    text: (row.driver || "Unknown") + (row.driverId !== "" ? "  ID " + row.driverId : "")
+                    text: row.driver || "Unknown"
                 }
             }
-            Label {
+            RowLayout {
                 Layout.fillWidth: true
-                color: row.isDayBest ? Style.magentaColor : row.isDriverBest ? Style.greenColor : Style.mutedTextColor
-                elide: Text.ElideMiddle
-                font.family: Style.monoFontFamily
-                font.pixelSize: 8
-                text: (row.stem || row.name) + "  ·  " + (row.sessionTime || "--:--:--") + "  ·  best " + (row.bestTime || "—")
+                spacing: 5
                 visible: row.role === "session"
+
+                Label {
+                    Layout.minimumWidth: implicitWidth
+                    color: row.isDayBest ? Style.magentaColor : row.isDriverBest ? Style.greenColor : Style.mutedTextColor
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: 8
+                    text: "best " + (row.bestTime || "—")
+                }
+                Label {
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    color: Style.mutedTextColor
+                    elide: Text.ElideMiddle
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: 8
+                    text: row.stem || row.name
+                }
             }
             Label {
                 Layout.fillWidth: true
@@ -193,10 +209,18 @@ Item {
 
             onTriggered: row.sessionIsolated(row.key)
         }
+        MenuItem {
+            enabled: Store.trackAtlasReady
+            text: "Assign track…"
+
+            onTriggered: row.trackAssignmentRequested(row.key)
+        }
         MenuSeparator {
+            height: visible ? implicitHeight : 0
             visible: Store.comparing
         }
         MenuItem {
+            height: visible ? implicitHeight : 0
             text: "Clear reference"
             visible: Store.comparing
 
@@ -213,6 +237,7 @@ Item {
 
         onClicked: mouse => {
             if (mouse.button === Qt.RightButton) {
+                row.pointerTooltipDismissed(row.tooltipOwner);
                 if (row.role === "session") {
                     sessionMenu.x = mouse.x;
                     sessionMenu.y = mouse.y;
@@ -227,6 +252,19 @@ Item {
             } else if (row.role === "session") {
                 row.sessionActivated(row.key);
             }
+        }
+        onEntered: {
+            if (row.role !== "session")
+                return;
+            const point = rowMouse.mapToItem(Overlay.overlay, rowMouse.mouseX, rowMouse.mouseY);
+            row.pointerTooltipRequested(row.tooltipOwner, row.stem, point.x, point.y);
+        }
+        onExited: row.pointerTooltipDismissed(row.tooltipOwner)
+        onPositionChanged: mouse => {
+            if (row.role !== "session")
+                return;
+            const point = rowMouse.mapToItem(Overlay.overlay, mouse.x, mouse.y);
+            row.pointerTooltipMoved(row.tooltipOwner, point.x, point.y);
         }
     }
 }
