@@ -14,9 +14,9 @@ import QtQuick
 QtObject {
     id: style
 
-    readonly property color accentColor: Theme.colors.accent || desktopPalette.highlight
-    readonly property color backgroundColor: Theme.colors.background || desktopPalette.window
-    readonly property color borderColor: Theme.colors.muted || desktopPalette.mid
+    readonly property color accentColor: Theme.colors.accent || style.desktopPalette.highlight
+    readonly property color backgroundColor: Theme.colors.background || style.desktopPalette.window
+    readonly property color borderColor: Theme.colors.muted || style.desktopPalette.mid
 
     // Offered when picking a trace color; deliberately theme-independent so a
     // saved channel color keeps meaning across desktop themes.
@@ -28,28 +28,28 @@ QtObject {
     // is one edit here rather than a number per component.
     readonly property int controlHeight: 26
     readonly property int controlPadding: 8
-    readonly property color darkBackgroundColor: Theme.colors.dark_background || desktopPalette.alternateBase
+    readonly property color darkBackgroundColor: Theme.colors.dark_background || style.desktopPalette.alternateBase
     readonly property SystemPalette desktopPalette: SystemPalette {
         colorGroup: SystemPalette.Active
     }
-    readonly property color dimTextColor: Theme.colors.dark_foreground || desktopPalette.mid
+    readonly property color dimTextColor: Theme.colors.dark_foreground || style.desktopPalette.mid
     readonly property int fontSize: 11
-    readonly property color foregroundColor: Theme.colors.foreground || desktopPalette.windowText
+    readonly property color foregroundColor: Theme.colors.foreground || style.desktopPalette.windowText
     readonly property color graphDimColor: Qt.rgba(0, 0, 0, 0.58)
     readonly property color greenColor: Theme.colors.green || "#a7c080"
     readonly property int iconButtonSize: 24
     readonly property color magentaColor: Theme.colors.magenta || "#d699b6"
     readonly property string monoFontFamily: "Geist Mono"
-    readonly property color mutedTextColor: Theme.colors.light_foreground || desktopPalette.midlight
+    readonly property color mutedTextColor: Theme.colors.light_foreground || style.desktopPalette.midlight
     readonly property color orangeColor: Theme.colors.orange || "#e09d7f"
     readonly property color redColor: Theme.colors.red || "#e67e80"
     readonly property color referenceSelectionColor: Qt.rgba(224 / 255, 157 / 255, 127 / 255, 0.14)
     readonly property int scrollBarWidth: 6
-    readonly property color selectionColor: Theme.colors.selection || desktopPalette.highlight
+    readonly property color selectionColor: Theme.colors.selection || style.desktopPalette.highlight
     readonly property int smallControlHeight: 20
     readonly property int smallFontSize: 9
-    readonly property color surfaceColor: Theme.colors.lighter_background || desktopPalette.button
-    readonly property color traceBackgroundColor: Theme.colors.darker_background || desktopPalette.base
+    readonly property color surfaceColor: Theme.colors.lighter_background || style.desktopPalette.button
+    readonly property color traceBackgroundColor: Theme.colors.darker_background || style.desktopPalette.base
     readonly property string uiFontFamily: "Geist"
 
     // Letterbox behind onboard video. Deliberately true black in every theme:

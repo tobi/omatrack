@@ -18,6 +18,9 @@
 #include "AutotestHarness.h"
 #endif
 #include "TelemetryStore.h"
+#ifdef Q_OS_WIN
+#include "WindowsIntegration.h"
+#endif
 
 int main(int argc, char** argv) {
     QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
@@ -35,8 +38,14 @@ int main(int argc, char** argv) {
     QCoreApplication::setApplicationVersion(OMATRACK_VERSION);
     QGuiApplication::setApplicationDisplayName("Omatrack");
     QGuiApplication::setDesktopFileName("io.github.tobi.omatrack");
+#ifdef Q_OS_WIN
+    omatrack::initializeWindowsIntegration(app);
+    QGuiApplication::setWindowIcon(
+        QIcon(QStringLiteral(":/assets/omatrack.ico")));
+#else
     QGuiApplication::setWindowIcon(
         QIcon(QStringLiteral(":/assets/omatrack.svg")));
+#endif
     QQuickStyle::setStyle("Material");
 
     const QStringList bundledFonts{
@@ -88,8 +97,9 @@ int main(int argc, char** argv) {
     }
     // Configuration supplies persistent scan roots. A positional path opens a
     // directory or one supported telemetry/video file.
-    if (argc > 1) {
-        const QString path = QString::fromLocal8Bit(argv[1]);
+    const QStringList arguments = QCoreApplication::arguments();
+    if (arguments.size() > 1) {
+        const QString path = arguments.at(1);
         if (QFileInfo(path).isDir())
             store->addSessionDirectory(path);
         else

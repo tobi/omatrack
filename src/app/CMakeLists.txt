@@ -8,6 +8,18 @@
 qt_add_executable(omatrack
   main.cpp)
 
+if(WIN32)
+  configure_file(
+    ${CMAKE_SOURCE_DIR}/assets/omatrack.rc.in
+    ${CMAKE_CURRENT_BINARY_DIR}/omatrack.rc
+    @ONLY)
+  target_sources(omatrack PRIVATE
+    WindowsIntegration.h
+    WindowsIntegration.cpp
+    ${CMAKE_CURRENT_BINARY_DIR}/omatrack.rc)
+  set_target_properties(omatrack PROPERTIES WIN32_EXECUTABLE TRUE)
+endif()
+
 # `pragma Singleton` alone is not enough: the qmldir entry comes from this
 # source property, and without it qmllint and qmlcachegen treat Style as an
 # ordinary type.
@@ -64,7 +76,9 @@ qt_add_resources(omatrack "omatrack_assets"
 qt_add_resources(omatrack "omatrack_branding"
   PREFIX "/"
   BASE ${CMAKE_SOURCE_DIR}
-  FILES ${CMAKE_SOURCE_DIR}/assets/omatrack.svg)
+  FILES
+    ${CMAKE_SOURCE_DIR}/assets/omatrack.svg
+    ${CMAKE_SOURCE_DIR}/assets/omatrack.ico)
 
 target_link_libraries(omatrack PRIVATE
   omatrack_core
@@ -76,6 +90,9 @@ target_link_libraries(omatrack PRIVATE
   Qt6::QuickControls2
   Qt6::Qml
   Qt6::Network)
+if(WIN32)
+  target_link_libraries(omatrack PRIVATE dwmapi shell32)
+endif()
 
 # qmlprofiler and qmlpreview can only attach to a QML-debug-enabled binary.
 target_compile_definitions(omatrack PRIVATE

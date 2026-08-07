@@ -1,28 +1,17 @@
 #include "OmarchyTheme.h"
 
+#ifdef Q_OS_LINUX
+#include <QDir>
 #include <QFile>
-#include <QProcess>
+#include <QFileInfo>
 #include <QRegularExpression>
 #include <QStringList>
 
 namespace {
 
-QVariantMap loadOmarchyColors() {
+QVariantMap loadOmarchyColors(const QString& currentStatePath) {
     QVariantMap colors;
-    QProcess themeProcess;
-    themeProcess.start(QStringLiteral("omarchy"),
-                       {QStringLiteral("theme"), QStringLiteral("current")});
-    if (!themeProcess.waitForFinished(500)) return colors;
-    QString theme = QString::fromUtf8(themeProcess.readAllStandardOutput())
-                        .trimmed()
-                        .toLower();
-    static const QRegularExpression unsafe(QStringLiteral("[^a-z0-9-]"));
-    theme.replace(unsafe, QStringLiteral("-"));
-    if (theme.isEmpty()) return colors;
-    const QString omarchyPath = qEnvironmentVariable(
-        "OMARCHY_PATH", QStringLiteral("/usr/share/omarchy"));
-    QFile file(omarchyPath + QStringLiteral("/themes/") + theme +
-               QStringLiteral("/colors.toml"));
+    QFile file(currentStatePath + QStringLiteral("/theme/colors.toml"));
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) return colors;
     static const QRegularExpression assignment(
         QStringLiteral("^\\s*([a-z_]+)\\s*=\\s*\"(#[0-9a-fA-F]{6,8})\""));
@@ -37,6 +26,64 @@ QVariantMap loadOmarchyColors() {
 }
 
 }  // namespace
+#endif
 
-OmarchyTheme::OmarchyTheme(QObject* parent)
-    : QObject(parent), colors_(loadOmarchyColors()) {}
+OmarchyTheme::OmarchyTheme(QObject* parent) : QObject(parent) {
+#ifdef Q_OS_LINUX
+    const QString omarchyPath = qEnvironmentVariable(
+        "OMARCHY_PATH", QStringLiteral("/usr/share/omarchy"));
+    const QString stateHome = qEnvironmentVariable(
+        "XDG_STATE_HOME", QDir::homePath() + QStringLiteral("/.local/state"));
+    currentStatePath_ = stateHome + QStringLiteral("/omarchy/current");
+
+    // The session plus both paths are required so an Omarchy installation or
+    // stale/copyable state never enables integration on another desktop.
+    const bool omarchySession =
+        qEnvironmentVariable("DESKTOP_SESSION")
+            .compare(QStringLiteral("omarchy"), Qt::CaseInsensitive) == 0;
+    if (!omarchySession || !QFileInfo(omarchyPath).isDir() ||
+        !QFileInfo(currentStatePath_).isDir()) {
+        currentStatePath_.clear();
+        return;
+    }
+
+    reloadTimer_.setSingleShot(true);
+    reloadTimer_.setInterval(100);
+    connect(&reloadTimer_, &QTimer::timeout, this, &OmarchyTheme::reload);
+    connect(&watcher_, &QFileSystemWatcher::directoryChanged, this,
+            [this] { reloadTimer_.start(); });
+    connect(&watcher_, &QFileSystemWatcher::fileChanged, this,
+            [this] { reloadTimer_.start(); });
+
+    reload();
+#endif
+}
+
+#ifdef Q_OS_LINUX
+void OmarchyTheme::reload() {
+    if (currentStatePath_.isEmpty()) return;
+
+    const QVariantMap nextColors = loadOmarchyColors(currentStatePath_);
+    refreshWatchPaths();
+    if (nextColors == colors_) return;
+
+    colors_ = nextColors;
+    emit colorsChanged();
+}
+
+void OmarchyTheme::refreshWatchPaths() {
+    if (!watcher_.files().isEmpty()) watcher_.removePaths(watcher_.files());
+    if (!watcher_.directories().isEmpty())
+        watcher_.removePaths(watcher_.directories());
+
+    const QStringList candidates{
+        currentStatePath_,
+        currentStatePath_ + QStringLiteral("/theme"),
+        currentStatePath_ + QStringLiteral("/theme.name"),
+        currentStatePath_ + QStringLiteral("/theme/colors.toml"),
+    };
+    for (const QString& path : candidates) {
+        if (QFileInfo::exists(path)) watcher_.addPath(path);
+    }
+}
+#endif

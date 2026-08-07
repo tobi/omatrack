@@ -60,6 +60,21 @@ target_link_libraries(session-metadata-cache-test PRIVATE
 add_test(NAME session-metadata-cache-test COMMAND session-metadata-cache-test)
 set_tests_properties(session-metadata-cache-test PROPERTIES LABELS unit)
 
+# ── Omarchy theme bridge test ──
+# Exercises the atomic directory replacement used by `omarchy theme set` and
+# verifies that the QML-facing color map changes without restarting the app.
+qt_add_executable(omarchy-theme-test OmarchyThemeTest.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/OmarchyTheme.cpp)
+target_include_directories(omarchy-theme-test PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/app)
+target_link_libraries(omarchy-theme-test PRIVATE
+  Qt6::Test
+  Qt6::Core
+  Qt6::Qml
+  omatrack_warnings)
+add_test(NAME omarchy-theme-test COMMAND omarchy-theme-test)
+set_tests_properties(omarchy-theme-test PROPERTIES LABELS unit)
+
 # ── alignment-test ──────────────────────────────────────────────────
 # Drives the pure comparison-alignment helper (computeComparisonAlignment)
 # with synthetic omatrack::UnifiedLap inputs. Compiles the helper .cpp
