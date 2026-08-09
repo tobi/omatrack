@@ -7,8 +7,7 @@ add_library(omatrack_core STATIC
   TelemetryEngineInternal.h)
 
 target_include_directories(omatrack_core
-  PUBLIC ${CMAKE_SOURCE_DIR}/src
-  PRIVATE ${CMAKE_SOURCE_DIR}/third_party/motorsport-telemetry/bridge/include)
+  PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(omatrack_core
   PUBLIC omatrack_rust_bridge
   PRIVATE omatrack_warnings)

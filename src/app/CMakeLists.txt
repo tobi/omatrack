@@ -60,6 +60,7 @@ qt_add_qml_module(omatrack
     SessionMetadataCache.h SessionMetadataCache.cpp
     TrackMetadata.h TrackMetadata.cpp
     TelemetryStore.h TelemetryStore.cpp
+    TrackAtlasSpatial.h TrackAtlasSpatial.cpp
     TraceView.h TraceView.cpp
     VideoTelemetryHud.h VideoTelemetryHud.cpp
     YamlConfig.h YamlConfig.cpp

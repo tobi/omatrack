@@ -118,11 +118,11 @@ add_test(NAME lint-qml-pragma
 set_tests_properties(lint-qml-pragma PROPERTIES LABELS lint)
 
 # ── rust ────────────────────────────────────────────────────────────
-# rust_clippy is defined with the vendored workspace in third_party/.
+# rust_clippy is defined with the local bridge workspace in third_party/.
 add_dependencies(lint rust_clippy)
 add_test(NAME lint-rust-clippy
   COMMAND ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${RUST_TARGET_DIR}
-          cargo clippy --release --all-targets
+          cargo clippy --release --workspace --all-targets
           --manifest-path ${CMAKE_SOURCE_DIR}/third_party/motorsport-telemetry/Cargo.toml
           -- -D warnings)
 set_tests_properties(lint-rust-clippy PROPERTIES LABELS lint)
@@ -130,7 +130,7 @@ set_tests_properties(lint-rust-clippy PROPERTIES LABELS lint)
 add_custom_target(rust_format_check
   COMMAND cargo fmt --all --check
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/third_party/motorsport-telemetry
-  COMMENT "cargo fmt --check over the vendored parser workspace"
+  COMMENT "cargo fmt --check over the Rust bridge workspace"
   VERBATIM)
 add_dependencies(lint rust_format_check)
 add_test(NAME lint-rust-format

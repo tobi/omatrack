@@ -1,10 +1,5 @@
-# Vendored Rust parser workspace.
-#
-# Every vendor decoder lives in its own crate; `bridge` is the single panic-safe
-# C ABI the C++ side links against. The crates are compiled individually by
-# cargo and archived into one staticlib, so the C++ build has exactly one
-# artifact to link but each format stays independently buildable and testable
-# (`ctest -R rust-`).
+# Thin C ABI over the pinned upstream motorsport-telemetry-rs crates. No vendor
+# decoder source lives in this repository.
 
 set(RUST_WORKSPACE ${CMAKE_CURRENT_SOURCE_DIR}/motorsport-telemetry)
 set(RUST_TARGET_DIR ${CMAKE_BINARY_DIR}/cargo-target)
@@ -25,6 +20,13 @@ else()
 endif()
 set(RUST_STATICLIB
   ${RUST_PROFILE_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}omatrack_bridge${CMAKE_STATIC_LIBRARY_SUFFIX})
+set(RUST_GENERATED_INCLUDE_DIR
+  ${CMAKE_BINARY_DIR}/generated/motorsport-telemetry)
+set(RUST_GENERATED_HEADER
+  ${RUST_GENERATED_INCLUDE_DIR}/omatrack_bridge.h)
+# CMake validates imported-target include directories while generating the
+# build graph, before the custom command has generated the header itself.
+file(MAKE_DIRECTORY ${RUST_GENERATED_INCLUDE_DIR})
 
 if(MSVC)
   message(FATAL_ERROR
@@ -32,40 +34,42 @@ if(MSVC)
 endif()
 
 
-# Cargo package names, in dependency order. `motorsport-telemetry-core` carries
-# the shared traits and value types; `omatrack-bridge` re-exports every
-# decoder through the C ABI.
-set(RUST_CRATES
-  motorsport-telemetry-core
-  cosworth-telemetry
-  aim-telemetry
-  motec-telemetry
-  vbo-telemetry
-  omatrack-bridge)
+set(RUST_CRATES omatrack-bridge)
 
 # Depend on every Rust source, not a hand-picked subset: a stale list silently
 # skips rebuilds when a decoder changes. CONFIGURE_DEPENDS re-runs the glob when
 # files are added or removed.
 file(GLOB_RECURSE RUST_SOURCES CONFIGURE_DEPENDS
-  ${RUST_WORKSPACE}/crates/*.rs
   ${RUST_WORKSPACE}/bridge/*.rs
-  ${RUST_WORKSPACE}/crates/*/Cargo.toml
-  ${RUST_WORKSPACE}/bridge/Cargo.toml)
+  ${RUST_WORKSPACE}/bridge/Cargo.toml
+  ${RUST_WORKSPACE}/bridge/cbindgen.toml
+  ${RUST_WORKSPACE}/bridge-header/*.rs
+  ${RUST_WORKSPACE}/bridge-header/Cargo.toml)
 list(APPEND RUST_SOURCES
   ${RUST_WORKSPACE}/Cargo.toml
   ${RUST_WORKSPACE}/Cargo.lock)
 
 add_custom_command(
-  OUTPUT ${RUST_STATICLIB}
+  OUTPUT ${RUST_STATICLIB} ${RUST_GENERATED_HEADER}
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${RUST_GENERATED_INCLUDE_DIR}
   COMMAND ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${RUST_TARGET_DIR}
-          cargo build ${RUST_BUILD_ARGS}
+          cargo run --quiet --locked
+          --package omatrack-bridge-header
           --manifest-path ${RUST_WORKSPACE}/Cargo.toml
+          -- ${RUST_GENERATED_HEADER}
+  COMMAND ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${RUST_TARGET_DIR}
+          cargo build --locked ${RUST_BUILD_ARGS}
+          --package omatrack-bridge
+          --manifest-path ${RUST_WORKSPACE}/Cargo.toml
+  COMMAND ${CMAKE_COMMAND} -E touch_nocreate
+          ${RUST_GENERATED_HEADER} ${RUST_STATICLIB}
   WORKING_DIRECTORY ${RUST_WORKSPACE}
   DEPENDS ${RUST_SOURCES}
-  COMMENT "Building Rust telemetry parsers (${RUST_CRATES} + bridge)"
+  COMMENT "Building upstream Rust telemetry bridge"
   VERBATIM)
 
-add_custom_target(rust_bridge DEPENDS ${RUST_STATICLIB})
+add_custom_target(rust_bridge
+  DEPENDS ${RUST_STATICLIB} ${RUST_GENERATED_HEADER})
 
 add_library(omatrack_rust_bridge STATIC IMPORTED GLOBAL)
 set_target_properties(omatrack_rust_bridge PROPERTIES
@@ -75,6 +79,8 @@ add_dependencies(omatrack_rust_bridge rust_bridge)
 # The archive is pulled in whole: its exports are reached only through the C
 # ABI, so the linker cannot see the references that keep them alive.
 target_link_directories(omatrack_rust_bridge INTERFACE ${RUST_PROFILE_DIR})
+target_include_directories(omatrack_rust_bridge INTERFACE
+  ${RUST_GENERATED_INCLUDE_DIR})
 target_link_options(omatrack_rust_bridge INTERFACE
   -Wl,--whole-archive -lomatrack_bridge -Wl,--no-whole-archive)
 if(WIN32)
@@ -84,7 +90,8 @@ else()
   target_link_libraries(omatrack_rust_bridge INTERFACE pthread dl m)
 endif()
 
-# One CTest entry per crate so a format regression names the format.
+# The bridge tests exercise the pinned parser adapters. Upstream format-crate
+# tests run in the motorsport-telemetry-rs project itself.
 foreach(crate IN LISTS RUST_CRATES)
   add_test(NAME rust-${crate}
     COMMAND ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${RUST_TARGET_DIR}
@@ -95,8 +102,8 @@ endforeach()
 # Lint target; not part of `all` because clippy is slower than a build.
 add_custom_target(rust_clippy
   COMMAND ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${RUST_TARGET_DIR}
-          cargo clippy --release --all-targets
+          cargo clippy --release --workspace --all-targets
           --manifest-path ${RUST_WORKSPACE}/Cargo.toml -- -D warnings
   WORKING_DIRECTORY ${RUST_WORKSPACE}
-  COMMENT "cargo clippy over the vendored parser workspace"
+  COMMENT "cargo clippy over the Rust telemetry bridge"
   VERBATIM)

@@ -59,7 +59,7 @@ qt_standard_project_setup(REQUIRES 6.5)
 # the module without per-editor configuration.
 set(QT_QML_GENERATE_QMLLS_INI ON)
 
-# Warnings are opt-in per target so Qt-generated sources and the vendored Rust
+# Warnings are opt-in per target so Qt-generated sources and the Rust
 # bridge are not held to them.
 add_library(omatrack_warnings INTERFACE)
 target_compile_options(omatrack_warnings INTERFACE

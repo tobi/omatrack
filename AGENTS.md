@@ -67,7 +67,7 @@ video remain immutable evidence.
 
 [Track Atlas](https://github.com/tobi/track-atlas) is the upstream source of track/layout identity, real geometry, label layers, corner points, `corner_ranges`, and `corner_complexes`. Consume its schema; do not create a competing local track schema or duplicate curated metadata in application code.
 
-Network access is an enhancement, not a boot requirement. Cache upstream data, skip refreshes while the cache is less than 24 hours old, continue to work offline, and fail back cleanly without fabricated corner metadata. Do not bundle track or corner datasets without documented redistribution rights and attribution.
+Track Atlas connectivity is independent of telemetry parsing. Cache upstream data, skip refreshes while the cache is less than 24 hours old, continue to work offline, and fail back cleanly without fabricated corner metadata. Do not bundle track or corner datasets without documented redistribution rights and attribution.
 
 ### Configuration and portable recording metadata
 
@@ -180,7 +180,12 @@ Native lap distance is accepted only when its continuity and total agree with in
 - Draw corner traces with surrounding context: at least a 500 m window around the zone, more approach before it and a longer exit after it, with the context dimmed and the selected zone kept at full contrast between its boundaries.
 - Keep Track Atlas cache refresh and offline fallback explicit in preferences; corner edits are copied into `omatrack.yml` as a per-track override.
 
-The current implementation imports `corner_ranges` and exposes a corner inspector. `corner_complexes`, full geometry, and the rest of the Track Atlas range layers are product requirements still to be carried through the application model; extend the model rather than overloading `CornerZone` until it loses meaning.
+The current implementation imports `corner_ranges`, downloads the selected
+layout centerline to map those ranges onto GPS laps spatially, and exposes a
+corner inspector. `corner_complexes`, full geometry rendering/modeling, and the
+rest of the Track Atlas range layers are product requirements still to be
+carried through the application model; extend the model rather than overloading
+`CornerZone` until it loses meaning.
 
 ### Headless tools and automation
 
@@ -192,10 +197,10 @@ The current implementation imports `corner_ranges` and exposes a corner inspecto
 .pds / .ld(+.ldx) / .vbo / .mp4(aimd) / future race formats
               |
               v
-third_party/motorsport-telemetry/crates/*     Rust, vendor-specific parsing
+motorsport-telemetry-rs (pinned Cargo dependencies) vendor parsing
               |
               v
-third_party/motorsport-telemetry/bridge       panic-safe bulk C ABI
+third_party/motorsport-telemetry/bridge       Omatrack panic-safe bulk C ABI
               |
               v
 src/core/TelemetryEngine                      Qt-free normalization + laps
@@ -211,6 +216,9 @@ headless acceptance                sessions, state, cache, Track Atlas
                                   v                    v         v
                            src/app/TraceView  src/app/MpvVideoItem  src/app/*.qml
                            telemetry canvas  libmpv rendering      Material UI
+
+Track Atlas JSONL -----------------------> src/app/TelemetryStore
+             independent network/cache path
 ```
 
 ### Build graph
@@ -219,10 +227,13 @@ CMake is driven through `CMakePresets.json` (Ninja + ccache): `release` builds
 into `./build`, `debug` into `./build-debug` with `QT_QML_DEBUG`, `asan` into
 `./build-asan`, and `acceptance` into `./build-acceptance` with the
 state-mutating GUI acceptance harness explicitly enabled. Production builds
-must not contain that harness. `third_party/CMakeLists.txt` compiles every
-vendored Rust crate into a configuration-local Cargo target directory under
-the CMake build tree, tracks all `*.rs`/`Cargo.toml` files, and registers one
-CTest per crate (`ctest -R rust-`). `src/core` builds the Qt-free
+must not contain that harness. `third_party/CMakeLists.txt` compiles the local
+bridge and its Git-pinned `motorsport-telemetry-rs` dependency into a
+configuration-local Cargo target directory under the CMake build tree. A
+Cargo-pinned `cbindgen` tool derives `omatrack_bridge.h` from the Rust exports
+into the CMake build tree before C++ compilation; no handwritten copy of that
+ABI exists. CTest registers the bridge tests. Vendor parser tests run in the
+upstream project. `src/core` builds the Qt-free
 `omatrack_core`, linked by both `cli/omatrack-cli` and the Qt app.
 `src/app/CMakeLists.txt` declares the `Omatrack` QML module through
 `qt_add_qml_module`; QML documents and imported C++ types live together so
@@ -234,8 +245,8 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
 
 | Layer | Paths | Owns | Must not own |
 |---|---|---|---|
-| Vendor parsers | `third_party/motorsport-telemetry/crates/` | File validation, memory mapping, chunks, typed decoding, vendor metadata | Qt, UI state, omatrack-specific presentation |
-| C ABI | `third_party/motorsport-telemetry/bridge/` | Extension dispatch, opaque handles, bulk decode, stable strings, thread-local errors | Analysis policy or exceptions/panics crossing FFI |
+| Vendor parsers | Git-pinned `tobi/motorsport-telemetry-rs` crates | File validation, memory mapping, chunks, typed decoding, vendor metadata | Qt, UI state, omatrack-specific presentation |
+| C ABI | `third_party/motorsport-telemetry/bridge/` | Extension dispatch, opaque handles, authoritative source lap metadata, bulk decode, stable strings, thread-local errors | Vendor decoding, analysis policy, or exceptions/panics crossing FFI |
 | Core | `src/core/TelemetryEngine.*` | Channel mapping, units, lap detection, resampling, `UnifiedLap` | Qt types, QML, settings, network access |
 | Session/store | `src/app/TelemetryStore.*` | Lazy session handles, selection, cached GPS/speed track-station alignment, comparison, viewport, preferences, Track Atlas, corner analysis | Pixel-level paint loops or vendor byte parsing |
 | Renderer | `src/app/TraceView.*` | Frame-budget-sensitive painting and direct trace interaction | Parsing, network access, persistent product state |
@@ -288,7 +299,7 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
 
 ## Where changes belong
 
-- New file format or source encoding: add/extend a Rust parser crate and expose only generic capabilities through the bridge.
+- New file format or source encoding: add/extend it upstream in `motorsport-telemetry-rs`, advance the pinned revision, and expose only generic capabilities through the bridge.
 - New cross-format channel or unit rule: `TelemetryEngine` and `UnifiedLap`.
 - New lap/corner comparison metric: C++ analysis in the store/core, exposed as compact view data.
 - New persistent user preference: `TelemetryStore` + `omatrack.yml` through `YamlConfig`; never `QSettings`, and never write it into telemetry.
@@ -320,7 +331,7 @@ Other presets: `debug` (`./build-debug`, `QT_QML_DEBUG` for `qmlprofiler`) and
 `asan` (`./build-asan`, ASan + UBSan).
 
 Checks. Every linter is a CMake target and a CTest entry, so one command covers
-formatting, static analysis, and the parser tests:
+formatting, static analysis, and the Rust bridge tests:
 
 ```sh
 ctest --preset release
@@ -433,10 +444,23 @@ Embedded libmpv playback must be verified on the native Linux/Omarchy OpenGL sce
   `QSGGeometryNode` line strips on the GPU, not another QPainter geometry
   scheme. `CornerGraphView` and `DamperStripView` do walk per column, which is
   correct for their point counts.
-- The app currently consumes Track Atlas `corner_ranges`; first-class complexes and geometry are not wired through yet.
+- The app consumes Track Atlas `corner_ranges` and the selected layout's
+  centerline for GPS-based corner station mapping. First-class complexes, full
+  geometry rendering/modeling, and the remaining range layers are not wired
+  through yet.
+- Upstream AiM parsing exposes telemetry-to-video frame lookup and the MP4
+  edit-list presentation offset. The bridge carries the checked signed-ns
+  offset into the core; primary/reference seeks add it and playback-to-cursor
+  mapping subtracts it.
+- AiM GPS availability varies by recording. Preserve upstream `NaN` positions
+  for no-fix intervals rather than fabricating a path; recordings with valid
+  fixes provide spatially usable Road America coordinates and drive Track
+  Atlas corner station mapping.
 - `sessionStartUnixTime()`/`hasGlobalTime()` do not currently provide global session time.
 - The GUI is file-based post-session analysis today. Future live or database-backed work must preserve the same normalized core instead of bypassing it.
-- The app embeds one video. An `aimd` MP4 self-associates playback with its telemetry and clock offset; persisted associations between separate files and multi-video alignment are not implemented.
+- The app embeds one video. An `aimd` MP4 self-associates playback with its
+  telemetry and exact MP4 presentation offset; persisted associations between
+  separate files and multi-video alignment are not implemented.
 - Configuration migrates from the pre-YAML `QSettings` store, the pre-rename `racecraft.yml`/Track Atlas cache, and per-track corner CSVs on first run; legacy stores are read only and left untouched.
 
 ## Definition of done

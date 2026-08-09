@@ -2,16 +2,17 @@
 name = "omatrack-bridge"
 version = "0.1.0"
 edition = "2021"
+rust-version.workspace = true
 license = "MIT"
-description = "C ABI bridge exposing duckdb_motorsport_telemetry parsers to Omatrack"
+description = "C ABI bridge exposing motorsport-telemetry-rs to Omatrack"
 
 [lib]
 name = "omatrack_bridge"
 crate-type = ["staticlib"]
 
 [dependencies]
-motorsport-telemetry-core.workspace = true
-cosworth-telemetry.workspace = true
-aim-telemetry.workspace = true
-motec-telemetry.workspace = true
-vbo-telemetry.workspace = true
+aim-telemetry = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "02d272980fe778ae4c485da9199b8a049145fc6f" }
+cosworth-telemetry = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "02d272980fe778ae4c485da9199b8a049145fc6f" }
+motec-telemetry = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "02d272980fe778ae4c485da9199b8a049145fc6f" }
+motorsport-telemetry-core = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "02d272980fe778ae4c485da9199b8a049145fc6f" }
+racelogic-telemetry = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "02d272980fe778ae4c485da9199b8a049145fc6f" }

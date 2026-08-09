@@ -14,6 +14,7 @@
 #include <QStringList>
 #include <QHash>
 #include <QJsonObject>
+#include <QPointF>
 #include <QVector>
 #include <QUrl>
 #include <QtQml/qqmlregistration.h>
@@ -487,11 +488,17 @@ private:
     void loadChannelsConfig();
 
     void loadCornersForPrimary();
-    QVector<CornerZone> atlasCornersForPrimary() const;
+    QVector<CornerZone> atlasCornersForPrimary();
     bool parseTrackAtlas(const QByteArray& payload);
     void loadTrackAtlasCache();
     void updateTrackAtlas(bool force);
     QString trackAtlasCachePath() const;
+    QString trackAtlasGeometryCachePath(const QString& trackSlug,
+                                        const QString& layoutId) const;
+    bool ensureAtlasCenterline(const QString& trackSlug,
+                               const QJsonObject& layout);
+    void requestAtlasCenterline(const QString& trackSlug,
+                                const QJsonObject& layout);
     void invalidateComparisonAlignment();
     void rebuildComparisonAlignment();
     double compareTimeForPrimaryFraction(double fraction) const;
@@ -534,6 +541,9 @@ private:
     QSet<QString> closedTracks_;
 
     QHash<QString, QJsonObject> atlasTracks_;
+    QHash<QString, QVector<QPointF>> atlasCenterlines_;
+    QHash<QString, QVector<QPointF>> atlasSpatialMappings_;
+    QSet<QString> atlasGeometryRequests_;
     QString trackAtlasStatus_;
     QNetworkAccessManager* atlasNetwork_ = nullptr;
     QTimer* atlasTimer_ = nullptr;

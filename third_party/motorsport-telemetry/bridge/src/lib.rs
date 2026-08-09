@@ -1,5 +1,5 @@
-//! C ABI bridge exposing the vendored duckdb_motorsport_telemetry parsers
-//! (AiM aimd MP4, Cosworth/Pi PDS, MoTeC LD, VBO) to Omatrack.
+//! C ABI bridge exposing the upstream `motorsport-telemetry-rs` parser crates
+//! to Omatrack.
 //!
 //! Design notes (bulk-first):
 //! - `omatrack_decode_range` pulls a contiguous run of decoded samples across one
@@ -10,13 +10,12 @@
 //! - Errors are reported via `omatrack_last_error` (thread-local) and non-zero/handle
 //!   return codes; no panics cross the FFI boundary.
 
+use motorsport_telemetry_core::TelemetrySource;
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
-
-use motorsport_telemetry_core::TelemetrySource;
 
 thread_local! {
     static LAST_ERROR: RefCell<CString> = RefCell::new(CString::new("").unwrap());
@@ -52,6 +51,18 @@ pub struct BridgeFile {
     src: Box<dyn TelemetrySource>,
     names: Vec<CString>,
     units: Vec<CString>,
+    source_laps: Vec<OmatrackSourceLap>,
+}
+
+/// Stable C representation of one authoritative source-provided lap.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OmatrackSourceLap {
+    pub number: i64,
+    pub start_ns: u64,
+    pub end_ns: u64,
+    pub duration_ns: u64,
+    pub complete: u8,
 }
 
 fn as_file<'a>(handle: *mut c_void) -> Option<&'a BridgeFile> {
@@ -65,23 +76,22 @@ fn as_file<'a>(handle: *mut c_void) -> Option<&'a BridgeFile> {
 fn parse_path(open_path: &Path) -> Result<Box<dyn TelemetrySource>, String> {
     let ext = open_path
         .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase())
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
         .unwrap_or_default();
-    let path = open_path.to_string_lossy().into_owned();
     match ext.as_str() {
-        "mp4" => aim_telemetry::AimFile::open(&path)
-            .map(|f| Box::new(f) as Box<dyn TelemetrySource>)
-            .map_err(|e| e.to_string()),
-        "pds" => cosworth_telemetry::CosworthFile::open(&path)
-            .map(|f| Box::new(f) as Box<dyn TelemetrySource>)
-            .map_err(|e| e.to_string()),
-        "ld" => motec_telemetry::MotecFile::open(&path)
-            .map(|f| Box::new(f) as Box<dyn TelemetrySource>)
-            .map_err(|e| e.to_string()),
-        "vbo" => vbo_telemetry::VboFile::open(&path)
-            .map(|f| Box::new(f) as Box<dyn TelemetrySource>)
-            .map_err(|e| e.to_string()),
+        "mp4" => aim_telemetry::AimFile::open(open_path)
+            .map(|source| Box::new(source) as Box<dyn TelemetrySource>)
+            .map_err(|error| error.to_string()),
+        "pds" => cosworth_telemetry::CosworthFile::open(open_path)
+            .map(|source| Box::new(source) as Box<dyn TelemetrySource>)
+            .map_err(|error| error.to_string()),
+        "ld" => motec_telemetry::MotecFile::open(open_path)
+            .map(|source| Box::new(source) as Box<dyn TelemetrySource>)
+            .map_err(|error| error.to_string()),
+        "vbo" => racelogic_telemetry::RacelogicFile::open(open_path)
+            .map(|source| Box::new(source) as Box<dyn TelemetrySource>)
+            .map_err(|error| error.to_string()),
         other => Err(format!("unsupported telemetry format: {other:?}")),
     }
 }
@@ -97,7 +107,28 @@ fn build_handle(src: Box<dyn TelemetrySource>) -> Box<BridgeFile> {
         .iter()
         .map(|c| CString::new(c.unit.as_str()).unwrap_or_default())
         .collect::<Vec<_>>();
-    Box::new(BridgeFile { src, names, units })
+    let source_laps = src
+        .source_lap_metadata()
+        .map(|metadata| {
+            metadata
+                .laps
+                .into_iter()
+                .map(|lap| OmatrackSourceLap {
+                    number: lap.number,
+                    start_ns: lap.start_ns,
+                    end_ns: lap.end_ns,
+                    duration_ns: lap.duration_ns,
+                    complete: u8::from(lap.complete),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Box::new(BridgeFile {
+        src,
+        names,
+        units,
+        source_laps,
+    })
 }
 
 // ── handling ─────────────────────────────────────────────────────────
@@ -109,7 +140,7 @@ fn build_handle(src: Box<dyn TelemetrySource>) -> Box<BridgeFile> {
 /// `path` must be NULL or a valid NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn omatrack_open(path: *const c_char) -> *mut c_void {
-    ffi_guard(stringify!(omatrack_open), Default::default(), || {
+    ffi_guard(stringify!(omatrack_open), std::ptr::null_mut(), || {
         if path.is_null() {
             set_error("omatrack_open: null path");
             return std::ptr::null_mut();
@@ -148,7 +179,7 @@ pub unsafe extern "C" fn omatrack_close(handle: *mut c_void) {
 /// only on the calling thread and until that thread's next failing bridge call.
 #[no_mangle]
 pub extern "C" fn omatrack_last_error() -> *const c_char {
-    ffi_guard(stringify!(omatrack_last_error), Default::default(), || {
+    ffi_guard(stringify!(omatrack_last_error), std::ptr::null(), || {
         LAST_ERROR.with(|cell| cell.borrow().as_ptr())
     })
 }
@@ -163,7 +194,7 @@ pub extern "C" fn omatrack_last_error() -> *const c_char {
 pub unsafe extern "C" fn omatrack_format(handle: *mut c_void) -> *const c_char {
     ffi_guard(
         stringify!(omatrack_format),
-        Default::default(),
+        std::ptr::null(),
         || match as_file(handle) {
             Some(f) => {
                 static AIMD: &[u8] = b"aimd\0";
@@ -174,7 +205,7 @@ pub unsafe extern "C" fn omatrack_format(handle: *mut c_void) -> *const c_char {
                 let bytes: &[u8] = match fmt {
                     "aimd" => AIMD,
                     "pds" => PDS,
-                    "ld" => LD,
+                    "ld" | "motec" => LD,
                     "vbo" => VBO,
                     _ => b"unknown\0",
                 };
@@ -185,32 +216,76 @@ pub unsafe extern "C" fn omatrack_format(handle: *mut c_void) -> *const c_char {
     )
 }
 
-/// Media time offset of the source in ns, written to `out`.
+/// Return the number of authoritative source-provided laps.
 ///
 /// # Safety
-/// `handle` must be NULL or a live `omatrack_open` handle, and `out` must point to a
-/// writable `i64`.
+/// `handle` must be NULL or a live `omatrack_open` handle.
 #[no_mangle]
-pub unsafe extern "C" fn omatrack_media_time_offset_ns(
+pub unsafe extern "C" fn omatrack_source_lap_count(handle: *mut c_void) -> usize {
+    ffi_guard(stringify!(omatrack_source_lap_count), 0, || {
+        as_file(handle)
+            .map(|file| file.source_laps.len())
+            .unwrap_or(0)
+    })
+}
+
+/// Copy one authoritative source-provided lap into `out`.
+/// Returns 1 on success or 0 for a null pointer or out-of-range index.
+///
+/// # Safety
+/// `handle` must be NULL or a live `omatrack_open` handle, and `out` must point
+/// to writable `OmatrackSourceLap` storage.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_source_lap(
+    handle: *mut c_void,
+    index: usize,
+    out: *mut OmatrackSourceLap,
+) -> std::os::raw::c_int {
+    ffi_guard(stringify!(omatrack_source_lap), Default::default(), || {
+        let Some(file) = as_file(handle) else {
+            return 0;
+        };
+        if out.is_null() {
+            return 0;
+        }
+        let Some(lap) = file.source_laps.get(index) else {
+            return 0;
+        };
+        *out = *lap;
+        1
+    })
+}
+
+/// Write the offset satisfying
+/// `video_presentation_ns = telemetry_file_relative_ns + offset`.
+/// Returns 1 when the source supplies an offset and it fits in an `i64`, or 0
+/// when unavailable/invalid.
+///
+/// # Safety
+/// `handle` must be NULL or a live `omatrack_open` handle, and `out` must point
+/// to a writable `i64`.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_video_presentation_offset_ns(
     handle: *mut c_void,
     out: *mut i64,
 ) -> std::os::raw::c_int {
-    ffi_guard(
-        stringify!(omatrack_media_time_offset_ns),
-        Default::default(),
-        || {
-            if out.is_null() {
-                return 0;
-            }
-            match as_file(handle).and_then(|file| file.src.media_time_offset_ns()) {
-                Some(value) => {
-                    *out = value;
-                    1
-                }
-                None => 0,
-            }
-        },
-    )
+    ffi_guard(stringify!(omatrack_video_presentation_offset_ns), 0, || {
+        let Some(file) = as_file(handle) else {
+            return 0;
+        };
+        if out.is_null() {
+            return 0;
+        }
+        let Some(offset) = file.src.video_presentation_offset_ns() else {
+            return 0;
+        };
+        let Ok(offset) = i64::try_from(offset) else {
+            set_error("omatrack_video_presentation_offset_ns: offset exceeds i64");
+            return 0;
+        };
+        *out = offset;
+        1
+    })
 }
 
 /// Return the number of channels.
@@ -234,7 +309,7 @@ pub unsafe extern "C" fn omatrack_channel_count(handle: *mut c_void) -> usize {
 pub unsafe extern "C" fn omatrack_channel_name(handle: *mut c_void, index: usize) -> *const c_char {
     ffi_guard(
         stringify!(omatrack_channel_name),
-        Default::default(),
+        std::ptr::null(),
         || match as_file(handle) {
             Some(f) => f
                 .names
@@ -254,7 +329,7 @@ pub unsafe extern "C" fn omatrack_channel_name(handle: *mut c_void, index: usize
 pub unsafe extern "C" fn omatrack_channel_unit(handle: *mut c_void, index: usize) -> *const c_char {
     ffi_guard(
         stringify!(omatrack_channel_unit),
-        Default::default(),
+        std::ptr::null(),
         || match as_file(handle) {
             Some(f) => f
                 .units
@@ -591,10 +666,14 @@ pub unsafe extern "C" fn omatrack_sample_time_ns(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use motorsport_telemetry_core::{Channel, Chunk, SampleType, UnitSource};
+    use motorsport_telemetry_core::{
+        Channel, Chunk, LapMetadata, SampleType, SourceLapMetadata, UnitSource,
+    };
 
     struct TestSource {
         channels: Vec<Channel>,
+        video_presentation_offset_ns: Option<i128>,
+        source_laps: Vec<LapMetadata>,
     }
 
     impl TelemetrySource for TestSource {
@@ -603,7 +682,7 @@ mod tests {
         }
 
         fn format(&self) -> &'static str {
-            "test"
+            "motec"
         }
 
         fn channels(&self) -> &[Channel] {
@@ -612,6 +691,17 @@ mod tests {
 
         fn decode(&self, _: usize, _: usize, local_index: u64) -> f64 {
             local_index as f64
+        }
+
+        fn video_presentation_offset_ns(&self) -> Option<i128> {
+            self.video_presentation_offset_ns
+        }
+
+        fn source_lap_metadata(&self) -> Option<SourceLapMetadata> {
+            Some(SourceLapMetadata {
+                laps: self.source_laps.clone(),
+                fastest_lap: None,
+            })
         }
     }
 
@@ -634,6 +724,23 @@ mod tests {
         };
         Box::into_raw(build_handle(Box::new(TestSource {
             channels: vec![channel],
+            video_presentation_offset_ns: Some(101_500_000),
+            source_laps: vec![
+                LapMetadata {
+                    number: 7,
+                    start_ns: 1_000_000_000,
+                    end_ns: 91_000_000_000,
+                    duration_ns: 90_000_000_000,
+                    complete: true,
+                },
+                LapMetadata {
+                    number: 8,
+                    start_ns: 91_000_000_000,
+                    end_ns: 100_000_000_000,
+                    duration_ns: 9_000_000_000,
+                    complete: false,
+                },
+            ],
         }))) as *mut c_void
     }
 
@@ -659,6 +766,50 @@ mod tests {
         );
         assert_eq!(unsafe { omatrack_sample_time_ns(handle, 0, 1, 0) }, 0);
         assert_eq!(unsafe { omatrack_sample_time_ns(handle, 0, 0, 1) }, 0);
+        unsafe { omatrack_close(handle) };
+    }
+
+    #[test]
+    fn video_presentation_offset_is_exposed() {
+        let handle = test_handle();
+        let mut offset = 0i64;
+        assert_eq!(
+            unsafe { omatrack_video_presentation_offset_ns(handle, &mut offset) },
+            1
+        );
+        assert_eq!(offset, 101_500_000);
+        assert_eq!(
+            unsafe { omatrack_video_presentation_offset_ns(handle, std::ptr::null_mut()) },
+            0
+        );
+        unsafe { omatrack_close(handle) };
+    }
+
+    #[test]
+    fn motec_format_and_source_laps_are_exposed() {
+        let handle = test_handle();
+        let format = unsafe { CStr::from_ptr(omatrack_format(handle)) };
+        assert_eq!(format.to_bytes(), b"ld");
+        assert_eq!(unsafe { omatrack_source_lap_count(handle) }, 2);
+
+        let mut lap = OmatrackSourceLap {
+            number: 0,
+            start_ns: 0,
+            end_ns: 0,
+            duration_ns: 0,
+            complete: 0,
+        };
+        assert_eq!(unsafe { omatrack_source_lap(handle, 0, &mut lap) }, 1);
+        assert_eq!(lap.number, 7);
+        assert_eq!(lap.start_ns, 1_000_000_000);
+        assert_eq!(lap.end_ns, 91_000_000_000);
+        assert_eq!(lap.duration_ns, 90_000_000_000);
+        assert_eq!(lap.complete, 1);
+        assert_eq!(unsafe { omatrack_source_lap(handle, 2, &mut lap) }, 0);
+        assert_eq!(
+            unsafe { omatrack_source_lap(handle, 0, std::ptr::null_mut()) },
+            0
+        );
         unsafe { omatrack_close(handle) };
     }
 

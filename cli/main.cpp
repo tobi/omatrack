@@ -23,8 +23,8 @@ static int cmdParse(const std::string& path) {
     }
 
     printf("format: %s\n", src->formatName().c_str());
-    if (src->formatName() == "aimd")
-        printf("media time offset: %.6fs\n", src->mediaTimeOffsetSec());
+    if (const auto offset = src->videoPresentationOffsetSec())
+        printf("video presentation offset: %.6f s\n", *offset);
     printf("channels: %zu\n", src->channels().size());
     for (size_t i = 0; i < src->channels().size(); ++i) {
         const auto& ch = src->channels()[i];

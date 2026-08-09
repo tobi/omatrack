@@ -1,6 +1,6 @@
 // Omatrack application entry.
 // Qt Quick Controls 2 Material UI; telemetry canvas is a custom C++
-// QQuickPaintedItem; parsing is the vendored Rust bridge.
+// QQuickPaintedItem; parsing is delegated through the upstream Rust bridge.
 
 #include <QFileInfo>
 #include <QFontDatabase>

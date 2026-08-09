@@ -1,0 +1,11 @@
+[package]
+name = "omatrack-bridge-header"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+license = "MIT"
+description = "Build-time cbindgen driver for the Omatrack telemetry bridge"
+publish = false
+
+[dependencies]
+cbindgen = { version = "=0.29.4", default-features = false }

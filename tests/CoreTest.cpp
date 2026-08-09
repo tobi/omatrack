@@ -727,6 +727,28 @@ private slots:
                             [](const Lap& lap) { return lap.complete; }));
     }
 
+    void detectLapsPrefersAuthoritativeSourceMetadata() {
+        TelemetrySource src;
+        RawChannel counter;
+        counter.name = "Lap Number";
+        counter.frequencyHz = 1.0;
+        counter.durationSec = 45.0;
+        counter.samples.insert(counter.samples.end(), 15, 1.0);
+        counter.samples.insert(counter.samples.end(), 15, 2.0);
+        counter.samples.insert(counter.samples.end(), 15, 3.0);
+        src.channels() = {counter};
+        src.sourceLaps() = {Lap{42, 5.0, 25.0, 19750.0, true}};
+
+        const std::vector<Lap> laps = src.detectLaps();
+        QCOMPARE(laps.size(), size_t(1));
+        QCOMPARE(laps[0].id, 42);
+        QCOMPARE(laps[0].startTime, 5.0);
+        QCOMPARE(laps[0].endTime, 25.0);
+        QCOMPARE(laps[0].timeMs, 19750.0);
+        QVERIFY(laps[0].complete);
+        QVERIFY(!laps[0].sourceNumber.has_value());
+    }
+
     void unifyLapNormalizesSyntheticChannels() {
         TelemetrySource src;
         RawChannel speed;
@@ -766,9 +788,9 @@ private slots:
     void defaultConstructedSourceIsSafe() {
         TelemetrySource src;
         QVERIFY(src.channels().empty());
+        QVERIFY(src.sourceLaps().empty());
         QVERIFY(src.path().empty());
         QVERIFY(src.formatName().empty());
-        QCOMPARE(src.mediaTimeOffsetSec(), 0.0);
         QVERIFY(src.mapChannels().empty());
         QVERIFY(src.detectLaps().empty());
         QCOMPARE(src.detectDriverId(), 0.0);

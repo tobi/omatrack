@@ -4,9 +4,16 @@ Omatrack's MIT license covers the application code and original project assets. 
 
 ## Bundled components
 
-### Motorsport telemetry parser workspace
+### Motorsport telemetry for Rust
 
-`third_party/motorsport-telemetry` is distributed under the MIT License. Its license text is preserved at `third_party/motorsport-telemetry/LICENSE`.
+Omatrack depends on [`tobi/motorsport-telemetry-rs`](https://github.com/tobi/motorsport-telemetry-rs) at the revision recorded in `third_party/motorsport-telemetry/Cargo.lock`. It is distributed under the MIT License. The local `third_party/motorsport-telemetry` directory contains only Omatrack's C ABI adapter, header-generation tool, and dependency manifests; no vendor parser source is copied into this repository.
+
+### cbindgen
+
+The Rust-to-C bridge header is generated at build time with
+[`cbindgen`](https://github.com/mozilla/cbindgen), distributed under the Mozilla
+Public License 2.0. Its pinned version and checksum are recorded in
+`third_party/motorsport-telemetry/Cargo.lock`.
 
 ### Geist fonts
 
@@ -22,6 +29,6 @@ Omatrack links to these dependencies supplied by the operating system or build e
 
 Distributors are responsible for satisfying the terms of the exact dependency builds they ship.
 
-## Network-fetched track data
+## Network-fetched Track Atlas data
 
-Omatrack can download and cache Track Atlas metadata from <https://github.com/tobi/track-atlas>. No Track Atlas dataset is bundled in this repository. Track Atlas combines MIT-licensed curated overrides with data from OpenStreetMap and other attributed upstream sources; see its current `LICENSE` and `ATTRIBUTION.md` before redistributing cached data.
+Omatrack independently downloads and caches Track Atlas metadata from <https://github.com/tobi/track-atlas>; it does not consume the optional Track Atlas facade from `motorsport-telemetry-rs`. No Track Atlas dataset is bundled in this repository. Track Atlas combines MIT-licensed curated overrides with data from OpenStreetMap and other attributed upstream sources; see its current `LICENSE` and `ATTRIBUTION.md` before redistributing cached data.

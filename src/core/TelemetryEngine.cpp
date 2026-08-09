@@ -2,7 +2,7 @@
 //
 // Ports the Omatrack analysis layer (MoTecParser.swift + TelemetryUtils)
 // on top of the Rust parsing bridge. Parsing itself is delegated to the
-// vendored duckdb_motorsport_telemetry crates.
+// pinned motorsport-telemetry-rs crates.
 
 #include "TelemetryEngineInternal.h"
 #include "omatrack_bridge.h"
@@ -381,6 +381,50 @@ double dominantDriverId(const std::vector<double>& values,
 
 using namespace detail;
 
+namespace {
+
+std::vector<Lap> sourceLapsFromBridge(void* handle) {
+    std::vector<OmatrackSourceLap> rawLaps;
+    const size_t count = omatrack_source_lap_count(handle);
+    rawLaps.reserve(count);
+    for (size_t index = 0; index < count; ++index) {
+        OmatrackSourceLap raw{};
+        if (!omatrack_source_lap(handle, index, &raw) ||
+            raw.end_ns <= raw.start_ns)
+            continue;
+        rawLaps.push_back(raw);
+    }
+
+    std::vector<Lap> laps;
+    laps.reserve(rawLaps.size());
+    std::set<int> usedIds;
+    int nextFallbackId = 0;
+    for (const OmatrackSourceLap& raw : rawLaps) {
+        int id = 0;
+        const bool numberFits = raw.number >= std::numeric_limits<int>::min() &&
+                                raw.number <= std::numeric_limits<int>::max();
+        const bool preservesSourceNumber =
+            numberFits && !usedIds.count(int(raw.number));
+        if (preservesSourceNumber) {
+            id = int(raw.number);
+        } else {
+            while (usedIds.count(nextFallbackId)) ++nextFallbackId;
+            id = nextFallbackId++;
+        }
+        usedIds.insert(id);
+
+        const uint64_t durationNs =
+            raw.duration_ns > 0 ? raw.duration_ns : raw.end_ns - raw.start_ns;
+        laps.push_back(
+            Lap{id, double(raw.start_ns) / 1e9, double(raw.end_ns) / 1e9,
+                double(durationNs) / 1e6, raw.complete != 0,
+                preservesSourceNumber ? std::optional<int>(id) : std::nullopt});
+    }
+    return laps;
+}
+
+}  // namespace
+
 // ── public helpers ──────────────────────────────────────────────────
 
 std::string normalizeChannelName(const std::string& raw) {
@@ -449,9 +493,13 @@ std::unique_ptr<TelemetrySource> TelemetrySource::open(const std::string& path,
     src->path_ = path;
     const char* fmt = omatrack_format(handle);
     src->format_ = fmt ? fmt : "";
-    int64_t mediaTimeOffsetNs = 0;
-    if (omatrack_media_time_offset_ns(handle, &mediaTimeOffsetNs))
-        src->mediaTimeOffsetSec_ = double(mediaTimeOffsetNs) / 1e9;
+    src->sourceLaps_ = sourceLapsFromBridge(handle);
+    int64_t videoPresentationOffsetNs = 0;
+    if (omatrack_video_presentation_offset_ns(handle,
+                                              &videoPresentationOffsetNs)) {
+        src->videoPresentationOffsetSec_ =
+            double(videoPresentationOffsetNs) / 1e9;
+    }
     size_t n = omatrack_channel_count(handle);
     src->channels_.reserve(n);
     for (size_t i = 0; i < n; ++i) {
@@ -570,6 +618,8 @@ double TelemetrySource::detectDriverId(
 }
 
 std::vector<Lap> TelemetrySource::detectLaps() const {
+    if (!sourceLaps_.empty()) return sourceLaps_;
+
     // Exact normalized match first, then contains fallback for longer aliases.
     auto firstId = [&](const std::vector<std::string>& aliases) -> int {
         for (auto& alias : aliases) {
@@ -671,6 +721,7 @@ std::vector<Lap> detectLapsLightweight(const std::string& path,
         omatrack_open(path.c_str()), closeBridge);
     if (!bridge) return {};
     void* handle = bridge.get();
+    const std::vector<Lap> sourceLaps = sourceLapsFromBridge(handle);
 
     const size_t channelCount = omatrack_channel_count(handle);
     auto firstId = [&](const std::vector<std::string>& aliases) -> int {
@@ -761,6 +812,8 @@ std::vector<Lap> detectLapsLightweight(const std::string& path,
         const double detected = dominantDriverId(driverValues, sampleTypeCode);
         if (detected > 0.0) *driverId = detected;
     }
+    if (!sourceLaps.empty()) return sourceLaps;
+
     auto [beacon, beaconFreq] = sampleRegular(beaconId);
     auto [lapNumber, numberFreq] = sampleRegular(lapNumberId);
     auto [lapDistance, distanceFreq] = sampleRegular(lapDistanceId);

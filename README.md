@@ -35,7 +35,9 @@ through braking, turn-in, apex, and throttle pickup.
 - Compare primary and reference laps through a cached track-station map that remains useful when GPS is sparse or absent.
 - Overlay standard and raw channels, share a cursor, pan, zoom, select ranges, pin lanes, and manually align specialist signals.
 - Derive distance-aligned cumulative delta and corner metrics from the normalized lap arrays.
-- Consume Track Atlas corner ranges with an offline cache and user-owned YAML overrides.
+- Consume Track Atlas corner ranges through an independent offline cache,
+  spatially map them from the layout centerline when lap GPS is usable, and
+  retain user-owned YAML overrides.
 - Synchronize embedded onboard video through libmpv's OpenGL Render API.
 - Follow the active Omarchy palette on Linux, with a Qt system-palette fallback elsewhere.
 - Inspect parsing, channel mapping, lap detection, and unification through `omatrack-cli`.
@@ -44,11 +46,12 @@ through braking, turn-in, apex, and throttle pickup.
 
 ```mermaid
 flowchart TD
-    F["PDS / LD / VBO / MP4"] --> R["Rust vendor parsers"]
+    F["PDS / LD / VBO / MP4"] --> R["motorsport-telemetry-rs"]
     R --> B["Panic-safe bulk C ABI"]
     B --> C["Qt-free C++ normalization core"]
     C --> CLI["omatrack-cli"]
     C --> S["TelemetryStore"]
+    A["Track Atlas JSONL"] --> S
     S --> T["C++ trace renderer"]
     S --> V["libmpv video renderer"]
     S --> Q["Qt Quick Material UI"]
@@ -133,7 +136,7 @@ The install target provides `omatrack`, `omatrack-cli`, Linux desktop/AppStream/
 
 ## Privacy and network behavior
 
-Telemetry and video stay local. Omatrack does not upload session data. When its Track Atlas cache is missing or older than 24 hours, it requests public track metadata from `raw.githubusercontent.com`; manual refresh performs the same request. A fresh cache is used without a startup request, and the app continues without corner metadata when offline.
+Telemetry and video stay local. Omatrack does not upload session data. Track Atlas connectivity is independent of telemetry parsing: when its metadata or selected-layout geometry cache is missing or older than 24 hours, Omatrack requests the public data from `raw.githubusercontent.com`; manual refresh performs the same metadata request. Fresh caches are used without a startup request. Offline starts retain cached corner geometry; without it, GPS laps do not silently substitute distance-based corner locations.
 
 libmpv can open URLs through its API, but Omatrack's normal file selectors and session library provide local paths.
 
@@ -145,12 +148,25 @@ ctest --preset release
 cmake --build --preset release --target lint
 ```
 
-The test suite covers the Rust format parsers, C++ normalization and comparison behavior, formatting, Rust lints, and QML invariants. CI runs the release build and tests on Linux and Windows.
+The test suite covers the Rust integration bridge, C++ normalization and comparison behavior, formatting, Rust lints, and QML invariants. Parser-crate tests live upstream in `motorsport-telemetry-rs`. CI runs the release build and tests on Linux and Windows.
+
+Update all upstream parser crates to the same commit and regenerate the lockfile with:
+
+```sh
+./scripts/update-motorsport-telemetry.sh \
+  --smoke-file /path/to/copied-session.mp4
+```
+
+The optional smoke file is parsed only after the Rust, build, lint, and unit checks pass. Supply a branch, tag, or full commit as the final argument to pin something other than upstream `HEAD`.
 
 ## Project status and boundaries
 
 - Session parsing is lazy, but opening a source currently decodes and retains whole channel arrays; this is not a streaming reader.
-- Track Atlas corner ranges are wired through the app. First-class corner complexes and full geometry remain planned work.
+- Track Atlas corner ranges and GPS-based centerline station mapping are wired
+  through the app. First-class corner complexes and full geometry rendering
+  remain planned work.
+- Embedded AiM telemetry time is translated to MP4 presentation time through
+  the upstream edit-list offset exposed by Omatrack's C bridge.
 - Separate-file persisted video associations and multi-video alignment are not implemented.
 - The GUI is file-based post-session analysis today.
 

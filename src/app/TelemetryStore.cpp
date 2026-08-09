@@ -3,12 +3,13 @@
 #include "ComparisonAlignment.h"
 #include "SessionMetadataCache.h"
 #include "TrackMetadata.h"
+#include "TrackAtlasSpatial.h"
 #include "core/TelemetryEngine.h"
 #include "YamlConfig.h"
 
 #include <QCoreApplication>
-#include <QDebug>
 #include <QDateTime>
+#include <QDebug>
 #include <QElapsedTimer>
 #include <QDir>
 #include <QDirIterator>
@@ -16,18 +17,18 @@
 #include <QFileInfo>
 #include <QFutureWatcher>
 #include <QJsonArray>
-#include <QJSEngine>
 #include <QJsonDocument>
 #include <QJsonParseError>
+#include <QJSEngine>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QPointer>
 #include <QRegularExpression>
-#include <QSslError>
 #include <QSaveFile>
-#include <QSettings>
 #include <QScopeGuard>
+#include <QSettings>
+#include <QSslError>
 #include <QStandardPaths>
 #include <QTextStream>
 #include <QTimer>
@@ -44,6 +45,8 @@ constexpr qint64 kTrackAtlasMaxAgeSeconds = 24 * 60 * 60;
 constexpr int kTrackAtlasCheckIntervalMs = 6 * 60 * 60 * 1000;
 const QUrl kTrackAtlasUrl(QStringLiteral(
     "https://raw.githubusercontent.com/tobi/track-atlas/main/tracks.jsonl"));
+const QString kTrackAtlasRawBase = QStringLiteral(
+    "https://raw.githubusercontent.com/tobi/track-atlas/main/tracks/");
 QPointer<TelemetryStore> s_storeInstance;
 QString legacyAppDataPath() {
     return QStandardPaths::writableLocation(
@@ -92,6 +95,10 @@ double geoDistanceKm(double firstLat, double firstLon, double secondLat,
     const double a =
         sinLat * sinLat + std::cos(lat1) * std::cos(lat2) * sinLon * sinLon;
     return 2.0 * kEarthRadiusKm * std::asin(std::sqrt(std::clamp(a, 0.0, 1.0)));
+}
+
+QString atlasGeometryKey(const QString& trackSlug, const QString& layoutId) {
+    return trackSlug + QLatin1Char('/') + layoutId;
 }
 
 QColor defaultChannelColor(const QString& key) {
@@ -494,8 +501,11 @@ void SessionHandle::populateLaps(const std::vector<Lap>& detected) {
         entry.endTime = lap.endTime;
         entry.timeMs = lap.timeMs;
         entry.isComplete = lap.complete;
-        entry.label = lap.complete ? QStringLiteral("L%1").arg(++lapNumber)
-                      : i == 0     ? QStringLiteral("Out")
+        const int sequentialNumber = lap.complete ? ++lapNumber : lapNumber;
+        entry.label = lap.complete
+                          ? QStringLiteral("L%1").arg(
+                                lap.sourceNumber.value_or(sequentialNumber))
+                      : i == 0                   ? QStringLiteral("Out")
                       : i + 1 == detected.size() ? QStringLiteral("In")
                                                  : QStringLiteral("Frag");
         entry.timeText = QString::fromStdString(formatLapTime(lap.timeMs));
@@ -1670,6 +1680,130 @@ QString TelemetryStore::trackAtlasCachePath() const {
     return current;
 }
 
+QString TelemetryStore::trackAtlasGeometryCachePath(
+    const QString& trackSlug, const QString& layoutId) const {
+    const QString directory = QFileInfo(trackAtlasCachePath()).absolutePath() +
+                              QStringLiteral("/geometry");
+    QDir().mkpath(directory);
+    auto safeName = [](QString value) {
+        value.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9._-]")),
+                      QStringLiteral("_"));
+        return value;
+    };
+    return directory + QLatin1Char('/') + safeName(trackSlug) +
+           QStringLiteral("__") + safeName(layoutId) +
+           QStringLiteral(".geojson");
+}
+
+bool TelemetryStore::ensureAtlasCenterline(const QString& trackSlug,
+                                           const QJsonObject& layout) {
+    const QString layoutId = layout.value(QStringLiteral("id")).toString();
+    if (trackSlug.isEmpty() || layoutId.isEmpty()) return false;
+    const QString key = atlasGeometryKey(trackSlug, layoutId);
+    const QString cachePath = trackAtlasGeometryCachePath(trackSlug, layoutId);
+    const QFileInfo cacheInfo(cachePath);
+
+    bool available = atlasCenterlines_.contains(key);
+    if (!available && cacheInfo.exists()) {
+        QFile cache(cachePath);
+        if (cache.open(QIODevice::ReadOnly)) {
+            QVector<QPointF> centerline =
+                omatrack::trackatlas::parseCenterline(cache.readAll());
+            if (!centerline.isEmpty()) {
+                atlasCenterlines_.insert(key, std::move(centerline));
+                available = true;
+            }
+        }
+    }
+
+    const qint64 ageSeconds =
+        cacheInfo.exists()
+            ? cacheInfo.lastModified().secsTo(QDateTime::currentDateTimeUtc())
+            : kTrackAtlasMaxAgeSeconds;
+    if (!available || !cacheInfo.exists() || ageSeconds < 0 ||
+        ageSeconds >= kTrackAtlasMaxAgeSeconds)
+        requestAtlasCenterline(trackSlug, layout);
+    return available;
+}
+
+void TelemetryStore::requestAtlasCenterline(const QString& trackSlug,
+                                            const QJsonObject& layout) {
+    const QString layoutId = layout.value(QStringLiteral("id")).toString();
+    const QJsonObject geometry =
+        layout.value(QStringLiteral("geometry")).toObject();
+    const QString crs = geometry.value(QStringLiteral("crs")).toString();
+    QString relativePath =
+        geometry.value(QStringLiteral("centerline")).toString();
+    relativePath = QDir::cleanPath(relativePath);
+    const QString key = atlasGeometryKey(trackSlug, layoutId);
+    static const QRegularExpression safeSlug(
+        QStringLiteral("^[A-Za-z0-9._-]+$"));
+    if (!safeSlug.match(trackSlug).hasMatch() || layoutId.isEmpty() ||
+        relativePath.isEmpty() || relativePath == QStringLiteral(".") ||
+        relativePath.startsWith(QStringLiteral("../")) ||
+        relativePath.startsWith(QLatin1Char('/')) ||
+        (!crs.isEmpty() && crs != QStringLiteral("EPSG:4326")) ||
+        atlasGeometryRequests_.contains(key))
+        return;
+
+    atlasGeometryRequests_.insert(key);
+    if (!atlasCenterlines_.contains(key)) {
+        trackAtlasStatus_ = QStringLiteral("Updating track-atlas geometry…");
+        emit trackAtlasChanged();
+    }
+
+    const QUrl url(kTrackAtlasRawBase + trackSlug + QStringLiteral("/raw/") +
+                   relativePath);
+    QNetworkRequest request(url);
+    request.setHeader(
+        QNetworkRequest::UserAgentHeader,
+        QStringLiteral("Omatrack/") + QCoreApplication::applicationVersion());
+    request.setTransferTimeout(15000);
+    QNetworkReply* reply = atlasNetwork_->get(request);
+    connect(
+        reply, &QNetworkReply::finished, this,
+        [this, reply, trackSlug, layoutId, key]() {
+            const auto cleanup =
+                qScopeGuard([reply]() { reply->deleteLater(); });
+            atlasGeometryRequests_.remove(key);
+            if (reply->error() != QNetworkReply::NoError) {
+                if (!atlasCenterlines_.contains(key)) {
+                    trackAtlasStatus_ = QStringLiteral(
+                        "Track-atlas layout geometry unavailable");
+                    emit trackAtlasChanged();
+                }
+                return;
+            }
+
+            const QByteArray payload = reply->readAll();
+            QVector<QPointF> centerline =
+                omatrack::trackatlas::parseCenterline(payload);
+            if (centerline.isEmpty()) {
+                if (!atlasCenterlines_.contains(key)) {
+                    trackAtlasStatus_ =
+                        QStringLiteral("Track-atlas layout geometry invalid");
+                    emit trackAtlasChanged();
+                }
+                return;
+            }
+            atlasCenterlines_.insert(key, std::move(centerline));
+            atlasSpatialMappings_.clear();
+
+            QSaveFile output(trackAtlasGeometryCachePath(trackSlug, layoutId));
+            const bool opened = output.open(QIODevice::WriteOnly);
+            const bool written =
+                opened && output.write(payload) == qsizetype(payload.size());
+            const bool cached = written && output.commit();
+            loadCornersForPrimary();
+            if (!cached) {
+                trackAtlasStatus_ = QStringLiteral(
+                    "Track-atlas geometry ready; cache write failed");
+                emit trackAtlasChanged();
+            }
+            emit cornersChanged();
+        });
+}
+
 bool TelemetryStore::parseTrackAtlas(const QByteArray& payload) {
     QHash<QString, QJsonObject> parsed;
     const QList<QByteArray> lines = payload.split('\n');
@@ -1953,6 +2087,7 @@ void TelemetryStore::clearSessions() {
     setCompareLapLoading(false);
     deltaCacheValid_ = false;
     damperAlignmentValid_ = false;
+    atlasSpatialMappings_.clear();
     setReferenceAlignment(0.0);
     corners_.clear();
     emit selectionChanged();
@@ -2029,21 +2164,7 @@ bool TelemetryStore::directoryExists(const QString& dirPath) const {
 // only the fallback for sessions that cannot be aligned positionally.
 bool TelemetryStore::hasGpsData() const {
     const omatrack::UnifiedLap* lap = primaryUnified();
-    if (!lap || lap->gpsLat.size() < 2 ||
-        lap->gpsLat.size() != lap->gpsLon.size())
-        return false;
-    double minLat = lap->gpsLat.front();
-    double maxLat = minLat;
-    double minLon = lap->gpsLon.front();
-    double maxLon = minLon;
-    for (size_t i = 1; i < lap->gpsLat.size(); ++i) {
-        minLat = std::min(minLat, lap->gpsLat[i]);
-        maxLat = std::max(maxLat, lap->gpsLat[i]);
-        minLon = std::min(minLon, lap->gpsLon[i]);
-        maxLon = std::max(maxLon, lap->gpsLon[i]);
-    }
-    // A parked or absent receiver reports a constant (often zero) fix.
-    return (maxLat - minLat) > 1e-5 || (maxLon - minLon) > 1e-5;
+    return lap && omatrack::trackatlas::hasPositionalGps(*lap);
 }
 QString TelemetryStore::configFilePath() const {
     return YamlConfig::filePath();
@@ -2883,7 +3004,7 @@ QVariantList TelemetryStore::trackGroups() const {
     return tracks;
 }
 
-QVector<CornerZone> TelemetryStore::atlasCornersForPrimary() const {
+QVector<CornerZone> TelemetryStore::atlasCornersForPrimary() {
     QVector<CornerZone> result;
     if (!primarySession_ || primaryLap_ < 0 || atlasTracks_.isEmpty())
         return result;
@@ -2894,6 +3015,7 @@ QVector<CornerZone> TelemetryStore::atlasCornersForPrimary() const {
     if (wanted.isEmpty()) return result;
 
     QJsonObject matchedTrack;
+    QString matchedTrackSlug;
     int bestTrackScore = std::numeric_limits<int>::max();
     for (auto it = atlasTracks_.cbegin(); it != atlasTracks_.cend(); ++it) {
         const QJsonObject track = it.value();
@@ -2924,6 +3046,7 @@ QVector<CornerZone> TelemetryStore::atlasCornersForPrimary() const {
             if (score < bestTrackScore) {
                 bestTrackScore = score;
                 matchedTrack = track;
+                matchedTrackSlug = it.key();
             }
         }
     }
@@ -2986,10 +3109,57 @@ QVector<CornerZone> TelemetryStore::atlasCornersForPrimary() const {
     }
     if (ranges.isEmpty()) return result;
 
+    const bool gpsAvailable =
+        unified && omatrack::trackatlas::hasPositionalGps(*unified);
+    QVector<QPointF> spatialMapping;
+    if (gpsAvailable) {
+        const QString layoutId =
+            matchedLayout.value(QStringLiteral("id")).toString();
+        const QString geometryKey =
+            atlasGeometryKey(matchedTrackSlug, layoutId);
+        if (!ensureAtlasCenterline(matchedTrackSlug, matchedLayout)) {
+            if (!atlasGeometryRequests_.contains(geometryKey)) {
+                trackAtlasStatus_ = QStringLiteral(
+                    "Track-atlas layout geometry unavailable; GPS corners "
+                    "hidden");
+                emit trackAtlasChanged();
+            }
+            return result;
+        }
+        const QString mappingKey =
+            primarySession_->sessionKey() + QLatin1Char('|') +
+            QString::number(primaryLap_) + QLatin1Char('|') + geometryKey;
+        spatialMapping = atlasSpatialMappings_.value(mappingKey);
+        if (spatialMapping.isEmpty()) {
+            spatialMapping = omatrack::trackatlas::spatialStationMap(
+                *unified, atlasCenterlines_.value(geometryKey));
+            if (!spatialMapping.isEmpty())
+                atlasSpatialMappings_.insert(mappingKey, spatialMapping);
+        }
+        if (spatialMapping.isEmpty()) {
+            trackAtlasStatus_ = QStringLiteral(
+                "Track-atlas GPS corner match failed; corners hidden");
+            emit trackAtlasChanged();
+            return result;
+        }
+        trackAtlasStatus_ =
+            QStringLiteral("%1 tracks cached · GPS-mapped corners")
+                .arg(atlasTracks_.size());
+        emit trackAtlasChanged();
+    } else {
+        trackAtlasStatus_ =
+            QStringLiteral("%1 tracks cached · distance fallback (no GPS)")
+                .arg(atlasTracks_.size());
+        emit trackAtlasChanged();
+    }
+
     const QString labelDefault =
         matchedLayout.value(QStringLiteral("label_default"))
             .toString(QStringLiteral("numbered"));
-    auto fractionAtDistance = [&](double normalizedDistance) {
+    auto fractionAtMarker = [&](double normalizedDistance) {
+        if (gpsAvailable)
+            return omatrack::trackatlas::lapFractionAtStation(
+                spatialMapping, normalizedDistance);
         if (!unified || unified->distance.size() < 2 || lapLength <= 0.0)
             return qBound(0.0, normalizedDistance, 1.0);
         const double target = qBound(0.0, normalizedDistance, 1.0) * lapLength;
@@ -3022,9 +3192,9 @@ QVector<CornerZone> TelemetryStore::atlasCornersForPrimary() const {
         CornerZone corner;
         corner.name = label;
         corner.start =
-            fractionAtDistance(range.value(QStringLiteral("start")).toDouble());
+            fractionAtMarker(range.value(QStringLiteral("start")).toDouble());
         corner.end =
-            fractionAtDistance(range.value(QStringLiteral("end")).toDouble());
+            fractionAtMarker(range.value(QStringLiteral("end")).toDouble());
         if (!corner.name.isEmpty() && corner.end > corner.start)
             result.append(corner);
     }
@@ -3355,8 +3525,10 @@ void TelemetryStore::setCursorFromVideoTime(double mediaTime) {
     if (!unified || unified->time.size() < 2) return;
     for (const LapEntry& lap : primarySession_->laps()) {
         if (lap.lapId != primaryLap_) continue;
+        const double presentationOffset =
+            source->videoPresentationOffsetSec().value_or(0.0);
         const double relativeTime =
-            mediaTime - source->mediaTimeOffsetSec() - lap.startTime;
+            mediaTime - presentationOffset - lap.startTime;
         double fraction = 0.0;
         if (relativeTime >= unified->time.back()) {
             fraction = 1.0;
@@ -4593,7 +4765,8 @@ double TelemetryStore::primaryVideoTime() const {
         (unified->time[high] - unified->time[low]) * (position - double(low));
     for (const LapEntry& lap : session->laps()) {
         if (lap.lapId == primaryLap_)
-            return source->mediaTimeOffsetSec() + lap.startTime + relativeTime;
+            return lap.startTime + relativeTime +
+                   source->videoPresentationOffsetSec().value_or(0.0);
     }
     return 0.0;
 }
@@ -4688,7 +4861,8 @@ double TelemetryStore::compareVideoTime() const {
     if (relativeTime < 0.0) return 0.0;
     for (const LapEntry& lap : session->laps()) {
         if (lap.lapId == compareLap_)
-            return source->mediaTimeOffsetSec() + lap.startTime + relativeTime;
+            return lap.startTime + relativeTime +
+                   source->videoPresentationOffsetSec().value_or(0.0);
     }
     return 0.0;
 }

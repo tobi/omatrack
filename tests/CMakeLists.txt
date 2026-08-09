@@ -92,6 +92,21 @@ target_link_libraries(alignment-test PRIVATE
 add_test(NAME alignment-test COMMAND alignment-test)
 set_tests_properties(alignment-test PROPERTIES LABELS unit)
 
+# ── Track Atlas spatial station mapping ────────────────────────────
+# Proves that corner markers are projected through WGS84 coordinates and do
+# not inherit the telemetry lap's distance progress.
+qt_add_executable(track-atlas-spatial-test TrackAtlasSpatialTest.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/TrackAtlasSpatial.cpp)
+target_include_directories(track-atlas-spatial-test PRIVATE
+  ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(track-atlas-spatial-test PRIVATE
+  omatrack_core
+  Qt6::Test
+  Qt6::Core
+  omatrack_warnings)
+add_test(NAME track-atlas-spatial-test COMMAND track-atlas-spatial-test)
+set_tests_properties(track-atlas-spatial-test PROPERTIES LABELS unit)
+
 # ── CLI command contract ────────────────────────────────────────────
 # Covers usage, dispatch, exit codes, and parser-error propagation without
 # writing telemetry-derived output.

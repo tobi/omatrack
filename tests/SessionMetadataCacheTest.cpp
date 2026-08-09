@@ -11,8 +11,10 @@ private slots:
     void fingerprintTracksPathSizeAndPrefix() {
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
-        const QString firstPath = directory.filePath(QStringLiteral("first.pds"));
-        const QString secondPath = directory.filePath(QStringLiteral("second.pds"));
+        const QString firstPath =
+            directory.filePath(QStringLiteral("first.pds"));
+        const QString secondPath =
+            directory.filePath(QStringLiteral("second.pds"));
 
         QFile first(firstPath);
         QVERIFY(first.open(QIODevice::WriteOnly));
@@ -53,6 +55,34 @@ private slots:
         QCOMPARE(SessionMetadataCache::fingerprint(path), original);
     }
 
+    void fingerprintTracksMotecSidecar() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString ldPath = directory.filePath(QStringLiteral("run.ld"));
+        const QString ldxPath = directory.filePath(QStringLiteral("run.ldx"));
+        QFile ld(ldPath);
+        QVERIFY(ld.open(QIODevice::WriteOnly));
+        QCOMPARE(ld.write("telemetry"), qint64(9));
+        ld.close();
+
+        const QString withoutSidecar =
+            SessionMetadataCache::fingerprint(ldPath);
+        QFile ldx(ldxPath);
+        QVERIFY(ldx.open(QIODevice::WriteOnly));
+        QCOMPARE(ldx.write("markers-1"), qint64(9));
+        ldx.close();
+        const QString firstSidecar = SessionMetadataCache::fingerprint(ldPath);
+        QVERIFY(firstSidecar != withoutSidecar);
+
+        QVERIFY(ldx.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QCOMPARE(ldx.write("markers-2"), qint64(9));
+        ldx.close();
+        QVERIFY(SessionMetadataCache::fingerprint(ldPath) != firstSidecar);
+
+        QVERIFY(QFile::remove(ldxPath));
+        QCOMPARE(SessionMetadataCache::fingerprint(ldPath), withoutSidecar);
+    }
+
     void roundTripsSupportedAndUnsupportedEntries() {
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
@@ -72,8 +102,9 @@ private slots:
             const auto supported = cache.lookup(QStringLiteral("supported"));
             QVERIFY(supported.found);
             QVERIFY(supported.supported);
-            QCOMPARE(supported.metadata.value(QStringLiteral("driver")).toString(),
-                     QStringLiteral("Driver 1"));
+            QCOMPARE(
+                supported.metadata.value(QStringLiteral("driver")).toString(),
+                QStringLiteral("Driver 1"));
 
             const auto media = cache.lookup(QStringLiteral("media"));
             QVERIFY(media.found);

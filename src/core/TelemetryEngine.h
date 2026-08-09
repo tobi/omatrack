@@ -1,7 +1,7 @@
 // Omatrack core telemetry engine.
 //
-// Parsing is delegated to the vendored Rust crates from
-// duckdb_motorsport_telemetry via the C ABI bridge (`omatrack_*` functions).
+// Parsing is delegated to the pinned motorsport-telemetry-rs facade through
+// the C ABI bridge (`omatrack_*` functions).
 // This file ports Omatrack's analysis layer (channel mapping, lap detection,
 // 50 Hz UnifiedLap unification) from MoTecParser.swift on top of the raw
 // channels the bridge exposes.
@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -36,6 +37,16 @@ struct RawChannel {
 // ── lap ─────────────────────────────────────────────────────────────
 
 struct Lap {
+    Lap() = default;
+    Lap(int lapId, double start, double end, double milliseconds,
+        bool isComplete, std::optional<int> originalNumber = std::nullopt)
+        : id(lapId),
+          startTime(start),
+          endTime(end),
+          timeMs(milliseconds),
+          complete(isComplete),
+          sourceNumber(originalNumber) {}
+
     int id = 0;
     double startTime = 0.0;  // seconds from session start
     double endTime = 0.0;
@@ -43,6 +54,8 @@ struct Lap {
     /// True when both bounds are real start/finish crossings. A leading
     /// (out) or trailing (in) fragment of the recording is not a lap.
     bool complete = true;
+    /// Original source lap number when the parser supplied a unique value.
+    std::optional<int> sourceNumber;
 };
 
 // ── unified 50 Hz lap ───────────────────────────────────────────────
@@ -97,10 +110,16 @@ public:
 
     const std::string& path() const { return path_; }
     const std::string& formatName() const { return format_; }
-    double mediaTimeOffsetSec() const { return mediaTimeOffsetSec_; }
+    /// Offset satisfying video presentation time = telemetry file-relative
+    /// time + offset. Absent for sources without embedded-video timing.
+    std::optional<double> videoPresentationOffsetSec() const {
+        return videoPresentationOffsetSec_;
+    }
 
     std::vector<RawChannel>& channels() { return channels_; }
     const std::vector<RawChannel>& channels() const { return channels_; }
+    std::vector<Lap>& sourceLaps() { return sourceLaps_; }
+    const std::vector<Lap>& sourceLaps() const { return sourceLaps_; }
 
     /// Sample a channel at absolute time (seconds) with linear interpolation.
     /// Returns false when out of range.
@@ -110,7 +129,8 @@ public:
     std::map<std::string, int> mapChannels(
         const ChannelOverrides& overrides = {}) const;
 
-    /// Detect laps using the PDS beacon/splits heuristics.
+    /// Return authoritative source-provided laps, falling back to channel
+    /// beacon/counter/time/distance heuristics when the parser has none.
     std::vector<Lap> detectLaps() const;
 
     /// Dominant positive driver code from the mapped numeric channel; 0 if
@@ -129,8 +149,9 @@ private:
     void* handle_ = nullptr;
     std::string path_;
     std::string format_;
-    double mediaTimeOffsetSec_ = 0.0;
+    std::optional<double> videoPresentationOffsetSec_;
     std::vector<RawChannel> channels_;
+    std::vector<Lap> sourceLaps_;
 };
 
 // ── helpers exposed for CLI/tests ───────────────────────────────────
