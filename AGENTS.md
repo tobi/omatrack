@@ -246,7 +246,7 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
 | Layer | Paths | Owns | Must not own |
 |---|---|---|---|
 | Vendor parsers | Git-pinned `tobi/motorsport-telemetry-rs` crates | File validation, memory mapping, chunks, typed decoding, vendor metadata | Qt, UI state, omatrack-specific presentation |
-| C ABI | `third_party/motorsport-telemetry/bridge/` | Extension dispatch, opaque handles, authoritative source lap metadata, bulk decode, stable strings, thread-local errors | Vendor decoding, analysis policy, or exceptions/panics crossing FFI |
+| C ABI | `third_party/motorsport-telemetry/bridge/` | Extension dispatch, opaque handles, format-neutral lap metadata, bulk decode, stable strings, thread-local errors | Vendor decoding, analysis policy, or exceptions/panics crossing FFI |
 | Core | `src/core/TelemetryEngine.*` | Channel mapping, units, lap detection, resampling, `UnifiedLap` | Qt types, QML, settings, network access |
 | Session/store | `src/app/TelemetryStore.*` | Lazy session handles, selection, cached GPS/speed track-station alignment, comparison, viewport, preferences, Track Atlas, corner analysis | Pixel-level paint loops or vendor byte parsing |
 | Renderer | `src/app/TraceView.*` | Frame-budget-sensitive painting and direct trace interaction | Parsing, network access, persistent product state |

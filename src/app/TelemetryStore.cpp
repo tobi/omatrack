@@ -563,10 +563,7 @@ bool SessionHandle::loadSummaryForIndex() {
         TelemetrySource::openIndex(path_.toStdString());
     if (!source) return false;
     captureSourceChannels(*source);
-    // The bounded AiM index deliberately does not construct a full packet or
-    // frame timeline. Exact laps are loaded through the normal open path when
-    // the user opens the recording.
-    populateLaps({});
+    populateLaps(source->detectLaps());
     applyEventDriverId(source->detectDriverId());
     captureGpsLocation(*source);
     return true;

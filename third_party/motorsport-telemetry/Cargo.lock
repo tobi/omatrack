@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "aim-telemetry"
 version = "0.1.0"
-source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=71d92d3b65537b6ab87c702d7219954fb0f52b16#71d92d3b65537b6ab87c702d7219954fb0f52b16"
+source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=b7059fce9a0107a8efea2623e62a256809c20b36#b7059fce9a0107a8efea2623e62a256809c20b36"
 dependencies = [
  "memmap2",
  "motorsport-telemetry-core",
@@ -86,7 +86,7 @@ checksum = "7c74b8349d32d297c9134b8c88677813a227df8f779daa29bfc29c183fe3dca6"
 [[package]]
 name = "cosworth-telemetry"
 version = "0.1.0"
-source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=71d92d3b65537b6ab87c702d7219954fb0f52b16#71d92d3b65537b6ab87c702d7219954fb0f52b16"
+source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=b7059fce9a0107a8efea2623e62a256809c20b36#b7059fce9a0107a8efea2623e62a256809c20b36"
 dependencies = [
  "memmap2",
  "motorsport-telemetry-core",
@@ -197,7 +197,7 @@ dependencies = [
 [[package]]
 name = "motec-telemetry"
 version = "0.1.0"
-source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=71d92d3b65537b6ab87c702d7219954fb0f52b16#71d92d3b65537b6ab87c702d7219954fb0f52b16"
+source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=b7059fce9a0107a8efea2623e62a256809c20b36#b7059fce9a0107a8efea2623e62a256809c20b36"
 dependencies = [
  "memmap2",
  "motorsport-telemetry-core",
@@ -208,7 +208,7 @@ dependencies = [
 [[package]]
 name = "motorsport-telemetry-core"
 version = "0.1.0"
-source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=71d92d3b65537b6ab87c702d7219954fb0f52b16#71d92d3b65537b6ab87c702d7219954fb0f52b16"
+source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=b7059fce9a0107a8efea2623e62a256809c20b36#b7059fce9a0107a8efea2623e62a256809c20b36"
 
 [[package]]
 name = "omatrack-bridge"
@@ -271,7 +271,7 @@ checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
 [[package]]
 name = "racelogic-telemetry"
 version = "0.1.0"
-source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=71d92d3b65537b6ab87c702d7219954fb0f52b16#71d92d3b65537b6ab87c702d7219954fb0f52b16"
+source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=b7059fce9a0107a8efea2623e62a256809c20b36#b7059fce9a0107a8efea2623e62a256809c20b36"
 dependencies = [
  "memmap2",
  "motorsport-telemetry-core",
