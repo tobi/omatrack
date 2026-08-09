@@ -13,44 +13,68 @@ source "$script_dir/runtime-policy.sh"
 
 bundle=$(realpath "$1")
 failures=0
-elf_count=0
+declare -a elf_files=()
+declare -A bundled_elf_names=()
+origin_token=\$ORIGIN
+braced_origin_token=\$\{ORIGIN\}
 
+# Check the packaged dependency names instead of asking the host loader to
+# resolve them. ldd may prefer a runner library even when the same SONAME is
+# present in an AppImage and selected by its packaged loader at runtime.
 while IFS= read -r -d '' candidate; do
   if ! readelf -h "$candidate" >/dev/null 2>&1; then
     continue
   fi
-  ((elf_count += 1))
-  # install-qt-action exports its SDK through LD_LIBRARY_PATH. Clear it so the
-  # audit exercises only the AppImage RPATHs and the permitted host ABI.
-  dependencies=$(env -u LD_LIBRARY_PATH ldd "$candidate" 2>&1 || true)
-  while read -r missing; do
-    [[ -n "$missing" ]] || continue
-    echo "Unresolved Linux dependency: $missing (required by $candidate)" >&2
-    failures=1
-  done < <(awk '/not found/{print $1}' <<<"$dependencies")
+  elf_files+=("$candidate")
+  bundled_elf_names["${candidate##*/}"]=1
+done < <(find "$bundle" \( -type f -o -type l \) -print0)
 
-  while IFS=$'\t' read -r name path; do
-    [[ -n "$name" && -n "$path" ]] || continue
-    if [[ "$path" != "$bundle/"* ]] && \
-      ! omatrack_linux_system_library "$name"; then
-      echo "Unbundled Linux dependency: $name => $path" \
+if ((${#elf_files[@]} == 0)); then
+  echo "No ELF binaries found in $bundle" >&2
+  exit 1
+fi
+
+for candidate in "${elf_files[@]}"; do
+  dynamic=$(readelf -d "$candidate")
+
+  while IFS= read -r dependency; do
+    [[ -n "$dependency" ]] || continue
+    if [[ -z "${bundled_elf_names[$dependency]+present}" ]] && \
+      ! omatrack_linux_system_library "$dependency"; then
+      echo "Unbundled Linux dependency: $dependency" \
         "(required by $candidate)" >&2
       failures=1
     fi
   done < <(
-    awk '
-      $2 == "=>" && $3 ~ /^\// { print $1 "\t" $3 }
-      $1 ~ /^\// {
-        name = $1
-        sub(/^.*\//, "", name)
-        print name "\t" $1
-      }
-    ' <<<"$dependencies"
+    sed -n 's/.*(NEEDED).*Shared library: \[\([^]]*\)\].*/\1/p' \
+      <<<"$dynamic"
   )
-done < <(find "$bundle" -type f -print0)
 
-if ((elf_count == 0)); then
-  echo "No ELF binaries found in $bundle" >&2
-  exit 1
-fi
+  while IFS= read -r search_paths; do
+    if [[ -z "$search_paths" || "$search_paths" == :* || \
+      "$search_paths" == *: || "$search_paths" == *::* ]]; then
+      echo "Unsafe Linux runtime search path: $search_paths" \
+        "(declared by $candidate)" >&2
+      failures=1
+      continue
+    fi
+    IFS=: read -r -a entries <<<"$search_paths"
+    for entry in "${entries[@]}"; do
+      case "$entry" in
+        "$origin_token" | "$origin_token"/* | "$braced_origin_token" | \
+          "$braced_origin_token"/*) ;;
+        *)
+          echo "Unsafe Linux runtime search path: $entry" \
+            "(declared by $candidate)" >&2
+          failures=1
+          ;;
+      esac
+    done
+  done < <(
+    sed -n \
+      's/.*(\(RPATH\|RUNPATH\)).*Library \(rpath\|runpath\): \[\([^]]*\)\].*/\3/p' \
+      <<<"$dynamic"
+  )
+done
+
 exit "$failures"
