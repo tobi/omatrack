@@ -480,7 +480,18 @@ SessionMeta sessionMetaFromFilename(const std::string& stem) {
 
 std::unique_ptr<TelemetrySource> TelemetrySource::open(const std::string& path,
                                                        std::string* error) {
-    void* handle = omatrack_open(path.c_str());
+    return openImpl(path, false, error);
+}
+
+std::unique_ptr<TelemetrySource> TelemetrySource::openIndex(
+    const std::string& path, std::string* error) {
+    return openImpl(path, true, error);
+}
+
+std::unique_ptr<TelemetrySource> TelemetrySource::openImpl(
+    const std::string& path, bool indexOnly, std::string* error) {
+    void* handle = indexOnly ? omatrack_open_index(path.c_str())
+                             : omatrack_open(path.c_str());
     if (!handle) {
         if (error) {
             const char* message = omatrack_last_error();

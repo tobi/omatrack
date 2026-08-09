@@ -190,6 +190,7 @@ public:
 
     bool hasSummary() const { return summaryLoaded_; }
     bool loadSummaryForIndex();
+    bool loadSummaryForOpen();
     QJsonObject metadataForCache() const;
     void adoptLoadedLap(int lapId,
                         std::unique_ptr<omatrack::TelemetrySource> source,

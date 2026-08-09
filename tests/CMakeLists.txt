@@ -57,6 +57,7 @@ target_include_directories(session-metadata-cache-test PRIVATE
 target_link_libraries(session-metadata-cache-test PRIVATE
   Qt6::Test
   Qt6::Core
+  omatrack_rust_bridge
   omatrack_warnings)
 add_test(NAME session-metadata-cache-test COMMAND session-metadata-cache-test)
 set_tests_properties(session-metadata-cache-test PROPERTIES LABELS unit)

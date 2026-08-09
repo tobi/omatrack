@@ -13,9 +13,14 @@
 use motorsport_telemetry_core::TelemetrySource;
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
-use std::os::raw::{c_char, c_void};
+use std::fs::File;
+use std::io::{self, Read};
+use std::os::raw::{c_char, c_int, c_void};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+const CACHE_NAMESPACE: &[u8] = b"omatrack-session-index-blake3-v1\0";
+const FINGERPRINT_LIMIT: u64 = 1024 * 1024;
 
 thread_local! {
     static LAST_ERROR: RefCell<CString> = RefCell::new(CString::new("").unwrap());
@@ -73,16 +78,23 @@ fn as_file<'a>(handle: *mut c_void) -> Option<&'a BridgeFile> {
     }
 }
 
-fn parse_path(open_path: &Path) -> Result<Box<dyn TelemetrySource>, String> {
+fn parse_path(open_path: &Path, index_only: bool) -> Result<Box<dyn TelemetrySource>, String> {
     let ext = open_path
         .extension()
         .and_then(|value| value.to_str())
         .map(|value| value.to_ascii_lowercase())
         .unwrap_or_default();
     match ext.as_str() {
-        "mp4" => aim_telemetry::AimFile::open(open_path)
-            .map(|source| Box::new(source) as Box<dyn TelemetrySource>)
-            .map_err(|error| error.to_string()),
+        "mp4" => {
+            let source = if index_only {
+                aim_telemetry::AimFile::open_index(open_path)
+            } else {
+                aim_telemetry::AimFile::open(open_path)
+            };
+            source
+                .map(|source| Box::new(source) as Box<dyn TelemetrySource>)
+                .map_err(|error| error.to_string())
+        }
         "pds" => cosworth_telemetry::CosworthFile::open(open_path)
             .map(|source| Box::new(source) as Box<dyn TelemetrySource>)
             .map_err(|error| error.to_string()),
@@ -94,6 +106,57 @@ fn parse_path(open_path: &Path) -> Result<Box<dyn TelemetrySource>, String> {
             .map_err(|error| error.to_string()),
         other => Err(format!("unsupported telemetry format: {other:?}")),
     }
+}
+
+fn canonical_or_absolute(path: &Path) -> io::Result<PathBuf> {
+    match path.canonicalize() {
+        Ok(path) => Ok(path),
+        Err(_) if path.is_absolute() => Ok(path.to_path_buf()),
+        Err(_) => Ok(std::env::current_dir()?.join(path)),
+    }
+}
+
+fn add_file_fingerprint(hasher: &mut blake3::Hasher, path: &Path) -> io::Result<()> {
+    let canonical = canonical_or_absolute(path)?;
+    let mut file = File::open(&canonical)?;
+    let size = file.metadata()?.len();
+    hasher.update(canonical.as_os_str().as_encoded_bytes());
+    hasher.update(b"\0");
+    hasher.update(size.to_string().as_bytes());
+    hasher.update(b"\0");
+
+    let mut buffer = [0u8; 64 * 1024];
+    let mut remaining = FINGERPRINT_LIMIT;
+    while remaining > 0 {
+        let read_limit = remaining.min(buffer.len() as u64) as usize;
+        let count = file.read(&mut buffer[..read_limit])?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+        remaining -= count as u64;
+    }
+    Ok(())
+}
+
+fn fingerprint(path: &Path) -> io::Result<blake3::Hash> {
+    let canonical = canonical_or_absolute(path)?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(CACHE_NAMESPACE);
+    hasher.update(b"primary\0");
+    add_file_fingerprint(&mut hasher, &canonical)?;
+
+    if canonical
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("ld"))
+    {
+        hasher.update(b"sidecar\0");
+        if add_file_fingerprint(&mut hasher, &canonical.with_extension("ldx")).is_err() {
+            hasher.update(b"missing\0");
+        }
+    }
+    Ok(hasher.finalize())
 }
 
 fn build_handle(src: Box<dyn TelemetrySource>) -> Box<BridgeFile> {
@@ -140,25 +203,82 @@ fn build_handle(src: Box<dyn TelemetrySource>) -> Box<BridgeFile> {
 /// `path` must be NULL or a valid NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn omatrack_open(path: *const c_char) -> *mut c_void {
-    ffi_guard(stringify!(omatrack_open), std::ptr::null_mut(), || {
+    open_bridge(path, false, stringify!(omatrack_open))
+}
+
+/// Open a telemetry file for a bounded library-index summary.
+///
+/// AiM MP4 files retain channel schema and representative samples while
+/// omitting full lap and video-frame indexes. Other formats use their normal
+/// lightweight parser path.
+///
+/// # Safety
+/// `path` must be NULL or a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_open_index(path: *const c_char) -> *mut c_void {
+    open_bridge(path, true, stringify!(omatrack_open_index))
+}
+
+unsafe fn open_bridge(path: *const c_char, index_only: bool, function: &str) -> *mut c_void {
+    ffi_guard(function, std::ptr::null_mut(), || {
         if path.is_null() {
-            set_error("omatrack_open: null path");
+            set_error(format!("{function}: null path"));
             return std::ptr::null_mut();
         }
         let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
             Ok(s) => s,
             Err(_) => {
-                set_error("omatrack_open: path is not valid UTF-8");
+                set_error(format!("{function}: path is not valid UTF-8"));
                 return std::ptr::null_mut();
             }
         };
-        match parse_path(Path::new(path_str)) {
+        match parse_path(Path::new(path_str), index_only) {
             Ok(src) => Box::into_raw(build_handle(src)) as *mut c_void,
             Err(e) => {
-                set_error(format!("omatrack_open: {e}"));
+                set_error(format!("{function}: {e}"));
                 std::ptr::null_mut()
             }
         }
+    })
+}
+
+/// Compute Omatrack's BLAKE3 cache fingerprint into a 65-byte hex buffer.
+/// Returns 1 on success and 0 on invalid input or an I/O error.
+///
+/// # Safety
+/// `path` must be a valid NUL-terminated C string. `output` must point to at
+/// least `output_len` writable bytes; 65 bytes are required.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_fingerprint(
+    path: *const c_char,
+    output: *mut c_char,
+    output_len: usize,
+) -> c_int {
+    ffi_guard(stringify!(omatrack_fingerprint), 0, || {
+        if path.is_null() || output.is_null() || output_len < 65 {
+            set_error("omatrack_fingerprint: invalid path or output buffer");
+            return 0;
+        }
+        let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
+            Ok(path) => path,
+            Err(_) => {
+                set_error("omatrack_fingerprint: path is not valid UTF-8");
+                return 0;
+            }
+        };
+        let hash = match fingerprint(Path::new(path_str)) {
+            Ok(hash) => hash,
+            Err(error) => {
+                set_error(format!("omatrack_fingerprint: {error}"));
+                return 0;
+            }
+        };
+        let hex = hash.to_hex();
+        unsafe {
+            std::ptr::copy_nonoverlapping(hex.as_bytes().as_ptr(), output.cast::<u8>(), 64);
+            *output.add(64) = 0;
+        }
+        1
     })
 }
 

@@ -21,7 +21,7 @@ public:
     bool save();
 
 private:
-    static constexpr int kSchemaVersion = 3;
+    static constexpr int kSchemaVersion = 4;
     static constexpr qint64 kMaxEntryAgeMs = 90LL * 24 * 60 * 60 * 1000;
 
     QString path_;

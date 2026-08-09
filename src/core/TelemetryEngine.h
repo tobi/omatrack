@@ -106,6 +106,10 @@ class TelemetrySource {
 public:
     static std::unique_ptr<TelemetrySource> open(const std::string& path,
                                                  std::string* error = nullptr);
+    /// Open a bounded metadata view for library indexing. AiM video lap and
+    /// frame indexes are deliberately omitted; normal `open()` remains exact.
+    static std::unique_ptr<TelemetrySource> openIndex(
+        const std::string& path, std::string* error = nullptr);
     ~TelemetrySource();
 
     const std::string& path() const { return path_; }
@@ -146,6 +150,9 @@ public:
     TelemetrySource() = default;
 
 private:
+    static std::unique_ptr<TelemetrySource> openImpl(const std::string& path,
+                                                     bool indexOnly,
+                                                     std::string* error);
     void* handle_ = nullptr;
     std::string path_;
     std::string format_;

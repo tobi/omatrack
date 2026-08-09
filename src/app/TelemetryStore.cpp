@@ -560,6 +560,20 @@ bool SessionHandle::loadSummaryForIndex() {
         return true;
     }
     std::unique_ptr<TelemetrySource> source =
+        TelemetrySource::openIndex(path_.toStdString());
+    if (!source) return false;
+    captureSourceChannels(*source);
+    // The bounded AiM index deliberately does not construct a full packet or
+    // frame timeline. Exact laps are loaded through the normal open path when
+    // the user opens the recording.
+    populateLaps({});
+    applyEventDriverId(source->detectDriverId());
+    captureGpsLocation(*source);
+    return true;
+}
+
+bool SessionHandle::loadSummaryForOpen() {
+    std::unique_ptr<TelemetrySource> source =
         TelemetrySource::open(path_.toStdString());
     if (!source) return false;
     captureSourceChannels(*source);
@@ -1413,12 +1427,20 @@ std::shared_ptr<FileOpenResult> openIndexedFile(const QString& path,
     result->path = path;
     SessionMetadataCache cache(cachePath);
     IndexedSession indexed = indexSession(path, cache);
-    cache.save();
     if (!indexed.handle) {
+        cache.save();
         result->standaloneVideo = indexed.unsupportedVideo;
         return result;
     }
     const LapEntry* lap = bestLap(*indexed.handle);
+    if (!lap && indexed.handle->isVideo() &&
+        indexed.handle->loadSummaryForOpen()) {
+        const QString fingerprint = SessionMetadataCache::fingerprint(path);
+        cache.store(fingerprint, path, true,
+                    indexed.handle->metadataForCache());
+        lap = bestLap(*indexed.handle);
+    }
+    cache.save();
     if (!lap) {
         result->standaloneVideo = indexed.handle->isVideo();
         return result;
@@ -2038,6 +2060,24 @@ void TelemetryStore::startNextFileOpen() {
                     session = result->handle.get();
                     sessions_.push_back(std::move(result->handle));
                     added = true;
+                } else {
+                    const bool hasLoadedLap = std::any_of(
+                        session->laps().cbegin(), session->laps().cend(),
+                        [result](const LapEntry& lap) {
+                            return lap.lapId == result->lap->lapId;
+                        });
+                    if (!hasLoadedLap) {
+                        for (auto& candidate : sessions_) {
+                            if (candidate.get() != session) continue;
+                            const bool wasPrimary = primarySession_ == session;
+                            const bool wasCompare = compareSession_ == session;
+                            candidate = std::move(result->handle);
+                            session = candidate.get();
+                            if (wasPrimary) primarySession_ = session;
+                            if (wasCompare) compareSession_ = session;
+                            break;
+                        }
+                    }
                 }
                 session->adoptLoadedLap(
                     result->lap->lapId, std::move(result->lap->source),

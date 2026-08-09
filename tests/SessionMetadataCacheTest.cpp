@@ -24,6 +24,7 @@ private slots:
 
         const QString original = SessionMetadataCache::fingerprint(firstPath);
         QVERIFY(!original.isEmpty());
+        QCOMPARE(original.size(), 64);
         QVERIFY(original != SessionMetadataCache::fingerprint(secondPath));
 
         QVERIFY(first.open(QIODevice::WriteOnly | QIODevice::Truncate));
