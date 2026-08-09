@@ -280,8 +280,8 @@ jobs:
           ((unresolved == 0))
       - name: Build zip archive
         run: |
-          artifact="$GITHUB_WORKSPACE/Omatrack-${OMATRACK_RELEASE_VERSION}-windows-x86_64.zip"
-          (cd stage && 7z a -tzip "$artifact" .)
+          artifact="Omatrack-${OMATRACK_RELEASE_VERSION}-windows-x86_64.zip"
+          (cd stage && 7z a -tzip "../$artifact" .)
           7z t "$artifact"
       - uses: actions/upload-artifact@v7
         with:
