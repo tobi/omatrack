@@ -172,8 +172,9 @@ private slots:
         QStringList paths;
         const QVariantMap merged =
             omatrack::track_metadata::readHierarchy(child, true, &paths);
-        QCOMPARE(paths.constLast(),
-                 QDir(child).filePath(QStringLiteral("TRACK.yml")));
+        QCOMPARE(QFileInfo(paths.constLast()).canonicalFilePath(),
+                 QFileInfo(QDir(child).filePath(QStringLiteral("TRACK.yml")))
+                     .canonicalFilePath());
         QCOMPARE(merged.value(QStringLiteral("car"))
                      .toMap()
                      .value(QStringLiteral("number"))

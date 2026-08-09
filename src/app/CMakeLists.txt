@@ -121,19 +121,9 @@ target_compile_definitions(omatrack PRIVATE
   OMATRACK_VERSION="${PROJECT_VERSION}"
   $<$<NOT:$<CONFIG:Release>>:QT_QML_DEBUG>)
 
-if(WIN32)
-  install(TARGETS omatrack
-    RUNTIME_DEPENDENCY_SET omatrack_runtime_dependencies
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-  install(RUNTIME_DEPENDENCY_SET omatrack_runtime_dependencies
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    PRE_EXCLUDE_REGEXES "api-ms-win-.*" "ext-ms-win-.*"
-    POST_EXCLUDE_REGEXES ".*[Ww]indows/[Ss]ystem32/.*")
-else()
-  install(TARGETS omatrack
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    BUNDLE DESTINATION .)
-endif()
+install(TARGETS omatrack
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+  BUNDLE DESTINATION .)
 
 if(UNIX AND NOT APPLE)
   install(FILES

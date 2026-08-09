@@ -234,7 +234,44 @@ jobs:
       - name: Test
         run: ctest --preset ci
       - name: Install application tree
-        run: cmake --install build-ci
+        run: |
+          cmake --install build-ci
+
+          # Qt deploys its own runtime and QML imports. Close over the remaining
+          # MinGW dependencies (mpv, yaml, and compiler runtimes) recursively.
+          mkdir -p stage/bin
+          mapfile -d '' binaries < <(
+            find stage -type f \( -iname '*.exe' -o -iname '*.dll' \) -print0
+          )
+          declare -A inspected=()
+          unresolved=0
+          index=0
+          while ((index < ${#binaries[@]})); do
+            binary=${binaries[index++]}
+            if [[ -n "${inspected[$binary]+present}" ]]; then
+              continue
+            fi
+            inspected[$binary]=1
+
+            while IFS= read -r dependency; do
+              [[ -n "$dependency" ]] || continue
+              if find stage -type f -iname "$dependency" -print -quit | grep -q .; then
+                continue
+              fi
+              if [[ -f "/ucrt64/bin/$dependency" ]]; then
+                destination="stage/bin/$dependency"
+                cp "/ucrt64/bin/$dependency" "$destination"
+                binaries+=("$destination")
+                continue
+              fi
+              if [[ -f "/c/Windows/System32/$dependency" ]]; then
+                continue
+              fi
+              echo "Unresolved runtime dependency: $dependency (required by $binary)" >&2
+              unresolved=1
+            done < <(objdump -p "$binary" | awk '/DLL Name:/{print $3}')
+          done
+          ((unresolved == 0))
       - name: Build zip archive
         run: |
           artifact="$GITHUB_WORKSPACE/Omatrack-${OMATRACK_RELEASE_VERSION}-windows-x86_64.zip"
