@@ -5,8 +5,22 @@
 # QML_SINGLETON, so qmllint, qmlls, and qmlcachegen all resolve
 # `import Omatrack` without any extra configuration.
 
-qt_add_executable(omatrack
-  main.cpp)
+if(APPLE)
+  qt_add_executable(omatrack MACOSX_BUNDLE
+    main.cpp)
+else()
+  qt_add_executable(omatrack
+    main.cpp)
+endif()
+
+set_target_properties(omatrack PROPERTIES
+  MACOSX_BUNDLE_BUNDLE_NAME "Omatrack"
+  MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+  MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.tobi.omatrack"
+  MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}")
+if(APPLE)
+  set_target_properties(omatrack PROPERTIES OUTPUT_NAME "Omatrack")
+endif()
 
 if(WIN32)
   configure_file(
@@ -107,9 +121,20 @@ target_compile_definitions(omatrack PRIVATE
   OMATRACK_VERSION="${PROJECT_VERSION}"
   $<$<NOT:$<CONFIG:Release>>:QT_QML_DEBUG>)
 
-install(TARGETS omatrack
-  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-  BUNDLE DESTINATION .)
+if(WIN32)
+  install(TARGETS omatrack
+    RUNTIME_DEPENDENCY_SET omatrack_runtime_dependencies
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  install(RUNTIME_DEPENDENCY_SET omatrack_runtime_dependencies
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    DIRECTORIES ${OMATRACK_TOOLCHAIN_BIN_DIR}
+    PRE_EXCLUDE_REGEXES "api-ms-win-.*" "ext-ms-win-.*"
+    POST_EXCLUDE_REGEXES ".*[Ww]indows/[Ss]ystem32/.*")
+else()
+  install(TARGETS omatrack
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    BUNDLE DESTINATION .)
+endif()
 
 if(UNIX AND NOT APPLE)
   install(FILES
@@ -125,8 +150,12 @@ if(UNIX AND NOT APPLE)
     DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
 endif()
 
-qt_generate_deploy_qml_app_script(
-  TARGET omatrack
-  OUTPUT_SCRIPT omatrack_deploy_script
-  NO_UNSUPPORTED_PLATFORM_ERROR)
-install(SCRIPT ${omatrack_deploy_script})
+# Windows and macOS releases are self-contained application bundles. Linux
+# distribution installs deliberately retain their system Qt dependencies; the
+# release workflow turns that install tree into a portable AppImage.
+if(WIN32 OR APPLE)
+  qt_generate_deploy_qml_app_script(
+    TARGET omatrack
+    OUTPUT_SCRIPT omatrack_deploy_script)
+  install(SCRIPT ${omatrack_deploy_script})
+endif()

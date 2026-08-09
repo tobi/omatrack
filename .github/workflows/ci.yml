@@ -55,6 +55,45 @@ jobs:
       - name: Test
         run: ctest --preset ci
 
+  macos:
+    name: macOS
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install native dependencies
+        run: brew install ccache clang-format libyaml mpv ninja pkg-config
+      - name: Restore Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            build-ci/cargo-target
+          key: cargo-${{ runner.os }}-${{ hashFiles('third_party/motorsport-telemetry/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ hashFiles('third_party/motorsport-telemetry/Cargo.lock') }}-
+            cargo-${{ runner.os }}-
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: ccache-${{ runner.os }}-
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.11.1'
+          cache: true
+      - name: Configure
+        run: cmake --preset ci
+      - name: Build
+        run: cmake --build --preset ci
+      - name: Test
+        run: ctest --preset ci
+
   windows:
     name: Windows
     runs-on: windows-2025

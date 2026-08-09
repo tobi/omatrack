@@ -81,12 +81,21 @@ add_dependencies(omatrack_rust_bridge rust_bridge)
 target_link_directories(omatrack_rust_bridge INTERFACE ${RUST_PROFILE_DIR})
 target_include_directories(omatrack_rust_bridge INTERFACE
   ${RUST_GENERATED_INCLUDE_DIR})
-target_link_options(omatrack_rust_bridge INTERFACE
-  -Wl,--whole-archive -lomatrack_bridge -Wl,--no-whole-archive)
+if(APPLE)
+  # ld64 has no GNU --whole-archive mode. Force-load the C ABI archive so its
+  # exports remain reachable even though the C++ linker sees no symbols inside
+  # the imported Rust target directly.
+  target_link_options(omatrack_rust_bridge INTERFACE
+    "LINKER:-force_load,${RUST_STATICLIB}")
+  target_link_libraries(omatrack_rust_bridge INTERFACE iconv)
+else()
+  target_link_options(omatrack_rust_bridge INTERFACE
+    -Wl,--whole-archive -lomatrack_bridge -Wl,--no-whole-archive)
+endif()
 if(WIN32)
   target_link_libraries(omatrack_rust_bridge INTERFACE
     ws2_32 userenv advapi32 bcrypt ntdll)
-else()
+elseif(NOT APPLE)
   target_link_libraries(omatrack_rust_bridge INTERFACE pthread dl m)
 endif()
 

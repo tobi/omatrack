@@ -9,7 +9,8 @@
 
 Omatrack is a Qt 6 workstation for drivers and engineers who need one analysis workflow across heterogeneous logger formats. It normalizes every source into the same 50 Hz lap model, so traces, delta, cursor readouts, corner analysis, and synchronized onboard video use one analytical truth.
 
-Omatrack is under active development. Linux is the primary desktop target; Windows is built and tested in CI.
+Omatrack is under active development. Linux is the primary desktop target;
+Linux, macOS, and Windows are built and tested in CI.
 
 ## Screenshots
 
@@ -101,6 +102,15 @@ pacman -S --needed git \
   mingw-w64-ucrt-x86_64-rust
 ```
 
+### macOS
+
+Install the native dependencies with Homebrew, then install Qt 6.5 or newer
+from Qt or Homebrew:
+
+```sh
+brew install cmake ninja pkg-config mpv libyaml rust
+```
+
 ## Build and run
 
 ```sh
@@ -111,7 +121,8 @@ cmake --build --preset release
 ./build/omatrack /path/to/telemetry-directory
 ```
 
-On Windows, run `./build/omatrack.exe` from the UCRT64 shell.
+On macOS, run `./build/Omatrack.app/Contents/MacOS/Omatrack`. On Windows, run
+`./build/omatrack.exe` from the UCRT64 shell.
 
 Open a single supported file with the file picker or pass its containing directory. Configuration is stored in `$XDG_CONFIG_HOME/omatrack/omatrack.yml` on Linux, falling back to `~/.config/omatrack/omatrack.yml`.
 An existing pre-rename `racecraft.yml`, legacy `QSettings` preferences, and Track Atlas cache are imported once; legacy files remain untouched as a backup.
@@ -132,7 +143,10 @@ An existing pre-rename `racecraft.yml`, legacy `QSettings` preferences, and Trac
 cmake --install build --prefix "$HOME/.local"
 ```
 
-The install target provides `omatrack`, `omatrack-cli`, Linux desktop/AppStream/MIME metadata, the application icon, and license notices. Use a system prefix or packaging root when building a distribution package.
+The install target provides `omatrack`, `omatrack-cli`, platform deployment
+metadata, and license notices. Tagged releases publish a Linux AppImage, a
+macOS disk image, and a Windows zip from GitHub Actions. The macOS build is
+ad-hoc signed but not Apple-notarized.
 
 ## Privacy and network behavior
 
@@ -148,7 +162,7 @@ ctest --preset release
 cmake --build --preset release --target lint
 ```
 
-The test suite covers the Rust integration bridge, C++ normalization and comparison behavior, formatting, Rust lints, and QML invariants. Parser-crate tests live upstream in `motorsport-telemetry-rs`. CI runs the release build and tests on Linux and Windows.
+The test suite covers the Rust integration bridge, C++ normalization and comparison behavior, formatting, Rust lints, and QML invariants. Parser-crate tests live upstream in `motorsport-telemetry-rs`. CI runs the release build and tests on Linux, macOS, and Windows.
 
 Update all upstream parser crates to the same commit and regenerate the lockfile with:
 

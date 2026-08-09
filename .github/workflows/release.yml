@@ -1,0 +1,278 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linux:
+    name: Linux x86_64
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      APPIMAGE_EXTRACT_AND_RUN: '1'
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    steps:
+      - uses: actions/checkout@v5
+      - name: Read and validate release version
+        shell: bash
+        run: |
+          version=$(sed -n 's/project(omatrack VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)
+          test -n "$version"
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            test "$GITHUB_REF_NAME" = "v$version"
+          fi
+          echo "OMATRACK_RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            ccache clang-format libmpv-dev libyaml-dev ninja-build pkg-config
+      - name: Restore Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            build-ci/cargo-target
+          key: release-cargo-${{ runner.os }}-${{ hashFiles('third_party/motorsport-telemetry/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            release-cargo-${{ runner.os }}-${{ hashFiles('third_party/motorsport-telemetry/Cargo.lock') }}-
+            release-cargo-${{ runner.os }}-
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: release-ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: release-ccache-${{ runner.os }}-
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.11.1'
+          cache: true
+      - name: Configure
+        run: cmake --preset ci -DCMAKE_INSTALL_PREFIX=/usr
+      - name: Build
+        run: cmake --build --preset ci
+      - name: Test
+        run: ctest --preset ci
+      - name: Install application tree
+        run: DESTDIR="$GITHUB_WORKSPACE/AppDir" cmake --install build-ci
+      - name: Download pinned AppImage deployment tools
+        run: |
+          mkdir -p release-tools
+          curl --fail --location --output release-tools/linuxdeploy.AppImage \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          curl --fail --location --output release-tools/linuxdeploy-plugin-qt.AppImage \
+            https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          echo '421ca71d5c69ea97c6309276232990d43df1dcece0edfaa26bbf926ff96ed12e  release-tools/linuxdeploy.AppImage' | sha256sum --check
+          echo 'be1b7e166bf9975cfb694ebe6759ba40502ffc6196440d3e64aa90c4dbd67e9f  release-tools/linuxdeploy-plugin-qt.AppImage' | sha256sum --check
+          chmod +x release-tools/linuxdeploy.AppImage release-tools/linuxdeploy-plugin-qt.AppImage
+      - name: Build AppImage
+        env:
+          LINUXDEPLOY_PLUGIN_QT: ${{ github.workspace }}/release-tools/linuxdeploy-plugin-qt.AppImage
+          QML_SOURCES_PATHS: ${{ github.workspace }}/src/app
+        run: |
+          release-tools/linuxdeploy.AppImage \
+            --appdir AppDir \
+            --desktop-file packaging/linux/io.github.tobi.omatrack.desktop \
+            --icon-file assets/omatrack.svg \
+            --executable AppDir/usr/bin/omatrack \
+            --executable AppDir/usr/bin/omatrack-cli \
+            --plugin qt \
+            --output appimage
+          artifact="Omatrack-${OMATRACK_RELEASE_VERSION}-linux-x86_64.AppImage"
+          mv ./Omatrack-*.AppImage "$artifact"
+          chmod +x "$artifact"
+          "./$artifact" --appimage-version
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-linux
+          path: Omatrack-${{ env.OMATRACK_RELEASE_VERSION }}-linux-x86_64.AppImage
+          if-no-files-found: error
+
+  macos:
+    name: macOS arm64
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    steps:
+      - uses: actions/checkout@v5
+      - name: Read and validate release version
+        shell: bash
+        run: |
+          version=$(sed -n 's/project(omatrack VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)
+          test -n "$version"
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            test "$GITHUB_REF_NAME" = "v$version"
+          fi
+          echo "OMATRACK_RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Install native dependencies
+        run: brew install ccache clang-format dylibbundler libyaml mpv ninja pkg-config
+      - name: Restore Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            build-ci/cargo-target
+          key: release-cargo-${{ runner.os }}-${{ hashFiles('third_party/motorsport-telemetry/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            release-cargo-${{ runner.os }}-${{ hashFiles('third_party/motorsport-telemetry/Cargo.lock') }}-
+            release-cargo-${{ runner.os }}-
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: release-ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: release-ccache-${{ runner.os }}-
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.11.1'
+          cache: true
+      - name: Configure
+        run: cmake --preset ci -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/stage"
+      - name: Build
+        run: cmake --build --preset ci
+      - name: Test
+        run: ctest --preset ci
+      - name: Install and bundle application
+        run: |
+          dylibbundler \
+            --bundle-deps \
+            --fix-file build-ci/Omatrack.app/Contents/MacOS/Omatrack \
+            --dest-dir build-ci/Omatrack.app/Contents/Frameworks \
+            --install-path '@executable_path/../Frameworks/' \
+            --ignore "$QT_ROOT_DIR" \
+            --overwrite-files
+          cmake --install build-ci
+          codesign --force --deep --sign - stage/Omatrack.app
+          codesign --verify --deep --strict stage/Omatrack.app
+      - name: Build disk image
+        run: |
+          artifact="Omatrack-${OMATRACK_RELEASE_VERSION}-macOS-arm64.dmg"
+          hdiutil create \
+            -volname "Omatrack ${OMATRACK_RELEASE_VERSION}" \
+            -srcfolder stage/Omatrack.app \
+            -format UDZO \
+            -ov "$artifact"
+          hdiutil verify "$artifact"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-macos
+          path: Omatrack-${{ env.OMATRACK_RELEASE_VERSION }}-macOS-arm64.dmg
+          if-no-files-found: error
+
+  windows:
+    name: Windows x86_64
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install MSYS2 toolchain and dependencies
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-clang-tools-extra
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-ccache
+            mingw-w64-ucrt-x86_64-libyaml
+            mingw-w64-ucrt-x86_64-mpv
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-qt6-base
+            mingw-w64-ucrt-x86_64-qt6-declarative
+            mingw-w64-ucrt-x86_64-rust
+      - name: Read and validate release version
+        run: |
+          version=$(sed -n 's/project(omatrack VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)
+          test -n "$version"
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            test "$GITHUB_REF_NAME" = "v$version"
+          fi
+          echo "OMATRACK_RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Restore Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            build-ci/cargo-target
+          key: release-cargo-${{ runner.os }}-${{ hashFiles('third_party/motorsport-telemetry/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            release-cargo-${{ runner.os }}-${{ hashFiles('third_party/motorsport-telemetry/Cargo.lock') }}-
+            release-cargo-${{ runner.os }}-
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: release-ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: release-ccache-${{ runner.os }}-
+      - name: Configure
+        run: cmake --preset ci -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/stage"
+      - name: Build
+        run: cmake --build --preset ci
+      - name: Test
+        run: ctest --preset ci
+      - name: Install application tree
+        run: cmake --install build-ci
+      - name: Build zip archive
+        run: |
+          artifact="$GITHUB_WORKSPACE/Omatrack-${OMATRACK_RELEASE_VERSION}-windows-x86_64.zip"
+          (cd stage && 7z a -tzip "$artifact" .)
+          7z t "$artifact"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-windows
+          path: Omatrack-${{ env.OMATRACK_RELEASE_VERSION }}-windows-x86_64.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    if: github.ref_type == 'tag'
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: release-assets
+        run: sha256sum Omatrack-* > SHA256SUMS.txt
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: Omatrack 0.9
+          body: |
+            Omatrack 0.9 aligns telemetry, traces, delta, and primary/reference
+            onboard video through one cached GPS/speed track-station map.
+
+            Downloads are unsigned development builds. The macOS image is
+            ad-hoc signed but is not Apple-notarized.
+          files: release-assets/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          make_latest: true
