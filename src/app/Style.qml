@@ -18,6 +18,7 @@ QtObject {
     readonly property color backgroundColor: Theme.colors.background || style.desktopPalette.window
     readonly property color blueColor: Theme.colors.blue || "#7fbbb3"
     readonly property color borderColor: Theme.colors.muted || style.desktopPalette.mid
+    readonly property color brakeTelemetryColor: "#e67e80"
 
     // Offered when picking a trace color; deliberately theme-independent so a
     // saved channel color keeps meaning across desktop themes.
@@ -44,12 +45,14 @@ QtObject {
     readonly property color mutedTextColor: Theme.colors.light_foreground || style.desktopPalette.midlight
     readonly property color orangeColor: Theme.colors.orange || "#e09d7f"
     readonly property color redColor: Theme.colors.red || "#e67e80"
-    readonly property color referenceSelectionColor: Qt.rgba(224 / 255, 157 / 255, 127 / 255, 0.14)
+    readonly property color referenceSelectionColor: Qt.rgba(style.orangeColor.r, style.orangeColor.g, style.orangeColor.b, 0.14)
     readonly property int scrollBarWidth: 6
     readonly property color selectionColor: Theme.colors.selection || style.desktopPalette.highlight
     readonly property int smallControlHeight: 20
     readonly property int smallFontSize: 9
+    readonly property color steeringTelemetryColor: "#dbbc7f"
     readonly property color surfaceColor: Theme.colors.lighter_background || style.desktopPalette.button
+    readonly property color throttleTelemetryColor: "#a7c080"
     readonly property color traceBackgroundColor: Theme.colors.darker_background || style.desktopPalette.base
     readonly property string uiFontFamily: "Geist"
 

@@ -12,12 +12,13 @@ class VideoTelemetryHud : public QQuickPaintedItem {
     QML_ELEMENT
     Q_PROPERTY(
         TelemetryStore* store READ store WRITE setStore NOTIFY storeChanged)
-    Q_PROPERTY(QColor primaryColor MEMBER primaryColor_ NOTIFY paletteChanged)
+    Q_PROPERTY(QColor throttleColor MEMBER throttleColor_ NOTIFY paletteChanged)
     Q_PROPERTY(QColor compareColor MEMBER compareColor_ NOTIFY paletteChanged)
     Q_PROPERTY(
         QColor foregroundColor MEMBER foregroundColor_ NOTIFY paletteChanged)
     Q_PROPERTY(QColor mutedColor MEMBER mutedColor_ NOTIFY paletteChanged)
     Q_PROPERTY(QColor brakeColor MEMBER brakeColor_ NOTIFY paletteChanged)
+    Q_PROPERTY(QColor steeringColor MEMBER steeringColor_ NOTIFY paletteChanged)
     Q_PROPERTY(
         QColor backgroundColor MEMBER backgroundColor_ NOTIFY paletteChanged)
     Q_PROPERTY(
@@ -36,11 +37,12 @@ signals:
 
 private:
     TelemetryStore* store_ = nullptr;
-    QColor primaryColor_ = QColor(QStringLiteral("#32d74b"));
+    QColor throttleColor_ = QColor(QStringLiteral("#a7c080"));
     QColor compareColor_ = QColor(QStringLiteral("#e09d7f"));
     QColor foregroundColor_ = Qt::white;
     QColor mutedColor_ = QColor(QStringLiteral("#9da9a0"));
-    QColor brakeColor_ = QColor(QStringLiteral("#ff2020"));
+    QColor brakeColor_ = QColor(QStringLiteral("#e67e80"));
+    QColor steeringColor_ = QColor(QStringLiteral("#dbbc7f"));
     QColor backgroundColor_ = QColor(0, 0, 0, 218);
     QString monoFontFamily_ = QStringLiteral("Geist Mono");
 };

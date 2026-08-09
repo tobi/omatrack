@@ -4744,15 +4744,66 @@ QString TelemetryStore::primaryLabel() const {
 
 QString TelemetryStore::primaryDetail() const {
     if (!primarySession_) return QString();
-    QString s = driverDisplay(primarySession_);
+    QStringList details{driverDisplay(primarySession_)};
+    const auto meaningful = [](const QString& input) {
+        const QString value = input.trimmed();
+        const QString folded = value.toCaseFolded();
+        return !value.isEmpty() && folded != QStringLiteral("unknown") &&
+               folded != QStringLiteral("n/a") && value != QStringLiteral("—");
+    };
+    const auto appendDetail = [&details, &meaningful](const QString& value) {
+        const QString trimmed = value.trimmed();
+        if (meaningful(trimmed) && !details.contains(trimmed))
+            details.append(trimmed);
+    };
     if (primaryLap_ >= 0) {
         for (const auto& l : primarySession_->laps())
             if (l.lapId == primaryLap_) {
-                s += " · " + l.label + " " + l.timeText;
+                appendDetail(l.label + QStringLiteral(" ") + l.timeText);
                 break;
             }
     }
-    return s;
+
+    const QVariantMap metadata =
+        recordingMetadataForPath(primarySession_->path(), recordingMetadata_);
+    const auto metadataOr = [&metadata](const QStringList& path,
+                                        const QString& fallback) {
+        const QString value = nestedText(metadata, path).trimmed();
+        return value.isEmpty() ? fallback.trimmed() : value;
+    };
+    const QString event = metadataOr({QStringLiteral("event")}, QString());
+    const QString series = metadataOr({QStringLiteral("series")}, QString());
+
+    const QString carNumber =
+        metadataOr({QStringLiteral("car"), QStringLiteral("number")},
+                   primarySession_->carNumber());
+    const QString carClass =
+        metadataOr({QStringLiteral("car"), QStringLiteral("class")},
+                   primarySession_->carClass());
+    QStringList car;
+    if (meaningful(primarySession_->vehicle()))
+        car.append(primarySession_->vehicle().trimmed());
+    if (meaningful(carNumber))
+        car.append(carNumber.startsWith(QLatin1Char('#'))
+                       ? carNumber
+                       : QStringLiteral("#") + carNumber);
+    if (meaningful(carClass)) car.append(carClass);
+    appendDetail(car.join(QStringLiteral(" ")));
+    appendDetail(event);
+    if (series != event) appendDetail(series);
+
+    QString recorded = meaningful(primarySession_->date())
+                           ? primarySession_->date().trimmed()
+                           : QString();
+    const QString sessionTime = primarySession_->sessionTime().trimmed();
+    if (meaningful(sessionTime) && !recorded.contains(sessionTime))
+        recorded += (recorded.isEmpty() ? QString() : QStringLiteral(" ")) +
+                    sessionTime;
+    appendDetail(recorded);
+
+    details.removeAll(QString());
+    details.removeDuplicates();
+    return details.join(QStringLiteral("  ·  "));
 }
 
 QString TelemetryStore::primaryDriverName() const {
@@ -4761,6 +4812,16 @@ QString TelemetryStore::primaryDriverName() const {
 
 QString TelemetryStore::primaryDriverMappingKey() const {
     return primarySession_ ? primarySession_->driverMappingKey() : QString();
+}
+
+QString TelemetryStore::primaryMetadataPath() const {
+    if (!primarySession_) return {};
+    if (primarySession_->isVideo()) return primarySession_->path();
+    return QFileInfo(primarySession_->path()).absolutePath();
+}
+
+bool TelemetryStore::primaryMetadataFolderScope() const {
+    return primarySession_ && !primarySession_->isVideo();
 }
 
 QString TelemetryStore::compareLabel() const {

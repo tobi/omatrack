@@ -150,10 +150,15 @@ Pane {
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: 34
-            border.color: Style.borderColor
-            border.width: 1
             color: Style.surfaceColor
 
+            Rectangle {
+                anchors.bottom: parent.bottom
+                anchors.left: parent.left
+                anchors.right: parent.right
+                color: Style.borderColor
+                height: 1
+            }
             RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: 8

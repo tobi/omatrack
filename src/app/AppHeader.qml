@@ -22,7 +22,7 @@ ToolBar {
 
     signal channelsRequested
     signal cornersRequested
-    signal driverRenameRequested(string key, string name)
+    signal metadataRequested(string path, bool folderScope)
     signal openTelemetryRequested
     signal openVideoRequested
     signal preferencesRequested
@@ -72,6 +72,8 @@ ToolBar {
             onClicked: appBar.sidebarToggleRequested()
         }
         Label {
+            Layout.leftMargin: 4
+            Layout.rightMargin: 10
             color: Style.accentColor
             font.bold: true
             font.family: Style.monoFontFamily
@@ -119,20 +121,6 @@ ToolBar {
                     text: Store.primaryDriverName
                     visible: headerDriverName.text !== ""
                 }
-                ToolButton {
-                    id: headerDriverEdit
-
-                    Layout.preferredHeight: 20
-                    Layout.preferredWidth: 20
-                    ToolTip.text: "Rename driver"
-                    ToolTip.visible: hovered
-                    font.pixelSize: 10
-                    objectName: "headerDriverEdit"
-                    text: "✎"
-                    visible: Store.primaryDriverMappingKey !== ""
-
-                    onClicked: appBar.driverRenameRequested(Store.primaryDriverMappingKey, Store.primaryDriverName)
-                }
                 Label {
                     id: headerDetail
 
@@ -149,6 +137,19 @@ ToolBar {
                     visible: headerDetail.text !== ""
                 }
             }
+        }
+        ToolButton {
+            Layout.preferredHeight: 28
+            Layout.preferredWidth: appBar.width >= 900 ? implicitWidth : 30
+            ToolTip.text: Store.primaryMetadataFolderScope ? "Edit metadata inherited by this session" : "Edit recording metadata"
+            ToolTip.visible: hovered
+            display: appBar.width >= 900 ? AbstractButton.TextBesideIcon : AbstractButton.IconOnly
+            icon.name: "document-properties-symbolic"
+            objectName: "headerMetadataEdit"
+            text: "Metadata"
+            visible: Store.primaryMetadataPath !== ""
+
+            onClicked: appBar.metadataRequested(Store.primaryMetadataPath, Store.primaryMetadataFolderScope)
         }
         Label {
             id: readout

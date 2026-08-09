@@ -38,6 +38,7 @@ ApplicationWindow {
     property real referenceSyncError: 0
     property real referenceSyncLastPrimary: -1
     property real referenceSyncLastTarget: -1
+    property int referenceSyncPauseAttempts: 0
     property string referenceSyncState: "WAIT"
     property bool sidebarVisible: true
     readonly property bool standaloneVideoActive: root.videoVisible && !root.telemetryVideoActive
@@ -147,6 +148,35 @@ ApplicationWindow {
         if (source.toString() === "" || videoPlayer.source.toString() === source.toString())
             return;
         videoPlayer.openMedia(source);
+    }
+    function realignPausedVideos(): void {
+        const ref = root.videoReference();
+        if (!root.dualVideo || !videoPlayer.loaded || !videoPlayer.paused || !ref || !ref.loaded)
+            return;
+
+        // Use the primary player's final stopped time as truth. The store maps
+        // that station onto the reference with its shared GPS/speed alignment.
+        Store.setCursorFromVideoTime(videoPlayer.position);
+        const target = Store.compareVideoTime;
+        root.referenceSyncPauseAttempts = 0;
+        if (target <= 0) {
+            ref.playbackRate = 1;
+            root.referenceSyncState = "NO MAP";
+            return;
+        }
+
+        ref.paused = true;
+        ref.playbackRate = 1;
+        root.referenceSyncBaseRate = Store.comparisonVideoRate;
+        root.referenceSyncError = target - ref.position;
+        root.referenceSyncLastPrimary = videoPlayer.position;
+        root.referenceSyncLastTarget = target;
+        root.referenceSyncPauseAttempts = 1;
+        root.referenceSyncState = "ALIGNING";
+        // A pause is an explicit synchronization checkpoint, so request an
+        // exact seek even when both reported positions are already close.
+        ref.seek(target);
+        pausedVideoAlignmentTimer.restart();
     }
     function refreshDeltaTraceVisible(): void {
         root.deltaTraceVisible = Store.channelVisible("delta");
@@ -336,6 +366,37 @@ ApplicationWindow {
         Store.clearCompare();
         Store.selectLap(key, lap.lapId);
     }
+    function verifyPausedVideoAlignment(): void {
+        const ref = root.videoReference();
+        if (!root.dualVideo || !videoPlayer.paused || !ref || !ref.loaded)
+            return;
+        if (ref.seeking) {
+            pausedVideoAlignmentTimer.restart();
+            return;
+        }
+
+        // time-pos can advance once more while the pause command settles.
+        // Re-sample it before checking the reference player's exact seek.
+        Store.setCursorFromVideoTime(videoPlayer.position);
+        const target = Store.compareVideoTime;
+        if (target <= 0) {
+            root.referenceSyncState = "NO MAP";
+            return;
+        }
+        const error = target - ref.position;
+        root.referenceSyncError = error;
+        root.referenceSyncLastPrimary = videoPlayer.position;
+        root.referenceSyncLastTarget = target;
+        if (Math.abs(error) > 0.025 && root.referenceSyncPauseAttempts < 3) {
+            ++root.referenceSyncPauseAttempts;
+            root.referenceSyncState = "ALIGNING";
+            ref.seek(target);
+            pausedVideoAlignmentTimer.restart();
+            return;
+        }
+        root.referenceSyncPauseAttempts = 0;
+        root.referenceSyncState = Math.abs(error) <= 0.05 ? "LOCKED" : "BEST";
+    }
     function videoFileName(source) {
         const text = source.toString();
         if (text === "")
@@ -405,7 +466,12 @@ ApplicationWindow {
             cornerWindow.show();
             cornerWindow.requestActivate();
         }
-        onDriverRenameRequested: (key, name) => root.openDriverRename(key, name)
+        onMetadataRequested: (path, folderScope) => {
+            if (folderScope)
+                videoMetadataDialog.openForFolder(path);
+            else
+                videoMetadataDialog.openForVideo(path);
+        }
         onOpenTelemetryRequested: drawer.open()
         onOpenVideoRequested: videoFileDialog.open()
         onPreferencesRequested: {
@@ -462,6 +528,13 @@ ApplicationWindow {
 
             onTriggered: root.syncReferenceVideo(false)
         }
+        Timer {
+            id: pausedVideoAlignmentTimer
+
+            interval: 120
+
+            onTriggered: root.verifyPausedVideoAlignment()
+        }
         RowLayout {
             anchors.fill: parent
             spacing: root.dualVideo && (!root.videoFullscreen || root.videoFullscreenLayout === 0) ? 2 : 0
@@ -489,6 +562,8 @@ ApplicationWindow {
                     onPositionChanged: {
                         if (root.telemetryVideoActive && loaded && !paused)
                             Store.setCursorFromVideoTime(position);
+                        else if (root.dualVideo && loaded && paused && root.referenceSyncPauseAttempts > 0)
+                            pausedVideoAlignmentTimer.restart();
                     }
                 }
                 Label {
@@ -556,7 +631,10 @@ ApplicationWindow {
                                 if (loaded)
                                     Qt.callLater(() => {
                                         paused = videoPlayer.paused;
-                                        root.syncReferenceVideo(true);
+                                        if (videoPlayer.paused)
+                                            root.realignPausedVideos();
+                                        else
+                                            root.syncReferenceVideo(true);
                                     });
                             }
                         }
@@ -579,7 +657,13 @@ ApplicationWindow {
                         if (!ref || !ref.loaded)
                             return;
                         ref.paused = videoPlayer.paused;
-                        root.syncReferenceVideo(!videoPlayer.paused);
+                        if (videoPlayer.paused)
+                            root.realignPausedVideos();
+                        else {
+                            pausedVideoAlignmentTimer.stop();
+                            root.referenceSyncPauseAttempts = 0;
+                            root.syncReferenceVideo(true);
+                        }
                     }
 
                     target: videoPlayer
@@ -685,6 +769,20 @@ ApplicationWindow {
             z: 2
 
             onClicked: root.videoToggleMuted()
+        }
+        ToolButton {
+            ToolTip.text: "Close video"
+            ToolTip.visible: hovered
+            anchors.margins: 6
+            anchors.right: parent.right
+            anchors.top: parent.top
+            height: 28
+            objectName: "videoCloseButton"
+            text: "×"
+            width: 32
+            z: 3
+
+            onClicked: root.hideVideo()
         }
         Rectangle {
             id: videoControls
@@ -1096,7 +1194,7 @@ ApplicationWindow {
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: visible ? root.filmstripSessions.length * 33 + 9 : 0
-            color: Style.darkBackgroundColor
+            color: Style.traceBackgroundColor
             visible: root.filmstripSessions.length > 0
 
             Column {
@@ -1123,8 +1221,7 @@ ApplicationWindow {
                         }
                         property var strip: modelData
 
-                        border.color: Style.borderColor
-                        color: strip.reference ? Qt.rgba(224 / 255, 157 / 255, 127 / 255, 0.06) : "transparent"
+                        color: strip.reference ? Qt.tint(Style.surfaceColor, Qt.rgba(Style.orangeColor.r, Style.orangeColor.g, Style.orangeColor.b, 0.08)) : Style.surfaceColor
                         height: 30
                         radius: 4
                         width: parent.width
@@ -1187,7 +1284,7 @@ ApplicationWindow {
                                             anchors.verticalCenter: proportionalLapRow.verticalCenter
                                             border.color: sessionStrip.strip.reference ? Style.orangeColor : Style.accentColor
                                             border.width: proportionalLap.selectedLap ? 1 : 0
-                                            color: proportionalLap.selectedLap ? Style.selectionColor : proportionalLapMouse.containsMouse ? Style.surfaceColor : Style.backgroundColor
+                                            color: proportionalLap.selectedLap ? Style.selectionColor : proportionalLapMouse.containsMouse ? Style.backgroundColor : Style.traceBackgroundColor
                                             height: proportionalLapRow.height - 8
                                             radius: 3
                                             width: Math.max(1, (proportionalLapLane.width - Math.max(0, sessionStrip.strip.laps.length - 1) * 3) * proportionalLap.modelData.timeMs / sessionStrip.strip.totalTimeMs)
@@ -1368,78 +1465,14 @@ ApplicationWindow {
 
                         onActivated: root.videoSetFullscreen(false)
                     }
-                    ColumnLayout {
+                    // Docked home of videoStage; the stage itself is at
+                    // window scope so it can move fullscreen without
+                    // rebuilding either libmpv render context.
+                    Item {
+                        id: videoStageSlot
+
                         anchors.fill: parent
-                        spacing: 0
-
-                        Rectangle {
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 34
-                            border.color: Style.borderColor
-                            color: Style.surfaceColor
-
-                            RowLayout {
-                                anchors.fill: parent
-                                anchors.leftMargin: 8
-                                anchors.rightMargin: 4
-                                spacing: 6
-
-                                Label {
-                                    color: Style.accentColor
-                                    font.bold: true
-                                    font.family: Style.monoFontFamily
-                                    font.letterSpacing: 0.8
-                                    font.pixelSize: 9
-                                    text: "VIDEO"
-                                }
-                                Label {
-                                    Layout.fillWidth: true
-                                    Layout.minimumWidth: 0
-                                    Layout.preferredWidth: 1
-                                    clip: true
-                                    color: Style.foregroundColor
-                                    elide: Text.ElideMiddle
-                                    font.pixelSize: 10
-                                    text: videoPlayer.title || "No video loaded"
-                                }
-                                Label {
-                                    color: videoPlayer.seeking ? Style.yellowColor : Style.mutedTextColor
-                                    font.family: Style.monoFontFamily
-                                    font.pixelSize: 8
-                                    text: videoPlayer.seeking ? "SEEK" : videoPlayer.loaded ? (videoPlayer.paused ? "PAUSED" : "PLAYING") : ""
-                                    visible: videoPane.width >= 470
-                                }
-                                ToolButton {
-                                    ToolTip.text: "Open another video"
-                                    ToolTip.visible: hovered
-                                    text: "Open"
-                                    visible: videoPane.width >= 410
-
-                                    onClicked: videoFileDialog.open()
-                                }
-                                ToolButton {
-                                    Layout.preferredWidth: 28
-                                    ToolTip.text: "Close video"
-                                    ToolTip.visible: hovered
-                                    implicitWidth: 28
-                                    leftPadding: 2
-                                    rightPadding: 2
-                                    text: "×"
-
-                                    onClicked: root.hideVideo()
-                                }
-                            }
-                        }
-                        // Docked home of videoStage; the stage itself is at
-                        // window scope so it can move fullscreen without
-                        // rebuilding either libmpv render context.
-                        Item {
-                            id: videoStageSlot
-
-                            Layout.fillHeight: true
-                            Layout.fillWidth: true
-                            objectName: "videoStageSlot"
-                        }
+                        objectName: "videoStageSlot"
                     }
                 }
                 Rectangle {
@@ -1458,6 +1491,7 @@ ApplicationWindow {
                         id: trace
 
                         anchors.fill: parent
+                        backgroundColor: Style.traceBackgroundColor
                         focus: true
                         objectName: "traceView"
                         store: Store

@@ -26,7 +26,6 @@ constexpr double kLabelW = 62.0;
 constexpr int kCursorSamplesPerStep = 1;
 constexpr qint64 kHoverFrameMs = 16;
 
-const QColor kTraceBackground("#181d20");
 const QColor kGrid("#343f44");
 const QColor kGridStrong("#475258");
 const QColor kForeground("#d3c6aa");
@@ -71,6 +70,13 @@ TraceView::TraceView(QQuickItem* parent) : QQuickPaintedItem(parent) {
     setOpaquePainting(true);
     setRenderTarget(QQuickPaintedItem::FramebufferObject);
     rebuildChannelSpecs();
+}
+
+void TraceView::setBackgroundColor(const QColor& color) {
+    if (!color.isValid() || backgroundColor_ == color) return;
+    backgroundColor_ = color;
+    update();
+    emit backgroundColorChanged();
 }
 
 void TraceView::setStore(TelemetryStore* store) {
@@ -246,7 +252,7 @@ void TraceView::paintStatic(QPainter* painter) {
     cursorTop_ = 0.0;
     cursorBottom_ = 0.0;
     painter->setRenderHint(QPainter::Antialiasing, true);
-    painter->fillRect(boundingRect(), kTraceBackground);
+    painter->fillRect(boundingRect(), backgroundColor_);
 
     if (!store_) {
         painter->setPen(kDim);
@@ -442,7 +448,7 @@ void TraceView::paintCursorOverlay(QPainter* painter) {
             valueText = QString::number(value, 'f', 2);
 
         const QRectF valueRect(0, lane.rect.top() + 15, kLabelW - 6, 12);
-        painter->fillRect(valueRect, kTraceBackground);
+        painter->fillRect(valueRect, backgroundColor_);
         QFont valueFont("Geist Mono");
         valueFont.setPointSizeF(7.0);
         valueFont.setBold(true);
@@ -536,7 +542,7 @@ void TraceView::paintSelectionOverlay(QPainter* painter) {
     labelX = std::clamp(labelX, 2.0, std::max(2.0, width() - pillWidth - 2));
     const QRectF pill(labelX, cursorTop_ + 6, pillWidth, pillHeight);
     painter->setPen(QPen(alpha(labelColor, 170), 1));
-    painter->setBrush(alpha(kTraceBackground, 238));
+    painter->setBrush(alpha(backgroundColor_, 238));
     painter->drawRoundedRect(pill, 4, 4);
     painter->setPen(labelColor);
     painter->drawText(pill, Qt::AlignCenter, label);

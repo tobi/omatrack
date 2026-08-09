@@ -702,10 +702,8 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                                             "e"));
                                                 if (reference)
                                                     root->setProperty(
-                                                        "dualReferenceS"
-                                                        "eekBasel"
-                                                        "i"
-                                                        "ne",
+                                                        "dualPauseSeekBasel"
+                                                        "ine",
                                                         reference
                                                             ->exactSeekCount());
                                             });
@@ -726,6 +724,88 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                             root, "videoSetFullscreen",
                                             Q_ARG(QVariant, QVariant(false)));
                                 });
+                                // Pausing is an intentional hard-sync point:
+                                // the reference must exact-seek through the
+                                // shared GPS/speed station map, then playback
+                                // resumes without periodic seeks.
+                                QTimer::singleShot(5200, &engine, [&engine]() {
+                                    if (engine.rootObjects().isEmpty()) return;
+                                    QObject* root =
+                                        engine.rootObjects().first();
+                                    auto* reference =
+                                        root->findChild<MpvVideoItem*>(
+                                            QStringLiteral(
+                                                "videoPlayerReference"));
+                                    const int baseline =
+                                        root->property("dualPauseSeekBaseline")
+                                            .toInt();
+                                    root->setProperty(
+                                        "dualContinuousBeforePause",
+                                        reference && baseline >= 0 &&
+                                            reference->exactSeekCount() ==
+                                                baseline);
+                                    root->setProperty(
+                                        "dualPauseSeekBaseline",
+                                        reference ? reference->exactSeekCount()
+                                                  : -1);
+                                    QMetaObject::invokeMethod(
+                                        root, "videoTogglePaused");
+                                });
+                                QTimer::singleShot(
+                                    5700, &engine, [&engine, &store]() {
+                                        if (engine.rootObjects().isEmpty())
+                                            return;
+                                        QObject* root =
+                                            engine.rootObjects().first();
+                                        auto* primary =
+                                            root->findChild<MpvVideoItem*>(
+                                                QStringLiteral("videoPlayer"));
+                                        auto* reference =
+                                            root->findChild<MpvVideoItem*>(
+                                                QStringLiteral(
+                                                    "videoPlayerReference"));
+                                        const int pauseBaseline =
+                                            root->property(
+                                                    "dualPauseSeekBaseline")
+                                                .toInt();
+                                        const double error =
+                                            reference
+                                                ? std::abs(
+                                                      store.compareVideoTime() -
+                                                      reference->position())
+                                                : std::numeric_limits<
+                                                      double>::infinity();
+                                        const bool pausedAligned =
+                                            primary && reference &&
+                                            primary->paused() &&
+                                            reference->paused() &&
+                                            pauseBaseline >= 0 &&
+                                            reference->exactSeekCount() >
+                                                pauseBaseline &&
+                                            error <= 0.05 &&
+                                            root->property(
+                                                    "dualContinuousBeforePause")
+                                                .toBool();
+                                        root->setProperty(
+                                            "dualPauseAlignmentReady",
+                                            pausedAligned);
+                                        qWarning()
+                                            << "AUTOTEST dual pause alignment:"
+                                            << pausedAligned << "error" << error
+                                            << "exact seeks"
+                                            << (reference
+                                                    ? reference
+                                                              ->exactSeekCount() -
+                                                          pauseBaseline
+                                                    : -1);
+                                        QMetaObject::invokeMethod(
+                                            root, "videoTogglePaused");
+                                        root->setProperty(
+                                            "dualReferenceSeekBaseline",
+                                            reference
+                                                ? reference->exactSeekCount()
+                                                : -1);
+                                    });
                             }
                             QTimer::singleShot(
                                 autotestDualVideo ? 7000 : 2500, &engine,
@@ -1037,6 +1117,11 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                             reference && seekBaseline >= 0 &&
                                             reference->exactSeekCount() ==
                                                 seekBaseline;
+                                        const bool pauseAlignmentReady =
+                                            root &&
+                                            root->property(
+                                                    "dualPauseAlignmentReady")
+                                                .toBool();
                                         dualVideoReady =
                                             root &&
                                             root->property(
@@ -1055,6 +1140,7 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                             !primary->paused() &&
                                             !reference->paused() &&
                                             error <= 0.15 &&
+                                            pauseAlignmentReady &&
                                             continuousPlayback &&
                                             !store.comparisonAlignmentBasis()
                                                  .isEmpty() &&

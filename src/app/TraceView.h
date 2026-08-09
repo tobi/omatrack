@@ -9,6 +9,7 @@
 #pragma once
 
 #include <QtQml/qqmlregistration.h>
+#include <QColor>
 #include <QQuickPaintedItem>
 #include <QElapsedTimer>
 #include <QFont>
@@ -33,12 +34,16 @@ class TraceView : public QQuickPaintedItem {
     QML_ELEMENT
     Q_PROPERTY(
         TelemetryStore* store READ store WRITE setStore NOTIFY storeChanged)
+    Q_PROPERTY(QColor backgroundColor READ backgroundColor WRITE
+                   setBackgroundColor NOTIFY backgroundColorChanged)
 
 public:
     explicit TraceView(QQuickItem* parent = nullptr);
 
     TelemetryStore* store() const { return store_; }
     void setStore(TelemetryStore* store);
+    QColor backgroundColor() const { return backgroundColor_; }
+    void setBackgroundColor(const QColor& color);
 
     void paint(QPainter* painter) override;
 
@@ -61,6 +66,7 @@ protected:
 
 signals:
     void storeChanged();
+    void backgroundColorChanged();
     void cursorChangedFromCanvas();
     void cornerActivated(int index);
     void cornerEdited();
@@ -152,6 +158,7 @@ private:
     bool selecting_ = false;
 
     TelemetryStore* store_ = nullptr;
+    QColor backgroundColor_{QStringLiteral("#181d20")};
     QVector<ChannelSpec> channelSpecs_;
     bool dragging_ = false;
     bool panning_ = false;

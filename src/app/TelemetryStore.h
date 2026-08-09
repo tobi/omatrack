@@ -252,6 +252,10 @@ class TelemetryStore : public QObject {
                    selectionChanged)
     Q_PROPERTY(QString primaryDriverMappingKey READ primaryDriverMappingKey
                    NOTIFY selectionChanged)
+    Q_PROPERTY(QString primaryMetadataPath READ primaryMetadataPath NOTIFY
+                   selectionChanged)
+    Q_PROPERTY(bool primaryMetadataFolderScope READ primaryMetadataFolderScope
+                   NOTIFY selectionChanged)
     Q_PROPERTY(QString compareLabel READ compareLabel NOTIFY selectionChanged)
     Q_PROPERTY(QString roomName READ roomName NOTIFY selectionChanged)
     Q_PROPERTY(QString primarySessionKey READ primarySessionKey NOTIFY
@@ -428,6 +432,8 @@ public:
     QString primaryDetail() const;
     QString primaryDriverName() const;
     QString primaryDriverMappingKey() const;
+    QString primaryMetadataPath() const;
+    bool primaryMetadataFolderScope() const;
     bool hasGpsData() const;
     QString compareLabel() const;
     QString roomName() const;
