@@ -21,7 +21,11 @@ fi
 while IFS=$'\t' read -r name path; do
   [[ -n "$name" && -n "$path" ]] || continue
   if ! omatrack_linux_system_library "$name"; then
-    realpath "$path"
+    # Preserve the loader-facing SONAME path. linuxdeploy uses the input
+    # basename as the packaged filename; canonicalizing this to a fully
+    # versioned target would leave DT_NEEDED entries such as libz.so.1 without
+    # a matching file in the AppImage.
+    printf '%s\n' "$path"
   fi
 done < <(
   awk '
