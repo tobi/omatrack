@@ -193,6 +193,7 @@ jobs:
           update: true
           install: >-
             git
+            p7zip
             mingw-w64-ucrt-x86_64-clang-tools-extra
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-gcc
