@@ -127,7 +127,6 @@ if(WIN32)
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
   install(RUNTIME_DEPENDENCY_SET omatrack_runtime_dependencies
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    DIRECTORIES ${OMATRACK_TOOLCHAIN_BIN_DIR}
     PRE_EXCLUDE_REGEXES "api-ms-win-.*" "ext-ms-win-.*"
     POST_EXCLUDE_REGEXES ".*[Ww]indows/[Ss]ystem32/.*")
 else()
