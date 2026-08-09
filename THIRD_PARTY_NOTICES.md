@@ -19,9 +19,12 @@ Public License 2.0. Its pinned version and checksum are recorded in
 
 The Geist and Geist Mono font files under `src/app/assets/fonts` are distributed under the SIL Open Font License 1.1. The license text is preserved at `src/app/assets/fonts/OFL.txt`.
 
-## System dependencies
+## Runtime dependencies
 
-Omatrack links to these dependencies supplied by the operating system or build environment; their source is not copied into this repository.
+Omatrack links to these dependencies supplied by the operating system or build
+environment. Portable release artifacts bundle their redistributable dynamic
+libraries and transitive runtime dependencies; source builds normally use the
+system copies. Their source is not copied into this repository.
 
 - **Qt 6** — available under the GNU LGPL v3, GNU GPL v2/v3, or commercial terms. See <https://www.qt.io/licensing>.
 - **libmpv** — license depends on how mpv was built; LGPL v2.1-or-later is available for qualifying builds, while builds with GPL components are GPL. See <https://github.com/mpv-player/mpv/blob/master/Copyright>.

@@ -146,7 +146,11 @@ cmake --install build --prefix "$HOME/.local"
 The install target provides `omatrack`, `omatrack-cli`, platform deployment
 metadata, and license notices. Tagged releases publish a Linux AppImage, a
 macOS disk image, and a Windows zip from GitHub Actions. The macOS build is
-ad-hoc signed but not Apple-notarized.
+ad-hoc signed but not Apple-notarized. Portable builds bundle Qt, libmpv,
+libyaml, QML modules, media codecs, and their redistributable dependency
+closure. Linux and Windows also statically link Omatrack's GNU C++ runtime.
+Each package is rejected if a binary still refers to a build-machine library;
+only operating-system and graphics-driver interfaces remain host-provided.
 
 ## Privacy and network behavior
 

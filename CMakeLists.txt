@@ -68,6 +68,18 @@ target_compile_options(omatrack_warnings INTERFACE
 enable_testing()
 option(OMATRACK_ENABLE_AUTOTEST_HARNESS
   "Compile the state-mutating GUI acceptance harness" OFF)
+option(OMATRACK_STATIC_GNU_RUNTIME
+  "Statically link the GNU C++ and compiler runtimes into executables" OFF)
+
+add_library(omatrack_portable_runtime INTERFACE)
+if(OMATRACK_STATIC_GNU_RUNTIME)
+  if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    message(FATAL_ERROR
+      "OMATRACK_STATIC_GNU_RUNTIME requires the GNU C++ compiler")
+  endif()
+  target_link_options(omatrack_portable_runtime INTERFACE
+    -static-libgcc -static-libstdc++)
+endif()
 
 add_subdirectory(third_party)
 add_subdirectory(src/core)

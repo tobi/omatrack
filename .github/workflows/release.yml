@@ -60,7 +60,10 @@ jobs:
           version: '6.11.1'
           cache: true
       - name: Configure
-        run: cmake --preset ci -DCMAKE_INSTALL_PREFIX=/usr
+        run: >-
+          cmake --preset ci
+          -DCMAKE_INSTALL_PREFIX=/usr
+          -DOMATRACK_STATIC_GNU_RUNTIME=ON
       - name: Build
         run: cmake --build --preset ci
       - name: Test
@@ -82,18 +85,41 @@ jobs:
           LINUXDEPLOY_PLUGIN_QT: ${{ github.workspace }}/release-tools/linuxdeploy-plugin-qt.AppImage
           QML_SOURCES_PATHS: ${{ github.workspace }}/src/app
         run: |
-          release-tools/linuxdeploy.AppImage \
-            --appdir AppDir \
-            --desktop-file packaging/linux/io.github.tobi.omatrack.desktop \
-            --icon-file assets/omatrack.svg \
-            --executable AppDir/usr/bin/omatrack \
-            --executable AppDir/usr/bin/omatrack-cli \
-            --plugin qt \
+          mapfile -t portable_libraries < <(
+            packaging/linux/collect-portable-libraries.sh \
+              AppDir/usr/bin/omatrack
+          )
+          deploy_arguments=(
+            --appdir AppDir
+            --desktop-file packaging/linux/io.github.tobi.omatrack.desktop
+            --icon-file assets/omatrack.svg
+            --executable AppDir/usr/bin/omatrack
+            --executable AppDir/usr/bin/omatrack-cli
+            --plugin qt
             --output appimage
+          )
+          for library in "${portable_libraries[@]}"; do
+            deploy_arguments+=(--library "$library")
+          done
+          release-tools/linuxdeploy.AppImage "${deploy_arguments[@]}"
           artifact="Omatrack-${OMATRACK_RELEASE_VERSION}-linux-x86_64.AppImage"
           mv ./Omatrack-*.AppImage "$artifact"
           chmod +x "$artifact"
           "./$artifact" --appimage-version
+          mkdir appimage-audit
+          (
+            cd appimage-audit
+            "../$artifact" --appimage-extract >/dev/null
+          )
+          packaging/linux/verify-bundle.sh appimage-audit/squashfs-root
+          set +e
+          cli_output=$(
+            appimage-audit/squashfs-root/usr/bin/omatrack-cli 2>&1
+          )
+          cli_status=$?
+          set -e
+          test "$cli_status" -eq 2
+          grep -q '^usage:' <<<"$cli_output"
       - uses: actions/upload-artifact@v7
         with:
           name: release-linux
@@ -158,6 +184,7 @@ jobs:
             --ignore "$QT_ROOT_DIR" \
             --overwrite-files
           cmake --install build-ci
+          packaging/macos/verify-bundle.sh stage/Omatrack.app
           codesign --force --deep --sign - stage/Omatrack.app
           codesign --verify --deep --strict stage/Omatrack.app
       - name: Build disk image
@@ -230,7 +257,10 @@ jobs:
           key: release-ccache-${{ runner.os }}-${{ github.sha }}
           restore-keys: release-ccache-${{ runner.os }}-
       - name: Configure
-        run: cmake --preset ci -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/stage"
+        run: >-
+          cmake --preset ci
+          -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/stage"
+          -DOMATRACK_STATIC_GNU_RUNTIME=ON
       - name: Build
         run: cmake --build --preset ci
       - name: Test
@@ -241,6 +271,7 @@ jobs:
 
           # Qt deploys its own runtime and QML imports. Close over the remaining
           # MinGW dependencies (mpv, yaml, and compiler runtimes) recursively.
+          source packaging/windows/runtime-policy.sh
           mkdir -p stage/bin
           mapfile -d '' binaries < <(
             find stage -type f \( -iname '*.exe' -o -iname '*.dll' \) -print0
@@ -270,7 +301,7 @@ jobs:
                 binaries+=("$destination")
                 continue
               fi
-              if [[ -f "/c/Windows/System32/$dependency" ]]; then
+              if omatrack_windows_system_library "$dependency"; then
                 continue
               fi
               echo "Unresolved runtime dependency: $dependency (required by $binary)" >&2
@@ -278,6 +309,13 @@ jobs:
             done < <(objdump -p "$binary" | awk '/DLL Name:/{print $3}')
           done
           ((unresolved == 0))
+          packaging/windows/verify-bundle.sh stage
+          set +e
+          cli_output=$(stage/bin/omatrack-cli.exe 2>&1)
+          cli_status=$?
+          set -e
+          test "$cli_status" -eq 2
+          grep -q '^usage:' <<<"$cli_output"
       - name: Build zip archive
         run: |
           artifact="Omatrack-${OMATRACK_RELEASE_VERSION}-windows-x86_64.zip"

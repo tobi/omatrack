@@ -104,6 +104,7 @@ qt_add_resources(omatrack "omatrack_branding"
 
 target_link_libraries(omatrack PRIVATE
   omatrack_core
+  omatrack_portable_runtime
   omatrack_warnings
   omatrack_yaml
   omatrack_mpv
