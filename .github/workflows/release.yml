@@ -149,6 +149,7 @@ jobs:
         run: ctest --preset ci
       - name: Install and bundle application
         run: |
+          mkdir -p build-ci/Omatrack.app/Contents/Frameworks
           dylibbundler \
             --bundle-deps \
             --fix-file build-ci/Omatrack.app/Contents/MacOS/Omatrack \
@@ -255,6 +256,10 @@ jobs:
 
             while IFS= read -r dependency; do
               [[ -n "$dependency" ]] || continue
+              if [[ "${dependency,,}" == api-ms-win-* ||
+                    "${dependency,,}" == ext-ms-win-* ]]; then
+                continue
+              fi
               if find stage -type f -iname "$dependency" -print -quit | grep -q .; then
                 continue
               fi
