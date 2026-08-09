@@ -106,8 +106,9 @@ class TelemetrySource {
 public:
     static std::unique_ptr<TelemetrySource> open(const std::string& path,
                                                  std::string* error = nullptr);
-    /// Open a bounded metadata view for library indexing. AiM video lap and
-    /// frame indexes are deliberately omitted; normal `open()` remains exact.
+    /// Open a bounded metadata view for library indexing. AiM retains complete
+    /// filmstrip lap signals but omits the video-frame index; normal `open()`
+    /// remains the full analysis path.
     static std::unique_ptr<TelemetrySource> openIndex(
         const std::string& path, std::string* error = nullptr);
     ~TelemetrySource();
@@ -133,8 +134,8 @@ public:
     std::map<std::string, int> mapChannels(
         const ChannelOverrides& overrides = {}) const;
 
-    /// Return authoritative source-provided laps, falling back to channel
-    /// beacon/counter/time/distance heuristics when the parser has none.
+    /// Return reliable format-neutral laps, falling back to local
+    /// beacon/counter/time/distance heuristics when needed.
     std::vector<Lap> detectLaps() const;
 
     /// Dominant positive driver code from the mapped numeric channel; 0 if

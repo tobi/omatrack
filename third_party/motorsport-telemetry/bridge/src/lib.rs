@@ -10,7 +10,7 @@
 //! - Errors are reported via `omatrack_last_error` (thread-local) and non-zero/handle
 //!   return codes; no panics cross the FFI boundary.
 
-use motorsport_telemetry_core::TelemetrySource;
+use motorsport_telemetry_core::{read_source_metadata, TelemetrySource};
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::fs::File;
@@ -59,7 +59,7 @@ pub struct BridgeFile {
     source_laps: Vec<OmatrackSourceLap>,
 }
 
-/// Stable C representation of one authoritative source-provided lap.
+/// Stable C representation of one reliable format-neutral lap.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OmatrackSourceLap {
@@ -159,7 +159,7 @@ fn fingerprint(path: &Path) -> io::Result<blake3::Hash> {
     Ok(hasher.finalize())
 }
 
-fn build_handle(src: Box<dyn TelemetrySource>) -> Box<BridgeFile> {
+fn build_handle(src: Box<dyn TelemetrySource>, derive_laps: bool) -> Box<BridgeFile> {
     let names = src
         .channels()
         .iter()
@@ -170,22 +170,22 @@ fn build_handle(src: Box<dyn TelemetrySource>) -> Box<BridgeFile> {
         .iter()
         .map(|c| CString::new(c.unit.as_str()).unwrap_or_default())
         .collect::<Vec<_>>();
-    let source_laps = src
-        .source_lap_metadata()
-        .map(|metadata| {
-            metadata
-                .laps
-                .into_iter()
-                .map(|lap| OmatrackSourceLap {
-                    number: lap.number,
-                    start_ns: lap.start_ns,
-                    end_ns: lap.end_ns,
-                    duration_ns: lap.duration_ns,
-                    complete: u8::from(lap.complete),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let source_laps = if derive_laps {
+        read_source_metadata(src.as_ref()).laps
+    } else {
+        src.source_lap_metadata()
+            .map(|metadata| metadata.laps)
+            .unwrap_or_default()
+    }
+    .into_iter()
+    .map(|lap| OmatrackSourceLap {
+        number: lap.number,
+        start_ns: lap.start_ns,
+        end_ns: lap.end_ns,
+        duration_ns: lap.duration_ns,
+        complete: u8::from(lap.complete),
+    })
+    .collect();
     Box::new(BridgeFile {
         src,
         names,
@@ -208,9 +208,9 @@ pub unsafe extern "C" fn omatrack_open(path: *const c_char) -> *mut c_void {
 
 /// Open a telemetry file for a bounded library-index summary.
 ///
-/// AiM MP4 files retain channel schema and representative samples while
-/// omitting full lap and video-frame indexes. Other formats use their normal
-/// lightweight parser path.
+/// AiM MP4 files retain channel schema, complete lap counters/timers, and
+/// representative samples while omitting the video-frame index. Other formats
+/// use their normal lightweight parser path.
 ///
 /// # Safety
 /// `path` must be NULL or a valid NUL-terminated C string.
@@ -233,7 +233,7 @@ unsafe fn open_bridge(path: *const c_char, index_only: bool, function: &str) -> 
             }
         };
         match parse_path(Path::new(path_str), index_only) {
-            Ok(src) => Box::into_raw(build_handle(src)) as *mut c_void,
+            Ok(src) => Box::into_raw(build_handle(src, index_only)) as *mut c_void,
             Err(e) => {
                 set_error(format!("{function}: {e}"));
                 std::ptr::null_mut()
@@ -336,7 +336,7 @@ pub unsafe extern "C" fn omatrack_format(handle: *mut c_void) -> *const c_char {
     )
 }
 
-/// Return the number of authoritative source-provided laps.
+/// Return the number of reliable format-neutral laps.
 ///
 /// # Safety
 /// `handle` must be NULL or a live `omatrack_open` handle.
@@ -349,7 +349,7 @@ pub unsafe extern "C" fn omatrack_source_lap_count(handle: *mut c_void) -> usize
     })
 }
 
-/// Copy one authoritative source-provided lap into `out`.
+/// Copy one reliable format-neutral lap into `out`.
 /// Returns 1 on success or 0 for a null pointer or out-of-range index.
 ///
 /// # Safety
@@ -792,8 +792,9 @@ mod tests {
 
     struct TestSource {
         channels: Vec<Channel>,
+        samples: Vec<f64>,
         video_presentation_offset_ns: Option<i128>,
-        source_laps: Vec<LapMetadata>,
+        source_laps: Option<Vec<LapMetadata>>,
     }
 
     impl TelemetrySource for TestSource {
@@ -810,7 +811,7 @@ mod tests {
         }
 
         fn decode(&self, _: usize, _: usize, local_index: u64) -> f64 {
-            local_index as f64
+            self.samples[local_index as usize]
         }
 
         fn video_presentation_offset_ns(&self) -> Option<i128> {
@@ -818,8 +819,8 @@ mod tests {
         }
 
         fn source_lap_metadata(&self) -> Option<SourceLapMetadata> {
-            Some(SourceLapMetadata {
-                laps: self.source_laps.clone(),
+            self.source_laps.as_ref().map(|laps| SourceLapMetadata {
+                laps: laps.clone(),
                 fastest_lap: None,
             })
         }
@@ -842,26 +843,30 @@ mod tests {
             sample_count: 1,
             duration_ns: 1_000_000_000,
         };
-        Box::into_raw(build_handle(Box::new(TestSource {
-            channels: vec![channel],
-            video_presentation_offset_ns: Some(101_500_000),
-            source_laps: vec![
-                LapMetadata {
-                    number: 7,
-                    start_ns: 1_000_000_000,
-                    end_ns: 91_000_000_000,
-                    duration_ns: 90_000_000_000,
-                    complete: true,
-                },
-                LapMetadata {
-                    number: 8,
-                    start_ns: 91_000_000_000,
-                    end_ns: 100_000_000_000,
-                    duration_ns: 9_000_000_000,
-                    complete: false,
-                },
-            ],
-        }))) as *mut c_void
+        Box::into_raw(build_handle(
+            Box::new(TestSource {
+                channels: vec![channel],
+                samples: vec![0.0],
+                video_presentation_offset_ns: Some(101_500_000),
+                source_laps: Some(vec![
+                    LapMetadata {
+                        number: 7,
+                        start_ns: 1_000_000_000,
+                        end_ns: 91_000_000_000,
+                        duration_ns: 90_000_000_000,
+                        complete: true,
+                    },
+                    LapMetadata {
+                        number: 8,
+                        start_ns: 91_000_000_000,
+                        end_ns: 100_000_000_000,
+                        duration_ns: 9_000_000_000,
+                        complete: false,
+                    },
+                ]),
+            }),
+            false,
+        )) as *mut c_void
     }
 
     #[test]
@@ -930,6 +935,53 @@ mod tests {
             unsafe { omatrack_source_lap(handle, 0, std::ptr::null_mut()) },
             0
         );
+        unsafe { omatrack_close(handle) };
+    }
+
+    #[test]
+    fn index_handle_exposes_laps_derived_from_channels() {
+        let samples = (0..45)
+            .map(|index| f64::from(index / 15 + 1))
+            .collect::<Vec<_>>();
+        let channel = Channel {
+            id: 0,
+            name: "Lap Number".into(),
+            unit: String::new(),
+            unit_source: UnitSource::Unknown,
+            sample_type: SampleType::F64,
+            chunks: vec![Chunk {
+                sample_period_ns: 1_000_000_000,
+                sample_count: samples.len() as u64,
+                data_ptr: 0,
+                sample_base: 0,
+                time_base_ns: 0,
+            }],
+            sample_count: samples.len() as u64,
+            duration_ns: samples.len() as u64 * 1_000_000_000,
+        };
+        let handle = Box::into_raw(build_handle(
+            Box::new(TestSource {
+                channels: vec![channel],
+                samples,
+                video_presentation_offset_ns: None,
+                source_laps: None,
+            }),
+            true,
+        )) as *mut c_void;
+
+        assert_eq!(unsafe { omatrack_source_lap_count(handle) }, 3);
+        let mut middle = OmatrackSourceLap {
+            number: 0,
+            start_ns: 0,
+            end_ns: 0,
+            duration_ns: 0,
+            complete: 0,
+        };
+        assert_eq!(unsafe { omatrack_source_lap(handle, 1, &mut middle) }, 1);
+        assert_eq!(middle.number, 2);
+        assert_eq!(middle.start_ns, 15_000_000_000);
+        assert_eq!(middle.end_ns, 30_000_000_000);
+        assert_eq!(middle.complete, 1);
         unsafe { omatrack_close(handle) };
     }
 
