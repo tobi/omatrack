@@ -20,7 +20,9 @@ while IFS= read -r -d '' candidate; do
     continue
   fi
   ((elf_count += 1))
-  dependencies=$(ldd "$candidate" 2>&1 || true)
+  # install-qt-action exports its SDK through LD_LIBRARY_PATH. Clear it so the
+  # audit exercises only the AppImage RPATHs and the permitted host ABI.
+  dependencies=$(env -u LD_LIBRARY_PATH ldd "$candidate" 2>&1 || true)
   while read -r missing; do
     [[ -n "$missing" ]] || continue
     echo "Unresolved Linux dependency: $missing (required by $candidate)" >&2

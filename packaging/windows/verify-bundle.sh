@@ -14,12 +14,18 @@ source "$script_dir/runtime-policy.sh"
 bundle=$1
 failures=0
 binary_count=0
+declare -A bundled=()
+while IFS= read -r -d '' packaged; do
+  filename=${packaged##*/}
+  bundled[${filename,,}]=1
+done < <(find "$bundle" -type f -print0)
+
 while IFS= read -r -d '' binary; do
   ((binary_count += 1))
   while IFS= read -r dependency; do
     [[ -n "$dependency" ]] || continue
-    if find "$bundle" -type f -iname "$dependency" -print -quit | grep -q .;
-    then
+    dependency_key=${dependency,,}
+    if [[ -n "${bundled[$dependency_key]+present}" ]]; then
       continue
     fi
     if ! omatrack_windows_system_library "$dependency"; then

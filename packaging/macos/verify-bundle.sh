@@ -60,7 +60,18 @@ while IFS= read -r -d '' candidate; do
         failures=1
         ;;
     esac
-  done < <(otool -L "$candidate" | tail -n +2 | awk '{print $1}')
+  done < <(
+    # LC_ID_DYLIB names the current file; it is not a dependency. Inspect only
+    # dylibs the loader will actually open.
+    otool -l "$candidate" | awk '
+      $1 == "cmd" && ($2 == "LC_LOAD_DYLIB" ||
+        $2 == "LC_LOAD_WEAK_DYLIB" ||
+        $2 == "LC_REEXPORT_DYLIB" ||
+        $2 == "LC_LAZY_LOAD_DYLIB" ||
+        $2 == "LC_LOAD_UPWARD_DYLIB") { dependency = 1; next }
+      dependency && $1 == "name" { print $2; dependency = 0 }
+    '
+  )
 
   while read -r runpath; do
     [[ -n "$runpath" ]] || continue

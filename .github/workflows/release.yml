@@ -277,6 +277,11 @@ jobs:
             find stage -type f \( -iname '*.exe' -o -iname '*.dll' \) -print0
           )
           declare -A inspected=()
+          declare -A bundled=()
+          for binary in "${binaries[@]}"; do
+            filename=${binary##*/}
+            bundled[${filename,,}]=1
+          done
           unresolved=0
           index=0
           while ((index < ${#binaries[@]})); do
@@ -292,13 +297,15 @@ jobs:
                     "${dependency,,}" == ext-ms-win-* ]]; then
                 continue
               fi
-              if find stage -type f -iname "$dependency" -print -quit | grep -q .; then
+              dependency_key=${dependency,,}
+              if [[ -n "${bundled[$dependency_key]+present}" ]]; then
                 continue
               fi
               if [[ -f "/ucrt64/bin/$dependency" ]]; then
                 destination="stage/bin/$dependency"
                 cp "/ucrt64/bin/$dependency" "$destination"
                 binaries+=("$destination")
+                bundled[$dependency_key]=1
                 continue
               fi
               if omatrack_windows_system_library "$dependency"; then
