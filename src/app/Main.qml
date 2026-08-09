@@ -24,10 +24,6 @@ ApplicationWindow {
     // Side by side only when the reference lap has its own recording and the
     // primary video is telemetry-linked, so both can be distance-aligned.
     readonly property bool dualVideo: telemetryVideoActive && Store.compareVideoSource.toString() !== "" && Store.compareVideoSource.toString() !== Store.primaryVideoSource.toString()
-    property var expandedDates: ({})
-
-    // Session-tree expansion state, keyed by track name and by track+date.
-    property var expandedTracks: ({})
     property var filmstripSessions: []
     // Rapid selection changes update one pending source instead of queuing
     // stale callLater closures that can reopen the previous recording.
@@ -43,8 +39,8 @@ ApplicationWindow {
     property real referenceSyncLastPrimary: -1
     property real referenceSyncLastTarget: -1
     property string referenceSyncState: "WAIT"
-    property string sessionFilter: ""
     property bool sidebarVisible: true
+    readonly property bool standaloneVideoActive: root.videoVisible && !root.telemetryVideoActive
     required property url startupVideo
     property bool telemetryVideoActive: false
     property bool videoFullscreen: false
@@ -76,12 +72,6 @@ ApplicationWindow {
                 return laps[i];
         return laps.length > 0 ? laps[0] : null;
     }
-    function dateExpanded(key) {
-        return expandedDates[key] !== false;
-    }
-    function dateKey(trackName, dateName) {
-        return trackName + "|" + dateName;
-    }
     function defaultTelemetryFolder() {
         const home = toLocalPath(Platform.StandardPaths.writableLocation(Platform.StandardPaths.HomeLocation));
         const preferred = home + "/Documents/Telemetry";
@@ -104,6 +94,18 @@ ApplicationWindow {
         const paddedMinutes = (hours > 0 && minutes < 10 ? "0" : "") + minutes;
         const paddedSeconds = (secs < 10 ? "0" : "") + secs;
         return hours > 0 ? hours + ":" + paddedMinutes + ":" + paddedSeconds : minutes + ":" + paddedSeconds;
+    }
+    function hideVideo(): void {
+        root.pendingVideoSource = "";
+        if (root.videoFullscreen)
+            root.videoSetFullscreen(false);
+        const reference = root.videoReference();
+        if (reference && reference.source.toString() !== "")
+            reference.closeMedia();
+        if (videoPlayer.source.toString() !== "")
+            videoPlayer.closeMedia();
+        root.telemetryVideoActive = false;
+        root.videoVisible = false;
     }
     function lapStripEntry(key, reference) {
         const laps = Store.lapsForSession(key);
@@ -146,99 +148,6 @@ ApplicationWindow {
             return;
         videoPlayer.openMedia(source);
     }
-    function rebuildTree() {
-        if (!Store.ready)
-            return;
-        treeModel.clear();
-        const groups = Store.trackGroups();
-        const query = sessionFilter.trim().toLowerCase();
-        for (let t = 0; t < groups.length; ++t) {
-            const trackName = groups[t].track;
-            const dates = groups[t].dates;
-            let matchingDates = [];
-            for (let d = 0; d < dates.length; ++d) {
-                let matchingSessions = [];
-                const sessions = dates[d].sessions;
-                for (let s = 0; s < sessions.length; ++s) {
-                    if (sessionMatches(sessions[s], trackName, dates[d].date, query))
-                        matchingSessions.push(sessions[s]);
-                }
-                if (matchingSessions.length > 0)
-                    matchingDates.push({
-                        date: dates[d].date,
-                        sessions: matchingSessions
-                    });
-            }
-            if (matchingDates.length === 0)
-                continue;
-            const showTrack = query !== "" || trackExpanded(trackName);
-            treeModel.append({
-                role: "track",
-                name: trackName,
-                stem: "",
-                driver: "",
-                driverId: "",
-                mappingKey: "",
-                sessionTime: "",
-                bestTime: "",
-                isDriverBest: false,
-                isDayBest: false,
-                isVideo: false,
-                indent: 0,
-                key: "",
-                expanded: showTrack
-            });
-            if (!showTrack)
-                continue;
-            for (let d = 0; d < matchingDates.length; ++d) {
-                const dateName = matchingDates[d].date;
-                const sessions = matchingDates[d].sessions;
-                const dk = dateKey(trackName, dateName);
-                const showDate = query !== "" || dateExpanded(dk);
-                treeModel.append({
-                    role: "date",
-                    name: dateName,
-                    stem: "",
-                    driver: "",
-                    driverId: "",
-                    mappingKey: "",
-                    sessionTime: "",
-                    bestTime: "",
-                    isDriverBest: false,
-                    isDayBest: false,
-                    isVideo: false,
-                    indent: 1,
-                    key: dk,
-                    expanded: showDate
-                });
-                if (!showDate)
-                    continue;
-                for (let s = 0; s < sessions.length; ++s) {
-                    const session = sessions[s];
-                    const display = session.driver !== "" ? session.driver : "Unknown";
-                    treeModel.append({
-                        role: "session",
-                        name: display,
-                        stem: session.stem,
-                        driver: session.driver,
-                        driverId: session.driverId,
-                        mappingKey: session.mappingKey,
-                        carNumber: session.carNumber,
-                        carClass: session.carClass,
-                        sessionTime: session.sessionTime,
-                        bestTime: session.bestTime,
-                        bestTimeMs: session.bestTimeMs,
-                        isDriverBest: session.isDriverBest,
-                        isDayBest: session.isDayBest,
-                        isVideo: session.isVideo === true,
-                        indent: 2,
-                        key: session.key,
-                        expanded: false
-                    });
-                }
-            }
-        }
-    }
     function refreshDeltaTraceVisible(): void {
         root.deltaTraceVisible = Store.channelVisible("delta");
     }
@@ -253,28 +162,6 @@ ApplicationWindow {
         if (referenceSessionKey !== "" && referenceSessionKey !== activeSessionKey)
             strips.push(lapStripEntry(referenceSessionKey, true));
         filmstripSessions = strips;
-    }
-    function revealSession(key) {
-        if (key === "" || sessionFilter !== "")
-            return;
-        const groups = Store.trackGroups();
-        for (let t = 0; t < groups.length; ++t) {
-            const dates = groups[t].dates;
-            for (let d = 0; d < dates.length; ++d) {
-                const sessions = dates[d].sessions;
-                for (let s = 0; s < sessions.length; ++s) {
-                    if (sessions[s].key !== key)
-                        continue;
-                    let tracks = Object.assign({}, expandedTracks);
-                    tracks[groups[t].track] = true;
-                    expandedTracks = tracks;
-                    let expanded = Object.assign({}, expandedDates);
-                    expanded[dateKey(groups[t].track, dates[d].date)] = true;
-                    expandedDates = expanded;
-                    return;
-                }
-            }
-        }
     }
     function seekVideoRelative(seconds) {
         if (telemetryVideoActive)
@@ -304,19 +191,9 @@ ApplicationWindow {
         }
         return null;
     }
-    function sessionMatches(session, trackName, dateName, query) {
-        if (query === "")
-            return true;
-        const searchable = [trackName, dateName, session.stem, session.driver, session.driverId, session.carNumber, session.carClass, session.sessionTime, session.bestTime].join(" ").toLowerCase();
-        return searchable.includes(query);
-    }
     function sessionNameForKey(key) {
-        for (let i = 0; i < treeModel.count; ++i) {
-            const row = treeModel.get(i);
-            if (row.role === "session" && row.key === key)
-                return row.name;
-        }
-        return "";
+        const session = root.sessionInfoForKey(key);
+        return session ? (session.driver || session.stem || "") : "";
     }
     function setSessionActive(key) {
         const lap = bestLapForSession(key);
@@ -436,11 +313,7 @@ ApplicationWindow {
     function syncTelemetryVideo() {
         const source = Store.primaryVideoSource;
         if (source.toString() === "") {
-            if (telemetryVideoActive) {
-                videoPlayer.closeMedia();
-                videoVisible = false;
-                telemetryVideoActive = false;
-            }
+            root.hideVideo();
             return;
         }
         if (!telemetryVideoActive || videoPlayer.source.toString() !== source.toString()) {
@@ -455,9 +328,6 @@ ApplicationWindow {
     function toLocalPath(value) {
         const text = value.toString();
         return text.startsWith("file://") ? decodeURIComponent(text.substring(7)) : text;
-    }
-    function trackExpanded(name) {
-        return expandedTracks[name] === true;
     }
     function useSessionAlone(key) {
         const lap = bestLapForSession(key);
@@ -548,7 +418,6 @@ ApplicationWindow {
 
     Component.onCompleted: {
         root.refreshDeltaTraceVisible();
-        root.rebuildTree();
         root.refreshLapStrip();
         root.syncTelemetryVideo();
         if (root.startupVideo.toString() !== "" && Store.primaryVideoSource.toString() === "")
@@ -763,13 +632,43 @@ ApplicationWindow {
             }
         }
         MouseArea {
+            id: videoStageMouse
+
+            acceptedButtons: Qt.LeftButton | Qt.RightButton
             anchors.fill: parent
             cursorShape: Qt.PointingHandCursor
             enabled: videoPlayer.loaded
 
-            onClicked: {
+            onClicked: mouse => {
+                if (mouse.button === Qt.RightButton) {
+                    let source = videoPlayer.source;
+                    const referenceVisible = root.dualVideo && (!root.videoFullscreen || root.videoFullscreenLayout !== 1);
+                    const activeVisible = !root.videoFullscreen || !root.dualVideo || root.videoFullscreenLayout !== 2;
+                    if (referenceVisible && (!activeVisible || mouse.x > videoStageMouse.width / 2))
+                        source = Store.compareVideoSource;
+                    const point = videoStageMouse.mapToItem(Overlay.overlay, mouse.x, mouse.y);
+                    videoMetadataMenu.videoPath = root.toLocalPath(source);
+                    videoMetadataMenu.x = point.x;
+                    videoMetadataMenu.y = point.y;
+                    videoMetadataMenu.open();
+                    return;
+                }
                 videoPane.forceActiveFocus();
                 root.videoTogglePaused();
+            }
+        }
+        Menu {
+            id: videoMetadataMenu
+
+            property string videoPath: ""
+
+            parent: Overlay.overlay
+
+            MenuItem {
+                enabled: videoMetadataMenu.videoPath !== ""
+                text: "Edit video metadata…"
+
+                onTriggered: videoMetadataDialog.openForVideo(videoMetadataMenu.videoPath)
             }
         }
         ToolButton {
@@ -914,24 +813,15 @@ ApplicationWindow {
             visible: root.videoFullscreen && root.videoOverlayVisible && root.telemetryVideoActive && videoPlayer.loaded
         }
     }
-    ListModel {
-        id: treeModel
-    }
     Connections {
         function onChannelConfigChanged(): void {
             root.refreshDeltaTraceVisible();
         }
-        function onDriverMappingsChanged(): void {
-            root.rebuildTree();
-        }
         function onSelectionChanged(): void {
             root.refreshLapStrip();
-            root.revealSession(Store.primarySessionKey);
-            root.rebuildTree();
             root.syncTelemetryVideo();
         }
         function onSessionsChanged(): void {
-            root.rebuildTree();
             root.refreshLapStrip();
             root.directoryRows = Store.sessionDirectories();
         }
@@ -1112,6 +1002,15 @@ ApplicationWindow {
 
         parent: Overlay.overlay
         width: Math.min(440, root.width - 32)
+        x: Math.round((parent.width - width) / 2)
+        y: Math.round((parent.height - height) / 2)
+    }
+    VideoMetadataDialog {
+        id: videoMetadataDialog
+
+        height: Math.min(760, root.height - 32)
+        parent: Overlay.overlay
+        width: Math.min(920, root.width - 32)
         x: Math.round((parent.width - width) / 2)
         y: Math.round((parent.height - height) / 2)
     }
@@ -1363,165 +1262,31 @@ ApplicationWindow {
                 implicitWidth: 1
             }
 
-            Pane {
+            FileBrowserPane {
                 id: sidebarPane
 
                 SplitView.fillHeight: true
                 SplitView.maximumWidth: root.sidebarVisible ? 420 : 0
                 SplitView.minimumWidth: root.sidebarVisible ? 185 : 0
                 SplitView.preferredWidth: root.sidebarVisible ? Math.min(280, Math.max(210, root.width * 0.32)) : 0
-                padding: 0
                 visible: root.sidebarVisible
 
-                background: Rectangle {
-                    color: Style.darkBackgroundColor
+                onDriverRenameRequested: (mappingKey, driver) => root.openDriverRename(mappingKey, driver)
+                onFileActivated: (path, key, hasSession) => {
+                    if (hasSession)
+                        root.setSessionActive(key);
+                    else
+                        Store.openFile(path);
                 }
-
-                ColumnLayout {
-                    anchors.fill: parent
-                    spacing: 0
-
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 66
-                        color: Style.surfaceColor
-
-                        ColumnLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 8
-                            anchors.rightMargin: 4
-                            spacing: 0
-
-                            RowLayout {
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 34
-
-                                Label {
-                                    color: Style.mutedTextColor
-                                    font.bold: true
-                                    font.family: Style.monoFontFamily
-                                    font.letterSpacing: 0.8
-                                    font.pixelSize: 10
-                                    text: "SESSIONS"
-                                }
-                                Item {
-                                    Layout.fillWidth: true
-                                }
-                                BusyIndicator {
-                                    Layout.preferredHeight: 22
-                                    Layout.preferredWidth: 22
-                                    running: Store.loading
-                                    visible: running
-                                }
-                                ToolButton {
-                                    ToolTip.text: "Rescan session directories"
-                                    ToolTip.visible: hovered
-                                    enabled: !Store.loading
-                                    text: "↻"
-
-                                    onClicked: Store.scan()
-                                }
-                            }
-                            RowLayout {
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 28
-                                spacing: 2
-
-                                CompactTextField {
-                                    id: sessionSearch
-
-                                    Layout.fillWidth: true
-                                    color: Style.foregroundColor
-                                    placeholderText: "Filter driver, run, car, time…"
-                                    placeholderTextColor: Style.dimTextColor
-
-                                    onTextEdited: {
-                                        root.sessionFilter = text;
-                                        sessionFilterTimer.restart();
-                                    }
-                                }
-                                ToolButton {
-                                    Layout.preferredHeight: 24
-                                    Layout.preferredWidth: 24
-                                    ToolTip.text: "Clear session filter"
-                                    ToolTip.visible: hovered
-                                    text: "×"
-                                    visible: sessionSearch.text !== ""
-
-                                    onClicked: {
-                                        sessionSearch.clear();
-                                        root.sessionFilter = "";
-                                        root.rebuildTree();
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Timer {
-                        id: sessionFilterTimer
-
-                        interval: 120
-                        repeat: false
-
-                        onTriggered: root.rebuildTree()
-                    }
-                    Item {
-                        Layout.fillHeight: true
-                        Layout.fillWidth: true
-
-                        ListView {
-                            id: tree
-
-                            anchors.fill: parent
-                            boundsBehavior: Flickable.StopAtBounds
-                            clip: true
-                            model: treeModel
-
-                            ScrollBar.vertical: ThinScrollBar {
-                            }
-                            delegate: SessionTreeDelegate {
-                                activeSessionKey: root.activeSessionKey
-                                referenceSessionKey: root.referenceSessionKey
-
-                                onDriverRenameRequested: (mappingKey, driver) => root.openDriverRename(mappingKey, driver)
-                                onPointerTooltipDismissed: owner => root.dismissPointerTooltip(owner)
-                                onPointerTooltipMoved: (owner, x, y) => root.movePointerTooltip(owner, x, y)
-                                onPointerTooltipRequested: (owner, text, x, y) => root.showPointerTooltip(owner, text, x, y)
-                                onSessionActivated: key => root.setSessionActive(key)
-                                onSessionIsolated: key => root.useSessionAlone(key)
-                                onSetActiveRequested: key => root.setSessionActive(key)
-                                onSetReferenceRequested: key => root.setSessionReference(key)
-                                onToggleDateRequested: key => {
-                                    root.expandedDates[key] = !root.dateExpanded(key);
-                                    root.rebuildTree();
-                                }
-                                onToggleTrackRequested: name => {
-                                    root.expandedTracks[name] = !root.trackExpanded(name);
-                                    root.rebuildTree();
-                                }
-                                onTrackAssignmentRequested: key => trackAssignmentDialog.openForSession(key)
-                            }
-                        }
-                        Column {
-                            anchors.centerIn: parent
-                            spacing: 4
-                            visible: Store.loading
-                            z: 2
-
-                            BusyIndicator {
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                objectName: "sessionLoadingIndicator"
-                                running: Store.loading
-                            }
-                            Label {
-                                color: Style.mutedTextColor
-                                font.family: Style.monoFontFamily
-                                font.pixelSize: 10
-                                text: "LOADING SESSIONS"
-                            }
-                        }
-                    }
-                }
+                onFileIsolated: key => root.useSessionAlone(key)
+                onFolderMetadataRequested: path => videoMetadataDialog.openForFolder(path)
+                onPointerTooltipDismissed: owner => root.dismissPointerTooltip(owner)
+                onPointerTooltipMoved: (owner, x, y) => root.movePointerTooltip(owner, x, y)
+                onPointerTooltipRequested: (owner, text, x, y) => root.showPointerTooltip(owner, text, x, y)
+                onSetActiveRequested: key => root.setSessionActive(key)
+                onSetReferenceRequested: key => root.setSessionReference(key)
+                onTrackAssignmentRequested: key => trackAssignmentDialog.openForSession(key)
+                onVideoMetadataRequested: path => videoMetadataDialog.openForVideo(path)
             }
             SplitView {
                 id: analysisSplit
@@ -1549,10 +1314,11 @@ ApplicationWindow {
                 Rectangle {
                     id: videoPane
 
+                    SplitView.fillHeight: root.standaloneVideoActive
                     SplitView.fillWidth: true
-                    SplitView.maximumHeight: visible ? root.height * 0.72 : 0
+                    SplitView.maximumHeight: visible ? (root.standaloneVideoActive ? 16777215 : root.height * 0.72) : 0
                     SplitView.minimumHeight: visible ? 180 : 0
-                    SplitView.preferredHeight: visible ? Math.min(480, Math.max(220, root.height * 0.42)) : 0
+                    SplitView.preferredHeight: visible ? (root.standaloneVideoActive ? root.height : Math.min(480, Math.max(220, root.height * 0.42))) : 0
                     border.color: Style.borderColor
                     border.width: 1
                     color: Style.traceBackgroundColor
@@ -1660,13 +1426,7 @@ ApplicationWindow {
                                     rightPadding: 2
                                     text: "×"
 
-                                    onClicked: {
-                                        if (root.videoFullscreen)
-                                            root.videoSetFullscreen(false);
-                                        videoPlayer.closeMedia();
-                                        root.telemetryVideoActive = false;
-                                        root.videoVisible = false;
-                                    }
+                                    onClicked: root.hideVideo()
                                 }
                             }
                         }
@@ -1683,10 +1443,16 @@ ApplicationWindow {
                     }
                 }
                 Rectangle {
+                    id: tracePane
+
                     SplitView.fillHeight: true
                     SplitView.fillWidth: true
+                    SplitView.maximumHeight: visible ? 16777215 : 0
+                    SplitView.minimumHeight: visible ? 120 : 0
                     clip: true
                     color: Style.traceBackgroundColor
+                    objectName: "tracePane"
+                    visible: !root.standaloneVideoActive
 
                     TraceView {
                         id: trace

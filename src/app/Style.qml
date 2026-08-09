@@ -16,6 +16,7 @@ QtObject {
 
     readonly property color accentColor: Theme.colors.accent || style.desktopPalette.highlight
     readonly property color backgroundColor: Theme.colors.background || style.desktopPalette.window
+    readonly property color blueColor: Theme.colors.blue || "#7fbbb3"
     readonly property color borderColor: Theme.colors.muted || style.desktopPalette.mid
 
     // Offered when picking a trace color; deliberately theme-independent so a

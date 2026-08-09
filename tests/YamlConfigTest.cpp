@@ -5,11 +5,13 @@
 // so the singleton's file is isolated from the user's real config.
 
 #include "app/YamlConfig.h"
+#include "app/TrackMetadata.h"
 
 #include <QtTest>
 #include <QDir>
 #include <QFile>
 #include <QStandardPaths>
+#include <QTemporaryDir>
 
 using namespace omatrack;
 
@@ -31,9 +33,7 @@ private slots:
         QDir(tempDir_ + QStringLiteral("/racecraft")).removeRecursively();
     }
 
-    void cleanupTestCase() {
-        QDir(tempDir_).removeRecursively();
-    }
+    void cleanupTestCase() { QDir(tempDir_).removeRecursively(); }
 
     void freshInstallHasNoValues() {
         YamlConfig config;
@@ -50,7 +50,8 @@ private slots:
 
     void nestedThreeLevelsDeep() {
         YamlConfig config;
-        config.setValue({"channels", "speed", "color"}, QStringLiteral("#ff0000"));
+        config.setValue({"channels", "speed", "color"},
+                        QStringLiteral("#ff0000"));
         QCOMPARE(config.value({"channels", "speed", "color"}).toString(),
                  QStringLiteral("#ff0000"));
     }
@@ -107,6 +108,215 @@ private slots:
         QVERIFY(config.map({"does", "not", "exist"}).isEmpty());
     }
 
+    void readsExternalDocumentWithoutChangingConfigPath() {
+        const QString path = tempDir_ + QStringLiteral("/TRACK.yml");
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        file.write(
+            "channels:\n  speed: Speed_Ref\ntrack:\n  name: Road America\n");
+        file.close();
+
+        QString error;
+        const QVariantMap document = YamlConfig::readDocument(path, &error);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QCOMPARE(document.value("channels").toMap().value("speed").toString(),
+                 QStringLiteral("Speed_Ref"));
+        QCOMPARE(document.value("track").toMap().value("name").toString(),
+                 QStringLiteral("Road America"));
+        QVERIFY(!QFile::exists(YamlConfig::filePath()));
+    }
+
+    void writesArbitraryDocumentAtomically() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("TRACK.yml"));
+        const QVariantMap document{
+            {QStringLiteral("schema"), QStringLiteral("2")},
+            {QStringLiteral("files"),
+             QVariantMap{{QStringLiteral("onboard.mp4"),
+                          QVariantMap{{QStringLiteral("offset"),
+                                       QStringLiteral("1.25")}}}}}};
+
+        QString error;
+        QVERIFY2(YamlConfig::writeDocument(path, document, &error),
+                 qPrintable(error));
+        QCOMPARE(YamlConfig::readDocument(path), document);
+        QVERIFY(!QFileInfo::exists(path + QStringLiteral(".XXXXXX")));
+    }
+
+    void trackMetadataMergesEveryParentRootToLeaf() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString parent = directory.filePath(QStringLiteral("event"));
+        const QString child = QDir(parent).filePath(QStringLiteral("run"));
+        QVERIFY(QDir().mkpath(child));
+        QVERIFY(YamlConfig::writeDocument(
+            QDir(parent).filePath(QStringLiteral("TRACK.yml")),
+            QVariantMap{
+                {QStringLiteral("car"),
+                 QVariantMap{
+                     {QStringLiteral("number"), QStringLiteral("7")},
+                     {QStringLiteral("class"), QStringLiteral("LMP2")}}},
+                {QStringLiteral("channels"),
+                 QVariantMap{
+                     {QStringLiteral("speed"), QStringLiteral("Speed")}}}}));
+        QVERIFY(YamlConfig::writeDocument(
+            QDir(child).filePath(QStringLiteral("TRACK.yml")),
+            QVariantMap{
+                {QStringLiteral("car"),
+                 QVariantMap{{QStringLiteral("number"), QStringLiteral("8")}}},
+                {QStringLiteral("channels"),
+                 QVariantMap{{QStringLiteral("brake"),
+                              QStringLiteral("Brake_Pressure")}}}}));
+
+        QStringList paths;
+        const QVariantMap merged =
+            omatrack::track_metadata::readHierarchy(child, true, &paths);
+        QCOMPARE(paths.constLast(),
+                 QDir(child).filePath(QStringLiteral("TRACK.yml")));
+        QCOMPARE(merged.value(QStringLiteral("car"))
+                     .toMap()
+                     .value(QStringLiteral("number"))
+                     .toString(),
+                 QStringLiteral("8"));
+        QCOMPARE(merged.value(QStringLiteral("car"))
+                     .toMap()
+                     .value(QStringLiteral("class"))
+                     .toString(),
+                 QStringLiteral("LMP2"));
+        QCOMPARE(merged.value(QStringLiteral("channels"))
+                     .toMap()
+                     .value(QStringLiteral("speed"))
+                     .toString(),
+                 QStringLiteral("Speed"));
+        QCOMPARE(merged.value(QStringLiteral("channels"))
+                     .toMap()
+                     .value(QStringLiteral("brake"))
+                     .toString(),
+                 QStringLiteral("Brake_Pressure"));
+    }
+
+    void trackMetadataUpdatePreservesUnrelatedKeys() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("TRACK.yml"));
+        const QVariantMap files{
+            {QStringLiteral("onboard.mp4"),
+             QVariantMap{{QStringLiteral("offset"), QStringLiteral("1.25")}}}};
+        QVERIFY(YamlConfig::writeDocument(
+            path,
+            QVariantMap{
+                {QStringLiteral("schema"), QStringLiteral("1")},
+                {QStringLiteral("car"), QVariantMap{{QStringLiteral("number"),
+                                                     QStringLiteral("old")}}},
+                {QStringLiteral("files"), files},
+                {QStringLiteral("custom"), QStringLiteral("keep")}}));
+
+        QString error;
+        QVERIFY2(
+            omatrack::track_metadata::update(
+                directory.path(),
+                QVariantMap{
+                    {QStringLiteral("schema"), QStringLiteral("2")},
+                    {QStringLiteral("event"), QStringLiteral("Road America")}},
+                &error),
+            qPrintable(error));
+        const QVariantMap updated = YamlConfig::readDocument(path);
+        QCOMPARE(updated.value(QStringLiteral("files")).toMap(), files);
+        QCOMPARE(updated.value(QStringLiteral("custom")).toString(),
+                 QStringLiteral("keep"));
+        QCOMPARE(updated.value(QStringLiteral("event")).toString(),
+                 QStringLiteral("Road America"));
+        QVERIFY(!updated.contains(QStringLiteral("car")));
+    }
+
+    void emptyTrackMetadataRemovesOnlyOwnedKeys() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("TRACK.yml"));
+        QVERIFY(YamlConfig::writeDocument(
+            path,
+            QVariantMap{{QStringLiteral("schema"), QStringLiteral("2")},
+                        {QStringLiteral("event"), QStringLiteral("Old event")},
+                        {QStringLiteral("files"),
+                         QVariantMap{{QStringLiteral("video.mp4"),
+                                      QStringLiteral("keep")}}}}));
+
+        QVERIFY(omatrack::track_metadata::update(directory.path(), {}));
+        const QVariantMap updated = YamlConfig::readDocument(path);
+        QVERIFY(!updated.contains(QStringLiteral("schema")));
+        QVERIFY(!updated.contains(QStringLiteral("event")));
+        QVERIFY(updated.contains(QStringLiteral("files")));
+    }
+
+    void trackMetadataUpdateCreatesFileInSelectedFolder() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString selected =
+            directory.filePath(QStringLiteral("selected-folder"));
+        QVERIFY(QDir().mkpath(selected));
+
+        QVERIFY(omatrack::track_metadata::update(
+            selected,
+            QVariantMap{{QStringLiteral("schema"), QStringLiteral("2")},
+                        {QStringLiteral("series"), QStringLiteral("IMSA")}}));
+        const QString expected =
+            QDir(selected).filePath(QStringLiteral("TRACK.yml"));
+        QVERIFY(QFileInfo::exists(expected));
+        QCOMPARE(YamlConfig::readDocument(expected)
+                     .value(QStringLiteral("series"))
+                     .toString(),
+                 QStringLiteral("IMSA"));
+    }
+
+    void driverMappingKeysAcceptPositiveNumbersAndWildcard() {
+        using omatrack::track_metadata::normalizedDriverMappingKey;
+        QCOMPARE(normalizedDriverMappingKey(QStringLiteral("  *  ")),
+                 QStringLiteral("*"));
+        QCOMPARE(normalizedDriverMappingKey(QStringLiteral("02.500")),
+                 QStringLiteral("2.5"));
+        QCOMPARE(normalizedDriverMappingKey(3.25), QStringLiteral("3.25"));
+        QVERIFY(normalizedDriverMappingKey(QStringLiteral("0")).isEmpty());
+        QVERIFY(normalizedDriverMappingKey(QStringLiteral("all")).isEmpty());
+    }
+
+    void exactDriverMappingWinsOverWildcardFallback() {
+        const QVariantMap metadata{
+            {QStringLiteral("driver"),
+             QVariantMap{
+                 {QStringLiteral("mappings"),
+                  QVariantMap{
+                      {QStringLiteral("*"), QStringLiteral("Any Driver")},
+                      {QStringLiteral("2.50"), QStringLiteral("Exact Driver")},
+                      {QStringLiteral("invalid"),
+                       QStringLiteral("Ignored")}}}}}};
+
+        QCOMPARE(omatrack::track_metadata::driverNameForId(metadata, 2.5),
+                 QStringLiteral("Exact Driver"));
+        QCOMPARE(omatrack::track_metadata::driverNameForId(metadata, 7.25),
+                 QStringLiteral("Any Driver"));
+        QVERIFY(
+            omatrack::track_metadata::driverNameForId(metadata, 0).isEmpty());
+    }
+
+    void wildcardDriverMappingRoundTripsThroughTrackYaml() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("TRACK.yml"));
+        const QVariantMap mappings{
+            {QStringLiteral("*"), QStringLiteral("Any Driver")}};
+        QVERIFY(YamlConfig::writeDocument(
+            path, QVariantMap{
+                      {QStringLiteral("driver"),
+                       QVariantMap{{QStringLiteral("mappings"), mappings}}}}));
+        QCOMPARE(YamlConfig::readDocument(path)
+                     .value(QStringLiteral("driver"))
+                     .toMap()
+                     .value(QStringLiteral("mappings"))
+                     .toMap(),
+                 mappings);
+    }
+
     void savePersistsAcrossInstances() {
         // Write with one instance, save, destroy, reload with a new instance.
         {
@@ -140,7 +350,8 @@ private slots:
         YamlConfig config;
         config.setValue(QStringList{"key"}, QStringLiteral("old"));
         config.setValue(QStringList{"key"}, QStringLiteral("new"));
-        QCOMPARE(config.value(QStringList{"key"}).toString(), QStringLiteral("new"));
+        QCOMPARE(config.value(QStringList{"key"}).toString(),
+                 QStringLiteral("new"));
     }
 
     void siblingKeysCoexist() {
@@ -202,14 +413,16 @@ private slots:
         QVERIFY(QDir().mkpath(legacyDir));
         QFile legacyFile(legacyDir + QStringLiteral("/racecraft.yml"));
         QVERIFY(legacyFile.open(QIODevice::WriteOnly));
-        legacyFile.write("telemetry_dirs:\n  - \"/legacy/telemetry\"\n"
-                         "video:\n  muted: \"true\"\n");
+        legacyFile.write(
+            "telemetry_dirs:\n  - \"/legacy/telemetry\"\n"
+            "video:\n  muted: \"true\"\n");
         legacyFile.close();
 
         YamlConfig migrated;
         QVERIFY(!migrated.isFresh());
-        QCOMPARE(migrated.value(QStringLiteral("telemetry_dirs")).toStringList(),
-                 QStringList{QStringLiteral("/legacy/telemetry")});
+        QCOMPARE(
+            migrated.value(QStringLiteral("telemetry_dirs")).toStringList(),
+            QStringList{QStringLiteral("/legacy/telemetry")});
         QCOMPARE(migrated.value(QStringLiteral("video/muted")).toString(),
                  QStringLiteral("true"));
         QVERIFY(QFile::exists(YamlConfig::filePath()));

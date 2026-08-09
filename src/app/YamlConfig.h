@@ -1,8 +1,10 @@
 // YAML-backed application configuration.
 //
-// `omatrack.yml` is the single source of truth for user configuration:
-// telemetry directories, channel display, driver naming, last selection, and
-// per-track corner overrides. It lives under the platform's standard
+// `omatrack.yml` is the source of truth for application-wide user
+// configuration: telemetry directories, channel display, driver naming, last
+// selection, per-video overrides, and per-track corner overrides. Portable
+// folder metadata lives in hierarchical TRACK.yml files. omatrack.yml lives
+// under the platform's standard
 // configuration directory (or `$XDG_CONFIG_HOME` when set) so it can be read,
 // diffed, and edited by hand.
 //
@@ -24,6 +26,15 @@ public:
 
     /// Absolute path of omatrack.yml (parent directory is created).
     static QString filePath();
+
+    /// Parse an arbitrary YAML mapping without changing it.
+    static QVariantMap readDocument(const QString& path,
+                                    QString* errorString = nullptr);
+
+    /// Atomically replace an arbitrary YAML mapping. This does not affect the
+    /// process-wide omatrack.yml document.
+    static bool writeDocument(const QString& path, const QVariantMap& document,
+                              QString* errorString = nullptr);
 
     /// Read a value addressed by nested map keys; keys are used verbatim.
     QVariant value(const QStringList& path,

@@ -83,6 +83,10 @@ struct SessionMeta {
     std::string eventName;
 };
 
+/// User-selected canonical concept -> source channel name overrides. Missing
+/// concepts keep the normal cross-format alias matching.
+using ChannelOverrides = std::map<std::string, std::string>;
+
 // ── telemtery source ────────────────────────────────────────────────
 
 class TelemetrySource {
@@ -103,16 +107,19 @@ public:
     bool sampleAt(size_t channelIdx, double timeSec, double* out) const;
 
     /// Map channel concepts to channel indices (omatrack channelMappings).
-    std::map<std::string, int> mapChannels() const;
+    std::map<std::string, int> mapChannels(
+        const ChannelOverrides& overrides = {}) const;
 
     /// Detect laps using the PDS beacon/splits heuristics.
     std::vector<Lap> detectLaps() const;
 
-    /// Dominant positive driver id from a DRIVER_ID-style channel; 0 if absent.
-    int detectDriverId() const;
+    /// Dominant positive driver code from the mapped numeric channel; 0 if
+    /// absent.
+    double detectDriverId(const ChannelOverrides& overrides = {}) const;
 
     /// Build a 50 Hz UnifiedLap over [startTime, endTime].
-    UnifiedLap unifyLap(double startTime, double endTime) const;
+    UnifiedLap unifyLap(double startTime, double endTime,
+                        const ChannelOverrides& overrides = {}) const;
 
     // Public so tests can populate channels_ with synthetic data without
     // going through the Rust bridge. Production code uses open().
@@ -139,7 +146,7 @@ std::string formatLapTime(double timeMs);
 
 /// Decode only sidebar metadata channels without loading full telemetry.
 std::vector<Lap> detectLapsLightweight(const std::string& path,
-                                       int* driverId = nullptr);
+                                       double* driverId = nullptr);
 
 /// Port of MoTecParser.resample (srcFreq -> targetFreq, linear).
 std::vector<double> resample(const std::vector<double>& values, double srcFreq,

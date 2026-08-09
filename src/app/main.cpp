@@ -11,6 +11,7 @@
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QSGRendererInterface>
+#include <QStandardPaths>
 #include <QUrl>
 #include <clocale>
 
@@ -23,9 +24,6 @@
 #endif
 
 int main(int argc, char** argv) {
-    QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
-    QGuiApplication app(argc, argv);
-    std::setlocale(LC_NUMERIC, "C");
 #ifdef OMATRACK_ENABLE_AUTOTEST_HARNESS
     const bool autotest = !qgetenv("OMATRACK_AUTOTEST").isEmpty();
 #else
@@ -37,7 +35,15 @@ int main(int argc, char** argv) {
     QCoreApplication::setApplicationName("omatrack");
     QCoreApplication::setApplicationVersion(OMATRACK_VERSION);
     QGuiApplication::setApplicationDisplayName("Omatrack");
-    QGuiApplication::setDesktopFileName("io.github.tobi.omatrack");
+    const QString desktopFileName = QStringLiteral("io.github.tobi.omatrack");
+    const QString desktopEntry = QStandardPaths::locate(
+        QStandardPaths::ApplicationsLocation, desktopFileName + ".desktop");
+    if (!desktopEntry.isEmpty())
+        QGuiApplication::setDesktopFileName(desktopFileName);
+
+    QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
+    QGuiApplication app(argc, argv);
+    std::setlocale(LC_NUMERIC, "C");
 #ifdef Q_OS_WIN
     omatrack::initializeWindowsIntegration(app);
     QGuiApplication::setWindowIcon(

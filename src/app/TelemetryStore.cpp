@@ -2,6 +2,7 @@
 
 #include "ComparisonAlignment.h"
 #include "SessionMetadataCache.h"
+#include "TrackMetadata.h"
 #include "core/TelemetryEngine.h"
 #include "YamlConfig.h"
 
@@ -137,6 +138,281 @@ bool yamlBool(const QVariant& value, bool fallback) {
     return fallback;
 }
 
+QVariant nestedValue(QVariantMap node, const QStringList& path) {
+    for (int index = 0; index < path.size(); ++index) {
+        const auto it = node.constFind(path.at(index));
+        if (it == node.cend()) return {};
+        if (index == path.size() - 1) return it.value();
+        if (it.value().typeId() != QMetaType::QVariantMap) return {};
+        node = it.value().toMap();
+    }
+    return {};
+}
+
+QString nestedText(const QVariantMap& node, const QStringList& path) {
+    return nestedValue(node, path).toString().trimmed();
+}
+
+QString canonicalInputPath(const QString& path) {
+    const QFileInfo info(path);
+    if (!info.exists() || !info.isFile()) return {};
+    const QString canonical = info.canonicalFilePath();
+    return canonical.isEmpty() ? info.absoluteFilePath() : canonical;
+}
+
+QString canonicalDirectoryPath(const QString& path) {
+    const QFileInfo info(path);
+    if (!info.exists() || !info.isDir()) return {};
+    const QString canonical = info.canonicalFilePath();
+    return canonical.isEmpty() ? info.absoluteFilePath() : canonical;
+}
+
+bool isVideoPath(const QString& path) {
+    static const QSet<QString> extensions{
+        QStringLiteral("mp4"), QStringLiteral("mov"), QStringLiteral("mkv"),
+        QStringLiteral("avi"), QStringLiteral("m4v"), QStringLiteral("webm")};
+    return extensions.contains(QFileInfo(path).suffix().toLower());
+}
+
+QStringList trackMetadataPaths(const QStringList& discovered,
+                               const QString& directoryPath) {
+    QSet<QString> paths(discovered.cbegin(), discovered.cend());
+    const QStringList inherited =
+        omatrack::track_metadata::hierarchyPaths(directoryPath);
+    for (const QString& path : inherited)
+        paths.insert(QFileInfo(path).absoluteFilePath());
+    QStringList result(paths.cbegin(), paths.cend());
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
+struct MetadataChannelDefinition {
+    const char* key;
+    const char* label;
+    const char* unit;
+    const char* detail;
+};
+
+const std::vector<MetadataChannelDefinition>& metadataChannelDefinitions() {
+    static const std::vector<MetadataChannelDefinition> definitions{
+        {"driver_id", "Driver ID channel", "numeric code",
+         "Numeric logger code identifying the active driver"},
+        {"speed", "Speed", "km/h", "Vehicle or corrected speed"},
+        {"throttle", "Throttle", "0–1", "Powertrain throttle position"},
+        {"driver_throttle", "Driver throttle", "0–1", "Pedal demand before TC"},
+        {"brake", "Brake pressure", "bar", "Front brake pressure"},
+        {"clutch", "Clutch", "0–1", "Clutch position"},
+        {"steering", "Steering", "deg", "Steering-wheel angle"},
+        {"gear", "Gear", "integer", "Selected gear"},
+        {"g_long", "Longitudinal G", "g", "Longitudinal acceleration"},
+        {"distance", "Lap distance", "m", "Native corrected lap distance"},
+        {"damper_fl", "Damper FL", "mm", "Front-left damper travel"},
+        {"damper_fr", "Damper FR", "mm", "Front-right damper travel"},
+        {"damper_rl", "Damper RL", "mm", "Rear-left damper travel"},
+        {"damper_rr", "Damper RR", "mm", "Rear-right damper travel"},
+        {"gps_lat", "GPS latitude", "deg", "Latitude position"},
+        {"gps_lon", "GPS longitude", "deg", "Longitude position"},
+        {"gps_speed", "GPS speed", "m/s", "Receiver Doppler speed"},
+        {"gps_position_accuracy", "GPS position accuracy", "m",
+         "Reported position uncertainty"},
+        {"gps_speed_accuracy", "GPS speed accuracy", "m/s",
+         "Reported speed uncertainty"},
+        {"lap_number", "Lap number", "integer", "Logger lap counter"},
+    };
+    return definitions;
+}
+
+bool metadataUnitsCompatible(const QString& expectedUnit,
+                             const QString& sourceUnit) {
+    QString expected = expectedUnit.trimmed().toLower();
+    QString source = sourceUnit.trimmed().toLower();
+    source.remove(QLatin1Char(' '));
+    source.replace(QStringLiteral("²"), QStringLiteral("2"));
+    if (source.isEmpty()) return false;
+    if (expected == QStringLiteral("numeric code"))
+        return QSet<QString>{
+            QStringLiteral("count"),   QStringLiteral("raw"),
+            QStringLiteral("integer"), QStringLiteral("int"),
+            QStringLiteral("enum"),    QStringLiteral("float"),
+            QStringLiteral("double"),  QStringLiteral("real"),
+            QStringLiteral("number"),  QStringLiteral("numeric"),
+            QStringLiteral("decimal"), QStringLiteral("unitless")}
+            .contains(source);
+    if (expected == QStringLiteral("integer"))
+        return QSet<QString>{QStringLiteral("count"), QStringLiteral("raw"),
+                             QStringLiteral("integer"), QStringLiteral("int"),
+                             QStringLiteral("enum")}
+            .contains(source);
+    if (expected == QStringLiteral("km/h"))
+        return QSet<QString>{QStringLiteral("km/h"), QStringLiteral("kph"),
+                             QStringLiteral("m/s"), QStringLiteral("mph")}
+            .contains(source);
+    if (expected == QStringLiteral("0–1"))
+        return QSet<QString>{
+            QStringLiteral("%"),     QStringLiteral("percent"),
+            QStringLiteral("ratio"), QStringLiteral("fraction"),
+            QStringLiteral("rad"),   QStringLiteral("deg")}
+            .contains(source);
+    if (expected == QStringLiteral("bar"))
+        return QSet<QString>{QStringLiteral("bar"), QStringLiteral("psi"),
+                             QStringLiteral("kpa"), QStringLiteral("pa"),
+                             QStringLiteral("mpa")}
+            .contains(source);
+    if (expected == QStringLiteral("deg"))
+        return source == QStringLiteral("deg") ||
+               source == QStringLiteral("rad");
+    if (expected == QStringLiteral("g"))
+        return source == QStringLiteral("g") ||
+               source == QStringLiteral("m/s2") ||
+               source == QStringLiteral("m/s^2");
+    if (expected == QStringLiteral("m"))
+        return QSet<QString>{QStringLiteral("m"), QStringLiteral("cm"),
+                             QStringLiteral("mm"), QStringLiteral("km"),
+                             QStringLiteral("ft")}
+            .contains(source);
+    if (expected == QStringLiteral("mm"))
+        return QSet<QString>{QStringLiteral("mm"), QStringLiteral("cm"),
+                             QStringLiteral("m"), QStringLiteral("in")}
+            .contains(source);
+    if (expected == QStringLiteral("m/s"))
+        return QSet<QString>{QStringLiteral("m/s"), QStringLiteral("km/h"),
+                             QStringLiteral("kph"), QStringLiteral("mph")}
+            .contains(source);
+    return expected == source;
+}
+
+QString normalizedDriverId(const QVariant& value) {
+    bool ok = false;
+    const double id = value.toDouble(&ok);
+    return ok && std::isfinite(id) && id > 0.0 ? QString::number(id, 'g', 15)
+                                               : QString();
+}
+
+class TextConsensus {
+public:
+    void add(const QString& value) {
+        const QString clean = value.trimmed();
+        if (clean.isEmpty()) return;
+        const QString key = clean.toCaseFolded();
+        ++counts_[key];
+        values_[key] = clean;
+        ++observations_;
+    }
+
+    QString confidentValue() const {
+        QString selected;
+        int selectedCount = 0;
+        bool tied = false;
+        for (auto it = counts_.cbegin(); it != counts_.cend(); ++it) {
+            if (it.value() > selectedCount) {
+                selected = values_.value(it.key());
+                selectedCount = it.value();
+                tied = false;
+            } else if (it.value() == selectedCount) {
+                tied = true;
+            }
+        }
+        if (tied || selectedCount * 3 < observations_ * 2) return {};
+        return selected;
+    }
+
+private:
+    QHash<QString, int> counts_;
+    QHash<QString, QString> values_;
+    int observations_ = 0;
+};
+
+QVariantMap driverNameMappings(const QVariantMap& metadata) {
+    QVariantMap result;
+    const QVariantMap driver = metadata.value(QStringLiteral("driver")).toMap();
+    const QVariantMap mappings =
+        driver.value(QStringLiteral("mappings")).toMap();
+    for (auto it = mappings.cbegin(); it != mappings.cend(); ++it) {
+        const QString id =
+            omatrack::track_metadata::normalizedDriverMappingKey(it.key());
+        const QString name = it.value().toString().trimmed();
+        if (!id.isEmpty() && !name.isEmpty()) result.insert(id, name);
+    }
+    return result;
+}
+
+QString driverNameForId(const QVariantMap& metadata, const QString& driverId) {
+    return omatrack::track_metadata::driverNameForId(metadata, driverId);
+}
+
+QVariantMap metadataDocument(const QVariantMap& metadata) {
+    auto insertText = [](QVariantMap* target, const QString& key,
+                         const QVariant& value) {
+        const QString text = value.toString().trimmed();
+        if (!text.isEmpty()) target->insert(key, text);
+    };
+
+    QVariantMap submittedDriverMappings =
+        metadata.value(QStringLiteral("driverMappings")).toMap();
+    QVariantMap normalizedDriverMappings;
+    for (auto it = submittedDriverMappings.cbegin();
+         it != submittedDriverMappings.cend(); ++it) {
+        const QString id =
+            omatrack::track_metadata::normalizedDriverMappingKey(it.key());
+        const QString name = it.value().toString().trimmed();
+        if (!id.isEmpty() && !name.isEmpty())
+            normalizedDriverMappings.insert(id, name);
+    }
+    QVariantMap driver;
+    if (!normalizedDriverMappings.isEmpty())
+        driver.insert(QStringLiteral("mappings"), normalizedDriverMappings);
+    QVariantMap car;
+    insertText(&car, QStringLiteral("number"),
+               metadata.value(QStringLiteral("carNumber")));
+    insertText(&car, QStringLiteral("class"),
+               metadata.value(QStringLiteral("carClass")));
+    QVariantMap track;
+    insertText(&track, QStringLiteral("name"),
+               metadata.value(QStringLiteral("trackName")));
+    const QString trackSlug = metadata.value(QStringLiteral("trackSlug"))
+                                  .toString()
+                                  .trimmed()
+                                  .toLower();
+    if (!trackSlug.isEmpty()) track.insert(QStringLiteral("slug"), trackSlug);
+
+    QVariantMap channels;
+    const QVariantMap submittedChannels =
+        metadata.value(QStringLiteral("channels")).toMap();
+    for (const MetadataChannelDefinition& definition :
+         metadataChannelDefinitions()) {
+        const QString field = QString::fromLatin1(definition.key);
+        insertText(&channels, field, submittedChannels.value(field));
+    }
+
+    QVariantMap document;
+    if (!driver.isEmpty()) document.insert(QStringLiteral("driver"), driver);
+    if (!car.isEmpty()) document.insert(QStringLiteral("car"), car);
+    insertText(&document, QStringLiteral("event"),
+               metadata.value(QStringLiteral("event")));
+    insertText(&document, QStringLiteral("series"),
+               metadata.value(QStringLiteral("series")));
+    if (!track.isEmpty()) document.insert(QStringLiteral("track"), track);
+    if (!channels.isEmpty())
+        document.insert(QStringLiteral("channels"), channels);
+    if (!document.isEmpty())
+        document.insert(QStringLiteral("schema"), QStringLiteral("2"));
+    return document;
+}
+
+omatrack::ChannelOverrides channelOverrides(const QVariantMap& metadata) {
+    omatrack::ChannelOverrides result;
+    const QVariantMap channels =
+        metadata.value(QStringLiteral("channels")).toMap();
+    for (const MetadataChannelDefinition& definition :
+         metadataChannelDefinitions()) {
+        const QString key = QString::fromLatin1(definition.key);
+        const QString value = channels.value(key).toString().trimmed();
+        if (!value.isEmpty())
+            result.emplace(key.toStdString(), value.toStdString());
+    }
+    return result;
+}
+
 }  // namespace
 
 using namespace omatrack;
@@ -169,6 +445,17 @@ SessionHandle::SessionHandle(const QString& path,
         const QRegularExpressionMatch hashMatch = hashPattern.match(stem);
         if (hashMatch.hasMatch()) carNumber_ = hashMatch.captured(1);
     }
+    const int carMarker = stem.lastIndexOf(
+        QRegularExpression(QStringLiteral("\\s*#\\d+(?:\\D|$)"),
+                           QRegularExpression::CaseInsensitiveOption));
+    if (carMarker > 0) {
+        const QString beforeCar = stem.left(carMarker).trimmed();
+        const QRegularExpression classPattern(
+            QStringLiteral("([A-Z][A-Z0-9-]*(?:[_ ][A-Z][A-Z0-9-]*)?)$"));
+        const QRegularExpressionMatch classMatch =
+            classPattern.match(beforeCar);
+        if (classMatch.hasMatch()) carClass_ = classMatch.captured(1);
+    }
 
     // Until Track Atlas resolves the layout, use the containing folder as the
     // generic track label. Filename-specific venue assumptions belong in user
@@ -192,6 +479,8 @@ QString SessionHandle::stem() const {
 }
 
 QString SessionHandle::sessionKey() const { return path_; }
+
+bool SessionHandle::isVideo() const { return isVideoPath(path_); }
 
 void SessionHandle::populateLaps(const std::vector<Lap>& detected) {
     laps_.clear();
@@ -237,18 +526,19 @@ void SessionHandle::populateLaps(const std::vector<Lap>& detected) {
     summaryLoaded_ = true;
 }
 
-void SessionHandle::applyEventDriverId(int eventDriverId) {
+void SessionHandle::applyEventDriverId(double eventDriverId, bool force) {
     // The lightweight pass reads raw logger values and wins; the loaded source
     // decodes physical samples and only fills the gap.
-    if (eventDriverId <= 0 || driverIdResolved_) return;
+    const QString normalized = normalizedDriverId(eventDriverId);
+    if (normalized.isEmpty() || (driverIdResolved_ && !force)) return;
     driverIdResolved_ = true;
-    driverId_ = QString::number(eventDriverId);
+    driverId_ = normalized;
     driver_ = QStringLiteral("Driver id %1").arg(driverId_);
 }
 
 void SessionHandle::ensureLapSummary() {
     if (summaryLoaded_) return;
-    int eventDriverId = 0;
+    double eventDriverId = 0.0;
     populateLaps(detectLapsLightweight(path_.toStdString(), &eventDriverId));
     applyEventDriverId(eventDriverId);
 }
@@ -262,10 +552,56 @@ bool SessionHandle::loadSummaryForIndex() {
     std::unique_ptr<TelemetrySource> source =
         TelemetrySource::open(path_.toStdString());
     if (!source) return false;
+    captureSourceChannels(*source);
     populateLaps(source->detectLaps());
     applyEventDriverId(source->detectDriverId());
     captureGpsLocation(*source);
     return true;
+}
+
+void SessionHandle::captureSourceChannels(const TelemetrySource& source) {
+    sourceChannels_.clear();
+    automaticChannelMappings_.clear();
+    const auto& channels = source.channels();
+    sourceChannels_.reserve(int(channels.size()));
+    QSet<QString> seenNames;
+    for (const RawChannel& channel : channels) {
+        if (channel.samples.empty()) continue;
+        const QString name = QString::fromStdString(channel.name).trimmed();
+        const QString normalizedName = name.toCaseFolded();
+        if (name.isEmpty() || seenNames.contains(normalizedName)) continue;
+        seenNames.insert(normalizedName);
+
+        SourceChannelSummary summary;
+        summary.name = name;
+        summary.unit = QString::fromStdString(channel.unit).trimmed();
+        summary.frequencyHz = channel.frequencyHz;
+        QSet<QString> seenExamples;
+        constexpr int kCandidateCount = 9;
+        for (int slot = 0; slot < kCandidateCount; ++slot) {
+            const size_t index = channel.samples.size() == 1
+                                     ? 0
+                                     : (channel.samples.size() - 1) *
+                                           size_t(slot) /
+                                           size_t(kCandidateCount - 1);
+            const double sample = channel.samples[index];
+            if (!std::isfinite(sample)) continue;
+            const QString formatted = QString::number(sample, 'g', 7);
+            if (seenExamples.contains(formatted)) continue;
+            seenExamples.insert(formatted);
+            summary.examples.append(formatted);
+            if (summary.examples.size() == 5) break;
+        }
+        sourceChannels_.append(std::move(summary));
+    }
+
+    const auto mappings = source.mapChannels();
+    for (const auto& [field, index] : mappings) {
+        if (index < 0 || index >= int(channels.size())) continue;
+        automaticChannelMappings_.insert(
+            QString::fromStdString(field),
+            QString::fromStdString(channels[size_t(index)].name));
+    }
 }
 
 void SessionHandle::captureGpsLocation(const TelemetrySource& source) {
@@ -322,16 +658,18 @@ void SessionHandle::captureGpsLocation(const TelemetrySource& source) {
 }
 
 void SessionHandle::applyCachedMetadata(const QJsonObject& metadata) {
-    // Version 6 also derives session dates from ISO-named event folders so
-    // automatic track identity can span consecutive event days.
-    if (metadata.value(QStringLiteral("version")).toInt() != 6) return;
+    // Version 10 preserves numeric driver codes without integer coercion and
+    // retains source units and representative values for the channel browser.
+    if (metadata.value(QStringLiteral("version")).toInt() != 10) return;
     time_ = metadata.value(QStringLiteral("time")).toString(time_);
     driverId_ = metadata.value(QStringLiteral("driverId")).toString(driverId_);
     track_ = metadata.value(QStringLiteral("track")).toString(track_);
     date_ = metadata.value(QStringLiteral("date")).toString(date_);
     carNumber_ =
         metadata.value(QStringLiteral("carNumber")).toString(carNumber_);
-    carClass_ = metadata.value(QStringLiteral("carClass")).toString(carClass_);
+    const QString cachedCarClass =
+        metadata.value(QStringLiteral("carClass")).toString();
+    if (!cachedCarClass.isEmpty()) carClass_ = cachedCarClass;
     driver_ = metadata.value(QStringLiteral("driver")).toString(driver_);
     vehicle_ = metadata.value(QStringLiteral("vehicle")).toString(vehicle_);
     venue_ = metadata.value(QStringLiteral("venue")).toString(venue_);
@@ -341,6 +679,25 @@ void SessionHandle::applyCachedMetadata(const QJsonObject& metadata) {
                         .toDouble(std::numeric_limits<double>::quiet_NaN());
     driverIdResolved_ =
         metadata.value(QStringLiteral("driverIdResolved")).toBool(false);
+    for (const QJsonValue& value :
+         metadata.value(QStringLiteral("sourceChannels")).toArray()) {
+        if (!value.isObject()) continue;
+        const QJsonObject object = value.toObject();
+        SourceChannelSummary summary;
+        summary.name = object.value(QStringLiteral("name")).toString();
+        summary.unit = object.value(QStringLiteral("unit")).toString();
+        summary.frequencyHz =
+            object.value(QStringLiteral("frequencyHz")).toDouble();
+        for (const QJsonValue& example :
+             object.value(QStringLiteral("examples")).toArray())
+            summary.examples.append(example.toString());
+        if (!summary.name.isEmpty()) sourceChannels_.append(std::move(summary));
+    }
+    const QJsonObject automaticMappings =
+        metadata.value(QStringLiteral("automaticChannelMappings")).toObject();
+    for (auto it = automaticMappings.begin(); it != automaticMappings.end();
+         ++it)
+        automaticChannelMappings_.insert(it.key(), it.value().toString());
 
     laps_.clear();
     const QJsonArray laps = metadata.value(QStringLiteral("laps")).toArray();
@@ -378,8 +735,24 @@ QJsonObject SessionHandle::metadataForCache() const {
             {QStringLiteral("pit"), lap.isPitLap},
         });
     }
+    QJsonArray sourceChannels;
+    for (const SourceChannelSummary& summary : sourceChannels_) {
+        QJsonArray examples;
+        for (const QString& example : summary.examples)
+            examples.append(example);
+        sourceChannels.append(QJsonObject{
+            {QStringLiteral("name"), summary.name},
+            {QStringLiteral("unit"), summary.unit},
+            {QStringLiteral("frequencyHz"), summary.frequencyHz},
+            {QStringLiteral("examples"), examples},
+        });
+    }
+    QJsonObject automaticMappings;
+    for (auto it = automaticChannelMappings_.cbegin();
+         it != automaticChannelMappings_.cend(); ++it)
+        automaticMappings.insert(it.key(), it.value());
     return QJsonObject{
-        {QStringLiteral("version"), 6},
+        {QStringLiteral("version"), 10},
         {QStringLiteral("time"), time_},
         {QStringLiteral("driverId"), driverId_},
         {QStringLiteral("track"), track_},
@@ -392,6 +765,8 @@ QJsonObject SessionHandle::metadataForCache() const {
         {QStringLiteral("gpsLatitude"), gpsLatitude_},
         {QStringLiteral("gpsLongitude"), gpsLongitude_},
         {QStringLiteral("driverIdResolved"), driverIdResolved_},
+        {QStringLiteral("sourceChannels"), sourceChannels},
+        {QStringLiteral("automaticChannelMappings"), automaticMappings},
         {QStringLiteral("laps"), laps},
     };
 }
@@ -409,6 +784,52 @@ QString SessionHandle::bestLapTime() {
                : QStringLiteral("—");
 }
 
+QString averageFastestQuartileTime(const SessionHandle* session) {
+    if (!session) return {};
+    QVector<double> representativeTimes;
+    for (const LapEntry& lap : session->laps()) {
+        if (lap.countsForBest() && std::isfinite(lap.timeMs) &&
+            lap.timeMs > 0.0)
+            representativeTimes.append(lap.timeMs);
+    }
+    if (representativeTimes.isEmpty()) return QStringLiteral("—");
+    std::sort(representativeTimes.begin(), representativeTimes.end());
+    const qsizetype count =
+        std::max<qsizetype>(1, (representativeTimes.size() + 3) / 4);
+    double totalMs = 0.0;
+    for (qsizetype index = 0; index < count; ++index)
+        totalMs += representativeTimes.at(index);
+    return QString::fromStdString(formatLapTime(totalMs / double(count)));
+}
+
+QString indexedDriveTime(const SessionHandle* session) {
+    if (!session) return {};
+    double totalMs = 0.0;
+    for (const LapEntry& lap : session->laps())
+        if (std::isfinite(lap.timeMs) && lap.timeMs > 0.0)
+            totalMs += lap.timeMs;
+    if (!(totalMs > 0.0)) return QStringLiteral("—");
+
+    const qint64 totalSeconds = qRound64(totalMs / 1000.0);
+    const qint64 hours = totalSeconds / 3600;
+    const qint64 minutes = (totalSeconds % 3600) / 60;
+    const qint64 seconds = totalSeconds % 60;
+    if (hours > 0)
+        return QStringLiteral("%1:%2:%3")
+            .arg(hours)
+            .arg(minutes, 2, 10, QLatin1Char('0'))
+            .arg(seconds, 2, 10, QLatin1Char('0'));
+    return QStringLiteral("%1:%2").arg(minutes).arg(seconds, 2, 10,
+                                                    QLatin1Char('0'));
+}
+
+int indexedLapCount(const SessionHandle* session) {
+    if (!session) return 0;
+    return int(
+        std::count_if(session->laps().cbegin(), session->laps().cend(),
+                      [](const LapEntry& lap) { return lap.isComplete; }));
+}
+
 std::shared_ptr<const omatrack::UnifiedLap> SessionHandle::unifiedLap(
     int lapId) const {
     return unifiedCache_.value(lapId);
@@ -416,28 +837,419 @@ std::shared_ptr<const omatrack::UnifiedLap> SessionHandle::unifiedLap(
 
 void SessionHandle::adoptLoadedLap(int lapId,
                                    std::unique_ptr<TelemetrySource> source,
-                                   std::shared_ptr<const UnifiedLap> unified) {
+                                   std::shared_ptr<const UnifiedLap> unified,
+                                   double driverId, bool forceDriverId) {
     if (!source || !unified || unified->size() == 0) return;
-    applyEventDriverId(source->detectDriverId());
+    applyEventDriverId(driverId > 0 ? driverId : source->detectDriverId(),
+                       forceDriverId);
     if (!hasGpsLocation()) captureGpsLocation(*source);
+    captureSourceChannels(*source);
     src_ = std::move(source);
     unifiedCache_.insert(lapId, std::move(unified));
 }
 
 struct SessionScanResult {
     std::vector<std::unique_ptr<SessionHandle>> sessions;
+    QVariantList fileSources;
+    QHash<QString, QVariantMap> fileMetadata;
+    QStringList trackMetadataPaths;
     int cacheHits = 0;
     int cacheMisses = 0;
     qint64 elapsedMs = 0;
 };
+
+struct FileTreeFolder {
+    QString name;
+    QString path;
+    qint64 modifiedMs = 0;
+    std::vector<std::unique_ptr<FileTreeFolder>> folders;
+    QVector<QVariantMap> files;
+};
+
+FileTreeFolder* childFolder(FileTreeFolder& parent, const QString& name) {
+    for (const auto& folder : parent.folders)
+        if (folder->name == name) return folder.get();
+    auto folder = std::make_unique<FileTreeFolder>();
+    folder->name = name;
+    folder->path = QDir(parent.path).filePath(name);
+    FileTreeFolder* result = folder.get();
+    parent.folders.push_back(std::move(folder));
+    return result;
+}
+
+QVariantMap fileTreeFolderMap(FileTreeFolder& folder) {
+    std::sort(folder.folders.begin(), folder.folders.end(),
+              [](const auto& left, const auto& right) {
+                  if (left->modifiedMs != right->modifiedMs)
+                      return left->modifiedMs > right->modifiedMs;
+                  return left->name.compare(right->name, Qt::CaseInsensitive) <
+                         0;
+              });
+    std::sort(folder.files.begin(), folder.files.end(),
+              [](const QVariantMap& left, const QVariantMap& right) {
+                  const qint64 leftTime =
+                      left.value(QStringLiteral("modifiedMs")).toLongLong();
+                  const qint64 rightTime =
+                      right.value(QStringLiteral("modifiedMs")).toLongLong();
+                  if (leftTime != rightTime) return leftTime > rightTime;
+                  return left.value(QStringLiteral("name"))
+                             .toString()
+                             .compare(
+                                 right.value(QStringLiteral("name")).toString(),
+                                 Qt::CaseInsensitive) < 0;
+              });
+
+    QVariantList children;
+    children.reserve(qsizetype(folder.folders.size()) + folder.files.size());
+    for (const auto& child : folder.folders)
+        children.append(fileTreeFolderMap(*child));
+    for (const QVariantMap& file : std::as_const(folder.files))
+        children.append(file);
+    return QVariantMap{
+        {QStringLiteral("role"), QStringLiteral("folder")},
+        {QStringLiteral("name"), folder.name},
+        {QStringLiteral("path"), folder.path},
+        {QStringLiteral("modifiedMs"), folder.modifiedMs},
+        {QStringLiteral("children"), children},
+    };
+}
+
+QVariantMap buildFileSource(const QString& directory,
+                            const QSet<QString>& paths) {
+    const QFileInfo sourceInfo(directory);
+    const QString sourcePath = sourceInfo.absoluteFilePath();
+    FileTreeFolder root;
+    root.name =
+        sourceInfo.fileName().isEmpty() ? sourcePath : sourceInfo.fileName();
+    root.path = sourcePath;
+    QDir sourceDirectory(sourcePath);
+
+    for (const QString& path : paths) {
+        const QFileInfo fileInfo(path);
+        QString relative = sourceDirectory.relativeFilePath(path);
+        QStringList parts = relative.split('/', Qt::SkipEmptyParts);
+        if (relative.startsWith(QStringLiteral("../")) || parts.isEmpty())
+            parts = {fileInfo.fileName()};
+
+        const qint64 modifiedMs = fileInfo.lastModified().toMSecsSinceEpoch();
+        root.modifiedMs = std::max(root.modifiedMs, modifiedMs);
+        FileTreeFolder* folder = &root;
+        for (int index = 0; index + 1 < parts.size(); ++index) {
+            folder = childFolder(*folder, parts.at(index));
+            folder->modifiedMs = std::max(folder->modifiedMs, modifiedMs);
+        }
+        folder->files.append(QVariantMap{
+            {QStringLiteral("role"), QStringLiteral("file")},
+            {QStringLiteral("name"), parts.constLast()},
+            {QStringLiteral("path"), path},
+            {QStringLiteral("modifiedMs"), modifiedMs},
+            {QStringLiteral("modified"),
+             fileInfo.lastModified().toString(
+                 QStringLiteral("yyyy-MM-dd HH:mm"))},
+            {QStringLiteral("children"), QVariantList{}},
+        });
+    }
+
+    QVariantMap source = fileTreeFolderMap(root);
+    source.insert(QStringLiteral("role"), QStringLiteral("source"));
+    source.insert(QStringLiteral("available"), sourceInfo.isDir());
+    source.insert(QStringLiteral("fileCount"), paths.size());
+    return source;
+}
 
 struct SessionLapLoadResult {
     QString sessionKey;
     int lapId = -1;
     std::unique_ptr<TelemetrySource> source;
     std::shared_ptr<const UnifiedLap> unified;
+    double driverId = 0.0;
+    bool forceDriverId = false;
     QString error;
 };
+
+QVariantMap configuredRecordingMetadataForPath(
+    const QString& path, const QHash<QString, QVariantMap>& saved) {
+    const QString canonical = canonicalInputPath(path);
+    if (canonical.isEmpty()) return {};
+    QVariantMap result = omatrack::track_metadata::readHierarchy(
+        QFileInfo(canonical).absolutePath());
+    omatrack::track_metadata::merge(&result, saved.value(canonical));
+    return result;
+}
+
+QVariantMap recordingMetadataForPath(const QString& path,
+                                     const QHash<QString, QVariantMap>& saved) {
+    return configuredRecordingMetadataForPath(path, saved);
+}
+
+QVariantList metadataChannelRows(
+    const QVariantMap& metadata, const QVariantMap& inheritedMetadata,
+    const QVector<SourceChannelSummary>& sourceChannels,
+    const QHash<QString, QString>& automaticMappings,
+    const QStringList& trackFiles) {
+    QHash<QString, QHash<QString, int>> historicalCounts;
+    QHash<QString, QHash<QString, QString>> historicalValues;
+    for (const QString& path : trackFiles) {
+        const QVariantMap document = YamlConfig::readDocument(path);
+        const QVariantMap mappings =
+            document.value(QStringLiteral("channels")).toMap();
+        for (const MetadataChannelDefinition& definition :
+             metadataChannelDefinitions()) {
+            const QString field = QString::fromLatin1(definition.key);
+            const QString value = mappings.value(field).toString().trimmed();
+            if (value.isEmpty()) continue;
+            const QString normalized = value.toCaseFolded();
+            historicalCounts[field][normalized] += 1;
+            historicalValues[field][normalized] = value;
+        }
+    }
+
+    QHash<QString, SourceChannelSummary> sourceChannelsByName;
+    for (const SourceChannelSummary& summary : sourceChannels)
+        sourceChannelsByName.insert(summary.name.toCaseFolded(), summary);
+    const QVariantMap channels =
+        metadata.value(QStringLiteral("channels")).toMap();
+    const QVariantMap inheritedChannels =
+        inheritedMetadata.value(QStringLiteral("channels")).toMap();
+
+    QVariantList rows;
+    for (const MetadataChannelDefinition& definition :
+         metadataChannelDefinitions()) {
+        const QString field = QString::fromLatin1(definition.key);
+        const QString current = channels.value(field).toString().trimmed();
+        const QString inherited =
+            inheritedChannels.value(field).toString().trimmed();
+        const QString effective = current.isEmpty() ? inherited : current;
+        const QString automatic = automaticMappings.value(field);
+
+        QHash<QString, QVariantMap> candidates;
+        auto addCandidate = [&](const QString& value, int historicalCount,
+                                bool isAutomatic) {
+            const QString clean = value.trimmed();
+            if (clean.isEmpty()) return;
+            const QString normalized = clean.toCaseFolded();
+            QVariantMap candidate = candidates.value(normalized);
+            const auto source = sourceChannelsByName.constFind(normalized);
+            const bool available = source != sourceChannelsByName.cend();
+            candidate.insert(QStringLiteral("value"), clean);
+            candidate.insert(
+                QStringLiteral("historicalCount"),
+                std::max(
+                    candidate.value(QStringLiteral("historicalCount")).toInt(),
+                    historicalCount));
+            candidate.insert(QStringLiteral("available"), available);
+            if (available) {
+                const QString sourceUnit =
+                    source->unit.isEmpty() &&
+                            QString::fromUtf8(definition.unit) ==
+                                QStringLiteral("numeric code")
+                        ? QStringLiteral("unitless")
+                        : source->unit;
+                candidate.insert(QStringLiteral("unit"), sourceUnit);
+                candidate.insert(
+                    QStringLiteral("unitCompatible"),
+                    metadataUnitsCompatible(QString::fromUtf8(definition.unit),
+                                            sourceUnit));
+                candidate.insert(QStringLiteral("examples"), source->examples);
+                candidate.insert(QStringLiteral("frequencyHz"),
+                                 source->frequencyHz);
+                candidate.insert(QStringLiteral("recordingCount"),
+                                 source->recordingCount);
+            }
+            candidate.insert(
+                QStringLiteral("automatic"),
+                candidate.value(QStringLiteral("automatic")).toBool() ||
+                    isAutomatic);
+            candidates.insert(normalized, candidate);
+        };
+
+        addCandidate(effective,
+                     historicalCounts[field].value(effective.toCaseFolded()),
+                     effective == automatic && !effective.isEmpty());
+        addCandidate(automatic,
+                     historicalCounts[field].value(automatic.toCaseFolded()),
+                     true);
+        for (auto it = historicalCounts[field].cbegin();
+             it != historicalCounts[field].cend(); ++it)
+            addCandidate(historicalValues[field].value(it.key()), it.value(),
+                         false);
+        for (const SourceChannelSummary& source : sourceChannels)
+            addCandidate(source.name, 0, false);
+
+        QVector<QVariantMap> ordered(candidates.cbegin(), candidates.cend());
+        std::sort(
+            ordered.begin(), ordered.end(),
+            [](const QVariantMap& left, const QVariantMap& right) {
+                auto score = [](const QVariantMap& candidate) {
+                    return (candidate.value(QStringLiteral("automatic"))
+                                    .toBool()
+                                ? 100000
+                                : 0) +
+                           candidate.value(QStringLiteral("historicalCount"))
+                                   .toInt() *
+                               100 +
+                           (candidate.value(QStringLiteral("available"))
+                                    .toBool()
+                                ? 10
+                                : 0) +
+                           (candidate.value(QStringLiteral("unitCompatible"))
+                                    .toBool()
+                                ? 25
+                                : 0);
+                };
+                const int leftScore = score(left);
+                const int rightScore = score(right);
+                if (leftScore != rightScore) return leftScore > rightScore;
+                return left.value(QStringLiteral("value"))
+                           .toString()
+                           .compare(
+                               right.value(QStringLiteral("value")).toString(),
+                               Qt::CaseInsensitive) < 0;
+            });
+        QVariantList suggestions;
+        suggestions.reserve(ordered.size());
+        for (const QVariantMap& candidate : ordered)
+            suggestions.append(candidate);
+
+        rows.append(QVariantMap{
+            {QStringLiteral("key"), field},
+            {QStringLiteral("label"), QString::fromUtf8(definition.label)},
+            {QStringLiteral("expectedUnit"),
+             QString::fromUtf8(definition.unit)},
+            {QStringLiteral("detail"), QString::fromUtf8(definition.detail)},
+            {QStringLiteral("value"), current},
+            {QStringLiteral("inheritedValue"), inherited},
+            {QStringLiteral("automaticValue"), automatic},
+            {QStringLiteral("suggestions"), suggestions},
+        });
+    }
+    return rows;
+}
+
+QVariantList metadataDriverRows(const QVariantMap& metadata,
+                                const QVariantMap& inheritedMetadata,
+                                const QStringList& detectedDriverIds,
+                                const QVariantMap& detectedDriverNames,
+                                const QStringList& trackFiles) {
+    const QVariantMap current = driverNameMappings(metadata);
+    const QVariantMap inherited = driverNameMappings(inheritedMetadata);
+    QHash<QString, QHash<QString, int>> historicalCounts;
+    QHash<QString, QHash<QString, QString>> historicalValues;
+    for (const QString& path : trackFiles) {
+        const QVariantMap mappings =
+            driverNameMappings(YamlConfig::readDocument(path));
+        for (auto it = mappings.cbegin(); it != mappings.cend(); ++it) {
+            const QString normalizedName =
+                it.value().toString().trimmed().toCaseFolded();
+            if (normalizedName.isEmpty()) continue;
+            historicalCounts[it.key()][normalizedName] += 1;
+            historicalValues[it.key()][normalizedName] = it.value().toString();
+        }
+    }
+
+    QSet<QString> ids;
+    for (auto it = current.cbegin(); it != current.cend(); ++it)
+        ids.insert(it.key());
+    for (auto it = inherited.cbegin(); it != inherited.cend(); ++it)
+        ids.insert(it.key());
+    if (historicalCounts.contains(QStringLiteral("*")))
+        ids.insert(QStringLiteral("*"));
+    QSet<QString> detected;
+    for (const QString& detectedDriverId : detectedDriverIds) {
+        const QString id = normalizedDriverId(detectedDriverId);
+        if (id.isEmpty()) continue;
+        detected.insert(id);
+        ids.insert(id);
+    }
+
+    QStringList orderedIds(ids.cbegin(), ids.cend());
+    std::sort(orderedIds.begin(), orderedIds.end(),
+              [](const QString& left, const QString& right) {
+                  if (left == QStringLiteral("*")) return false;
+                  if (right == QStringLiteral("*")) return true;
+                  bool leftOk = false;
+                  bool rightOk = false;
+                  const double leftId = left.toDouble(&leftOk);
+                  const double rightId = right.toDouble(&rightOk);
+                  if (leftOk && rightOk && leftId != rightId)
+                      return leftId < rightId;
+                  return left < right;
+              });
+
+    QVariantList rows;
+    for (const QString& id : orderedIds) {
+        QHash<QString, QVariantMap> candidates;
+        auto addCandidate = [&](const QString& value, int historicalCount) {
+            const QString clean = value.trimmed();
+            if (clean.isEmpty()) return;
+            const QString normalized = clean.toCaseFolded();
+            QVariantMap candidate = candidates.value(normalized);
+            candidate.insert(QStringLiteral("value"), clean);
+            candidate.insert(
+                QStringLiteral("historicalCount"),
+                std::max(
+                    candidate.value(QStringLiteral("historicalCount")).toInt(),
+                    historicalCount));
+            candidates.insert(normalized, candidate);
+        };
+        addCandidate(current.value(id).toString(),
+                     historicalCounts[id].value(
+                         current.value(id).toString().toCaseFolded()));
+        addCandidate(inherited.value(id).toString(),
+                     historicalCounts[id].value(
+                         inherited.value(id).toString().toCaseFolded()));
+        addCandidate(detectedDriverNames.value(id).toString(), 0);
+        for (auto it = historicalCounts[id].cbegin();
+             it != historicalCounts[id].cend(); ++it)
+            addCandidate(historicalValues[id].value(it.key()), it.value());
+
+        QVector<QVariantMap> orderedCandidates(candidates.cbegin(),
+                                               candidates.cend());
+        std::sort(
+            orderedCandidates.begin(), orderedCandidates.end(),
+            [](const QVariantMap& left, const QVariantMap& right) {
+                const int leftCount =
+                    left.value(QStringLiteral("historicalCount")).toInt();
+                const int rightCount =
+                    right.value(QStringLiteral("historicalCount")).toInt();
+                if (leftCount != rightCount) return leftCount > rightCount;
+                return left.value(QStringLiteral("value"))
+                           .toString()
+                           .compare(
+                               right.value(QStringLiteral("value")).toString(),
+                               Qt::CaseInsensitive) < 0;
+            });
+        QVariantList suggestions;
+        for (const QVariantMap& candidate : orderedCandidates)
+            suggestions.append(candidate);
+
+        rows.append(QVariantMap{
+            {QStringLiteral("id"), id},
+            {QStringLiteral("value"), current.value(id).toString()},
+            {QStringLiteral("inheritedValue"), inherited.value(id).toString()},
+            {QStringLiteral("detected"), detected.contains(id)},
+            {QStringLiteral("wildcard"), id == QStringLiteral("*")},
+            {QStringLiteral("suggestions"), suggestions},
+        });
+    }
+    return rows;
+}
+
+QVariantMap channelRow(const QVariantList& rows, const QString& key) {
+    for (const QVariant& value : rows) {
+        const QVariantMap row = value.toMap();
+        if (row.value(QStringLiteral("key")).toString() == key) return row;
+    }
+    return {};
+}
+
+QVariantList channelRowsWithout(const QVariantList& rows, const QString& key) {
+    QVariantList result;
+    for (const QVariant& value : rows)
+        if (value.toMap().value(QStringLiteral("key")).toString() != key)
+            result.append(value);
+    return result;
+}
 
 struct FileOpenResult {
     QString path;
@@ -496,9 +1308,9 @@ const LapEntry* bestLap(const SessionHandle& session) {
     return fallback;
 }
 
-std::shared_ptr<SessionLapLoadResult> loadSessionLap(const QString& path,
-                                                     const QString& sessionKey,
-                                                     const LapEntry& lap) {
+std::shared_ptr<SessionLapLoadResult> loadSessionLap(
+    const QString& path, const QString& sessionKey, const LapEntry& lap,
+    const QVariantMap& metadata = {}) {
     auto result = std::make_shared<SessionLapLoadResult>();
     result->sessionKey = sessionKey;
     result->lapId = lap.lapId;
@@ -510,8 +1322,11 @@ std::shared_ptr<SessionLapLoadResult> loadSessionLap(const QString& path,
                             : QString::fromStdString(error);
         return result;
     }
+    const ChannelOverrides overrides = channelOverrides(metadata);
+    result->driverId = result->source->detectDriverId(overrides);
+    result->forceDriverId = overrides.find("driver_id") != overrides.end();
     auto unified = std::make_shared<UnifiedLap>(
-        result->source->unifyLap(lap.startTime, lap.endTime));
+        result->source->unifyLap(lap.startTime, lap.endTime, overrides));
     if (unified->size() == 0) {
         result->error = QStringLiteral("Unable to normalize selected lap");
         result->source.reset();
@@ -529,27 +1344,48 @@ std::shared_ptr<SessionScanResult> scanSessionDirectories(
     auto result = std::make_shared<SessionScanResult>();
     SessionMetadataCache cache(cachePath);
     QSet<QString> uniquePaths = extraPaths;
-    const QStringList filters{"*.pds", "*.PDS", "*.ld",  "*.LD",  "*.ldx",
-                              "*.LDX", "*.vbo", "*.VBO", "*.mp4", "*.MP4"};
+    QSet<QString> metadataPaths;
+    const QStringList filters{
+        "*.pds", "*.PDS", "*.ld",  "*.LD",  "*.ldx",  "*.LDX",  "*.vbo",
+        "*.VBO", "*.mp4", "*.MP4", "*.mov", "*.MOV",  "*.mkv",  "*.MKV",
+        "*.avi", "*.AVI", "*.m4v", "*.M4V", "*.webm", "*.WEBM", "TRACK.yml"};
     for (const QString& directory : directories) {
+        QSet<QString> sourcePaths;
         QDirIterator it(directory, filters, QDir::Files,
                         QDirIterator::Subdirectories);
         while (it.hasNext()) {
             it.next();
+            if (it.fileName() == QStringLiteral("TRACK.yml")) {
+                metadataPaths.insert(
+                    QFileInfo(it.filePath()).absoluteFilePath());
+                continue;
+            }
             const QString path = telemetryPathForInput(it.filePath());
             if (path.isEmpty()) continue;
             const QFileInfo resolved(path);
             const QString canonical = resolved.canonicalFilePath().isEmpty()
                                           ? resolved.absoluteFilePath()
                                           : resolved.canonicalFilePath();
+            sourcePaths.insert(canonical);
             uniquePaths.insert(canonical);
         }
+        result->fileSources.append(buildFileSource(directory, sourcePaths));
     }
+    result->trackMetadataPaths =
+        QStringList(metadataPaths.cbegin(), metadataPaths.cend());
+    std::sort(result->trackMetadataPaths.begin(),
+              result->trackMetadataPaths.end());
 
     QStringList paths(uniquePaths.cbegin(), uniquePaths.cend());
     std::sort(paths.begin(), paths.end());
     result->sessions.reserve(size_t(paths.size()));
+    QHash<QString, QVariantMap> metadataDocuments;
     for (const QString& path : paths) {
+        const QString directory = QFileInfo(path).absolutePath();
+        if (!metadataDocuments.contains(directory))
+            metadataDocuments.insert(
+                directory, omatrack::track_metadata::readHierarchy(directory));
+        result->fileMetadata.insert(path, metadataDocuments.value(directory));
         IndexedSession indexed =
             indexSession(path, cache, &result->cacheHits, &result->cacheMisses);
         if (indexed.handle)
@@ -561,7 +1397,8 @@ std::shared_ptr<SessionScanResult> scanSessionDirectories(
 }
 
 std::shared_ptr<FileOpenResult> openIndexedFile(const QString& path,
-                                                const QString& cachePath) {
+                                                const QString& cachePath,
+                                                const QVariantMap& metadata) {
     auto result = std::make_shared<FileOpenResult>();
     result->path = path;
     SessionMetadataCache cache(cachePath);
@@ -576,7 +1413,8 @@ std::shared_ptr<FileOpenResult> openIndexedFile(const QString& path,
         result->standaloneVideo = indexed.handle->isVideo();
         return result;
     }
-    result->lap = loadSessionLap(path, indexed.handle->sessionKey(), *lap);
+    result->lap =
+        loadSessionLap(path, indexed.handle->sessionKey(), *lap, metadata);
     result->handle = std::move(indexed.handle);
     return result;
 }
@@ -723,6 +1561,20 @@ void TelemetryStore::loadPreferences() {
     for (auto it = trackAssignments.cbegin(); it != trackAssignments.cend();
          ++it)
         trackAssignments_.insert(it.key(), it.value().toString());
+
+    // Folder metadata lives beside the recordings. Prune the superseded
+    // central experiment rather than keeping two competing sources of truth.
+    if (config.value({QStringLiteral("folder_metadata")}).isValid()) {
+        config.remove({QStringLiteral("folder_metadata")});
+        config.save();
+    }
+
+    const QVariantMap recordingMetadata =
+        config.map({QStringLiteral("recording_metadata")});
+    for (auto it = recordingMetadata.cbegin(); it != recordingMetadata.cend();
+         ++it)
+        if (it.value().typeId() == QMetaType::QVariantMap)
+            recordingMetadata_.insert(it.key(), it.value().toMap());
 }
 
 void TelemetryStore::savePreferences() {
@@ -753,6 +1605,12 @@ void TelemetryStore::savePreferences() {
          ++it)
         trackAssignments.insert(it.key(), it.value());
     config.setMap({QStringLiteral("track_assignments")}, trackAssignments);
+
+    QVariantMap recordingMetadata;
+    for (auto it = recordingMetadata_.cbegin(); it != recordingMetadata_.cend();
+         ++it)
+        recordingMetadata.insert(it.key(), it.value());
+    config.setMap({QStringLiteral("recording_metadata")}, recordingMetadata);
 
     QVariantMap channels = config.map({QStringLiteral("channels")});
     for (const QString& key : channelOrder_)
@@ -941,6 +1799,9 @@ void TelemetryStore::finishSessionScan() {
 
     clearSessions();
     sessions_ = std::move(result->sessions);
+    fileSources_ = result->fileSources;
+    fileMetadata_ = result->fileMetadata;
+    trackMetadataPaths_ = result->trackMetadataPaths;
     scanExtraPaths_.clear();
     qInfo() << "Session index:" << sessions_.size() << "sessions,"
             << result->cacheHits << "cache hits," << result->cacheMisses
@@ -1018,6 +1879,8 @@ void TelemetryStore::startNextFileOpen() {
 
     const QString path = pendingFileOpens_.takeFirst();
     const QString cachePath = sessionIndexCachePath();
+    const QVariantMap metadata =
+        recordingMetadataForPath(path, recordingMetadata_);
     auto* watcher = new QFutureWatcher<std::shared_ptr<FileOpenResult>>(this);
     connect(
         watcher, &QFutureWatcher<std::shared_ptr<FileOpenResult>>::finished,
@@ -1025,6 +1888,11 @@ void TelemetryStore::startNextFileOpen() {
             std::shared_ptr<FileOpenResult> result = watcher->result();
             watcher->deleteLater();
             if (result->standaloneVideo) {
+                // An ordinary video has no analytical relationship to the
+                // currently selected laps. Clear both roles before handing
+                // playback to QML so stale traces are never presented as if
+                // they belonged to this recording.
+                clearPrimary();
                 emit standaloneVideoRequested(
                     QUrl::fromLocalFile(result->path));
             } else if (result->handle && result->lap &&
@@ -1037,9 +1905,10 @@ void TelemetryStore::startNextFileOpen() {
                     sessions_.push_back(std::move(result->handle));
                     added = true;
                 }
-                session->adoptLoadedLap(result->lap->lapId,
-                                        std::move(result->lap->source),
-                                        std::move(result->lap->unified));
+                session->adoptLoadedLap(
+                    result->lap->lapId, std::move(result->lap->source),
+                    std::move(result->lap->unified), result->lap->driverId,
+                    result->lap->forceDriverId);
                 if (added) emit sessionsChanged();
                 // Opening a second telemetry-bearing video means
                 // "compare these": preserve the first as primary.
@@ -1065,12 +1934,15 @@ void TelemetryStore::startNextFileOpen() {
             else
                 startNextFileOpen();
         });
-    watcher->setFuture(QtConcurrent::run(
-        [path, cachePath]() { return openIndexedFile(path, cachePath); }));
+    watcher->setFuture(QtConcurrent::run([path, cachePath, metadata]() {
+        return openIndexedFile(path, cachePath, metadata);
+    }));
 }
 
 void TelemetryStore::clearSessions() {
     sessions_.clear();
+    fileSources_.clear();
+    fileMetadata_.clear();
     primarySession_ = nullptr;
     compareSession_ = nullptr;
     primaryLap_ = -1;
@@ -1089,6 +1961,65 @@ void TelemetryStore::clearSessions() {
 }
 
 QStringList TelemetryStore::sessionDirectories() const { return sessionDirs_; }
+
+QVariantList TelemetryStore::fileSources() const {
+    auto enrichNode = [this](auto&& self,
+                             const QVariantMap& sourceNode) -> QVariantMap {
+        QVariantMap node = sourceNode;
+        const QString role = node.value(QStringLiteral("role")).toString();
+        const QString path = node.value(QStringLiteral("path")).toString();
+        if (role == QStringLiteral("file")) {
+            SessionHandle* session = findSession(path);
+            const bool video = isVideoPath(path);
+            QVariantMap metadata = fileMetadata_.value(path);
+            omatrack::track_metadata::merge(&metadata,
+                                            recordingMetadata_.value(path));
+            auto metadataOr = [&metadata](const QStringList& field,
+                                          const QString& fallback) {
+                const QString value = nestedText(metadata, field);
+                return value.isEmpty() ? fallback : value;
+            };
+            QString date = session ? session->date() : QString();
+            if (date == QStringLiteral("Unknown")) date.clear();
+            node.insert(QStringLiteral("key"),
+                        session ? session->sessionKey() : QString());
+            node.insert(QStringLiteral("hasSession"), session != nullptr);
+            node.insert(QStringLiteral("isVideo"), video);
+            node.insert(QStringLiteral("driver"),
+                        session ? driverDisplay(session) : QString());
+            node.insert(QStringLiteral("mappingKey"),
+                        session ? session->driverMappingKey() : QString());
+            node.insert(QStringLiteral("bestTime"),
+                        session ? session->bestLapTime() : QString());
+            node.insert(QStringLiteral("topQuartileTime"),
+                        averageFastestQuartileTime(session));
+            node.insert(QStringLiteral("driveTime"), indexedDriveTime(session));
+            node.insert(QStringLiteral("lapCount"), indexedLapCount(session));
+            node.insert(
+                QStringLiteral("carClass"),
+                metadataOr({QStringLiteral("car"), QStringLiteral("class")},
+                           session ? session->carClass() : QString()));
+            node.insert(QStringLiteral("seriesName"),
+                        nestedText(metadata, {QStringLiteral("series")}));
+            node.insert(QStringLiteral("sessionDate"), date);
+        }
+
+        const QVariantList sourceChildren =
+            node.value(QStringLiteral("children")).toList();
+        QVariantList children;
+        children.reserve(sourceChildren.size());
+        for (const QVariant& child : sourceChildren)
+            children.append(self(self, child.toMap()));
+        node.insert(QStringLiteral("children"), children);
+        return node;
+    };
+
+    QVariantList sources;
+    sources.reserve(fileSources_.size());
+    for (const QVariant& source : fileSources_)
+        sources.append(enrichNode(enrichNode, source.toMap()));
+    return sources;
+}
 
 bool TelemetryStore::directoryExists(const QString& dirPath) const {
     return !dirPath.isEmpty() && QFileInfo(dirPath).isDir();
@@ -1132,6 +2063,11 @@ void TelemetryStore::closeTrack(const QString& trackName) {
 
 QString TelemetryStore::driverDisplay(const SessionHandle* session) const {
     if (!session) return QStringLiteral("Unknown driver");
+    const QVariantMap metadata =
+        recordingMetadataForPath(session->path(), recordingMetadata_);
+    const QString recordingName =
+        driverNameForId(metadata, session->driverId());
+    if (!recordingName.isEmpty()) return recordingName;
     const QString mapped =
         driverMappings_.value(session->driverMappingKey()).trimmed();
     return mapped.isEmpty() ? session->driver() : mapped;
@@ -1146,6 +2082,12 @@ QString TelemetryStore::trackAssignmentKey(const SessionHandle* session) {
 
 QString TelemetryStore::assignedTrackSlug(const SessionHandle* session) const {
     if (!session) return QString();
+    const QVariantMap metadata =
+        configuredRecordingMetadataForPath(session->path(), recordingMetadata_);
+    const QString recordingSlug =
+        nestedText(metadata, {QStringLiteral("track"), QStringLiteral("slug")})
+            .toLower();
+    if (!recordingSlug.isEmpty()) return recordingSlug;
     QString slug = trackAssignments_.value(trackAssignmentKey(session));
     // Compatibility with the first track-assignment build, which scoped the
     // mapping to a source folder rather than an event date.
@@ -1200,6 +2142,49 @@ QString TelemetryStore::detectedAtlasSlug(const SessionHandle* session) const {
                 if (normalizeAtlasName(name) == wanted) return it.key();
         }
     }
+
+    QStringList sourceNames{session->track(),
+                            QFileInfo(session->path()).completeBaseName()};
+    QDir sourceDirectory(QFileInfo(session->path()).absolutePath());
+    for (int level = 0; level < 3; ++level) {
+        sourceNames.append(sourceDirectory.dirName());
+        if (!sourceDirectory.cdUp()) break;
+    }
+    QSet<QString> filenameTokens;
+    const QRegularExpression tokenSeparator(QStringLiteral("[^\\p{L}\\p{N}]+"));
+    for (const QString& sourceName : sourceNames) {
+        const QString whole = normalizeAtlasName(sourceName);
+        if (whole.size() >= 3) filenameTokens.insert(whole);
+        for (const QString& token :
+             sourceName.split(tokenSeparator, Qt::SkipEmptyParts)) {
+            const QString normalized = normalizeAtlasName(token);
+            if (normalized.size() < 3 ||
+                std::all_of(
+                    normalized.cbegin(), normalized.cend(),
+                    [](QChar character) { return character.isDigit(); }))
+                continue;
+            filenameTokens.insert(normalized);
+        }
+    }
+    QSet<QString> filenameMatches;
+    for (auto it = atlasTracks_.cbegin(); it != atlasTracks_.cend(); ++it) {
+        QStringList names{it.key(),
+                          it.value().value(QStringLiteral("name")).toString()};
+        for (const QJsonValue& alias :
+             it.value().value(QStringLiteral("aka")).toArray())
+            names.append(alias.toString());
+        const QJsonObject externalIds =
+            it.value().value(QStringLiteral("external_ids")).toObject();
+        for (auto external = externalIds.begin(); external != externalIds.end();
+             ++external)
+            names.append(external.value().toString());
+        for (const QString& name : names) {
+            if (!filenameTokens.contains(normalizeAtlasName(name))) continue;
+            filenameMatches.insert(it.key());
+            break;
+        }
+    }
+    if (filenameMatches.size() == 1) return *filenameMatches.cbegin();
 
     // Some AiM recordings expose a GPS channel whose receiver payload is an
     // invalid equator placeholder. Borrow the unambiguous venue identity from
@@ -1270,6 +2255,11 @@ QString TelemetryStore::resolvedTrackSlug(const SessionHandle* session) const {
 
 QString TelemetryStore::displayTrack(const SessionHandle* session) const {
     if (!session) return QString();
+    const QVariantMap metadata =
+        configuredRecordingMetadataForPath(session->path(), recordingMetadata_);
+    const QString recordingName =
+        nestedText(metadata, {QStringLiteral("track"), QStringLiteral("name")});
+    if (!recordingName.isEmpty()) return recordingName;
     const QString slug = resolvedTrackSlug(session);
     if (!slug.isEmpty()) {
         const QJsonObject track = atlasTracks_.value(slug);
@@ -1313,6 +2303,397 @@ QString TelemetryStore::detectedTrackForSession(
 QString TelemetryStore::assignedTrackForSession(
     const QString& sessionKey) const {
     return assignedTrackSlug(findSession(sessionKey));
+}
+
+QVariantMap TelemetryStore::folderMetadata(const QString& folderPath) const {
+    const QString canonical = canonicalDirectoryPath(folderPath);
+    if (canonical.isEmpty()) return {};
+
+    const QString targetSidecarPath =
+        omatrack::track_metadata::filePath(canonical);
+    const QVariantMap metadata =
+        QFileInfo::exists(targetSidecarPath)
+            ? YamlConfig::readDocument(targetSidecarPath)
+            : QVariantMap();
+    QStringList inheritedPaths;
+    const QVariantMap inheritedMetadata =
+        omatrack::track_metadata::readHierarchy(canonical, false,
+                                                &inheritedPaths);
+    const QStringList trackFiles =
+        trackMetadataPaths(trackMetadataPaths_, canonical);
+
+    QHash<QString, SourceChannelSummary> aggregatedChannels;
+    QHash<QString, QHash<QString, int>> automaticMappingCounts;
+    QHash<QString, QHash<QString, QString>> automaticMappingValues;
+    TextConsensus carNumberConsensus;
+    TextConsensus carClassConsensus;
+    TextConsensus eventConsensus;
+    TextConsensus seriesConsensus;
+    TextConsensus trackNameConsensus;
+    TextConsensus trackSlugConsensus;
+    QHash<QString, TextConsensus> driverNameConsensus;
+    QSet<QString> detectedDriverIds;
+    int metadataSourceCount = 0;
+    int sourceRecordingCount = 0;
+    for (const auto& session : sessions_) {
+        if (!session) continue;
+        const QString relative =
+            QDir(canonical).relativeFilePath(session->path());
+        if (relative == QStringLiteral("..") ||
+            relative.startsWith(QStringLiteral("../")))
+            continue;
+
+        ++metadataSourceCount;
+        QVariantMap effectiveMetadata = fileMetadata_.value(session->path());
+        omatrack::track_metadata::merge(
+            &effectiveMetadata, recordingMetadata_.value(session->path()));
+        const auto metadataOr = [&](const QStringList& path,
+                                    const QString& fallback) {
+            const QString value = nestedText(effectiveMetadata, path);
+            return value.isEmpty() ? fallback : value;
+        };
+        carNumberConsensus.add(
+            metadataOr({QStringLiteral("car"), QStringLiteral("number")},
+                       session->carNumber()));
+        carClassConsensus.add(
+            metadataOr({QStringLiteral("car"), QStringLiteral("class")},
+                       session->carClass()));
+        eventConsensus.add(
+            nestedText(effectiveMetadata, {QStringLiteral("event")}));
+        seriesConsensus.add(
+            nestedText(effectiveMetadata, {QStringLiteral("series")}));
+
+        QString trackSlug =
+            nestedText(effectiveMetadata,
+                       {QStringLiteral("track"), QStringLiteral("slug")})
+                .toLower();
+        if (trackSlug.isEmpty())
+            trackSlug =
+                trackAssignments_.value(trackAssignmentKey(session.get()))
+                    .trimmed()
+                    .toLower();
+        if (trackSlug.isEmpty()) trackSlug = detectedAtlasSlug(session.get());
+        trackSlugConsensus.add(trackSlug);
+
+        QString trackName =
+            nestedText(effectiveMetadata,
+                       {QStringLiteral("track"), QStringLiteral("name")});
+        if (trackName.isEmpty() && !trackSlug.isEmpty())
+            trackName = atlasTracks_.value(trackSlug)
+                            .value(QStringLiteral("name"))
+                            .toString(trackSlug);
+        if (trackName.isEmpty()) trackName = session->venue();
+        trackNameConsensus.add(trackName);
+
+        const QString driverId = normalizedDriverId(session->driverId());
+        if (!driverId.isEmpty()) {
+            detectedDriverIds.insert(driverId);
+            QString driverName = driverNameForId(effectiveMetadata, driverId);
+            if (driverName.isEmpty())
+                driverName = driverMappings_.value(session->driverMappingKey())
+                                 .trimmed();
+            driverNameConsensus[driverId].add(driverName);
+        }
+
+        if (!session->isVideo() || session->sourceChannels().isEmpty())
+            continue;
+        ++sourceRecordingCount;
+        for (auto it = session->automaticChannelMappings().cbegin();
+             it != session->automaticChannelMappings().cend(); ++it) {
+            const QString normalized = it.value().toCaseFolded();
+            ++automaticMappingCounts[it.key()][normalized];
+            automaticMappingValues[it.key()][normalized] = it.value();
+        }
+        for (const SourceChannelSummary& source : session->sourceChannels()) {
+            const QString key = source.name.toCaseFolded();
+            auto existing = aggregatedChannels.find(key);
+            if (existing == aggregatedChannels.end()) {
+                aggregatedChannels.insert(key, source);
+                continue;
+            }
+            ++existing->recordingCount;
+            if (existing->unit.isEmpty()) existing->unit = source.unit;
+            if (!(existing->frequencyHz > 0.0))
+                existing->frequencyHz = source.frequencyHz;
+            for (const QString& example : source.examples) {
+                if (!existing->examples.contains(example))
+                    existing->examples.append(example);
+                if (existing->examples.size() == 5) break;
+            }
+        }
+    }
+    QVector<SourceChannelSummary> sourceChannels;
+    sourceChannels.reserve(aggregatedChannels.size());
+    for (auto it = aggregatedChannels.cbegin(); it != aggregatedChannels.cend();
+         ++it)
+        sourceChannels.append(it.value());
+    QHash<QString, QString> automaticMappings;
+    for (auto field = automaticMappingCounts.cbegin();
+         field != automaticMappingCounts.cend(); ++field) {
+        QString selected;
+        int selectedCount = 0;
+        for (auto candidate = field.value().cbegin();
+             candidate != field.value().cend(); ++candidate) {
+            const QString value =
+                automaticMappingValues[field.key()].value(candidate.key());
+            if (candidate.value() > selectedCount ||
+                (candidate.value() == selectedCount &&
+                 value.compare(selected, Qt::CaseInsensitive) < 0)) {
+                selected = value;
+                selectedCount = candidate.value();
+            }
+        }
+        if (!selected.isEmpty())
+            automaticMappings.insert(field.key(), selected);
+    }
+    const QVariantList allChannelRows =
+        metadataChannelRows(metadata, inheritedMetadata, sourceChannels,
+                            automaticMappings, trackFiles);
+    QStringList detectedIds(detectedDriverIds.cbegin(),
+                            detectedDriverIds.cend());
+    QVariantMap detectedDriverNames;
+    for (auto it = driverNameConsensus.cbegin();
+         it != driverNameConsensus.cend(); ++it) {
+        const QString name = it.value().confidentValue();
+        if (!name.isEmpty()) detectedDriverNames.insert(it.key(), name);
+    }
+    const QVariantList driverRows =
+        metadataDriverRows(metadata, inheritedMetadata, detectedIds,
+                           detectedDriverNames, trackFiles);
+    const QString folderName = QFileInfo(canonical).fileName().isEmpty()
+                                   ? canonical
+                                   : QFileInfo(canonical).fileName();
+
+    return QVariantMap{
+        {QStringLiteral("path"), canonical},
+        {QStringLiteral("folderScope"), true},
+        {QStringLiteral("fileName"), folderName},
+        {QStringLiteral("folder"), canonical},
+        {QStringLiteral("sidecarPath"), targetSidecarPath},
+        {QStringLiteral("inheritedSidecarPath"),
+         inheritedPaths.isEmpty() ? QString() : inheritedPaths.constLast()},
+        {QStringLiteral("trackFileCount"), trackFiles.size()},
+        {QStringLiteral("sourceChannelCount"), sourceChannels.size()},
+        {QStringLiteral("sourceRecordingCount"), sourceRecordingCount},
+        {QStringLiteral("metadataSourceCount"), metadataSourceCount},
+        {QStringLiteral("suggestedCarNumber"),
+         carNumberConsensus.confidentValue()},
+        {QStringLiteral("suggestedCarClass"),
+         carClassConsensus.confidentValue()},
+        {QStringLiteral("suggestedEvent"), eventConsensus.confidentValue()},
+        {QStringLiteral("suggestedSeries"), seriesConsensus.confidentValue()},
+        {QStringLiteral("suggestedTrackName"),
+         trackNameConsensus.confidentValue()},
+        {QStringLiteral("suggestedTrackSlug"),
+         trackSlugConsensus.confidentValue()},
+        {QStringLiteral("driverChannel"),
+         channelRow(allChannelRows, QStringLiteral("driver_id"))},
+        {QStringLiteral("driverMappings"), driverRows},
+        {QStringLiteral("carNumber"),
+         nestedText(metadata,
+                    {QStringLiteral("car"), QStringLiteral("number")})},
+        {QStringLiteral("inheritedCarNumber"),
+         nestedText(inheritedMetadata,
+                    {QStringLiteral("car"), QStringLiteral("number")})},
+        {QStringLiteral("carClass"),
+         nestedText(metadata,
+                    {QStringLiteral("car"), QStringLiteral("class")})},
+        {QStringLiteral("inheritedCarClass"),
+         nestedText(inheritedMetadata,
+                    {QStringLiteral("car"), QStringLiteral("class")})},
+        {QStringLiteral("event"),
+         nestedText(metadata, {QStringLiteral("event")})},
+        {QStringLiteral("inheritedEvent"),
+         nestedText(inheritedMetadata, {QStringLiteral("event")})},
+        {QStringLiteral("series"),
+         nestedText(metadata, {QStringLiteral("series")})},
+        {QStringLiteral("inheritedSeries"),
+         nestedText(inheritedMetadata, {QStringLiteral("series")})},
+        {QStringLiteral("trackName"),
+         nestedText(metadata,
+                    {QStringLiteral("track"), QStringLiteral("name")})},
+        {QStringLiteral("inheritedTrackName"),
+         nestedText(inheritedMetadata,
+                    {QStringLiteral("track"), QStringLiteral("name")})},
+        {QStringLiteral("trackSlug"),
+         nestedText(metadata,
+                    {QStringLiteral("track"), QStringLiteral("slug")})},
+        {QStringLiteral("inheritedTrackSlug"),
+         nestedText(inheritedMetadata,
+                    {QStringLiteral("track"), QStringLiteral("slug")})},
+        {QStringLiteral("channels"),
+         channelRowsWithout(allChannelRows, QStringLiteral("driver_id"))},
+    };
+}
+
+QVariantMap TelemetryStore::videoMetadata(const QString& videoPath) const {
+    const QString canonical = canonicalInputPath(videoPath);
+    if (canonical.isEmpty() || !isVideoPath(canonical)) return {};
+
+    const SessionHandle* session = findSession(canonical);
+    const QVariantMap metadata = recordingMetadata_.value(canonical);
+    QStringList inheritedPaths;
+    const QString directory = QFileInfo(canonical).absolutePath();
+    const QVariantMap inheritedMetadata =
+        omatrack::track_metadata::readHierarchy(directory, true,
+                                                &inheritedPaths);
+
+    const QStringList trackFiles =
+        trackMetadataPaths(trackMetadataPaths_, directory);
+    const QVector<SourceChannelSummary> sourceChannels =
+        session ? session->sourceChannels() : QVector<SourceChannelSummary>();
+    const QHash<QString, QString> automaticMappings =
+        session ? session->automaticChannelMappings()
+                : QHash<QString, QString>();
+    const QVariantList allChannelRows =
+        metadataChannelRows(metadata, inheritedMetadata, sourceChannels,
+                            automaticMappings, trackFiles);
+    QStringList detectedDriverIds;
+    QVariantMap detectedDriverNames;
+    if (session) {
+        const QString driverId = normalizedDriverId(session->driverId());
+        if (!driverId.isEmpty()) {
+            detectedDriverIds.append(driverId);
+            const QString driverName = driverDisplay(session);
+            if (!driverName.isEmpty() &&
+                !driverName.startsWith(QStringLiteral("Driver id ")) &&
+                driverName != QStringLiteral("Unknown driver"))
+                detectedDriverNames.insert(driverId, driverName);
+        }
+    }
+    const QVariantList driverRows =
+        metadataDriverRows(metadata, inheritedMetadata, detectedDriverIds,
+                           detectedDriverNames, trackFiles);
+
+    return QVariantMap{
+        {QStringLiteral("path"), canonical},
+        {QStringLiteral("folderScope"), false},
+        {QStringLiteral("fileName"), QFileInfo(canonical).fileName()},
+        {QStringLiteral("folder"), QFileInfo(canonical).absolutePath()},
+        {QStringLiteral("sidecarPath"),
+         inheritedPaths.isEmpty() ? QString() : inheritedPaths.constLast()},
+        {QStringLiteral("trackFileCount"), trackFiles.size()},
+        {QStringLiteral("sourceChannelCount"), sourceChannels.size()},
+        {QStringLiteral("sourceRecordingCount"),
+         sourceChannels.isEmpty() ? 0 : 1},
+        {QStringLiteral("driverChannel"),
+         channelRow(allChannelRows, QStringLiteral("driver_id"))},
+        {QStringLiteral("driverMappings"), driverRows},
+        {QStringLiteral("carNumber"),
+         nestedText(metadata,
+                    {QStringLiteral("car"), QStringLiteral("number")})},
+        {QStringLiteral("inheritedCarNumber"),
+         nestedText(inheritedMetadata,
+                    {QStringLiteral("car"), QStringLiteral("number")})},
+        {QStringLiteral("carClass"),
+         nestedText(metadata,
+                    {QStringLiteral("car"), QStringLiteral("class")})},
+        {QStringLiteral("inheritedCarClass"),
+         nestedText(inheritedMetadata,
+                    {QStringLiteral("car"), QStringLiteral("class")})},
+        {QStringLiteral("event"),
+         nestedText(metadata, {QStringLiteral("event")})},
+        {QStringLiteral("inheritedEvent"),
+         nestedText(inheritedMetadata, {QStringLiteral("event")})},
+        {QStringLiteral("series"),
+         nestedText(metadata, {QStringLiteral("series")})},
+        {QStringLiteral("inheritedSeries"),
+         nestedText(inheritedMetadata, {QStringLiteral("series")})},
+        {QStringLiteral("trackName"),
+         nestedText(metadata,
+                    {QStringLiteral("track"), QStringLiteral("name")})},
+        {QStringLiteral("inheritedTrackName"),
+         nestedText(inheritedMetadata,
+                    {QStringLiteral("track"), QStringLiteral("name")})},
+        {QStringLiteral("trackSlug"),
+         nestedText(metadata,
+                    {QStringLiteral("track"), QStringLiteral("slug")})},
+        {QStringLiteral("inheritedTrackSlug"),
+         nestedText(inheritedMetadata,
+                    {QStringLiteral("track"), QStringLiteral("slug")})},
+        {QStringLiteral("channels"),
+         channelRowsWithout(allChannelRows, QStringLiteral("driver_id"))},
+    };
+}
+
+bool TelemetryStore::saveFolderMetadata(const QString& folderPath,
+                                        const QVariantMap& metadata) {
+    const QString canonical = canonicalDirectoryPath(folderPath);
+    if (canonical.isEmpty()) return false;
+
+    QString error;
+    const QVariantMap document = metadataDocument(metadata);
+    if (!omatrack::track_metadata::update(canonical, document, &error)) {
+        qWarning().noquote() << error;
+        return false;
+    }
+    const QString sidecarPath = omatrack::track_metadata::filePath(canonical);
+    if (!trackMetadataPaths_.contains(sidecarPath)) {
+        trackMetadataPaths_.append(sidecarPath);
+        std::sort(trackMetadataPaths_.begin(), trackMetadataPaths_.end());
+    }
+
+    for (auto it = fileMetadata_.begin(); it != fileMetadata_.end(); ++it) {
+        const QString relative = QDir(canonical).relativeFilePath(it.key());
+        if (relative == QStringLiteral("..") ||
+            relative.startsWith(QStringLiteral("../")))
+            continue;
+        it.value() = omatrack::track_metadata::readHierarchy(
+            QFileInfo(it.key()).absolutePath());
+    }
+
+    auto isDescendantVideo = [&](const SessionHandle* session) {
+        if (!session || !session->isVideo()) return false;
+        const QString relative =
+            QDir(canonical).relativeFilePath(session->path());
+        return relative != QStringLiteral("..") &&
+               !relative.startsWith(QStringLiteral("../"));
+    };
+    const bool reloadPrimary =
+        primaryLap_ >= 0 && isDescendantVideo(primarySession_);
+    const bool reloadCompare =
+        compareLap_ >= 0 && isDescendantVideo(compareSession_);
+    const int primaryLap = primaryLap_;
+    const int compareLap = compareLap_;
+    for (const auto& session : sessions_)
+        if (isDescendantVideo(session.get())) session->clearUnifiedCache();
+    if (reloadPrimary) requestLapLoad(primarySession_, primaryLap, false);
+    if (reloadCompare) requestLapLoad(compareSession_, compareLap, true);
+
+    emit videoMetadataChanged(canonical);
+    emit sessionsChanged();
+    emit selectionChanged();
+    return true;
+}
+
+bool TelemetryStore::saveVideoMetadata(const QString& videoPath,
+                                       const QVariantMap& metadata) {
+    const QString canonical = canonicalInputPath(videoPath);
+    if (canonical.isEmpty() || !isVideoPath(canonical)) return false;
+
+    const QVariantMap document = metadataDocument(metadata);
+    if (document.isEmpty())
+        recordingMetadata_.remove(canonical);
+    else
+        recordingMetadata_.insert(canonical, document);
+    savePreferences();
+
+    SessionHandle* session = findSession(canonical);
+    if (session) {
+        const bool reloadPrimary =
+            session == primarySession_ && primaryLap_ >= 0;
+        const bool reloadCompare =
+            session == compareSession_ && compareLap_ >= 0;
+        const int primaryLap = primaryLap_;
+        const int compareLap = compareLap_;
+        session->clearUnifiedCache();
+        if (reloadPrimary) requestLapLoad(session, primaryLap, false);
+        if (reloadCompare) requestLapLoad(session, compareLap, true);
+    }
+    emit videoMetadataChanged(canonical);
+    emit sessionsChanged();
+    emit selectionChanged();
+    return true;
 }
 
 void TelemetryStore::setSessionTrackAssignment(const QString& sessionKey,
@@ -1432,19 +2813,30 @@ QVariantList TelemetryStore::trackGroups() const {
                 SessionHandle* session = findSession(key);
                 if (!session) continue;
                 const double bestTimeMs = session->bestLapMs();
-                sessionMaps.append(
-                    QVariantMap{{"stem", stem},
-                                {"key", key},
-                                {"mappingKey", session->driverMappingKey()},
-                                {"driver", driverDisplay(session)},
-                                {"driverId", session->driverId()},
-                                {"carNumber", session->carNumber()},
-                                {"carClass", session->carClass()},
-                                {"vehicle", session->vehicle()},
-                                {"sessionTime", session->sessionTime()},
-                                {"bestTime", session->bestLapTime()},
-                                {"bestTimeMs", bestTimeMs},
-                                {"isVideo", session->isVideo()}});
+                const QVariantMap metadata = configuredRecordingMetadataForPath(
+                    session->path(), recordingMetadata_);
+                auto metadataOr = [&](const QStringList& path,
+                                      const QString& fallback) {
+                    const QString value = nestedText(metadata, path);
+                    return value.isEmpty() ? fallback : value;
+                };
+                sessionMaps.append(QVariantMap{
+                    {"stem", stem},
+                    {"key", key},
+                    {"mappingKey", session->driverMappingKey()},
+                    {"driver", driverDisplay(session)},
+                    {"driverId", session->driverId()},
+                    {"carNumber", metadataOr({QStringLiteral("car"),
+                                              QStringLiteral("number")},
+                                             session->carNumber())},
+                    {"carClass", metadataOr({QStringLiteral("car"),
+                                             QStringLiteral("class")},
+                                            session->carClass())},
+                    {"vehicle", session->vehicle()},
+                    {"sessionTime", session->sessionTime()},
+                    {"bestTime", session->bestLapTime()},
+                    {"bestTimeMs", bestTimeMs},
+                    {"isVideo", session->isVideo()}});
             }
             std::sort(sessionMaps.begin(), sessionMaps.end(),
                       [](const QVariantMap& a, const QVariantMap& b) {
@@ -1724,6 +3116,8 @@ void TelemetryStore::requestLapLoad(SessionHandle* session, int lapId,
     const QString path = session->path();
     const QString sessionKey = session->sessionKey();
     const LapEntry lap = *wanted;
+    const QVariantMap metadata =
+        recordingMetadataForPath(path, recordingMetadata_);
     auto* watcher =
         new QFutureWatcher<std::shared_ptr<SessionLapLoadResult>>(this);
     connect(
@@ -1748,7 +3142,8 @@ void TelemetryStore::requestLapLoad(SessionHandle* session, int lapId,
                 return;
             }
             session->adoptLoadedLap(result->lapId, std::move(result->source),
-                                    std::move(result->unified));
+                                    std::move(result->unified),
+                                    result->driverId, result->forceDriverId);
             if (compare) {
                 setCompare(session, result->lapId);
                 setCompareLapLoading(false);
@@ -1757,8 +3152,8 @@ void TelemetryStore::requestLapLoad(SessionHandle* session, int lapId,
                 setPrimaryLapLoading(false);
             }
         });
-    watcher->setFuture(QtConcurrent::run([path, sessionKey, lap]() {
-        return loadSessionLap(path, sessionKey, lap);
+    watcher->setFuture(QtConcurrent::run([path, sessionKey, lap, metadata]() {
+        return loadSessionLap(path, sessionKey, lap, metadata);
     }));
 }
 

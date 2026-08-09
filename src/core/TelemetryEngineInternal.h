@@ -76,8 +76,11 @@ int scoreChannelMatch(const std::string& channelName, const std::string& alias,
 
 // ── driver ID ───────────────────────────────────────────────────────
 
-/// Most frequent positive integer in a driver-ID series; ties go to the
-/// earlier one. Returns 0 when no positive values exist.
-int dominantDriverId(const std::vector<double>& values);
+/// Most frequent positive numeric code in a driver-ID series; ties go to the
+/// earlier one. Float32-backed values are reduced to their meaningful decimal
+/// precision so codes such as 2.1 do not expose binary storage noise. Returns
+/// 0 when no positive finite values exist.
+double dominantDriverId(const std::vector<double>& values,
+                        uint32_t sampleTypeCode = 0);
 
 }  // namespace omatrack::detail

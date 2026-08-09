@@ -31,12 +31,17 @@ qt_add_qml_module(omatrack
   QML_FILES
     Main.qml
     RoleDot.qml
+    ChannelBrowserPopup.qml
+    ChannelMappingField.qml
     CompactTextField.qml
     CompactButton.qml
     Style.qml
     AppHeader.qml
     ChannelsWindow.qml
     CornerInspectorWindow.qml
+    DriverMetadataSection.qml
+    FileBrowserPane.qml
+    FileTreeDelegate.qml
     PreferencesWindow.qml
     PreferencesDriversPage.qml
     PreferencesLibraryPage.qml
@@ -44,6 +49,7 @@ qt_add_qml_module(omatrack
     SessionTreeDelegate.qml
     TrackAssignmentDialog.qml
     ThinScrollBar.qml
+    VideoMetadataDialog.qml
     VideoTelemetryOverlay.qml
   SOURCES
     CornerGraphView.h CornerGraphView.cpp
@@ -52,6 +58,7 @@ qt_add_qml_module(omatrack
     OmarchyTheme.h OmarchyTheme.cpp
     ComparisonAlignment.h ComparisonAlignment.cpp
     SessionMetadataCache.h SessionMetadataCache.cpp
+    TrackMetadata.h TrackMetadata.cpp
     TelemetryStore.h TelemetryStore.cpp
     TraceView.h TraceView.cpp
     VideoTelemetryHud.h VideoTelemetryHud.cpp

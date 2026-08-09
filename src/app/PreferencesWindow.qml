@@ -14,6 +14,11 @@ ApplicationWindow {
 
     property int currentSection: 0
 
+    function refresh(): void {
+        libraryPage.refresh();
+        driversPage.refresh();
+    }
+
     Material.accent: Style.accentColor
     Material.background: Style.backgroundColor
     Material.foreground: Style.foregroundColor
@@ -179,8 +184,10 @@ ApplicationWindow {
                 currentIndex: preferencesWindow.currentSection
 
                 PreferencesLibraryPage {
+                    id: libraryPage
                 }
                 PreferencesDriversPage {
+                    id: driversPage
                 }
                 PreferencesTrackDataPage {
                 }

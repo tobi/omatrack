@@ -18,6 +18,7 @@
 #include <QUrl>
 #include <QtQml/qqmlregistration.h>
 #include <QVariantList>
+#include <QVariantMap>
 
 #include <memory>
 #include <cmath>
@@ -134,6 +135,14 @@ struct LapEntry {
     bool countsForBest() const { return isComplete && !isPitLap; }
 };
 
+struct SourceChannelSummary {
+    QString name;
+    QString unit;
+    QStringList examples;
+    double frequencyHz = 0.0;
+    int recordingCount = 1;
+};
+
 // ── session handle: lazy parse + unified-lap cache per file ─────────
 
 class SessionHandle {
@@ -149,9 +158,7 @@ public:
     const QVector<LapEntry>& laps() const { return laps_; }
     std::shared_ptr<const omatrack::UnifiedLap> unifiedLap(int lapId) const;
     QString sessionKey() const;
-    bool isVideo() const {
-        return path_.endsWith(QStringLiteral(".mp4"), Qt::CaseInsensitive);
-    }
+    bool isVideo() const;
 
     QString track() const { return track_; }
     QString sessionTime() const { return time_; }
@@ -173,19 +180,28 @@ public:
         return carNumber_ + QStringLiteral("|") + carClass_ +
                QStringLiteral("|") + driverId_;
     }
+    const QVector<SourceChannelSummary>& sourceChannels() const {
+        return sourceChannels_;
+    }
+    const QHash<QString, QString>& automaticChannelMappings() const {
+        return automaticChannelMappings_;
+    }
 
     bool hasSummary() const { return summaryLoaded_; }
     bool loadSummaryForIndex();
     QJsonObject metadataForCache() const;
     void adoptLoadedLap(int lapId,
                         std::unique_ptr<omatrack::TelemetrySource> source,
-                        std::shared_ptr<const omatrack::UnifiedLap> unified);
+                        std::shared_ptr<const omatrack::UnifiedLap> unified,
+                        double driverId = 0.0, bool forceDriverId = false);
+    void clearUnifiedCache() { unifiedCache_.clear(); }
 
 private:
     void applyCachedMetadata(const QJsonObject& metadata);
     void ensureLapSummary();
-    void applyEventDriverId(int eventDriverId);
+    void applyEventDriverId(double eventDriverId, bool force = false);
     void captureGpsLocation(const omatrack::TelemetrySource& source);
+    void captureSourceChannels(const omatrack::TelemetrySource& source);
     void populateLaps(const std::vector<omatrack::Lap>& detected);
     QString path_;
     std::unique_ptr<omatrack::TelemetrySource> src_;
@@ -202,6 +218,8 @@ private:
     QString driver_;
     QString vehicle_;
     QString venue_;
+    QVector<SourceChannelSummary> sourceChannels_;
+    QHash<QString, QString> automaticChannelMappings_;
     double gpsLatitude_ = std::numeric_limits<double>::quiet_NaN();
     double gpsLongitude_ = std::numeric_limits<double>::quiet_NaN();
 };
@@ -286,6 +304,7 @@ public:
     Q_INVOKABLE QString configFilePath() const;
     Q_INVOKABLE void removeSessionDirectory(const QString& dirPath);
     Q_INVOKABLE QStringList sessionDirectories() const;
+    Q_INVOKABLE QVariantList fileSources() const;
     Q_INVOKABLE void clearSessions();
     Q_INVOKABLE QVariantList
     trackGroups() const;  // nested: track → dates → sessions → laps
@@ -297,6 +316,12 @@ public:
     assignedTrackForSession(const QString& sessionKey) const;
     Q_INVOKABLE void setSessionTrackAssignment(const QString& sessionKey,
                                                const QString& atlasSlug);
+    Q_INVOKABLE QVariantMap folderMetadata(const QString& folderPath) const;
+    Q_INVOKABLE bool saveFolderMetadata(const QString& folderPath,
+                                        const QVariantMap& metadata);
+    Q_INVOKABLE QVariantMap videoMetadata(const QString& videoPath) const;
+    Q_INVOKABLE bool saveVideoMetadata(const QString& videoPath,
+                                       const QVariantMap& metadata);
 
     // ── selection ──────────────────────────────────────────────────
     Q_INVOKABLE void selectLap(const QString& sessionKey, int lapId);
@@ -437,6 +462,7 @@ signals:
     void trackAtlasChanged();
     void videoTimeChanged();
     void videoMutedChanged();
+    void videoMetadataChanged(const QString& videoPath);
     void standaloneVideoRequested(const QUrl& source);
 
 private:
@@ -471,10 +497,14 @@ private:
     double compareTimeForPrimaryFraction(double fraction) const;
     double compareFractionForPrimaryFraction(double fraction) const;
     QStringList sessionDirs_;
+    QVariantList fileSources_;
+    QHash<QString, QVariantMap> fileMetadata_;
     QFutureWatcher<std::shared_ptr<SessionScanResult>>* scanWatcher_ = nullptr;
     QSet<QString> scanExtraPaths_;
     QHash<QString, QString> driverMappings_;
     QHash<QString, QString> trackAssignments_;
+    QHash<QString, QVariantMap> recordingMetadata_;
+    QStringList trackMetadataPaths_;
     QString lastPrimaryKey_;
     QString lastCompareKey_;
     int lastPrimaryLap_ = -1;

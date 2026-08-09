@@ -64,7 +64,7 @@ ToolBar {
         spacing: 8
 
         ToolButton {
-            ToolTip.text: appBar.sidebarVisible ? "Hide sessions" : "Show sessions"
+            ToolTip.text: appBar.sidebarVisible ? "Hide sidebar" : "Show sidebar"
             ToolTip.visible: hovered
             font.pixelSize: 16
             text: "☰"
@@ -154,7 +154,7 @@ ToolBar {
             id: readout
 
             function refresh(): void {
-                if (!Store.ready) {
+                if (!Store.ready || Store.primarySessionKey === "") {
                     readout.text = "";
                     return;
                 }

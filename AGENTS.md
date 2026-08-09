@@ -53,20 +53,37 @@ Use Qt Quick Material for application chrome and C++/Qt rendering for hot paths.
 
 Telemetry and onboard-video inputs are immutable evidence. Never rewrite, rename, or delete source files. Normalization, aliases, corner edits, caches, and exported analysis are separate state. Be especially careful with event data outside this source tree.
 
+### Prefer clean migrations
+
+Ignore legacy compatibility unless the user explicitly asks for it. When a
+schema, workflow, or UI model changes, update the existing owned metadata and
+configuration files to the new shape, remove obsolete fields and code paths,
+and prune components that are no longer needed. Do not carry compatibility
+branches, duplicate representations, or dead migration logic forward by
+default. This does not weaken the source-truth rule: telemetry and onboard
+video remain immutable evidence.
+
 ### Track Atlas is authoritative
 
 [Track Atlas](https://github.com/tobi/track-atlas) is the upstream source of track/layout identity, real geometry, label layers, corner points, `corner_ranges`, and `corner_complexes`. Consume its schema; do not create a competing local track schema or duplicate curated metadata in application code.
 
 Network access is an enhancement, not a boot requirement. Cache upstream data, skip refreshes while the cache is less than 24 hours old, continue to work offline, and fail back cleanly without fabricated corner metadata. Do not bundle track or corner datasets without documented redistribution rights and attribution.
 
-### Configuration lives in omatrack.yml
+### Configuration and portable recording metadata
 
-All user configuration state belongs in `omatrack.yml`
+Application-wide user configuration state belongs in `omatrack.yml`
 (`$XDG_CONFIG_HOME/omatrack/omatrack.yml`, else `~/.config/omatrack/omatrack.yml`).
 It is the single source of truth for telemetry directories, channel display,
 driver naming, last selection, and per-track corner overrides, and it is meant
 to be read, diffed, and hand-edited. Never add a second configuration store,
 and never write configuration into telemetry, caches, or `QSettings`.
+
+Portable recording metadata is the deliberate exception: a folder may contain
+a `TRACK.yml`, and recordings inherit metadata from every `TRACK.yml` above
+them in root-to-leaf order. Editing folder metadata writes that folder's
+`TRACK.yml` atomically and preserves unrelated keys such as `files`; a closer
+folder or per-video override wins. Individual video overrides remain under
+`recording_metadata` in `omatrack.yml`. Never rewrite telemetry or video files.
 
 Upstream data is not configuration. Track Atlas is used as-is by default; the
 moment a user edits corner zones for a track, the whole resulting zone list is
@@ -82,8 +99,9 @@ wins on load. Caches (Track Atlas snapshot, thumbnails) stay outside the file.
   expose `TelemetryStore::loading` so every session-library surface can retain
   its current data and show progress while a replacement snapshot is built.
 - Persist the library index under `QStandardPaths::CacheLocation`: a bounded
-  path/size/prefix fingerprint keys lap summaries and unsupported-video
-  classification, writes are atomic, and entries expire after 90 days.
+  path/size/prefix fingerprint keys lap summaries, compact source-channel
+  units/example values, and unsupported-video classification; writes are
+  atomic, and entries expire after 90 days.
 - Dispatch formats through the Rust parser workspace.
 - Infer inexpensive metadata from filenames/folders before parsing samples.
 - Group the library as Track → Date → Session → Laps.
@@ -128,6 +146,28 @@ Native lap distance is accepted only when its continuity and total agree with in
 - Treat video files as read-only. Parsing and playback must never rewrite embedded telemetry or media.
 - Qt Quick must use the OpenGL graphics API before the first window because `QQuickFramebufferObject` and libmpv share that context.
 - `OMATRACK_VIDEO=/path/to/video` first attempts to open a telemetry-bearing MP4 session, falls back to standalone playback, and is also used by the GUI acceptance harness.
+- Right-clicking a video or its session row opens recording metadata. User
+  edits and channel-mapping overrides are stored per video under
+  `recording_metadata` in `omatrack.yml`. Driver identity is represented by
+  `channels.driver_id` plus numeric-code-to-name entries under
+  `driver.mappings`; driver codes may be float-backed or fractional, so never
+  coerce them to integers or flatten identity into one driver name. A `*`
+  mapping is the fallback for any detected driver ID; an exact numeric mapping
+  always wins over it.
+  Right-clicking a library folder edits
+  that folder's `TRACK.yml`; videos inherit the root-to-leaf merge of all
+  parent `TRACK.yml` files, which also inform mapping suggestions. Each mapping
+  exposes its canonical unit and a searchable source-channel browser with raw
+  units, sample rate, and representative values. When
+  editing folder metadata, indexed descendant recordings of every supported
+  telemetry format inform driver IDs and identity fields; only a clear
+  two-thirds consensus is auto-completed, remains reviewable in the dialog,
+  and is not written until Save. When
+  development changes that schema, update the known `TRACK.yml` files directly
+  instead of adding compatibility branches.
+- Opening a video without embedded telemetry clears active/reference laps and
+  gives the video the full analysis workspace. Telemetry-bearing videos retain
+  the synchronized trace workspace below playback.
 
 ### Corner intelligence
 
@@ -359,6 +399,10 @@ Add feature flags as needed:
 - `OMATRACK_AUTOTEST_CORNER_EDIT=1`
 - `OMATRACK_AUTOTEST_LOADING=1`
 - `OMATRACK_AUTOTEST_LAP_LOADING=1`
+- `OMATRACK_AUTOTEST_VIDEO_METADATA=/path/to/video`
+- `OMATRACK_AUTOTEST_CHANNEL_BROWSER=1`
+- `OMATRACK_AUTOTEST_FOLDER_METADATA=/path/to/folder`
+- `OMATRACK_AUTOTEST_STANDALONE_VIDEO=1`
 - `OMATRACK_VIDEO=/path/to/onboard.mp4`
 
 `HOVER` and `ZOOM` print average paint time. Treat 16.67 ms as the hard 60 fps ceiling and 8.33 ms as the design target for continuous interaction. Inspect the screenshot as well; timing alone cannot catch illegible density, overlap, incorrect colors, or stale comparison state.

@@ -484,7 +484,7 @@ private slots:
 };
 
 // ────────────────────────────────────────────────────────────────────
-// dominantDriverId — most frequent positive integer
+// dominantDriverId — most frequent positive numeric code
 // ────────────────────────────────────────────────────────────────────
 
 class DominantDriverIdTest : public QObject {
@@ -492,25 +492,43 @@ class DominantDriverIdTest : public QObject {
 private slots:
     void mostFrequent() {
         std::vector<double> v{0, 3, 3, 3, 5, 5};
-        QCOMPARE(dominantDriverId(v), 3);
+        QCOMPARE(dominantDriverId(v), 3.0);
     }
     void tiesGoToEarlier() {
         std::vector<double> v{0, 7, 7, 9, 9};
         // 7 appears first (index 1) vs 9 (index 3)
-        QCOMPARE(dominantDriverId(v), 7);
+        QCOMPARE(dominantDriverId(v), 7.0);
     }
     void allNonPositive() {
         std::vector<double> v{0, -1, -2, 0};
-        QCOMPARE(dominantDriverId(v), 0);
+        QCOMPARE(dominantDriverId(v), 0.0);
     }
-    void empty() { QCOMPARE(dominantDriverId({}), 0); }
+    void empty() { QCOMPARE(dominantDriverId({}), 0.0); }
     void singlePositive() {
         std::vector<double> v{0, 0, 42, 0};
-        QCOMPARE(dominantDriverId(v), 42);
+        QCOMPARE(dominantDriverId(v), 42.0);
     }
     void ignoresZeroAndNegatives() {
         std::vector<double> v{0, -5, 0, -5, 3, 3, 3};
-        QCOMPARE(dominantDriverId(v), 3);
+        QCOMPARE(dominantDriverId(v), 3.0);
+    }
+    void preservesFractionalCodes() {
+        std::vector<double> v{0, 2.5, 2.5, 3.75};
+        QCOMPARE(dominantDriverId(v), 2.5);
+    }
+    void removesFloat32StorageNoise() {
+        std::vector<double> v{double(float(2.1)), double(float(2.1)), 3.0};
+        QCOMPARE(dominantDriverId(v, 6), 2.1);
+    }
+    void preservesFloat64Precision() {
+        const double code = 2.12345678901234;
+        std::vector<double> v{code, code, 3.0};
+        QCOMPARE(dominantDriverId(v, 7), code);
+    }
+    void ignoresNonFiniteValues() {
+        std::vector<double> v{std::numeric_limits<double>::quiet_NaN(),
+                              std::numeric_limits<double>::infinity(), 4.5};
+        QCOMPARE(dominantDriverId(v), 4.5);
     }
 };
 
@@ -560,6 +578,32 @@ private slots:
         QCOMPARE(mapping["gear"], 2);
     }
 
+    void mapChannelsHonorsExplicitOverride() {
+        TelemetrySource src;
+        RawChannel automatic;
+        automatic.name = "Ground Speed";
+        automatic.samples = {10, 20};
+        RawChannel selected;
+        selected.name = "Speed_Ref";
+        selected.samples = {30, 40};
+        src.channels() = {automatic, selected};
+
+        const auto mapping = src.mapChannels({{"speed", "speed_ref"}});
+        QVERIFY(mapping.count("speed"));
+        QCOMPARE(mapping.at("speed"), 1);
+    }
+
+    void mapChannelsDoesNotGuessInvalidOverride() {
+        TelemetrySource src;
+        RawChannel automatic;
+        automatic.name = "Ground Speed";
+        automatic.samples = {10, 20};
+        src.channels() = {automatic};
+
+        const auto mapping = src.mapChannels({{"speed", "missing_channel"}});
+        QVERIFY(!mapping.count("speed"));
+    }
+
     void mapChannelsSkipsEmptyChannels() {
         TelemetrySource src;
         RawChannel empty;
@@ -593,7 +637,29 @@ private slots:
         ch.samples = {0, 7, 7, 7, 3, 3};
         src.channels() = {ch};
 
-        QCOMPARE(src.detectDriverId(), 7);
+        QCOMPARE(src.detectDriverId(), 7.0);
+    }
+
+    void detectDriverIdPreservesFloatBackedCode() {
+        TelemetrySource src;
+        RawChannel ch;
+        ch.name = "DriverID";
+        ch.sampleTypeCode = 6;
+        ch.samples = {0.0, 2.5, 2.5, 3.0};
+        src.channels() = {ch};
+
+        QCOMPARE(src.detectDriverId(), 2.5);
+    }
+
+    void detectDriverIdNormalizesFloat32Code() {
+        TelemetrySource src;
+        RawChannel ch;
+        ch.name = "DriverID";
+        ch.sampleTypeCode = 6;
+        ch.samples = {double(float(2.1)), double(float(2.1)), 3.0};
+        src.channels() = {ch};
+
+        QCOMPARE(src.detectDriverId(), 2.1);
     }
 
     void detectDriverIdNoChannelReturnsZero() {
@@ -603,7 +669,32 @@ private slots:
         ch.samples = {100, 200};
         src.channels() = {ch};
 
-        QCOMPARE(src.detectDriverId(), 0);
+        QCOMPARE(src.detectDriverId(), 0.0);
+    }
+
+    void detectDriverIdHonorsChannelOverride() {
+        TelemetrySource src;
+        RawChannel automatic;
+        automatic.name = "X2LNK_driverID";
+        automatic.samples = {7, 7, 7};
+        RawChannel selected;
+        selected.name = "driver_id";
+        selected.samples = {2, 2, 3};
+        src.channels() = {automatic, selected};
+
+        const ChannelOverrides overrides{{"driver_id", "driver_id"}};
+        QCOMPARE(src.detectDriverId(overrides), 2.0);
+    }
+
+    void detectDriverIdInvalidOverrideDoesNotGuess() {
+        TelemetrySource src;
+        RawChannel automatic;
+        automatic.name = "DriverID";
+        automatic.samples = {7, 7, 7};
+        src.channels() = {automatic};
+
+        const ChannelOverrides overrides{{"driver_id", "Missing Selector"}};
+        QCOMPARE(src.detectDriverId(overrides), 0.0);
     }
 
     void sampleAtInterpolatesSyntheticChannels() {
@@ -680,7 +771,7 @@ private slots:
         QCOMPARE(src.mediaTimeOffsetSec(), 0.0);
         QVERIFY(src.mapChannels().empty());
         QVERIFY(src.detectLaps().empty());
-        QCOMPARE(src.detectDriverId(), 0);
+        QCOMPARE(src.detectDriverId(), 0.0);
         double out = 0;
         QVERIFY(!src.sampleAt(0, 0.0, &out));
     }

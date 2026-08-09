@@ -22,7 +22,8 @@ set_tests_properties(core-test PROPERTIES LABELS unit)
 # Compiles YamlConfig.cpp directly (it's not in a separate library) and
 # uses a temp XDG_CONFIG_HOME to isolate from the user's real config.
 qt_add_executable(yamlconfig-test YamlConfigTest.cpp
-  ${CMAKE_SOURCE_DIR}/src/app/YamlConfig.cpp)
+  ${CMAKE_SOURCE_DIR}/src/app/YamlConfig.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/TrackMetadata.cpp)
 target_include_directories(yamlconfig-test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(yamlconfig-test PRIVATE
   Qt6::Test

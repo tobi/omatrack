@@ -37,6 +37,7 @@ Item {
     required property string role
     required property string stem
     readonly property string tooltipOwner: "session:" + row.key
+    readonly property bool videoSession: row.role === "session" && row.isVideo
 
     signal driverRenameRequested(string mappingKey, string driver)
     signal pointerTooltipDismissed(string owner)
@@ -51,6 +52,7 @@ Item {
     // ── actions delegated to the root window ──────────────────────
     signal toggleTrackRequested(string name)
     signal trackAssignmentRequested(string key)
+    signal videoMetadataRequested(string key)
 
     height: row.role === "track" ? 28 : row.role === "date" ? 24 : 38
     width: ListView.view.width
@@ -89,7 +91,7 @@ Item {
                     border.width: 1
                     color: "transparent"
                     radius: 2
-                    visible: row.isVideo === true
+                    visible: row.videoSession
 
                     Label {
                         anchors.centerIn: parent
@@ -184,6 +186,31 @@ Item {
     Menu {
         id: sessionMenu
 
+        property bool videoMetadataAttached: true
+
+        function setVideoMetadataAvailable(available: bool): void {
+            if (available === sessionMenu.videoMetadataAttached)
+                return;
+            if (available) {
+                sessionMenu.insertItem(0, videoMetadataItem);
+                sessionMenu.insertItem(1, videoMetadataSeparator);
+            } else {
+                sessionMenu.removeItem(videoMetadataItem);
+                sessionMenu.removeItem(videoMetadataSeparator);
+            }
+            sessionMenu.videoMetadataAttached = available;
+        }
+
+        MenuItem {
+            id: videoMetadataItem
+
+            text: "Edit video metadata…"
+
+            onTriggered: row.videoMetadataRequested(row.key)
+        }
+        MenuSeparator {
+            id: videoMetadataSeparator
+        }
         MenuItem {
             enabled: (row.mappingKey || "") !== ""
             objectName: "renameDriverMenuItem"
@@ -239,6 +266,7 @@ Item {
             if (mouse.button === Qt.RightButton) {
                 row.pointerTooltipDismissed(row.tooltipOwner);
                 if (row.role === "session") {
+                    sessionMenu.setVideoMetadataAvailable(row.videoSession);
                     sessionMenu.x = mouse.x;
                     sessionMenu.y = mouse.y;
                     sessionMenu.open();

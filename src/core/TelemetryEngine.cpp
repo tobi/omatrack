@@ -41,6 +41,9 @@ const AliasTable& channelMappings() {
         {"brake_pos", {"brake pos"}},
         {"steering", {"steering angle", "steer"}},
         {"gear", {"gear_pos", "gear", "gearposdisplay"}},
+        {"driver_id",
+         {"driverid", "driver_id", "driver id", "activedriverid",
+          "x2lnk_driverid"}},
         {"driver_throttle", {"driver throttle pos", "fbwdrivertps", "pps"}},
         {"g_long", {"g force long", "i_accel_long", "fia_accelx"}},
         {"distance",
@@ -340,17 +343,27 @@ const std::vector<std::string>& driverIdAliases() {
     return aliases;
 }
 
-/// Most frequent positive id in a driver-id series; ties go to the earlier one.
-int dominantDriverId(const std::vector<double>& values) {
-    std::map<int, std::pair<size_t, size_t>> counts;
+/// Most frequent positive code in a driver-id series; ties go to the earlier
+/// one.
+double dominantDriverId(const std::vector<double>& values,
+                        uint32_t sampleTypeCode) {
+    std::map<double, std::pair<size_t, size_t>> counts;
     for (size_t index = 0; index < values.size(); ++index) {
-        const int candidate = int(std::llround(values[index]));
-        if (candidate <= 0) continue;
+        double candidate = values[index];
+        if (!std::isfinite(candidate) || candidate <= 0.0) continue;
+        if (sampleTypeCode == 6) {
+            const long double exponent =
+                std::floor(std::log10(std::fabs(candidate)));
+            const long double scale = std::pow(10.0L, 6.0L - exponent);
+            candidate =
+                double(std::round(static_cast<long double>(candidate) * scale) /
+                       scale);
+        }
         auto& entry = counts[candidate];
         ++entry.first;
         if (entry.first == 1) entry.second = index;
     }
-    int bestId = 0;
+    double bestId = 0.0;
     size_t bestCount = 0;
     size_t bestFirst = std::numeric_limits<size_t>::max();
     for (const auto& [candidate, count] : counts) {
@@ -491,7 +504,8 @@ bool TelemetrySource::sampleAt(size_t channelIdx, double timeSec,
     return true;
 }
 
-std::map<std::string, int> TelemetrySource::mapChannels() const {
+std::map<std::string, int> TelemetrySource::mapChannels(
+    const ChannelOverrides& overrides) const {
     std::map<std::string, int> mapping;
     std::vector<std::string> normalizedChannels;
     normalizedChannels.reserve(channels_.size());
@@ -499,6 +513,29 @@ std::map<std::string, int> TelemetrySource::mapChannels() const {
         normalizedChannels.push_back(normalizeChannelName(channel.name));
 
     for (const auto& [fieldName, aliases] : channelMappings()) {
+        const auto overrideIt = overrides.find(fieldName);
+        if (overrideIt != overrides.end()) {
+            bool matched = false;
+            for (size_t c = 0; c < channels_.size(); ++c) {
+                if (!channels_[c].samples.empty() &&
+                    channels_[c].name == overrideIt->second) {
+                    mapping[fieldName] = int(c);
+                    matched = true;
+                    break;
+                }
+            }
+            if (matched) continue;
+            const std::string wanted = normalizeChannelName(overrideIt->second);
+            if (wanted.empty()) continue;
+            for (size_t c = 0; c < channels_.size(); ++c) {
+                if (!channels_[c].samples.empty() &&
+                    normalizedChannels[c] == wanted) {
+                    mapping[fieldName] = int(c);
+                    break;
+                }
+            }
+            continue;
+        }
         std::vector<std::string> normalizedAliases;
         normalizedAliases.reserve(aliases.size());
         for (const std::string& alias : aliases)
@@ -521,22 +558,15 @@ std::map<std::string, int> TelemetrySource::mapChannels() const {
     return mapping;
 }
 
-int TelemetrySource::detectDriverId() const {
-    for (const bool exact : {true, false}) {
-        for (const std::string& alias : driverIdAliases()) {
-            const std::string normalized = normalizeChannelName(alias);
-            if (!exact && normalized.size() < 4) continue;
-            for (const RawChannel& channel : channels_) {
-                if (channel.samples.empty()) continue;
-                const std::string name = normalizeChannelName(channel.name);
-                const bool hit =
-                    exact ? name == normalized
-                          : name.find(normalized) != std::string::npos;
-                if (hit) return dominantDriverId(channel.samples);
-            }
-        }
-    }
-    return 0;
+double TelemetrySource::detectDriverId(
+    const ChannelOverrides& overrides) const {
+    const auto mapping = mapChannels(overrides);
+    const auto driver = mapping.find("driver_id");
+    if (driver == mapping.end() || driver->second < 0 ||
+        driver->second >= int(channels_.size()))
+        return 0.0;
+    const RawChannel& channel = channels_[size_t(driver->second)];
+    return dominantDriverId(channel.samples, channel.sampleTypeCode);
 }
 
 std::vector<Lap> TelemetrySource::detectLaps() const {
@@ -632,7 +662,8 @@ std::vector<Lap> TelemetrySource::detectLaps() const {
     return laps;
 }
 
-std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
+std::vector<Lap> detectLapsLightweight(const std::string& path,
+                                       double* driverId) {
     const auto closeBridge = [](void* handle) {
         if (handle) omatrack_close(handle);
     };
@@ -723,8 +754,12 @@ std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
     auto [driverValues, driverFreq] = decodeRaw(driverIdChannel);
     (void)driverFreq;
     if (driverId) {
-        const int detected = dominantDriverId(driverValues);
-        if (detected > 0) *driverId = detected;
+        const uint32_t sampleTypeCode =
+            driverIdChannel >= 0
+                ? omatrack_channel_type_code(handle, size_t(driverIdChannel))
+                : 0;
+        const double detected = dominantDriverId(driverValues, sampleTypeCode);
+        if (detected > 0.0) *driverId = detected;
     }
     auto [beacon, beaconFreq] = sampleRegular(beaconId);
     auto [lapNumber, numberFreq] = sampleRegular(lapNumberId);
@@ -759,7 +794,8 @@ std::vector<Lap> detectLapsLightweight(const std::string& path, int* driverId) {
     return laps;
 }
 
-UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime) const {
+UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime,
+                                     const ChannelOverrides& overrides) const {
     if (!std::isfinite(startTime) || !std::isfinite(endTime) ||
         !(endTime > startTime))
         return {};
@@ -768,7 +804,7 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime) const {
                        double(kDefaultSampleRate))
         return {};
     const int nSamples = int(duration * kDefaultSampleRate) + 1;
-    auto mapping = mapChannels();
+    auto mapping = mapChannels(overrides);
     // Sample each channel on the shared 50 Hz absolute-time grid. Source
     // chunks may start late or contain acquisition gaps; slicing flattened
     // arrays by index silently shifts every event after a gap.

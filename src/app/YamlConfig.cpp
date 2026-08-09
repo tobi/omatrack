@@ -226,6 +226,56 @@ QString YamlConfig::filePath() {
     return dir + QStringLiteral("/omatrack.yml");
 }
 
+QVariantMap YamlConfig::readDocument(const QString& path,
+                                     QString* errorString) {
+    if (errorString) errorString->clear();
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (errorString)
+            *errorString = QStringLiteral("Cannot read %1: %2")
+                               .arg(path, file.errorString());
+        return {};
+    }
+    bool ok = false;
+    const QVariantMap document = deserialize(file.readAll(), &ok);
+    if (!ok && errorString)
+        *errorString = QStringLiteral("Invalid YAML document: %1").arg(path);
+    return ok ? document : QVariantMap();
+}
+
+bool YamlConfig::writeDocument(const QString& path, const QVariantMap& document,
+                               QString* errorString) {
+    if (errorString) errorString->clear();
+    const QByteArray bytes = serialize(document);
+    if (bytes.isEmpty()) {
+        if (errorString)
+            *errorString = QStringLiteral("Unable to serialize YAML document");
+        return false;
+    }
+
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        if (errorString)
+            *errorString = QStringLiteral("Cannot write %1: %2")
+                               .arg(path, file.errorString());
+        return false;
+    }
+    if (file.write(bytes) != bytes.size()) {
+        if (errorString)
+            *errorString = QStringLiteral("Cannot write %1: %2")
+                               .arg(path, file.errorString());
+        file.cancelWriting();
+        return false;
+    }
+    if (!file.commit()) {
+        if (errorString)
+            *errorString = QStringLiteral("Cannot commit %1: %2")
+                               .arg(path, file.errorString());
+        return false;
+    }
+    return true;
+}
+
 YamlConfig::YamlConfig() { load(); }
 
 void YamlConfig::load() {
