@@ -725,9 +725,11 @@ void TraceView::buildCornerZones(TraceSceneBuilder& builder,
         builder.rect(labelBand, alpha(kMagenta, editing ? 64 : 34));
         QFont font = zoneFont_;
         font.setBold(editing);
-        builder.text(corner.name, font, alpha(kForeground, editing ? 220 : 160),
-                     labelBand.adjusted(4, 0, -3, 0),
-                     Qt::AlignLeft | Qt::AlignVCenter);
+        const QRectF textRect = labelBand.adjusted(4, 0, -3, 0);
+        const QString label = QFontMetricsF(font).elidedText(
+            corner.name, Qt::ElideRight, textRect.width());
+        builder.text(label, font, alpha(kForeground, editing ? 220 : 160),
+                     textRect, Qt::AlignLeft | Qt::AlignVCenter);
 
         if (editing) {
             builder.rect(QRectF(x1 - 2, totalRect.top(), 4, totalRect.height()),
