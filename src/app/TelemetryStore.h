@@ -173,6 +173,9 @@ public:
                         std::shared_ptr<const omatrack::UnifiedLap> unified,
                         double driverId = 0.0, bool forceDriverId = false);
     void clearUnifiedCache() { unifiedCache_.clear(); }
+    std::optional<double> videoPresentationOffsetSec() const {
+        return videoPresentationOffsetSec_;
+    }
 
 private:
     void applyCachedMetadata(const QJsonObject& metadata);
@@ -200,6 +203,7 @@ private:
     QHash<QString, QString> automaticChannelMappings_;
     double gpsLatitude_ = std::numeric_limits<double>::quiet_NaN();
     double gpsLongitude_ = std::numeric_limits<double>::quiet_NaN();
+    std::optional<double> videoPresentationOffsetSec_;
 };
 
 // ── store (root model exposed to QML) ───────────────────────────────

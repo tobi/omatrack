@@ -906,8 +906,11 @@ void SessionHandle::adoptLoadedLap(int lapId,
                        forceDriverId);
     if (!hasGpsLocation()) captureGpsLocation(*source);
     captureSourceChannels(*source);
-    src_ = std::move(source);
+    videoPresentationOffsetSec_ = source->videoPresentationOffsetSec();
     unifiedCache_.insert(lapId, std::move(unified));
+    // source (decoded raw channel arrays, ~300 MB per session) is freed when
+    // it goes out of scope here. The UnifiedLap is what rendering and analysis
+    // use; extraChannelData() re-opens the file on demand for raw channels.
 }
 
 struct SessionScanResult {
@@ -4081,6 +4084,9 @@ void TelemetryStore::requestLapLoad(SessionHandle* session, int lapId,
 
 void TelemetryStore::setPrimary(SessionHandle* session, int lapId) {
     const bool sessionChanged = primarySession_ != session;
+    if (sessionChanged && primarySession_ && primarySession_ != session &&
+        primarySession_ != compareSession_)
+        primarySession_->clearUnifiedCache();
     primarySession_ = session;
     primaryLap_ = lapId;
     deltaCacheValid_ = false;
@@ -4101,6 +4107,9 @@ void TelemetryStore::setPrimary(SessionHandle* session, int lapId) {
 
 void TelemetryStore::setCompare(SessionHandle* session, int lapId) {
     const bool sessionChanged = compareSession_ != session;
+    if (sessionChanged && compareSession_ && compareSession_ != session &&
+        compareSession_ != primarySession_)
+        compareSession_->clearUnifiedCache();
     lastCompareKey_ = session ? session->sessionKey() : QString();
     lastCompareLap_ = session ? lapId : -1;
     savePreferences();
@@ -4277,14 +4286,12 @@ void TelemetryStore::setCursorFromVideoTime(double mediaTime) {
     if (!std::isfinite(mediaTime) || !primarySession_ ||
         !primarySession_->isVideo() || primaryLap_ < 0)
         return;
-    const omatrack::TelemetrySource* source = primarySession_->source();
-    if (!source) return;
     const UnifiedLap* unified = primaryUnified();
     if (!unified || unified->time.size() < 2) return;
     for (const LapEntry& lap : primarySession_->laps()) {
         if (lap.lapId != primaryLap_) continue;
         const double presentationOffset =
-            source->videoPresentationOffsetSec().value_or(0.0);
+            primarySession_->videoPresentationOffsetSec().value_or(0.0);
         const double relativeTime =
             mediaTime - presentationOffset - lap.startTime;
         double fraction = 0.0;
@@ -5239,9 +5246,18 @@ const std::vector<double>* TelemetryStore::extraChannelData(
     auto cached = extraChannelCache_.constFind(cacheKey);
     if (cached != extraChannelCache_.cend()) return cached.value().get();
 
-    const omatrack::TelemetrySource* source = session->source();
-    if (!source) return nullptr;
     const QString rawName = key.mid(4);
+    // src_ is freed after unification to save ~300 MB per session.
+    // Re-open the file on demand for the opt-in raw-channel feature.
+    const omatrack::TelemetrySource* source = session->source();
+    std::unique_ptr<omatrack::TelemetrySource> reopened;
+    if (!source) {
+        std::string error;
+        reopened = omatrack::TelemetrySource::open(
+            session->path().toStdString(), &error);
+        if (!reopened) return nullptr;
+        source = reopened.get();
+    }
     int channelIndex = -1;
     const auto& channels = source->channels();
     for (int index = 0; index < int(channels.size()); ++index) {
@@ -5288,21 +5304,16 @@ QVariantList TelemetryStore::channelSettings() const {
                                {"weight", channelWeight(key)}});
     }
     if (primarySession_) {
-        const omatrack::TelemetrySource* source = primarySession_->source();
-        if (source) {
-            for (const omatrack::RawChannel& channel : source->channels()) {
-                if (channel.samples.size() < 2) continue;
-                const QString key = QStringLiteral("raw:") +
-                                    QString::fromStdString(channel.name);
-                out.append(
-                    QVariantMap{{"key", key},
-                                {"title", QString::fromStdString(channel.name)},
-                                {"unit", QString::fromStdString(channel.unit)},
-                                {"visible", channelVisible(key)},
-                                {"color", channelColor(key)},
-                                {"weight", channelWeight(key)},
-                                {"source", true}});
-            }
+        for (const SourceChannelSummary& channel :
+             primarySession_->sourceChannels()) {
+            const QString key = QStringLiteral("raw:") + channel.name;
+            out.append(QVariantMap{{"key", key},
+                                   {"title", channel.name},
+                                   {"unit", channel.unit},
+                                   {"visible", channelVisible(key)},
+                                   {"color", channelColor(key)},
+                                   {"weight", channelWeight(key)},
+                                   {"source", true}});
         }
     }
     return out;
@@ -5644,10 +5655,8 @@ QUrl TelemetryStore::primaryVideoSource() const {
 double TelemetryStore::primaryVideoTime() const {
     if (!primarySession_ || !primarySession_->isVideo() || primaryLap_ < 0)
         return 0.0;
-    auto* session = const_cast<SessionHandle*>(primarySession_);
-    const omatrack::TelemetrySource* source = session->source();
     const UnifiedLap* unified = primaryUnified();
-    if (!source || !unified || unified->time.empty()) return 0.0;
+    if (!unified || unified->time.empty()) return 0.0;
     const double position =
         qBound(0.0, cursorFrac_, 1.0) * double(unified->time.size() - 1);
     const size_t low = size_t(std::floor(position));
@@ -5655,10 +5664,10 @@ double TelemetryStore::primaryVideoTime() const {
     const double relativeTime =
         unified->time[low] +
         (unified->time[high] - unified->time[low]) * (position - double(low));
-    for (const LapEntry& lap : session->laps()) {
+    for (const LapEntry& lap : primarySession_->laps()) {
         if (lap.lapId == primaryLap_)
             return lap.startTime + relativeTime +
-                   source->videoPresentationOffsetSec().value_or(0.0);
+                   primarySession_->videoPresentationOffsetSec().value_or(0.0);
     }
     return 0.0;
 }
@@ -5744,9 +5753,8 @@ double TelemetryStore::compareVideoTime() const {
     if (!compareSession_ || !compareSession_->isVideo() || compareLap_ < 0)
         return 0.0;
     const SessionHandle* session = compareSession_;
-    const omatrack::TelemetrySource* source = session->source();
     const UnifiedLap* primary = primaryUnified();
-    if (!source || !primary || primary->time.size() < 2) return 0.0;
+    if (!primary || primary->time.size() < 2) return 0.0;
 
     const double relativeTime =
         compareTimeForPrimaryFraction(qBound(0.0, cursorFrac_, 1.0));
@@ -5754,7 +5762,7 @@ double TelemetryStore::compareVideoTime() const {
     for (const LapEntry& lap : session->laps()) {
         if (lap.lapId == compareLap_)
             return lap.startTime + relativeTime +
-                   source->videoPresentationOffsetSec().value_or(0.0);
+                   session->videoPresentationOffsetSec().value_or(0.0);
     }
     return 0.0;
 }
