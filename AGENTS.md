@@ -115,6 +115,12 @@ wins on load. Caches (Track Atlas snapshot, thumbnails) stay outside the file.
 - Cache parsed/unified laps lazily per session. Opening and normalizing active
   and reference laps runs on the worker pool; `TelemetryStore::lapLoading`
   drives feedback, and per-role generations discard stale rapid selections.
+  The old primary's `unifiedCache_` is evicted when the session changes in
+  `setPrimary()`, and the old compare's in `setCompare()`, so exploring many
+  sessions does not accumulate UnifiedLaps indefinitely. Raw channel arrays
+  (`src_`) are freed after unification in `adoptLoadedLap()`;
+  `extraChannelData()` re-opens the file on demand for the opt-in raw-channel
+  feature.
 - Persist telemetry directories and user-facing aliases in `omatrack.yml`; `~/Documents/Telemetry` (resolved through the platform Documents location, so Windows OneDrive redirection is honored) is the default directory on a fresh install and is created if missing.
 - Persist WebDAV connections under `webdav.connections` in `omatrack.yml`.
   Credentials are used only for authenticated requests; remote files and
@@ -513,6 +519,7 @@ Add feature flags as needed:
 - `OMATRACK_AUTOTEST_CORNER_EDIT=1`
 - `OMATRACK_AUTOTEST_LOADING=1`
 - `OMATRACK_AUTOTEST_LAP_LOADING=1`
+- `OMATRACK_AUTOTEST_LAP_SWITCH=1`
 - `OMATRACK_AUTOTEST_VIDEO_METADATA=/path/to/video`
 - `OMATRACK_AUTOTEST_CHANNEL_BROWSER=1`
 - `OMATRACK_AUTOTEST_FOLDER_METADATA=/path/to/folder`
@@ -530,7 +537,11 @@ Embedded libmpv playback must be verified on the native Linux/Omarchy OpenGL sce
 ## Current boundaries to keep explicit
 
 - The bridge dispatches `.pds`, `.ld`, `.vbo`, and AiM `aimd` `.mp4`; `.ldx` resolves to its `.ld` companion and is not parsed independently. An ordinary MP4 without an `aimd` track remains valid for standalone playback but is not a telemetry session.
-- Session parsing is lazy, but opening a source currently decodes and retains whole channel arrays. Do not describe it as streaming.
+- Session parsing is lazy. Opening a source decodes whole channel arrays, but
+  `src_` is freed after `adoptLoadedLap()` creates the `UnifiedLap`; the file is
+  re-opened on demand by `extraChannelData()` for the opt-in raw-channel
+  feature. Do not describe this as streaming — the decode still materialises
+  whole arrays before the C++ side sees them.
 - Every format crate memory-maps its input (`cosworth`, `aim`, `motec`, `vbo`), but the decoders still materialise whole channel arrays into `Vec<f64>` before the C++ side sees them. The mapping avoids the read copy; it is not a zero-copy channel walker. Pushing zero-copy further would change the C ABI, and the renderer measurements below show sample access is not the frame-budget bottleneck — so do it for memory, if at all, not for frame time.
 - `TelemetryStore` hands QML `QVariantList`/`QVariantMap` for channel rows, corner rows, driver mappings, directories, and the cursor readout. That is why `qmllint` still reports `[compiler]` warnings and why several QML properties remain `var`. Typed value types are the fix, not more `var`.
 - No QML `Canvas` and no `QQuickPaintedItem` remain. Every telemetry surface —
