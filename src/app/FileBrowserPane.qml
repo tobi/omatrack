@@ -8,6 +8,7 @@ import QtQuick.Layouts
 Pane {
     id: browser
 
+    property var _ancestorCache: ({})
     property var expandedNodes: ({})
 
     signal driverRenameRequested(string mappingKey, string driver)
@@ -58,6 +59,20 @@ Pane {
         for (let index = 0; index < nodes.length; ++index)
             browser.appendNode(nodes[index], indent, query);
     }
+    function buildAncestorCache(nodes, ancestors: list<string>): void {
+        for (let index = 0; index < nodes.length; ++index) {
+            const node = nodes[index];
+            const role = node.role || "file";
+            let nextAncestors = ancestors;
+            if (role === "source" || role === "folder")
+                nextAncestors = ancestors.concat([role + ":" + (node.path || "")]);
+            if (role === "file" && node.key && !browser._ancestorCache[node.key])
+                browser._ancestorCache[node.key] = nextAncestors;
+            const children = node.children || [];
+            if (children.length > 0)
+                browser.buildAncestorCache(children, nextAncestors);
+        }
+    }
     function nodeExpanded(role: string, path: string): bool {
         if (fileFilter.text.trim() !== "")
             return true;
@@ -80,28 +95,30 @@ Pane {
         treeModel.clear();
         browser.appendNodes(Store.fileSources(), 0, fileFilter.text.trim().toLowerCase());
     }
-    function revealInNodes(nodes, key: string, ancestors): bool {
-        for (let index = 0; index < nodes.length; ++index) {
-            const node = nodes[index];
-            let nextAncestors = ancestors;
-            if (node.role === "source" || node.role === "folder")
-                nextAncestors = ancestors.concat([node.role + ":" + node.path]);
-            if (node.role === "file" && node.key === key) {
-                let expanded = Object.assign({}, browser.expandedNodes);
-                for (let ancestor = 0; ancestor < ancestors.length; ++ancestor)
-                    expanded[ancestors[ancestor]] = true;
-                browser.expandedNodes = expanded;
-                return true;
-            }
-            if (browser.revealInNodes(node.children || [], key, nextAncestors))
-                return true;
-        }
-        return false;
+    function rebuildAncestorCache(): void {
+        browser._ancestorCache = ({});
+        browser.buildAncestorCache(Store.fileSources(), []);
     }
-    function revealSession(key: string): void {
+    function revealSession(key: string): bool {
         if (key === "" || fileFilter.text !== "")
-            return;
-        browser.revealInNodes(Store.fileSources(), key, []);
+            return false;
+        const ancestors = browser._ancestorCache[key];
+        if (!ancestors)
+            return false;
+        let changed = false;
+        let expanded = browser.expandedNodes;
+        for (let index = 0; index < ancestors.length; ++index) {
+            if (!expanded[ancestors[index]]) {
+                if (!changed) {
+                    expanded = Object.assign({}, browser.expandedNodes);
+                    changed = true;
+                }
+                expanded[ancestors[index]] = true;
+            }
+        }
+        if (changed)
+            browser.expandedNodes = expanded;
+        return changed;
     }
     function toggleNode(role: string, path: string): void {
         const key = role + ":" + path;
@@ -136,7 +153,10 @@ Pane {
         color: Style.darkBackgroundColor
     }
 
-    Component.onCompleted: browser.rebuild()
+    Component.onCompleted: {
+        browser.rebuildAncestorCache();
+        browser.rebuild();
+    }
 
     Connections {
         function onDriverMappingsChanged(): void {
@@ -146,10 +166,11 @@ Pane {
             browser.rebuild();
         }
         function onSelectionChanged(): void {
-            browser.revealSession(Store.primarySessionKey);
-            browser.rebuild();
+            if (browser.revealSession(Store.primarySessionKey))
+                browser.rebuild();
         }
         function onSessionsChanged(): void {
+            browser.rebuildAncestorCache();
             browser.rebuild();
         }
         function onSidebarMetadataChanged(path: string, details: var): void {
@@ -168,6 +189,128 @@ Pane {
     }
     ListModel {
         id: treeModel
+    }
+    Menu {
+        id: fileContextMenu
+
+        property string ctxDriver
+        property bool ctxHasSession
+        property string ctxKey
+        property string ctxMappingKey
+        property string ctxPath
+        property bool ctxPinned
+        property string ctxRole
+        property bool ctxVideoFile
+
+        MenuItem {
+            text: "Open"
+
+            onTriggered: browser.fileActivated(fileContextMenu.ctxPath, fileContextMenu.ctxKey, fileContextMenu.ctxHasSession)
+        }
+        MenuItem {
+            height: visible ? implicitHeight : 0
+            text: "Edit video metadata…"
+            visible: fileContextMenu.ctxVideoFile
+
+            onTriggered: browser.videoMetadataRequested(fileContextMenu.ctxPath)
+        }
+        MenuItem {
+            height: visible ? implicitHeight : 0
+            text: fileContextMenu.ctxPinned ? "Unpin from top" : "Pin to top"
+            visible: fileContextMenu.ctxVideoFile
+
+            onTriggered: Store.setFilePinned(fileContextMenu.ctxRole, fileContextMenu.ctxPath, !fileContextMenu.ctxPinned)
+        }
+        MenuSeparator {
+        }
+        MenuItem {
+            text: "Copy file path to clipboard"
+
+            onTriggered: Store.copyFilePath(fileContextMenu.ctxPath)
+        }
+        MenuItem {
+            text: "Open folder containing"
+
+            onTriggered: Store.openContainingFolder(fileContextMenu.ctxPath)
+        }
+        MenuSeparator {
+            height: visible ? implicitHeight : 0
+            visible: fileContextMenu.ctxHasSession
+        }
+        MenuItem {
+            enabled: fileContextMenu.ctxMappingKey !== ""
+            height: visible ? implicitHeight : 0
+            objectName: "renameDriverMenuItem"
+            text: "Rename driver"
+            visible: fileContextMenu.ctxHasSession
+
+            onTriggered: browser.driverRenameRequested(fileContextMenu.ctxMappingKey, fileContextMenu.ctxDriver)
+        }
+        MenuItem {
+            height: visible ? implicitHeight : 0
+            text: "Set active session (best lap)"
+            visible: fileContextMenu.ctxHasSession
+
+            onTriggered: browser.setActiveRequested(fileContextMenu.ctxKey)
+        }
+        MenuItem {
+            enabled: Store.primarySessionKey !== "" && fileContextMenu.ctxKey !== Store.primarySessionKey
+            height: visible ? implicitHeight : 0
+            text: "Set as reference (best lap)"
+            visible: fileContextMenu.ctxHasSession
+
+            onTriggered: browser.setReferenceRequested(fileContextMenu.ctxKey)
+        }
+        MenuItem {
+            height: visible ? implicitHeight : 0
+            text: "Use this session only"
+            visible: fileContextMenu.ctxHasSession
+
+            onTriggered: browser.fileIsolated(fileContextMenu.ctxKey)
+        }
+        MenuItem {
+            enabled: Store.trackAtlasReady
+            height: visible ? implicitHeight : 0
+            text: "Assign track…"
+            visible: fileContextMenu.ctxHasSession
+
+            onTriggered: browser.trackAssignmentRequested(fileContextMenu.ctxKey)
+        }
+        MenuSeparator {
+            height: visible ? implicitHeight : 0
+            visible: fileContextMenu.ctxHasSession && Store.comparing
+        }
+        MenuItem {
+            height: visible ? implicitHeight : 0
+            text: "Clear reference"
+            visible: fileContextMenu.ctxHasSession && Store.comparing
+
+            onTriggered: Store.clearCompare()
+        }
+    }
+    Menu {
+        id: folderContextMenu
+
+        property string ctxPath
+        property bool ctxPinned
+        property string ctxRole
+
+        MenuItem {
+            text: folderContextMenu.ctxPinned ? "Unpin from top" : "Pin to top"
+
+            onTriggered: Store.setFilePinned(folderContextMenu.ctxRole, folderContextMenu.ctxPath, !folderContextMenu.ctxPinned)
+        }
+        MenuSeparator {
+        }
+        MenuItem {
+            text: "Edit folder TRACK.yml…"
+
+            onTriggered: browser.folderMetadataRequested(folderContextMenu.ctxPath)
+        }
+        MenuItem {
+            enabled: false
+            text: "Inherited by videos and subfolders"
+        }
     }
     ColumnLayout {
         anchors.fill: parent
@@ -267,18 +410,31 @@ Pane {
                     activeSessionKey: Store.primarySessionKey
                     referenceSessionKey: Store.compareSessionKey
 
-                    onDriverRenameRequested: (mappingKey, driver) => browser.driverRenameRequested(mappingKey, driver)
+                    onContextMenuRequested: (role, path, key, hasSession, isVideo, mappingKey, driver, pinned) => {
+                        if (role === "file") {
+                            fileContextMenu.ctxPath = path;
+                            fileContextMenu.ctxKey = key;
+                            fileContextMenu.ctxHasSession = hasSession;
+                            fileContextMenu.ctxVideoFile = isVideo;
+                            fileContextMenu.ctxMappingKey = mappingKey;
+                            fileContextMenu.ctxDriver = driver;
+                            fileContextMenu.ctxPinned = pinned;
+                            fileContextMenu.ctxRole = role;
+                            fileContextMenu.popup();
+                        } else {
+                            folderContextMenu.ctxPath = path;
+                            folderContextMenu.ctxRole = role;
+                            folderContextMenu.ctxPinned = pinned;
+                            folderContextMenu.popup();
+                        }
+                    }
                     onFileActivated: (path, key, hasSession) => browser.fileActivated(path, key, hasSession)
-                    onFileIsolated: key => browser.fileIsolated(key)
-                    onFolderMetadataRequested: path => browser.folderMetadataRequested(path)
                     onPointerTooltipDismissed: owner => browser.pointerTooltipDismissed(owner)
                     onPointerTooltipMoved: (owner, x, y) => browser.pointerTooltipMoved(owner, x, y)
                     onPointerTooltipRequested: (owner, text, x, y) => browser.pointerTooltipRequested(owner, text, x, y)
                     onSetActiveRequested: key => browser.setActiveRequested(key)
                     onSetReferenceRequested: key => browser.setReferenceRequested(key)
                     onToggleNodeRequested: (role, path) => browser.toggleNode(role, path)
-                    onTrackAssignmentRequested: key => browser.trackAssignmentRequested(key)
-                    onVideoMetadataRequested: path => browser.videoMetadataRequested(path)
                 }
             }
             Column {

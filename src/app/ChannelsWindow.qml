@@ -42,8 +42,6 @@ ApplicationWindow {
     visible: false
     width: 640
 
-    Component.onCompleted: channelsWindow.refresh()
-
     Connections {
         function onChannelConfigChanged(): void {
             channelsWindow.refresh();

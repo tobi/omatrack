@@ -37,18 +37,14 @@ Item {
     required property string topQuartileTime
     readonly property bool videoFile: row.role === "file" && row.isVideo
 
-    signal driverRenameRequested(string mappingKey, string driver)
+    signal contextMenuRequested(string role, string path, string key, bool hasSession, bool isVideo, string mappingKey, string driver, bool pinned)
     signal fileActivated(string path, string key, bool hasSession)
-    signal fileIsolated(string key)
-    signal folderMetadataRequested(string path)
     signal pointerTooltipDismissed(string owner)
     signal pointerTooltipMoved(string owner, real x, real y)
     signal pointerTooltipRequested(string owner, string text, real x, real y)
     signal setActiveRequested(string key)
     signal setReferenceRequested(string key)
     signal toggleNodeRequested(string role, string path)
-    signal trackAssignmentRequested(string key)
-    signal videoMetadataRequested(string path)
 
     function hoverText(): string {
         if (row.role !== "file")
@@ -172,127 +168,6 @@ Item {
             onActivated: row.setReferenceRequested(row.key)
         }
     }
-    Menu {
-        id: fileMenu
-
-        property bool videoMetadataAttached: true
-
-        function setVideoMetadataAvailable(available: bool): void {
-            if (available === fileMenu.videoMetadataAttached)
-                return;
-            if (available)
-                fileMenu.insertItem(1, videoMetadataItem);
-            else
-                fileMenu.removeItem(videoMetadataItem);
-            fileMenu.videoMetadataAttached = available;
-        }
-
-        MenuItem {
-            text: "Open"
-
-            onTriggered: row.fileActivated(row.path, row.key, row.hasSession)
-        }
-        MenuItem {
-            id: videoMetadataItem
-
-            text: "Edit video metadata…"
-
-            onTriggered: row.videoMetadataRequested(row.path)
-        }
-        MenuItem {
-            height: visible ? implicitHeight : 0
-            text: row.pinned ? "Unpin from top" : "Pin to top"
-            visible: row.videoFile
-
-            onTriggered: Store.setFilePinned(row.role, row.path, !row.pinned)
-        }
-        MenuSeparator {
-        }
-        MenuItem {
-            text: "Copy file path to clipboard"
-
-            onTriggered: Store.copyFilePath(row.path)
-        }
-        MenuItem {
-            text: "Open folder containing"
-
-            onTriggered: Store.openContainingFolder(row.path)
-        }
-        MenuSeparator {
-            height: visible ? implicitHeight : 0
-            visible: row.hasSession
-        }
-        MenuItem {
-            enabled: row.mappingKey !== ""
-            height: visible ? implicitHeight : 0
-            objectName: "renameDriverMenuItem"
-            text: "Rename driver"
-            visible: row.hasSession
-
-            onTriggered: row.driverRenameRequested(row.mappingKey, row.driver)
-        }
-        MenuItem {
-            height: visible ? implicitHeight : 0
-            text: "Set active session (best lap)"
-            visible: row.hasSession
-
-            onTriggered: row.setActiveRequested(row.key)
-        }
-        MenuItem {
-            enabled: row.activeSessionKey !== "" && row.key !== row.activeSessionKey
-            height: visible ? implicitHeight : 0
-            text: "Set as reference (best lap)"
-            visible: row.hasSession
-
-            onTriggered: row.setReferenceRequested(row.key)
-        }
-        MenuItem {
-            height: visible ? implicitHeight : 0
-            text: "Use this session only"
-            visible: row.hasSession
-
-            onTriggered: row.fileIsolated(row.key)
-        }
-        MenuItem {
-            enabled: Store.trackAtlasReady
-            height: visible ? implicitHeight : 0
-            text: "Assign track…"
-            visible: row.hasSession
-
-            onTriggered: row.trackAssignmentRequested(row.key)
-        }
-        MenuSeparator {
-            height: visible ? implicitHeight : 0
-            visible: row.hasSession && Store.comparing
-        }
-        MenuItem {
-            height: visible ? implicitHeight : 0
-            text: "Clear reference"
-            visible: row.hasSession && Store.comparing
-
-            onTriggered: Store.clearCompare()
-        }
-    }
-    Menu {
-        id: folderMenu
-
-        MenuItem {
-            text: row.pinned ? "Unpin from top" : "Pin to top"
-
-            onTriggered: Store.setFilePinned(row.role, row.path, !row.pinned)
-        }
-        MenuSeparator {
-        }
-        MenuItem {
-            text: "Edit folder TRACK.yml…"
-
-            onTriggered: row.folderMetadataRequested(row.path)
-        }
-        MenuItem {
-            enabled: false
-            text: "Inherited by videos and subfolders"
-        }
-    }
     MouseArea {
         id: rowMouse
 
@@ -304,16 +179,8 @@ Item {
         onClicked: mouse => {
             if (mouse.button === Qt.RightButton) {
                 row.pointerTooltipDismissed(row.tooltipOwner);
-                if (row.role === "file") {
-                    fileMenu.setVideoMetadataAvailable(row.videoFile);
-                    fileMenu.x = mouse.x;
-                    fileMenu.y = mouse.y;
-                    fileMenu.open();
-                } else if (row.role === "source" || row.role === "folder") {
-                    folderMenu.x = mouse.x;
-                    folderMenu.y = mouse.y;
-                    folderMenu.open();
-                }
+                if (row.role === "file" || row.role === "source" || row.role === "folder")
+                    row.contextMenuRequested(row.role, row.path, row.key, row.hasSession, row.videoFile, row.mappingKey, row.driver, row.pinned);
                 return;
             }
             if (row.role === "source" || row.role === "folder" || row.role === "pins")

@@ -10,6 +10,8 @@ import QtQuick.Layouts
 ApplicationWindow {
     id: root
 
+    property bool _lapStripDirty: true
+    property var _sessionInfoCache: ({})
     property string activeSessionKey: ""
     property string activeSessionName: ""
 
@@ -184,8 +186,13 @@ ApplicationWindow {
         root.deltaTraceVisible = Store.channelVisible("delta");
     }
     function refreshLapStrip() {
-        activeSessionKey = Store.primarySessionKey;
-        referenceSessionKey = Store.compareSessionKey;
+        const newActive = Store.primarySessionKey;
+        const newReference = Store.compareSessionKey;
+        if (!root._lapStripDirty && newActive === activeSessionKey && newReference === referenceSessionKey)
+            return;
+        root._lapStripDirty = false;
+        activeSessionKey = newActive;
+        referenceSessionKey = newReference;
         activeSessionName = sessionNameForKey(activeSessionKey);
         referenceSessionName = sessionNameForKey(referenceSessionKey);
         let strips = [];
@@ -211,17 +218,22 @@ ApplicationWindow {
     function sessionInfoForKey(key) {
         if (key === "")
             return null;
+        const cached = root._sessionInfoCache[key];
+        if (cached)
+            return cached;
+        // Cache miss: rebuild from track groups, then retry.
+        const cache = {};
         const groups = Store.trackGroups();
         for (let t = 0; t < groups.length; ++t) {
             const dates = groups[t].dates;
             for (let d = 0; d < dates.length; ++d) {
                 const sessions = dates[d].sessions;
                 for (let s = 0; s < sessions.length; ++s)
-                    if (sessions[s].key === key)
-                        return sessions[s];
+                    cache[sessions[s].key] = sessions[s];
             }
         }
-        return null;
+        root._sessionInfoCache = cache;
+        return cache[key] || null;
     }
     function sessionNameForKey(key) {
         const session = root.sessionInfoForKey(key);
@@ -496,6 +508,7 @@ ApplicationWindow {
         if (root.startupVideo.toString() !== "" && Store.primaryVideoSource.toString() === "")
             root.showVideo(root.startupVideo);
         if (root.autotestWindows) {
+            channelsWindow.refresh();
             channelsWindow.show();
             settingsWindow.show();
         }
@@ -959,6 +972,8 @@ ApplicationWindow {
             root.syncTelemetryVideo();
         }
         function onSessionsChanged(): void {
+            root._lapStripDirty = true;
+            root._sessionInfoCache = ({});
             root.refreshLapStrip();
             root.directoryRows = Store.sessionDirectories();
         }
