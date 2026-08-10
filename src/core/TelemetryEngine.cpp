@@ -46,6 +46,9 @@ const AliasTable& channelMappings() {
           "x2lnk_driverid"}},
         {"driver_throttle", {"driver throttle pos", "fbwdrivertps", "pps"}},
         {"g_long", {"g force long", "i_accel_long", "fia_accelx"}},
+        {"g_lat",
+         {"g force lat", "g_force_lat", "i_accel_lat", "fia_accely",
+          "accel_lat", "lateral acceleration", "latacc", "g lat"}},
         {"distance",
          {"lap distance corrected", "lap distance", "distance_wspd_app"}},
         {"damper_fl", {"x_fl_damper", "damper travel fl"}},
@@ -965,6 +968,7 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime,
     unified.gear.reserve(nSamples);
     unified.distance.reserve(nSamples);
     unified.gForceLong.reserve(nSamples);
+    unified.gForceLat.reserve(nSamples);
     unified.gpsLat.reserve(nSamples);
     unified.gpsLon.reserve(nSamples);
     unified.gpsPositionAccuracy.reserve(nSamples);
@@ -1013,6 +1017,7 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime,
         unified.driverThrottle.push_back(std::clamp(dth, 0.0, 1.0));
 
         unified.gForceLong.push_back(get("g_long", i));
+        unified.gForceLat.push_back(get("g_lat", i));
         unified.damperFL.push_back(get("damper_fl", i));
         unified.damperFR.push_back(get("damper_fr", i));
         unified.damperRL.push_back(get("damper_rl", i));

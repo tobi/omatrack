@@ -2,6 +2,8 @@
 # usable without a QGuiApplication.
 
 add_library(omatrack_core STATIC
+  CornerAnalysis.cpp
+  CornerAnalysis.h
   TelemetryEngine.cpp
   TelemetryEngine.h
   TelemetryEngineInternal.h)

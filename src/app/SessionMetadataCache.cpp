@@ -6,13 +6,20 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QSaveFile>
 
 #include <array>
 #include <utility>
 
+namespace {
+QMutex s_cacheMutex;
+}
+
 SessionMetadataCache::SessionMetadataCache(QString path)
     : path_(std::move(path)) {
+    const QMutexLocker locker(&s_cacheMutex);
     QFile file(path_);
     if (!file.open(QIODevice::ReadOnly)) return;
     QJsonParseError error;
@@ -45,6 +52,7 @@ SessionMetadataCache::Lookup SessionMetadataCache::lookup(
     entry.insert(QStringLiteral("lastSeen"),
                  double(QDateTime::currentMSecsSinceEpoch()));
     it.value() = entry;
+    dirtyEntries_.insert(fingerprint, entry);
     Lookup result;
     result.found = true;
     result.supported = entry.value(QStringLiteral("supported")).toBool();
@@ -56,21 +64,42 @@ void SessionMetadataCache::store(const QString& fingerprint,
                                  const QString& canonicalPath, bool supported,
                                  const QJsonObject& metadata) {
     if (fingerprint.isEmpty()) return;
-    entries_.insert(fingerprint,
-                    QJsonObject{{QStringLiteral("path"), canonicalPath},
-                                {QStringLiteral("supported"), supported},
-                                {QStringLiteral("lastSeen"),
-                                 double(QDateTime::currentMSecsSinceEpoch())},
-                                {QStringLiteral("metadata"), metadata}});
+    const QJsonObject entry{
+        {QStringLiteral("path"), canonicalPath},
+        {QStringLiteral("supported"), supported},
+        {QStringLiteral("lastSeen"),
+         double(QDateTime::currentMSecsSinceEpoch())},
+        {QStringLiteral("metadata"), metadata},
+    };
+    entries_.insert(fingerprint, entry);
+    dirtyEntries_.insert(fingerprint, entry);
 }
 
 bool SessionMetadataCache::save() {
+    const QMutexLocker locker(&s_cacheMutex);
+    QJsonObject mergedEntries;
+    QFile existing(path_);
+    if (existing.open(QIODevice::ReadOnly)) {
+        QJsonParseError error;
+        const QJsonDocument document =
+            QJsonDocument::fromJson(existing.readAll(), &error);
+        if (error.error == QJsonParseError::NoError && document.isObject()) {
+            const QJsonObject root = document.object();
+            if (root.value(QStringLiteral("version")).toInt() == kSchemaVersion)
+                mergedEntries =
+                    root.value(QStringLiteral("entries")).toObject();
+        }
+    }
+    for (auto it = dirtyEntries_.constBegin(); it != dirtyEntries_.constEnd();
+         ++it)
+        mergedEntries.insert(it.key(), it.value());
+
     const qint64 oldest = QDateTime::currentMSecsSinceEpoch() - kMaxEntryAgeMs;
-    for (auto it = entries_.begin(); it != entries_.end();) {
+    for (auto it = mergedEntries.begin(); it != mergedEntries.end();) {
         const qint64 lastSeen =
             qint64(it->toObject().value(QStringLiteral("lastSeen")).toDouble());
         if (lastSeen <= 0 || lastSeen < oldest)
-            it = entries_.erase(it);
+            it = mergedEntries.erase(it);
         else
             ++it;
     }
@@ -79,8 +108,11 @@ bool SessionMetadataCache::save() {
     QSaveFile file(path_);
     if (!file.open(QIODevice::WriteOnly)) return false;
     const QJsonObject root{{QStringLiteral("version"), kSchemaVersion},
-                           {QStringLiteral("entries"), entries_}};
+                           {QStringLiteral("entries"), mergedEntries}};
     if (file.write(QJsonDocument(root).toJson(QJsonDocument::Compact)) < 0)
         return false;
-    return file.commit();
+    if (!file.commit()) return false;
+    entries_ = mergedEntries;
+    dirtyEntries_ = {};
+    return true;
 }

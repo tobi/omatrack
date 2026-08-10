@@ -245,13 +245,6 @@ ToolBar {
 
             onTriggered: appBar.preferencesRequested()
         }
-        MenuItem {
-            checkable: true
-            checked: Store.channelHeight > 110
-            text: "Larger trace lanes"
-
-            onTriggered: Store.channelHeight = checked ? 150 : 110
-        }
         MenuSeparator {
             height: visible ? implicitHeight : 0
             visible: Store.comparing

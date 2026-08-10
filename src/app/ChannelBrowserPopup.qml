@@ -11,6 +11,7 @@ Popup {
 
     required property string destinationLabel
     required property string expectedUnit
+    property bool folderScope: false
     required property var rows
 
     signal channelChosen(string value)
@@ -21,11 +22,11 @@ Popup {
         if (row.frequencyHz > 0)
             parts.push(Number(row.frequencyHz).toLocaleString(Qt.locale(), 'f', row.frequencyHz >= 10 ? 0 : 1) + " Hz");
         if (row.recordingCount > 1)
-            parts.push("Seen in " + row.recordingCount + " videos");
+            parts.push("Seen in " + row.recordingCount + (browser.folderScope ? " recordings" : " videos"));
         if (row.examples && row.examples.length > 0)
             parts.push("Examples  " + row.examples.join("   "));
         else if (!row.available)
-            parts.push("TRACK.yml suggestion; not present in this video");
+            parts.push(browser.folderScope ? "TRACK.yml suggestion; not present in sampled recordings" : "TRACK.yml suggestion; not present in this video");
         return parts.join("  ·  ");
     }
     function openBelow(anchorItem: Item, preferredWidth: real): void {

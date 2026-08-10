@@ -74,12 +74,10 @@ ApplicationWindow {
         return laps.length > 0 ? laps[0] : null;
     }
     function defaultTelemetryFolder() {
-        const home = toLocalPath(Platform.StandardPaths.writableLocation(Platform.StandardPaths.HomeLocation));
-        const preferred = home + "/Documents/Telemetry";
-        return "file://" + (Store.directoryExists(preferred) ? preferred : home);
+        return "file://" + Store.defaultTelemetryDirectory();
     }
     function dismissCornerPopover() {
-        cornerWindow.hide();
+        Store.clearCornerFocus();
     }
     function dismissPointerTooltip(owner: string): void {
         if (root.pointerTooltipOwner === owner)
@@ -227,8 +225,11 @@ ApplicationWindow {
     }
     function setSessionActive(key) {
         const lap = bestLapForSession(key);
-        if (!lap)
+        if (!lap) {
+            Store.clearCompare();
+            Store.selectSession(key, false);
             return;
+        }
         const referenceKey = referenceSessionKey;
         const referenceLap = bestLapForSession(referenceKey);
         Store.selectLap(key, lap.lapId);
@@ -249,6 +250,8 @@ ApplicationWindow {
         const lap = bestLapForSession(key);
         if (lap)
             Store.compareLap(key, lap.lapId);
+        else
+            Store.selectSession(key, true);
     }
     function showPointerTooltip(owner: string, text: string, x: real, y: real): void {
         root.pointerTooltipOwner = owner;
@@ -361,10 +364,11 @@ ApplicationWindow {
     }
     function useSessionAlone(key) {
         const lap = bestLapForSession(key);
-        if (!lap)
-            return;
         Store.clearCompare();
-        Store.selectLap(key, lap.lapId);
+        if (lap)
+            Store.selectLap(key, lap.lapId);
+        else
+            Store.selectSession(key, false);
     }
     function verifyPausedVideoAlignment(): void {
         const ref = root.videoReference();
@@ -462,9 +466,7 @@ ApplicationWindow {
             channelsWindow.raise();
         }
         onCornersRequested: {
-            cornerWindow.refresh();
-            cornerWindow.show();
-            cornerWindow.requestActivate();
+            Store.focusCornerAtCursor();
         }
         onMetadataRequested: (path, folderScope) => {
             if (folderScope)
@@ -489,12 +491,9 @@ ApplicationWindow {
         if (root.startupVideo.toString() !== "" && Store.primaryVideoSource.toString() === "")
             root.showVideo(root.startupVideo);
         if (root.autotestWindows) {
-            cornerWindow.show();
             channelsWindow.show();
             settingsWindow.show();
         }
-    }
-    onWidthChanged: {
         if (root.videoVisible && root.width < 1000)
             root.sidebarVisible = false;
     }
@@ -915,6 +914,11 @@ ApplicationWindow {
         function onChannelConfigChanged(): void {
             root.refreshDeltaTraceVisible();
         }
+        function onOperationError(title: string, message: string): void {
+            operationErrorDialog.errorTitle = title;
+            operationErrorDialog.errorMessage = message;
+            operationErrorDialog.open();
+        }
         function onSelectionChanged(): void {
             root.refreshLapStrip();
             root.syncTelemetryVideo();
@@ -1062,6 +1066,30 @@ ApplicationWindow {
         onAccepted: Store.openFile(root.toLocalPath(videoFileDialog.file))
     }
     Dialog {
+        id: operationErrorDialog
+
+        property string errorMessage: ""
+        property string errorTitle: "Unable to complete operation"
+
+        closePolicy: Popup.CloseOnEscape
+        focus: true
+        modal: true
+        objectName: "operationErrorDialog"
+        parent: Overlay.overlay
+        standardButtons: Dialog.Ok
+        title: errorTitle
+        width: Math.min(520, root.width - 32)
+        x: Math.round((parent.width - width) / 2)
+        y: Math.round((parent.height - height) / 2)
+
+        contentItem: Label {
+            color: Style.foregroundColor
+            font.pixelSize: 11
+            text: operationErrorDialog.errorMessage
+            wrapMode: Text.Wrap
+        }
+    }
+    Dialog {
         id: driverRenameDialog
 
         property string mappingKey: ""
@@ -1142,14 +1170,6 @@ ApplicationWindow {
             cornerRenameField.forceActiveFocus();
             cornerRenameField.selectAll();
         }
-    }
-
-    // ══ corner inspector (separate Material window) ════════════════
-    CornerInspectorWindow {
-        id: cornerWindow
-
-        onCornerDismissRequested: root.dismissCornerPopover()
-        onCornerRenameRequested: index => root.openCornerRename(index)
     }
     ChannelsWindow {
         id: channelsWindow
@@ -1505,22 +1525,16 @@ ApplicationWindow {
                                 event.accepted = true;
                             }
                         }
-                        onChannelMenuRequested: (key, title, pinned, x, y) => {
+                        onChannelMenuRequested: (key, title, weight, x, y) => {
                             channelMenu.channelKey = key;
                             channelMenu.channelTitle = title;
-                            channelMenu.pinned = pinned;
+                            channelMenu.channelWeight = weight;
                             channelMenu.popup(trace, x, y);
                         }
                         onChannelsRequested: {
                             channelsWindow.refresh();
                             channelsWindow.show();
                             channelsWindow.raise();
-                        }
-                        onCornerActivated: index => {
-                            cornerWindow.refresh();
-                            cornerWindow.selectedCornerIndex = index;
-                            cornerWindow.show();
-                            cornerWindow.requestActivate();
                         }
                         onCornerMenuRequested: (cornerIndex, cornerName, fraction, x, y) => {
                             cornerMenu.cornerIndex = cornerIndex;
@@ -1564,37 +1578,52 @@ ApplicationWindow {
 
                                 onTriggered: Store.deleteCorner(cornerMenu.cornerIndex)
                             }
+                            MenuSeparator {
+                            }
+                            MenuItem {
+                                text: "Auto-generate zones"
+
+                                onTriggered: {
+                                    Store.autoGenerateCorners();
+                                    Store.saveCorners();
+                                }
+                            }
                         }
                         Menu {
                             id: channelMenu
 
                             property string channelKey: ""
                             property string channelTitle: ""
-                            property bool pinned: false
+                            property real channelWeight: 1
 
                             objectName: "channelMenu"
 
                             MenuItem {
-                                text: channelMenu.pinned ? "Unpin " + channelMenu.channelTitle : "Pin " + channelMenu.channelTitle + " to top"
+                                text: "Double size"
 
-                                onTriggered: trace.toggleSticky(channelMenu.channelKey)
+                                onTriggered: Store.setChannelWeight(channelMenu.channelKey, Math.min(4, channelMenu.channelWeight * 2))
+                            }
+                            MenuItem {
+                                text: "Half size"
+
+                                onTriggered: Store.setChannelWeight(channelMenu.channelKey, Math.max(0.25, channelMenu.channelWeight / 2))
+                            }
+                            MenuItem {
+                                text: "Normal size"
+
+                                onTriggered: Store.setChannelWeight(channelMenu.channelKey, 1)
+                            }
+                            MenuSeparator {
                             }
                             MenuItem {
                                 text: "Hide " + channelMenu.channelTitle
 
                                 onTriggered: trace.hideChannel(channelMenu.channelKey)
                             }
-                            MenuSeparator {
-                            }
                             MenuItem {
                                 text: "Show all standard channels"
 
                                 onTriggered: trace.showAllStandardChannels()
-                            }
-                            MenuItem {
-                                text: "Unpin all channels"
-
-                                onTriggered: trace.unpinAllChannels()
                             }
                             MenuItem {
                                 text: "More channels…"
@@ -1627,6 +1656,46 @@ ApplicationWindow {
                         z: 2
 
                         onClicked: Store.setChannelVisible("delta", !root.deltaTraceVisible)
+                    }
+                    Row {
+                        // Left of the pane: the corner focus overlay owns the
+                        // right side while a corner is focused.
+                        anchors.left: parent.left
+                        anchors.leftMargin: 60
+                        anchors.top: parent.top
+                        spacing: 2
+                        z: 2
+
+                        ToolButton {
+                            ToolTip.text: "Zoom in"
+                            ToolTip.visible: hovered
+                            height: 22
+                            objectName: "zoomInButton"
+                            text: "+"
+                            width: 30
+
+                            onClicked: Store.zoomAt(Store.cursorFrac, 0.7)
+                        }
+                        ToolButton {
+                            ToolTip.text: "Zoom out"
+                            ToolTip.visible: hovered
+                            height: 22
+                            objectName: "zoomOutButton"
+                            text: "−"
+                            width: 30
+
+                            onClicked: Store.zoomAt(Store.cursorFrac, 1.4)
+                        }
+                        ToolButton {
+                            ToolTip.text: "Reset zoom"
+                            ToolTip.visible: hovered
+                            height: 22
+                            objectName: "zoomResetButton"
+                            text: "⤢"
+                            width: 30
+
+                            onClicked: Store.resetView()
+                        }
                     }
                     Rectangle {
                         anchors.fill: parent
@@ -1679,6 +1748,16 @@ ApplicationWindow {
                             channelsWindow.show();
                             channelsWindow.raise();
                         }
+                    }
+                    CornerFocusOverlay {
+                        anchors.bottom: tracePane.bottom
+                        anchors.bottomMargin: 8
+                        anchors.right: tracePane.right
+                        anchors.rightMargin: 8
+                        anchors.top: tracePane.top
+                        anchors.topMargin: 8
+                        width: Math.min(360, Math.max(240, tracePane.width * 0.34))
+                        z: 4
                     }
                 }
             }

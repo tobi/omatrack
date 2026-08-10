@@ -1,6 +1,6 @@
 // Omatrack application entry.
-// Qt Quick Controls 2 Material UI; telemetry canvas is a custom C++
-// QQuickPaintedItem; parsing is delegated through the upstream Rust bridge.
+// Qt Quick Controls 2 Material UI; the telemetry surfaces are custom C++
+// scene-graph items; parsing is delegated through the upstream Rust bridge.
 
 #include <QFileInfo>
 #include <QFontDatabase>
@@ -41,6 +41,12 @@ int main(int argc, char** argv) {
     if (!desktopEntry.isEmpty())
         QGuiApplication::setDesktopFileName(desktopFileName);
 
+    // The trace surfaces are scene-graph geometry now, so their edges are
+    // antialiased by the framebuffer rather than by QPainter. libmpv renders
+    // into its own FBO and is unaffected by the sample count.
+    QSurfaceFormat surfaceFormat = QSurfaceFormat::defaultFormat();
+    surfaceFormat.setSamples(4);
+    QSurfaceFormat::setDefaultFormat(surfaceFormat);
     QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
     QGuiApplication app(argc, argv);
     std::setlocale(LC_NUMERIC, "C");

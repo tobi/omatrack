@@ -1,13 +1,15 @@
 #pragma once
 
 #include <QColor>
-#include <QFont>
-#include <QQuickPaintedItem>
+#include <QQuickItem>
+#include <QString>
 #include <QtQml/qqmlregistration.h>
+
+#include "TraceSceneBuilder.h"
 
 class TelemetryStore;
 
-class VideoTelemetryHud : public QQuickPaintedItem {
+class VideoTelemetryHud : public QQuickItem {
     Q_OBJECT
     QML_ELEMENT
     Q_PROPERTY(
@@ -29,7 +31,11 @@ public:
 
     TelemetryStore* store() const { return store_; }
     void setStore(TelemetryStore* store);
-    void paint(QPainter* painter) override;
+
+protected:
+    QSGNode* updatePaintNode(QSGNode* oldNode,
+                             UpdatePaintNodeData* data) override;
+    void releaseResources() override;
 
 signals:
     void storeChanged();
@@ -45,4 +51,6 @@ private:
     QColor steeringColor_ = QColor(QStringLiteral("#dbbc7f"));
     QColor backgroundColor_ = QColor(0, 0, 0, 218);
     QString monoFontFamily_ = QStringLiteral("Geist Mono");
+
+    TraceSceneBuilder builder_;
 };

@@ -23,9 +23,11 @@ Item {
     required property string key
     required property int lapCount
     required property string mappingKey
+    readonly property bool metadataInViewport: row.role === "file" && row.y + row.height >= ListView.view.contentY && row.y <= ListView.view.contentY + ListView.view.height
     required property string modified
     required property string name
     required property string path
+    required property bool pinned
     readonly property bool referenceFile: row.hasSession && row.key === row.referenceSessionKey
     required property string referenceSessionKey
     required property string role
@@ -71,15 +73,23 @@ Item {
             if (row.sessionDate !== "")
                 lines.push("Date: " + row.sessionDate);
         }
-        return lines.length > 0 ? lines.join("\n") : "No telemetry metadata available";
+        return (lines.length > 0 ? lines.join("\n") : "No telemetry metadata available") + "\n\n" + row.name;
+    }
+    function requestVisibleMetadata(): void {
+        if (row.role === "file")
+            Store.requestSidebarMetadata(row.path, row.metadataInViewport);
     }
 
-    height: row.role === "source" ? 40 : row.role === "file" ? 38 : 28
+    height: row.role === "source" || row.role === "pins" ? 40 : row.role === "file" ? 38 : 28
     width: ListView.view.width
+
+    Component.onCompleted: row.requestVisibleMetadata()
+    onMetadataInViewportChanged: row.requestVisibleMetadata()
+    onPathChanged: row.requestVisibleMetadata()
 
     Rectangle {
         anchors.fill: parent
-        color: row.activeFile ? Style.selectionColor : row.referenceFile ? Style.referenceSelectionColor : row.role === "source" ? Style.surfaceColor : rowMouse.containsMouse ? Style.backgroundColor : "transparent"
+        color: row.activeFile ? Style.selectionColor : row.referenceFile ? Style.referenceSelectionColor : row.role === "source" || row.role === "pins" ? Style.surfaceColor : rowMouse.containsMouse ? Style.backgroundColor : "transparent"
     }
     RowLayout {
         anchors.fill: parent
@@ -93,7 +103,7 @@ Item {
             color: Style.dimTextColor
             font.family: Style.monoFontFamily
             font.pixelSize: 8
-            text: row.role === "source" || row.role === "folder" ? (row.expanded ? "▾" : "▸") : ""
+            text: row.role === "source" || row.role === "folder" || row.role === "pins" ? (row.expanded ? "▾" : "▸") : ""
         }
         Rectangle {
             Layout.preferredHeight: 11
@@ -123,9 +133,9 @@ Item {
                 Layout.fillWidth: true
                 color: !row.available ? Style.redColor : row.activeFile ? Style.accentColor : row.referenceFile ? Style.orangeColor : Style.foregroundColor
                 elide: Text.ElideRight
-                font.bold: row.role === "source" || row.activeFile
+                font.bold: row.role === "source" || row.role === "pins" || row.activeFile
                 font.family: row.role === "file" ? Style.monoFontFamily : Style.uiFontFamily
-                font.pixelSize: row.role === "source" ? 10 : 9
+                font.pixelSize: row.role === "source" || row.role === "pins" ? 10 : 9
                 text: row.name
             }
             Label {
@@ -134,7 +144,7 @@ Item {
                 elide: Text.ElideMiddle
                 font.family: Style.monoFontFamily
                 font.pixelSize: 8
-                text: row.role === "source" ? (!row.available ? "Folder not found · " : row.childCount + (row.childCount === 1 ? " file · " : " files · ")) + row.path : row.driver !== "" ? row.driver + (row.bestTime !== "" ? " · best " + row.bestTime : "") + (row.modified !== "" ? " · " + row.modified : "") : row.modified
+                text: row.role === "pins" ? row.childCount + (row.childCount === 1 ? " pinned item" : " pinned items") : row.role === "source" ? (!row.available ? "Folder not found" : row.childCount + (row.childCount === 1 ? " file" : " files")) : row.driver !== "" ? row.driver + (row.bestTime !== "" ? " · best " + row.bestTime : "") + (row.modified !== "" ? " · " + row.modified : "") : row.modified
                 visible: row.role !== "folder"
             }
         }
@@ -188,6 +198,25 @@ Item {
             text: "Edit video metadata…"
 
             onTriggered: row.videoMetadataRequested(row.path)
+        }
+        MenuItem {
+            height: visible ? implicitHeight : 0
+            text: row.pinned ? "Unpin from top" : "Pin to top"
+            visible: row.videoFile
+
+            onTriggered: Store.setFilePinned(row.role, row.path, !row.pinned)
+        }
+        MenuSeparator {
+        }
+        MenuItem {
+            text: "Copy file path to clipboard"
+
+            onTriggered: Store.copyFilePath(row.path)
+        }
+        MenuItem {
+            text: "Open folder containing"
+
+            onTriggered: Store.openContainingFolder(row.path)
         }
         MenuSeparator {
             height: visible ? implicitHeight : 0
@@ -248,6 +277,13 @@ Item {
         id: folderMenu
 
         MenuItem {
+            text: row.pinned ? "Unpin from top" : "Pin to top"
+
+            onTriggered: Store.setFilePinned(row.role, row.path, !row.pinned)
+        }
+        MenuSeparator {
+        }
+        MenuItem {
             text: "Edit folder TRACK.yml…"
 
             onTriggered: row.folderMetadataRequested(row.path)
@@ -280,7 +316,7 @@ Item {
                 }
                 return;
             }
-            if (row.role === "source" || row.role === "folder")
+            if (row.role === "source" || row.role === "folder" || row.role === "pins")
                 row.toggleNodeRequested(row.role, row.path);
             else
                 row.fileActivated(row.path, row.key, row.hasSession);

@@ -8,6 +8,7 @@ import QtQuick.Layouts
 ColumnLayout {
     id: driverSection
 
+    property bool channelMappingVisible: true
     required property var channelRow
     required property bool folderScope
     required property var mappingRows
@@ -34,7 +35,7 @@ ColumnLayout {
             Layout.fillWidth: true
             color: Style.dimTextColor
             font.pixelSize: Style.smallFontSize
-            text: (driverSection.folderScope ? "First choose the numeric Driver ID channel. Then define the code = name mappings inherited by videos below this folder. " : "First choose the numeric Driver ID channel. Then map each logger code to the driver's real name. ") + "Use * = Name for any driver ID; an exact ID mapping wins."
+            text: (driverSection.folderScope ? "First choose the numeric Driver ID channel. Then define the code = name mappings inherited by recordings below this folder. " : "First choose the numeric Driver ID channel. Then map each logger code to the driver's real name. ") + "Use * = Name for any driver ID; an exact ID mapping wins."
             wrapMode: Text.WordWrap
         }
     }
@@ -43,10 +44,12 @@ ColumnLayout {
         channelKey: driverSection.channelRow.key || "driver_id"
         detail: driverSection.channelRow.detail || "Numeric logger code identifying the active driver"
         expectedUnit: driverSection.channelRow.expectedUnit || "numeric code"
+        folderScope: driverSection.folderScope
         inheritedValue: driverSection.channelRow.inheritedValue || ""
         label: driverSection.channelRow.label || "Driver ID channel"
         suggestions: driverSection.channelRow.suggestions || []
         value: driverSection.channelRow.value || ""
+        visible: driverSection.channelMappingVisible
 
         onMappingEdited: (key, value) => driverSection.channelEdited(key, value)
     }
@@ -97,14 +100,19 @@ ColumnLayout {
             Layout.preferredWidth: Style.controlHeight
         }
     }
+    // Model is the row *count*, not the array: every keystroke replaces
+    // `mappingRows` with a fresh array, and a Repeater bound to the array
+    // itself destroys and recreates all delegates on each edit, so the
+    // focused editor dies after one character. Binding to the length keeps
+    // the delegates alive across in-row edits while add/remove still rebuild.
     Repeater {
-        model: driverSection.mappingRows
+        model: driverSection.mappingRows.length
 
         delegate: ColumnLayout {
             id: mappingDelegate
 
             required property int index
-            required property var modelData
+            readonly property var row: driverSection.mappingRows[mappingDelegate.index] || ({})
 
             Layout.fillWidth: true
             spacing: 3
@@ -125,7 +133,7 @@ ColumnLayout {
                     horizontalAlignment: Text.AlignRight
                     inputMethodHints: Qt.ImhNoPredictiveText
                     placeholderText: "ID or *"
-                    text: mappingDelegate.modelData.id || ""
+                    text: mappingDelegate.row.id || ""
 
                     validator: RegularExpressionValidator {
                         regularExpression: /(?:\*|(?:0*[1-9][0-9]*(?:\.[0-9]*)?|0*\.(?:[0-9]*[1-9][0-9]*)))/
@@ -143,9 +151,10 @@ ColumnLayout {
                     id: driverNameEditor
 
                     Layout.fillWidth: true
-                    placeholderText: mappingDelegate.modelData.inheritedValue || "Real driver name"
-                    placeholderTextColor: mappingDelegate.modelData.inheritedValue ? Style.blueColor : Style.dimTextColor
-                    text: mappingDelegate.modelData.value || ""
+                    objectName: "driverNameEditor" + mappingDelegate.index
+                    placeholderText: mappingDelegate.row.inheritedValue || "Real driver name"
+                    placeholderTextColor: mappingDelegate.row.inheritedValue ? Style.blueColor : Style.dimTextColor
+                    text: mappingDelegate.row.value || ""
 
                     onTextEdited: driverSection.mappingEdited(mappingDelegate.index, driverIdEditor.text, text)
                 }
@@ -153,15 +162,15 @@ ColumnLayout {
                     color: Style.accentColor
                     font.family: Style.monoFontFamily
                     font.pixelSize: Style.smallFontSize
-                    text: mappingDelegate.modelData.wildcard === true ? "ANY" : "DETECTED"
-                    visible: mappingDelegate.modelData.wildcard === true || mappingDelegate.modelData.detected === true
+                    text: mappingDelegate.row.wildcard === true ? "ANY" : "DETECTED"
+                    visible: mappingDelegate.row.wildcard === true || mappingDelegate.row.detected === true
                 }
                 ToolButton {
                     Layout.preferredHeight: Style.controlHeight
                     Layout.preferredWidth: Style.controlHeight
-                    ToolTip.text: mappingDelegate.modelData.inheritedValue ? "Revert to inherited driver name" : "Remove mapping"
+                    ToolTip.text: mappingDelegate.row.inheritedValue ? "Revert to inherited driver name" : "Remove mapping"
                     ToolTip.visible: hovered
-                    enabled: driverNameEditor.text !== "" || !mappingDelegate.modelData.inheritedValue
+                    enabled: driverNameEditor.text !== "" || !mappingDelegate.row.inheritedValue
                     text: "×"
 
                     onClicked: driverSection.mappingRemoved(mappingDelegate.index)
@@ -171,26 +180,28 @@ ColumnLayout {
                 Layout.fillWidth: true
                 Layout.leftMargin: 277
                 spacing: 4
-                visible: mappingDelegate.modelData.suggestions && mappingDelegate.modelData.suggestions.length > 0
+                visible: mappingDelegate.row.suggestions && mappingDelegate.row.suggestions.length > 0
 
                 Repeater {
-                    model: mappingDelegate.modelData.suggestions || []
+                    model: mappingDelegate.row.suggestions || []
 
                     delegate: CompactButton {
                         id: nameSuggestion
 
+                        required property int index
                         required property var modelData
 
                         ToolTip.text: nameSuggestion.modelData.historicalCount > 0 ? "Used by " + nameSuggestion.modelData.historicalCount + (nameSuggestion.modelData.historicalCount === 1 ? " TRACK.yml file" : " TRACK.yml files") : "Suggested driver name"
                         ToolTip.visible: hovered
                         font.pixelSize: Style.smallFontSize
                         implicitHeight: Style.smallControlHeight
+                        objectName: "driverNameSuggestion" + mappingDelegate.index + "_" + nameSuggestion.index
                         text: nameSuggestion.modelData.value
 
-                        onClicked: {
-                            driverNameEditor.text = nameSuggestion.modelData.value;
-                            driverSection.mappingEdited(mappingDelegate.index, driverIdEditor.text, nameSuggestion.modelData.value);
-                        }
+                        // No direct `driverNameEditor.text =` here: the
+                        // delegate now outlives model updates, so breaking the
+                        // text binding would leave the field stale forever.
+                        onClicked: driverSection.mappingEdited(mappingDelegate.index, driverIdEditor.text, nameSuggestion.modelData.value)
                     }
                 }
             }

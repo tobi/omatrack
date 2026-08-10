@@ -10,6 +10,7 @@ Item {
     id: libraryPage
 
     property var directoryRows: []
+    property var webdavRows: []
 
     function addDirectory(path): bool {
         const local = libraryPage.toLocalPath(path).trim();
@@ -19,13 +20,19 @@ Item {
         libraryPage.refresh();
         return true;
     }
+    function connectWebDav(): void {
+        const url = webdavUrlField.text.trim();
+        if (url === "")
+            return;
+        Store.connectWebDav(webdavNameField.text, url, webdavUserField.text, webdavPasswordField.text);
+        webdavPasswordField.clear();
+    }
     function defaultTelemetryFolder(): url {
-        const home = libraryPage.toLocalPath(Platform.StandardPaths.writableLocation(Platform.StandardPaths.HomeLocation));
-        const preferred = home + "/Documents/Telemetry";
-        return "file://" + (Store.directoryExists(preferred) ? preferred : home);
+        return "file://" + Store.defaultTelemetryDirectory();
     }
     function refresh(): void {
         libraryPage.directoryRows = Store.sessionDirectories();
+        libraryPage.webdavRows = Store.webDavConnections();
     }
     function toLocalPath(value): string {
         const text = value.toString();
@@ -40,6 +47,9 @@ Item {
 
     Connections {
         function onSessionsChanged(): void {
+            libraryPage.refresh();
+        }
+        function onWebDavChanged(): void {
             libraryPage.refresh();
         }
 
@@ -146,6 +156,108 @@ Item {
                     font.pixelSize: Style.smallFontSize
                     text: "Choose an existing folder."
                     visible: directoryField.text.trim() !== "" && !Store.directoryExists(libraryPage.toLocalPath(directoryField.text))
+                }
+            }
+        }
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 188
+            border.color: Style.borderColor
+            border.width: 1
+            color: Style.surfaceColor
+            radius: 6
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: 12
+                spacing: 6
+
+                Label {
+                    font.bold: true
+                    text: "Add a WebDAV server"
+                }
+                Label {
+                    color: Style.mutedTextColor
+                    text: "Remote telemetry is synchronized into the local cache before scanning."
+                    wrapMode: Text.Wrap
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+
+                    CompactTextField {
+                        id: webdavNameField
+
+                        Layout.preferredWidth: 150
+                        placeholderText: "Name (optional)"
+                    }
+                    CompactTextField {
+                        id: webdavUrlField
+
+                        Layout.fillWidth: true
+                        placeholderText: "https://server.example/dav/"
+
+                        onAccepted: libraryPage.connectWebDav()
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+
+                    CompactTextField {
+                        id: webdavUserField
+
+                        Layout.fillWidth: true
+                        placeholderText: "Username (optional)"
+                    }
+                    CompactTextField {
+                        id: webdavPasswordField
+
+                        Layout.fillWidth: true
+                        echoMode: TextInput.Password
+                        placeholderText: "Password (optional)"
+                    }
+                    CompactButton {
+                        enabled: webdavUrlField.text.trim() !== "" && !Store.loading
+                        text: "Connect"
+
+                        onClicked: libraryPage.connectWebDav()
+                    }
+                }
+                ListView {
+                    Layout.fillHeight: true
+                    Layout.fillWidth: true
+                    clip: true
+                    model: libraryPage.webdavRows
+                    visible: libraryPage.webdavRows.length > 0
+
+                    delegate: RowLayout {
+                        id: webdavRow
+
+                        required property var modelData
+
+                        Layout.fillWidth: true
+                        spacing: 8
+
+                        Label {
+                            Layout.fillWidth: true
+                            elide: Text.ElideMiddle
+                            font.family: Style.monoFontFamily
+                            font.pixelSize: Style.smallFontSize
+                            text: webdavRow.modelData.name + " · " + webdavRow.modelData.url
+                        }
+                        Label {
+                            color: Style.mutedTextColor
+                            elide: Text.ElideRight
+                            font.pixelSize: Style.smallFontSize
+                            text: webdavRow.modelData.status
+                        }
+                        CompactButton {
+                            text: "Remove"
+
+                            onClicked: Store.removeWebDavConnection(webdavRow.modelData.id)
+                        }
+                    }
                 }
             }
         }

@@ -4,18 +4,23 @@
 #include "SessionMetadataCache.h"
 #include "TrackMetadata.h"
 #include "TrackAtlasSpatial.h"
+#include "core/CornerAnalysis.h"
 #include "core/TelemetryEngine.h"
 #include "YamlConfig.h"
+#include "WebDavCache.h"
 
 #include <QCoreApplication>
+#include <QClipboard>
 #include <QDateTime>
 #include <QDebug>
+#include <QDesktopServices>
 #include <QElapsedTimer>
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QFutureWatcher>
+#include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
@@ -31,6 +36,7 @@
 #include <QSslError>
 #include <QStandardPaths>
 #include <QTextStream>
+#include <QThread>
 #include <QTimer>
 #include <QUrl>
 #include <QtConcurrent/QtConcurrentRun>
@@ -179,6 +185,19 @@ bool isVideoPath(const QString& path) {
         QStringLiteral("mp4"), QStringLiteral("mov"), QStringLiteral("mkv"),
         QStringLiteral("avi"), QStringLiteral("m4v"), QStringLiteral("webm")};
     return extensions.contains(QFileInfo(path).suffix().toLower());
+}
+
+QString sidebarPinKind(const QString& role, const QString& path) {
+    if (role == QStringLiteral("source") || role == QStringLiteral("folder"))
+        return QStringLiteral("folder");
+    if (role == QStringLiteral("file") && isVideoPath(path))
+        return QStringLiteral("video");
+    return {};
+}
+
+QString normalizedSidebarPinPath(const QString& path) {
+    if (path.trimmed().isEmpty()) return {};
+    return QDir::cleanPath(QFileInfo(path).absoluteFilePath());
 }
 
 QStringList trackMetadataPaths(const QStringList& discovered,
@@ -368,6 +387,9 @@ QVariantMap metadataDocument(const QVariantMap& metadata) {
     QVariantMap driver;
     if (!normalizedDriverMappings.isEmpty())
         driver.insert(QStringLiteral("mappings"), normalizedDriverMappings);
+    QVariantMap folder;
+    insertText(&folder, QStringLiteral("name"),
+               metadata.value(QStringLiteral("folderName")));
     QVariantMap car;
     insertText(&car, QStringLiteral("number"),
                metadata.value(QStringLiteral("carNumber")));
@@ -393,6 +415,7 @@ QVariantMap metadataDocument(const QVariantMap& metadata) {
 
     QVariantMap document;
     if (!driver.isEmpty()) document.insert(QStringLiteral("driver"), driver);
+    if (!folder.isEmpty()) document.insert(QStringLiteral("folder"), folder);
     if (!car.isEmpty()) document.insert(QStringLiteral("car"), car);
     insertText(&document, QStringLiteral("event"),
                metadata.value(QStringLiteral("event")));
@@ -569,10 +592,27 @@ bool SessionHandle::loadSummaryForIndex() {
     return true;
 }
 
-bool SessionHandle::loadSummaryForOpen() {
+bool SessionHandle::loadChannelSummaryForIndex() {
     std::unique_ptr<TelemetrySource> source =
-        TelemetrySource::open(path_.toStdString());
+        TelemetrySource::openIndex(path_.toStdString());
     if (!source) return false;
+    captureSourceChannels(*source);
+    return !sourceChannels_.isEmpty();
+}
+
+bool SessionHandle::loadSummaryForOpen(QString* errorString) {
+    if (errorString) errorString->clear();
+    std::string error;
+    std::unique_ptr<TelemetrySource> source =
+        TelemetrySource::open(path_.toStdString(), &error);
+    if (!source) {
+        if (errorString)
+            *errorString =
+                error.empty()
+                    ? QStringLiteral("Unable to read embedded telemetry")
+                    : QString::fromStdString(error);
+        return false;
+    }
     captureSourceChannels(*source);
     populateLaps(source->detectLaps());
     applyEventDriverId(source->detectDriverId());
@@ -870,13 +910,27 @@ void SessionHandle::adoptLoadedLap(int lapId,
 }
 
 struct SessionScanResult {
-    std::vector<std::unique_ptr<SessionHandle>> sessions;
     QVariantList fileSources;
-    QHash<QString, QVariantMap> fileMetadata;
+    QStringList discoveredFilePaths;
+    QHash<QString, QString> folderDisplayNames;
     QStringList trackMetadataPaths;
-    int cacheHits = 0;
-    int cacheMisses = 0;
+    QHash<QString, QString> remoteSourceNames;
+    QHash<QString, QString> webdavStatuses;
     qint64 elapsedMs = 0;
+};
+
+struct SidebarMetadataResult {
+    QString path;
+    std::unique_ptr<SessionHandle> handle;
+    QVariantMap metadata;
+    bool unsupportedVideo = false;
+};
+
+struct FolderChannelSample {
+    QVector<SourceChannelSummary> channels;
+    QHash<QString, QString> automaticMappings;
+    int candidateCount = 0;
+    int recordingCount = 0;
 };
 
 struct FileTreeFolder {
@@ -1277,6 +1331,7 @@ struct FileOpenResult {
     std::unique_ptr<SessionHandle> handle;
     std::shared_ptr<SessionLapLoadResult> lap;
     bool standaloneVideo = false;
+    QString error;
 };
 
 namespace {
@@ -1329,6 +1384,35 @@ const LapEntry* bestLap(const SessionHandle& session) {
     return fallback;
 }
 
+void mergeChannelSample(FolderChannelSample* sample,
+                        const SessionHandle& session) {
+    if (!sample || session.sourceChannels().isEmpty()) return;
+    ++sample->recordingCount;
+    QHash<QString, int> channelIndexes;
+    for (int index = 0; index < sample->channels.size(); ++index)
+        channelIndexes.insert(sample->channels.at(index).name.toCaseFolded(),
+                              index);
+    for (const SourceChannelSummary& source : session.sourceChannels()) {
+        const QString key = source.name.toCaseFolded();
+        const auto existing = channelIndexes.constFind(key);
+        if (existing == channelIndexes.cend()) {
+            sample->channels.append(source);
+            channelIndexes.insert(key, sample->channels.size() - 1);
+            continue;
+        }
+        SourceChannelSummary& merged = sample->channels[*existing];
+        ++merged.recordingCount;
+        if (merged.unit.isEmpty()) merged.unit = source.unit;
+        if (!(merged.frequencyHz > 0.0))
+            merged.frequencyHz = source.frequencyHz;
+        for (const QString& example : source.examples) {
+            if (!merged.examples.contains(example))
+                merged.examples.append(example);
+            if (merged.examples.size() == 5) break;
+        }
+    }
+}
+
 std::shared_ptr<SessionLapLoadResult> loadSessionLap(
     const QString& path, const QString& sessionKey, const LapEntry& lap,
     const QVariantMap& metadata = {}) {
@@ -1359,18 +1443,31 @@ std::shared_ptr<SessionLapLoadResult> loadSessionLap(
 
 std::shared_ptr<SessionScanResult> scanSessionDirectories(
     const QStringList& directories, const QSet<QString>& extraPaths,
-    const QString& cachePath) {
+    const QString&, const QVector<WebDavConnection>& webdavConnections) {
     QElapsedTimer timer;
     timer.start();
     auto result = std::make_shared<SessionScanResult>();
-    SessionMetadataCache cache(cachePath);
     QSet<QString> uniquePaths = extraPaths;
     QSet<QString> metadataPaths;
+    QStringList scanDirectories = directories;
     const QStringList filters{
         "*.pds", "*.PDS", "*.ld",  "*.LD",  "*.ldx",  "*.LDX",  "*.vbo",
         "*.VBO", "*.mp4", "*.MP4", "*.mov", "*.MOV",  "*.mkv",  "*.MKV",
         "*.avi", "*.AVI", "*.m4v", "*.M4V", "*.webm", "*.WEBM", "TRACK.yml"};
-    for (const QString& directory : directories) {
+
+    for (const WebDavConnection& connection : webdavConnections) {
+        if (!connection.enabled) continue;
+        const WebDavSyncResult synced = WebDavCache::sync(connection);
+        result->webdavStatuses.insert(synced.id, synced.status);
+        if (!synced.success || synced.cachePath.isEmpty()) continue;
+        scanDirectories.append(synced.cachePath);
+        result->remoteSourceNames.insert(
+            normalizedSidebarPinPath(synced.cachePath),
+            connection.name.trimmed().isEmpty() ? connection.url
+                                                : connection.name.trimmed());
+    }
+
+    for (const QString& directory : scanDirectories) {
         QSet<QString> sourcePaths;
         QDirIterator it(directory, filters, QDir::Files,
                         QDirIterator::Subdirectories);
@@ -1390,48 +1487,85 @@ std::shared_ptr<SessionScanResult> scanSessionDirectories(
             sourcePaths.insert(canonical);
             uniquePaths.insert(canonical);
         }
-        result->fileSources.append(buildFileSource(directory, sourcePaths));
+        QVariantMap source = buildFileSource(directory, sourcePaths);
+        const QString sourcePath = normalizedSidebarPinPath(directory);
+        const auto remoteName = result->remoteSourceNames.constFind(sourcePath);
+        if (remoteName != result->remoteSourceNames.cend()) {
+            source.insert(QStringLiteral("name"), remoteName.value());
+            source.insert(QStringLiteral("remote"), true);
+        }
+        result->fileSources.append(source);
     }
     result->trackMetadataPaths =
         QStringList(metadataPaths.cbegin(), metadataPaths.cend());
     std::sort(result->trackMetadataPaths.begin(),
               result->trackMetadataPaths.end());
-
-    QStringList paths(uniquePaths.cbegin(), uniquePaths.cend());
-    std::sort(paths.begin(), paths.end());
-    result->sessions.reserve(size_t(paths.size()));
-    QHash<QString, QVariantMap> metadataDocuments;
-    for (const QString& path : paths) {
+    result->discoveredFilePaths =
+        QStringList(uniquePaths.cbegin(), uniquePaths.cend());
+    std::sort(result->discoveredFilePaths.begin(),
+              result->discoveredFilePaths.end());
+    for (const QString& path : result->trackMetadataPaths) {
+        const QString name =
+            nestedText(YamlConfig::readDocument(path),
+                       {QStringLiteral("folder"), QStringLiteral("name")});
+        if (name.isEmpty()) continue;
         const QString directory = QFileInfo(path).absolutePath();
-        if (!metadataDocuments.contains(directory))
-            metadataDocuments.insert(
-                directory, omatrack::track_metadata::readHierarchy(directory));
-        result->fileMetadata.insert(path, metadataDocuments.value(directory));
-        IndexedSession indexed =
-            indexSession(path, cache, &result->cacheHits, &result->cacheMisses);
-        if (indexed.handle)
-            result->sessions.push_back(std::move(indexed.handle));
+        result->folderDisplayNames.insert(normalizedSidebarPinPath(directory),
+                                          name);
+        const QString canonical = canonicalDirectoryPath(directory);
+        if (!canonical.isEmpty())
+            result->folderDisplayNames.insert(
+                normalizedSidebarPinPath(canonical), name);
     }
-    cache.save();
+
     result->elapsedMs = timer.elapsed();
+    return result;
+}
+
+std::shared_ptr<SidebarMetadataResult> loadSidebarMetadata(
+    const QString& path, const QString& cachePath) {
+    auto result = std::make_shared<SidebarMetadataResult>();
+    result->path = path;
+    result->metadata =
+        omatrack::track_metadata::readHierarchy(QFileInfo(path).absolutePath());
+    SessionMetadataCache cache(cachePath);
+    IndexedSession indexed = indexSession(path, cache);
+    cache.save();
+    result->handle = std::move(indexed.handle);
+    result->unsupportedVideo = indexed.unsupportedVideo;
     return result;
 }
 
 std::shared_ptr<FileOpenResult> openIndexedFile(const QString& path,
                                                 const QString& cachePath,
-                                                const QVariantMap& metadata) {
+                                                const QVariantMap& metadata,
+                                                bool expectTelemetry) {
     auto result = std::make_shared<FileOpenResult>();
     result->path = path;
     SessionMetadataCache cache(cachePath);
     IndexedSession indexed = indexSession(path, cache);
+    if (!indexed.handle && expectTelemetry && isVideoPath(path)) {
+        auto handle = std::make_unique<SessionHandle>(path);
+        if (!handle->loadSummaryForOpen(&result->error)) {
+            cache.save();
+            return result;
+        }
+        const QString fingerprint = SessionMetadataCache::fingerprint(path);
+        cache.store(fingerprint, path, true, handle->metadataForCache());
+        indexed.handle = std::move(handle);
+        indexed.unsupportedVideo = false;
+    }
     if (!indexed.handle) {
         cache.save();
         result->standaloneVideo = indexed.unsupportedVideo;
         return result;
     }
     const LapEntry* lap = bestLap(*indexed.handle);
-    if (!lap && indexed.handle->isVideo() &&
-        indexed.handle->loadSummaryForOpen()) {
+    if (!lap && indexed.handle->isVideo()) {
+        if (!indexed.handle->loadSummaryForOpen(&result->error)) {
+            cache.save();
+            return result;
+        }
         const QString fingerprint = SessionMetadataCache::fingerprint(path);
         cache.store(fingerprint, path, true,
                     indexed.handle->metadataForCache());
@@ -1439,11 +1573,18 @@ std::shared_ptr<FileOpenResult> openIndexedFile(const QString& path,
     }
     cache.save();
     if (!lap) {
-        result->standaloneVideo = indexed.handle->isVideo();
+        result->error =
+            indexed.handle->isVideo()
+                ? QStringLiteral(
+                      "No usable laps were found in the embedded "
+                      "AiM telemetry")
+                : QStringLiteral(
+                      "No usable laps were found in this telemetry file");
         return result;
     }
     result->lap =
         loadSessionLap(path, indexed.handle->sessionKey(), *lap, metadata);
+    if (!result->lap->error.isEmpty()) result->error = result->lap->error;
     result->handle = std::move(indexed.handle);
     return result;
 }
@@ -1455,11 +1596,27 @@ TelemetryStore::TelemetryStore(QObject* parent) : QObject(parent) {
     if (s_storeInstance)
         qFatal("Only one TelemetryStore may exist in a process");
     s_storeInstance = this;
+    sidebarMetadataPool_.setMaxThreadCount(1);
+    sidebarMetadataPool_.setThreadPriority(QThread::LowPriority);
     scanWatcher_ = new QFutureWatcher<std::shared_ptr<SessionScanResult>>(this);
     connect(scanWatcher_,
             &QFutureWatcher<std::shared_ptr<SessionScanResult>>::finished, this,
             &TelemetryStore::finishSessionScan);
+    // Corner focus follows the data it points at: a corner list that no
+    // longer contains the focused zone drops the focus, and a new lap
+    // selection recomputes its markers.
+    connect(this, &TelemetryStore::cornersChanged, this, [this]() {
+        if (focusedCorner_ < 0) return;
+        if (focusedCorner_ >= corners_.size())
+            clearCornerFocus();
+        else
+            rebuildCornerMarkers();
+    });
+    connect(this, &TelemetryStore::selectionChanged, this, [this]() {
+        if (focusedCorner_ >= 0) rebuildCornerMarkers();
+    });
     loadPreferences();
+    loadWebDavConnections();
     loadChannelsConfig();
     // A fresh install gets a real omatrack.yml immediately, so the defaults
     // are visible and hand-editable instead of implicit.
@@ -1483,6 +1640,7 @@ TelemetryStore::TelemetryStore(QObject* parent) : QObject(parent) {
 }
 
 TelemetryStore::~TelemetryStore() {
+    sidebarMetadataPool_.waitForDone();
     if (s_storeInstance == this) s_storeInstance.clear();
 }
 
@@ -1503,8 +1661,6 @@ void TelemetryStore::loadPreferences() {
         if (!legacy.allKeys().isEmpty()) {
             config.setValue(QStringLiteral("telemetry_dirs"),
                             legacy.value(QStringLiteral("sessionDirs")));
-            config.setValue(QStringLiteral("view/channel_height"),
-                            legacy.value(QStringLiteral("channelHeight"), 110));
             config.setValue(QStringLiteral("video/muted"),
                             legacy.value(QStringLiteral("videoMuted"), false));
             config.setMap(
@@ -1557,16 +1713,27 @@ void TelemetryStore::loadPreferences() {
     }
     const QVariant configuredDirs =
         config.value(QStringLiteral("telemetry_dirs"));
-    const QStringList dirs =
-        configuredDirs.isValid()
-            ? configuredDirs.toStringList()
-            : QStringList{QDir::homePath() +
-                          QStringLiteral("/Documents/Telemetry")};
+    const QStringList dirs = configuredDirs.isValid()
+                                 ? configuredDirs.toStringList()
+                                 : QStringList{defaultTelemetryDirectory()};
     for (const QString& directory : dirs)
         if (!sessionDirs_.contains(directory)) sessionDirs_.append(directory);
 
-    channelHeight_ =
-        config.value(QStringLiteral("view/channel_height"), 110).toInt();
+    const QVariantList pinRows =
+        config.value({QStringLiteral("sidebar"), QStringLiteral("pins")})
+            .toList();
+    for (const QVariant& value : pinRows) {
+        const QVariantMap row = value.toMap();
+        const QString kind = row.value(QStringLiteral("kind")).toString();
+        const QString path = normalizedSidebarPinPath(
+            row.value(QStringLiteral("path")).toString());
+        if ((kind != QStringLiteral("folder") &&
+             kind != QStringLiteral("video")) ||
+            path.isEmpty() || sidebarPinIndex(kind, path) >= 0)
+            continue;
+        sidebarPins_.append(SidebarPin{kind, path});
+    }
+
     videoMuted_ = yamlBool(config.value(QStringLiteral("video/muted")), false);
     const QVariantMap selection = config.map({QStringLiteral("selection")});
     lastPrimaryKey_ = selection.value(QStringLiteral("primary_key")).toString();
@@ -1606,12 +1773,48 @@ void TelemetryStore::loadPreferences() {
             recordingMetadata_.insert(it.key(), it.value().toMap());
 }
 
+void TelemetryStore::loadWebDavConnections() {
+    const QVariantList rows =
+        YamlConfig::instance()
+            .value({QStringLiteral("webdav"), QStringLiteral("connections")})
+            .toList();
+    for (const QVariant& value : rows) {
+        const QVariantMap row = value.toMap();
+        WebDavConnection connection;
+        connection.url = row.value(QStringLiteral("url")).toString().trimmed();
+        connection.username =
+            row.value(QStringLiteral("username")).toString().trimmed();
+        connection.password = row.value(QStringLiteral("password")).toString();
+        connection.name =
+            row.value(QStringLiteral("name")).toString().trimmed();
+        connection.enabled =
+            yamlBool(row.value(QStringLiteral("enabled")), true);
+        connection.id = row.value(QStringLiteral("id")).toString().trimmed();
+        if (connection.id.isEmpty())
+            connection.id =
+                WebDavCache::connectionId(connection.url, connection.username);
+        if (connection.url.isEmpty() || !QUrl(connection.url).isValid() ||
+            std::none_of(webdavConnections_.cbegin(), webdavConnections_.cend(),
+                         [&connection](const WebDavConnection& existing) {
+                             return existing.id == connection.id;
+                         }))
+            webdavConnections_.append(std::move(connection));
+    }
+}
+
 void TelemetryStore::savePreferences() {
     YamlConfig& config = YamlConfig::instance();
     config.setValue(QStringList{QStringLiteral("telemetry_dirs")},
                     QVariant(sessionDirs_));
-    config.setValue(QStringLiteral("view/channel_height"), channelHeight_);
     config.setValue(QStringLiteral("video/muted"), videoMuted_);
+    QVariantList pinRows;
+    pinRows.reserve(sidebarPins_.size());
+    for (const SidebarPin& pin : std::as_const(sidebarPins_)) {
+        pinRows.append(QVariantMap{{QStringLiteral("kind"), pin.kind},
+                                   {QStringLiteral("path"), pin.path}});
+    }
+    config.setValue({QStringLiteral("sidebar"), QStringLiteral("pins")},
+                    pinRows.isEmpty() ? QVariant() : QVariant(pinRows));
     config.setMap(
         {QStringLiteral("selection")},
         QVariantMap{{QStringLiteral("primary_key"), lastPrimaryKey_},
@@ -1640,6 +1843,21 @@ void TelemetryStore::savePreferences() {
          ++it)
         recordingMetadata.insert(it.key(), it.value());
     config.setMap({QStringLiteral("recording_metadata")}, recordingMetadata);
+
+    QVariantList webdavRows;
+    webdavRows.reserve(webdavConnections_.size());
+    for (const WebDavConnection& connection :
+         std::as_const(webdavConnections_)) {
+        webdavRows.append(
+            QVariantMap{{QStringLiteral("id"), connection.id},
+                        {QStringLiteral("name"), connection.name},
+                        {QStringLiteral("url"), connection.url},
+                        {QStringLiteral("username"), connection.username},
+                        {QStringLiteral("password"), connection.password},
+                        {QStringLiteral("enabled"), connection.enabled}});
+    }
+    config.setValue({QStringLiteral("webdav"), QStringLiteral("connections")},
+                    webdavRows.isEmpty() ? QVariant() : QVariant(webdavRows));
 
     QVariantMap channels = config.map({QStringLiteral("channels")});
     for (const QString& key : channelOrder_)
@@ -1915,8 +2133,9 @@ void TelemetryStore::updateTrackAtlas(bool force) {
 // ── scanning / grouping ─────────────────────────────────────────────
 
 QString TelemetryStore::sessionIndexCachePath() const {
-    return QStandardPaths::writableLocation(QStandardPaths::CacheLocation) +
-           QStringLiteral("/session-index.json");
+    return QStandardPaths::writableLocation(
+               QStandardPaths::GenericCacheLocation) +
+           QStringLiteral("/omatrack/session-index.json");
 }
 
 void TelemetryStore::scan() {
@@ -1936,9 +2155,11 @@ void TelemetryStore::startSessionScan() {
     const QStringList directories = sessionDirs_;
     const QSet<QString> extraPaths = scanExtraPaths_;
     const QString cachePath = sessionIndexCachePath();
-    scanWatcher_->setFuture(
-        QtConcurrent::run([directories, extraPaths, cachePath]() {
-            return scanSessionDirectories(directories, extraPaths, cachePath);
+    const QVector<WebDavConnection> webdavConnections = webdavConnections_;
+    scanWatcher_->setFuture(QtConcurrent::run(
+        [directories, extraPaths, cachePath, webdavConnections]() {
+            return scanSessionDirectories(directories, extraPaths, cachePath,
+                                          webdavConnections);
         }));
 }
 
@@ -1951,36 +2172,14 @@ void TelemetryStore::finishSessionScan() {
     }
 
     clearSessions();
-    sessions_ = std::move(result->sessions);
     fileSources_ = result->fileSources;
-    fileMetadata_ = result->fileMetadata;
+    discoveredFilePaths_ = result->discoveredFilePaths;
+    folderDisplayNames_ = result->folderDisplayNames;
     trackMetadataPaths_ = result->trackMetadataPaths;
+    webdavStatuses_ = result->webdavStatuses;
     scanExtraPaths_.clear();
-    qInfo() << "Session index:" << sessions_.size() << "sessions,"
-            << result->cacheHits << "cache hits," << result->cacheMisses
-            << "misses in" << result->elapsedMs << "ms";
-    if (!lastPrimaryKey_.isEmpty()) {
-        SessionHandle* saved = findSession(lastPrimaryKey_);
-        if (saved) {
-            for (const LapEntry& lap : saved->laps()) {
-                if (lap.lapId == lastPrimaryLap_) {
-                    requestLapLoad(saved, lastPrimaryLap_, false);
-                    break;
-                }
-            }
-        }
-    }
-    if (!lastCompareKey_.isEmpty()) {
-        SessionHandle* saved = findSession(lastCompareKey_);
-        if (saved) {
-            for (const LapEntry& lap : saved->laps()) {
-                if (lap.lapId == lastCompareLap_) {
-                    requestLapLoad(saved, lastCompareLap_, true);
-                    break;
-                }
-            }
-        }
-    }
+    qInfo() << "File discovery:" << result->elapsedMs
+            << "ms; sidebar metadata remains lazy";
     if (!ready_) {
         ready_ = true;
         emit readyChanged();
@@ -1988,6 +2187,7 @@ void TelemetryStore::finishSessionScan() {
     loading_ = false;
     emit loadingChanged();
     emit sessionsChanged();
+    emit webDavChanged();
 }
 
 void TelemetryStore::addSessionDirectory(const QString& dirPath) {
@@ -2005,9 +2205,36 @@ void TelemetryStore::removeSessionDirectory(const QString& dirPath) {
 }
 
 void TelemetryStore::openFile(const QString& filePath) {
-    if (filePath.isEmpty() || !QFileInfo::exists(filePath)) return;
+    queueFileOpen(filePath, FileOpenRole::Automatic);
+}
+
+void TelemetryStore::queueFileOpen(const QString& filePath, FileOpenRole role) {
+    if (filePath.trimmed().isEmpty()) {
+        emit operationError(QStringLiteral("Unable to open file"),
+                            QStringLiteral("No file was selected."));
+        return;
+    }
+    if (!QFileInfo::exists(filePath)) {
+        emit operationError(
+            QStringLiteral("Unable to open file"),
+            QStringLiteral("The file no longer exists:\n%1").arg(filePath));
+        return;
+    }
     const QString resolvedPath = telemetryPathForInput(filePath);
-    if (resolvedPath.isEmpty() || !QFileInfo::exists(resolvedPath)) return;
+    if (resolvedPath.isEmpty()) {
+        emit operationError(
+            QStringLiteral("Missing telemetry companion"),
+            QStringLiteral("%1 needs a matching .ld file in the same folder.")
+                .arg(QFileInfo(filePath).fileName()));
+        return;
+    }
+    if (!QFileInfo::exists(resolvedPath)) {
+        emit operationError(
+            QStringLiteral("Unable to open file"),
+            QStringLiteral("The telemetry source could not be found:\n%1")
+                .arg(resolvedPath));
+        return;
+    }
     const QFileInfo resolved(resolvedPath);
     const QString telemetryPath = resolved.canonicalFilePath().isEmpty()
                                       ? resolved.absoluteFilePath()
@@ -2016,7 +2243,8 @@ void TelemetryStore::openFile(const QString& filePath) {
         scanExtraPaths_.insert(telemetryPath);
         rescanPending_ = true;
     }
-    pendingFileOpens_.append(telemetryPath);
+    pendingFileOpens_.append(PendingFileOpen{telemetryPath, role});
+    pauseSidebarMetadataQueue();
     startNextFileOpen();
 }
 
@@ -2030,14 +2258,15 @@ void TelemetryStore::startNextFileOpen() {
     fileOpenLoading_ = true;
     emit lapLoadingChanged();
 
-    const QString path = pendingFileOpens_.takeFirst();
+    const PendingFileOpen request = pendingFileOpens_.takeFirst();
+    const QString path = request.path;
     const QString cachePath = sessionIndexCachePath();
     const QVariantMap metadata =
         recordingMetadataForPath(path, recordingMetadata_);
     auto* watcher = new QFutureWatcher<std::shared_ptr<FileOpenResult>>(this);
     connect(
         watcher, &QFutureWatcher<std::shared_ptr<FileOpenResult>>::finished,
-        this, [this, watcher]() {
+        this, [this, watcher, role = request.role]() {
             std::shared_ptr<FileOpenResult> result = watcher->result();
             watcher->deleteLater();
             if (result->standaloneVideo) {
@@ -2081,10 +2310,10 @@ void TelemetryStore::startNextFileOpen() {
                     std::move(result->lap->unified), result->lap->driverId,
                     result->lap->forceDriverId);
                 if (added) emit sessionsChanged();
-                // Opening a second telemetry-bearing video means
-                // "compare these": preserve the first as primary.
-                if (session->isVideo() && primarySession_ &&
-                    primarySession_->isVideo() && primarySession_ != session) {
+                if (role == FileOpenRole::Compare ||
+                    (role == FileOpenRole::Automatic && session->isVideo() &&
+                     primarySession_ && primarySession_->isVideo() &&
+                     primarySession_ != session)) {
                     setCompare(session, result->lap->lapId);
                 } else {
                     setPrimary(session, result->lap->lapId);
@@ -2097,22 +2326,46 @@ void TelemetryStore::startNextFileOpen() {
                 }
             } else {
                 qWarning() << "Unable to open telemetry file" << result->path
-                           << (result->lap ? result->lap->error : QString());
+                           << result->error;
+                const QString detail =
+                    result->error.isEmpty()
+                        ? QStringLiteral(
+                              "The file does not contain supported "
+                              "telemetry.")
+                        : result->error;
+                emit operationError(
+                    QStringLiteral("Unable to open telemetry"),
+                    QStringLiteral("%1\n\n%2")
+                        .arg(QFileInfo(result->path).fileName(), detail));
             }
             fileOpenLoading_ = false;
-            if (pendingFileOpens_.isEmpty())
+            if (pendingFileOpens_.isEmpty()) {
                 emit lapLoadingChanged();
-            else
+                resumeSidebarMetadataQueue();
+            } else {
                 startNextFileOpen();
+            }
         });
-    watcher->setFuture(QtConcurrent::run([path, cachePath, metadata]() {
-        return openIndexedFile(path, cachePath, metadata);
-    }));
+    const bool expectTelemetry = request.role != FileOpenRole::Automatic;
+    watcher->setFuture(
+        QtConcurrent::run([path, cachePath, metadata, expectTelemetry]() {
+            return openIndexedFile(path, cachePath, metadata, expectTelemetry);
+        }));
 }
 
 void TelemetryStore::clearSessions() {
     sessions_.clear();
+    sidebarMetadataQueue_.clear();
+    sidebarMetadataQueued_.clear();
+    sidebarMetadataLoaded_.clear();
+    sidebarMetadataLoadingPath_.clear();
+    ++sidebarMetadataGeneration_;
     fileSources_.clear();
+    discoveredFilePaths_.clear();
+    folderDisplayNames_.clear();
+    folderChannelSamples_.clear();
+    folderChannelSampleRequests_.clear();
+    ++folderChannelSampleGeneration_;
     fileMetadata_.clear();
     primarySession_ = nullptr;
     compareSession_ = nullptr;
@@ -2134,46 +2387,240 @@ void TelemetryStore::clearSessions() {
 
 QStringList TelemetryStore::sessionDirectories() const { return sessionDirs_; }
 
+QVariantList TelemetryStore::webDavConnections() const {
+    QVariantList rows;
+    rows.reserve(webdavConnections_.size());
+    for (const WebDavConnection& connection :
+         std::as_const(webdavConnections_)) {
+        rows.append(QVariantMap{
+            {QStringLiteral("id"), connection.id},
+            {QStringLiteral("name"), connection.name},
+            {QStringLiteral("url"), connection.url},
+            {QStringLiteral("username"), connection.username},
+            {QStringLiteral("status"),
+             webdavStatuses_.value(connection.id,
+                                   QStringLiteral("Not scanned yet"))},
+            {QStringLiteral("cachePath"), WebDavCache::cachePath(connection)}});
+    }
+    return rows;
+}
+
+void TelemetryStore::connectWebDav(const QString& name, const QString& url,
+                                   const QString& username,
+                                   const QString& password) {
+    const QUrl parsed(url.trimmed());
+    if (!parsed.isValid() ||
+        (parsed.scheme() != QStringLiteral("http") &&
+         parsed.scheme() != QStringLiteral("https")) ||
+        parsed.host().isEmpty()) {
+        emit operationError(
+            QStringLiteral("Unable to connect WebDAV"),
+            QStringLiteral("Enter a valid http(s) WebDAV URL."));
+        return;
+    }
+    WebDavConnection connection;
+    connection.url = parsed.toString(QUrl::FullyEncoded);
+    connection.username = username.trimmed();
+    connection.name = name.trimmed().isEmpty() ? parsed.host() : name.trimmed();
+    connection.id =
+        WebDavCache::connectionId(connection.url, connection.username);
+    const auto existing =
+        std::find_if(webdavConnections_.begin(), webdavConnections_.end(),
+                     [&connection](const WebDavConnection& candidate) {
+                         return candidate.id == connection.id;
+                     });
+    if (existing != webdavConnections_.end()) {
+        connection.password =
+            password.isEmpty() ? existing->password : password;
+        *existing = connection;
+    } else {
+        connection.password = password;
+        webdavConnections_.append(connection);
+    }
+    webdavStatuses_.remove(connection.id);
+    savePreferences();
+    emit webDavChanged();
+    scan();
+}
+
+void TelemetryStore::removeWebDavConnection(const QString& id) {
+    const auto existing =
+        std::remove_if(webdavConnections_.begin(), webdavConnections_.end(),
+                       [&id](const WebDavConnection& connection) {
+                           return connection.id == id;
+                       });
+    if (existing == webdavConnections_.end()) return;
+    webdavConnections_.erase(existing, webdavConnections_.end());
+    webdavStatuses_.remove(id);
+    savePreferences();
+    emit webDavChanged();
+    scan();
+}
+
+void TelemetryStore::requestSidebarMetadata(const QString& path, bool visible) {
+    const QString canonical = canonicalInputPath(path);
+    if (canonical.isEmpty() || !visible) return;
+    if (findSession(canonical) || sidebarMetadataLoaded_.contains(canonical) ||
+        sidebarMetadataQueued_.contains(canonical) ||
+        sidebarMetadataLoadingPath_ == canonical)
+        return;
+    sidebarMetadataQueue_.append(canonical);
+    sidebarMetadataQueued_.insert(canonical);
+    startNextSidebarMetadataLoad();
+}
+
+void TelemetryStore::pauseSidebarMetadataQueue() {
+    sidebarMetadataQueuePaused_ = true;
+}
+
+void TelemetryStore::resumeSidebarMetadataQueue() {
+    if (fileOpenLoading_ || primaryLapLoading_ || compareLapLoading_ ||
+        !pendingFileOpens_.isEmpty())
+        return;
+    sidebarMetadataQueuePaused_ = false;
+    startNextSidebarMetadataLoad();
+}
+
+void TelemetryStore::startNextSidebarMetadataLoad() {
+    if (sidebarMetadataQueuePaused_ || fileOpenLoading_ || primaryLapLoading_ ||
+        compareLapLoading_ || !sidebarMetadataLoadingPath_.isEmpty())
+        return;
+    while (!sidebarMetadataQueue_.isEmpty()) {
+        const QString path = sidebarMetadataQueue_.takeFirst();
+        sidebarMetadataQueued_.remove(path);
+        if (findSession(path) || sidebarMetadataLoaded_.contains(path))
+            continue;
+
+        sidebarMetadataLoadingPath_ = path;
+        const quint64 generation = sidebarMetadataGeneration_;
+        const QString cachePath = sessionIndexCachePath();
+        auto* watcher =
+            new QFutureWatcher<std::shared_ptr<SidebarMetadataResult>>(this);
+        connect(
+            watcher,
+            &QFutureWatcher<std::shared_ptr<SidebarMetadataResult>>::finished,
+            this, [this, watcher, generation]() {
+                const std::shared_ptr<SidebarMetadataResult> result =
+                    watcher->result();
+                watcher->deleteLater();
+                if (generation != sidebarMetadataGeneration_) return;
+                sidebarMetadataLoaded_.insert(result->path);
+                fileMetadata_.insert(result->path, result->metadata);
+                if (result->handle && !findSession(result->path))
+                    sessions_.push_back(std::move(result->handle));
+                sidebarMetadataLoadingPath_.clear();
+                emit sidebarMetadataChanged(result->path,
+                                            sidebarFileDetails(result->path));
+                startNextSidebarMetadataLoad();
+            });
+        watcher->setFuture(
+            QtConcurrent::run(&sidebarMetadataPool_, [path, cachePath]() {
+                return loadSidebarMetadata(path, cachePath);
+            }));
+        return;
+    }
+}
+
+void TelemetryStore::copyFilePath(const QString& path) const {
+    const QString filePath = canonicalInputPath(path);
+    if (filePath.isEmpty()) return;
+    QGuiApplication::clipboard()->setText(filePath);
+}
+
+void TelemetryStore::openContainingFolder(const QString& path) const {
+    const QString filePath = canonicalInputPath(path);
+    if (filePath.isEmpty()) return;
+    QDesktopServices::openUrl(
+        QUrl::fromLocalFile(QFileInfo(filePath).absolutePath()));
+}
+
+int TelemetryStore::sidebarPinIndex(const QString& kind,
+                                    const QString& path) const {
+    for (int index = 0; index < sidebarPins_.size(); ++index) {
+        const SidebarPin& pin = sidebarPins_.at(index);
+        if (pin.kind == kind && pin.path == path) return index;
+    }
+    return -1;
+}
+
+bool TelemetryStore::filePinned(const QString& role,
+                                const QString& path) const {
+    const QString kind = sidebarPinKind(role, path);
+    return !kind.isEmpty() &&
+           sidebarPinIndex(kind, normalizedSidebarPinPath(path)) >= 0;
+}
+
+void TelemetryStore::setFilePinned(const QString& role, const QString& path,
+                                   bool pinned) {
+    const QString kind = sidebarPinKind(role, path);
+    const QString normalizedPath = normalizedSidebarPinPath(path);
+    if (kind.isEmpty() || normalizedPath.isEmpty()) return;
+
+    const int existing = sidebarPinIndex(kind, normalizedPath);
+    if (pinned && existing < 0) {
+        sidebarPins_.prepend(SidebarPin{kind, normalizedPath});
+    } else if (!pinned && existing >= 0) {
+        sidebarPins_.removeAt(existing);
+    } else {
+        return;
+    }
+    savePreferences();
+    emit filePinsChanged();
+}
+
+QVariantMap TelemetryStore::sidebarFileDetails(const QString& path) const {
+    SessionHandle* session = findSession(path);
+    const bool video = isVideoPath(path);
+    QVariantMap metadata = fileMetadata_.value(path);
+    omatrack::track_metadata::merge(&metadata, recordingMetadata_.value(path));
+    const auto metadataOr = [&metadata](const QStringList& field,
+                                        const QString& fallback) {
+        const QString value = nestedText(metadata, field);
+        return value.isEmpty() ? fallback : value;
+    };
+    QString date = session ? session->date() : QString();
+    if (date == QStringLiteral("Unknown")) date.clear();
+    return QVariantMap{
+        {QStringLiteral("key"), session ? session->sessionKey() : QString()},
+        {QStringLiteral("hasSession"), session != nullptr},
+        {QStringLiteral("isVideo"), video},
+        {QStringLiteral("driver"),
+         session ? driverDisplay(session) : QString()},
+        {QStringLiteral("mappingKey"),
+         session ? session->driverMappingKey() : QString()},
+        {QStringLiteral("bestTime"),
+         session ? session->bestLapTime() : QString()},
+        {QStringLiteral("topQuartileTime"),
+         averageFastestQuartileTime(session)},
+        {QStringLiteral("driveTime"), indexedDriveTime(session)},
+        {QStringLiteral("lapCount"), indexedLapCount(session)},
+        {QStringLiteral("carClass"),
+         metadataOr({QStringLiteral("car"), QStringLiteral("class")},
+                    session ? session->carClass() : QString())},
+        {QStringLiteral("seriesName"),
+         nestedText(metadata, {QStringLiteral("series")})},
+        {QStringLiteral("sessionDate"), date},
+    };
+}
+
 QVariantList TelemetryStore::fileSources() const {
     auto enrichNode = [this](auto&& self,
                              const QVariantMap& sourceNode) -> QVariantMap {
         QVariantMap node = sourceNode;
         const QString role = node.value(QStringLiteral("role")).toString();
         const QString path = node.value(QStringLiteral("path")).toString();
+        node.insert(QStringLiteral("pinned"), filePinned(role, path));
+        if (role == QStringLiteral("source") ||
+            role == QStringLiteral("folder")) {
+            const QString displayName =
+                folderDisplayNames_.value(normalizedSidebarPinPath(path));
+            if (!displayName.isEmpty())
+                node.insert(QStringLiteral("name"), displayName);
+        }
         if (role == QStringLiteral("file")) {
-            SessionHandle* session = findSession(path);
-            const bool video = isVideoPath(path);
-            QVariantMap metadata = fileMetadata_.value(path);
-            omatrack::track_metadata::merge(&metadata,
-                                            recordingMetadata_.value(path));
-            auto metadataOr = [&metadata](const QStringList& field,
-                                          const QString& fallback) {
-                const QString value = nestedText(metadata, field);
-                return value.isEmpty() ? fallback : value;
-            };
-            QString date = session ? session->date() : QString();
-            if (date == QStringLiteral("Unknown")) date.clear();
-            node.insert(QStringLiteral("key"),
-                        session ? session->sessionKey() : QString());
-            node.insert(QStringLiteral("hasSession"), session != nullptr);
-            node.insert(QStringLiteral("isVideo"), video);
-            node.insert(QStringLiteral("driver"),
-                        session ? driverDisplay(session) : QString());
-            node.insert(QStringLiteral("mappingKey"),
-                        session ? session->driverMappingKey() : QString());
-            node.insert(QStringLiteral("bestTime"),
-                        session ? session->bestLapTime() : QString());
-            node.insert(QStringLiteral("topQuartileTime"),
-                        averageFastestQuartileTime(session));
-            node.insert(QStringLiteral("driveTime"), indexedDriveTime(session));
-            node.insert(QStringLiteral("lapCount"), indexedLapCount(session));
-            node.insert(
-                QStringLiteral("carClass"),
-                metadataOr({QStringLiteral("car"), QStringLiteral("class")},
-                           session ? session->carClass() : QString()));
-            node.insert(QStringLiteral("seriesName"),
-                        nestedText(metadata, {QStringLiteral("series")}));
-            node.insert(QStringLiteral("sessionDate"), date);
+            const QVariantMap details = sidebarFileDetails(path);
+            for (auto it = details.cbegin(); it != details.cend(); ++it)
+                node.insert(it.key(), it.value());
         }
 
         const QVariantList sourceChildren =
@@ -2187,14 +2634,73 @@ QVariantList TelemetryStore::fileSources() const {
     };
 
     QVariantList sources;
-    sources.reserve(fileSources_.size());
+    sources.reserve(fileSources_.size() + 1);
     for (const QVariant& source : fileSources_)
         sources.append(enrichNode(enrichNode, source.toMap()));
+
+    auto findPinnedNode = [](auto&& self, const QVariantMap& node,
+                             const SidebarPin& pin) -> QVariantMap {
+        const QString role = node.value(QStringLiteral("role")).toString();
+        const QString path = normalizedSidebarPinPath(
+            node.value(QStringLiteral("path")).toString());
+        const bool roleMatches =
+            pin.kind == QStringLiteral("folder")
+                ? role == QStringLiteral("source") ||
+                      role == QStringLiteral("folder")
+                : role == QStringLiteral("file") &&
+                      node.value(QStringLiteral("isVideo")).toBool();
+        if (roleMatches && path == pin.path) return node;
+        for (const QVariant& child :
+             node.value(QStringLiteral("children")).toList()) {
+            const QVariantMap match = self(self, child.toMap(), pin);
+            if (!match.isEmpty()) return match;
+        }
+        return {};
+    };
+
+    QVariantList pinnedChildren;
+    pinnedChildren.reserve(sidebarPins_.size());
+    for (const SidebarPin& pin : sidebarPins_) {
+        for (const QVariant& source : sources) {
+            QVariantMap match =
+                findPinnedNode(findPinnedNode, source.toMap(), pin);
+            if (match.isEmpty()) continue;
+            if (match.value(QStringLiteral("role")).toString() ==
+                QStringLiteral("source"))
+                match.insert(QStringLiteral("role"), QStringLiteral("folder"));
+            pinnedChildren.append(match);
+            break;
+        }
+    }
+    if (!pinnedChildren.isEmpty()) {
+        sources.prepend(QVariantMap{
+            {QStringLiteral("role"), QStringLiteral("pins")},
+            {QStringLiteral("name"), QStringLiteral("Pinned")},
+            {QStringLiteral("path"), QStringLiteral("sidebar-pins")},
+            {QStringLiteral("available"), true},
+            {QStringLiteral("fileCount"), pinnedChildren.size()},
+            {QStringLiteral("pinned"), false},
+            {QStringLiteral("children"), pinnedChildren},
+        });
+    }
     return sources;
 }
 
 bool TelemetryStore::directoryExists(const QString& dirPath) const {
     return !dirPath.isEmpty() && QFileInfo(dirPath).isDir();
+}
+
+QString TelemetryStore::defaultTelemetryDirectory() const {
+    // QStandardPaths::DocumentsLocation is the OS-correct location on every
+    // platform and follows the user's OneDrive redirection on Windows; fall
+    // back to home/Documents when the platform reports no Documents folder.
+    QString documents =
+        QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    if (documents.isEmpty())
+        documents = QDir::homePath() + QStringLiteral("/Documents");
+    const QString directory = documents + QStringLiteral("/Telemetry");
+    QDir().mkpath(directory);
+    return directory;
 }
 
 // True when the active lap carries usable GPS: the damper-alignment tool is
@@ -2491,7 +2997,20 @@ QVariantMap TelemetryStore::folderMetadata(const QString& folderPath) const {
     TextConsensus trackSlugConsensus;
     QHash<QString, TextConsensus> driverNameConsensus;
     QSet<QString> detectedDriverIds;
-    int metadataSourceCount = 0;
+    QStringList descendantPaths;
+    for (const QString& path : discoveredFilePaths_) {
+        const QString relative = QDir(canonical).relativeFilePath(path);
+        if (relative == QStringLiteral("..") ||
+            relative.startsWith(QStringLiteral("../")))
+            continue;
+        descendantPaths.append(path);
+    }
+    const int metadataSourceCount = descendantPaths.size();
+    const int directRecordingCount = int(
+        std::count_if(descendantPaths.cbegin(), descendantPaths.cend(),
+                      [&canonical](const QString& path) {
+                          return QFileInfo(path).absolutePath() == canonical;
+                      }));
     int sourceRecordingCount = 0;
     for (const auto& session : sessions_) {
         if (!session) continue;
@@ -2501,7 +3020,6 @@ QVariantMap TelemetryStore::folderMetadata(const QString& folderPath) const {
             relative.startsWith(QStringLiteral("../")))
             continue;
 
-        ++metadataSourceCount;
         QVariantMap effectiveMetadata = fileMetadata_.value(session->path());
         omatrack::track_metadata::merge(
             &effectiveMetadata, recordingMetadata_.value(session->path()));
@@ -2553,8 +3071,7 @@ QVariantMap TelemetryStore::folderMetadata(const QString& folderPath) const {
             driverNameConsensus[driverId].add(driverName);
         }
 
-        if (!session->isVideo() || session->sourceChannels().isEmpty())
-            continue;
+        if (session->sourceChannels().isEmpty()) continue;
         ++sourceRecordingCount;
         for (auto it = session->automaticChannelMappings().cbegin();
              it != session->automaticChannelMappings().cend(); ++it) {
@@ -2579,6 +3096,26 @@ QVariantMap TelemetryStore::folderMetadata(const QString& folderPath) const {
                 if (existing->examples.size() == 5) break;
             }
         }
+    }
+    const auto sampled = folderChannelSamples_.constFind(canonical);
+    int channelSampleCandidateCount = metadataSourceCount;
+    bool channelSampleLoading =
+        folderChannelSampleRequests_.contains(canonical);
+    if (sampled != folderChannelSamples_.cend() && *sampled) {
+        channelSampleCandidateCount = (*sampled)->candidateCount;
+        sourceRecordingCount = (*sampled)->recordingCount;
+        aggregatedChannels.clear();
+        for (const SourceChannelSummary& source : (*sampled)->channels)
+            aggregatedChannels.insert(source.name.toCaseFolded(), source);
+        automaticMappingCounts.clear();
+        automaticMappingValues.clear();
+        for (auto it = (*sampled)->automaticMappings.cbegin();
+             it != (*sampled)->automaticMappings.cend(); ++it) {
+            automaticMappingCounts[it.key()][it.value().toCaseFolded()] = 1;
+            automaticMappingValues[it.key()][it.value().toCaseFolded()] =
+                it.value();
+        }
+        channelSampleLoading = false;
     }
     QVector<SourceChannelSummary> sourceChannels;
     sourceChannels.reserve(aggregatedChannels.size());
@@ -2626,6 +3163,9 @@ QVariantMap TelemetryStore::folderMetadata(const QString& folderPath) const {
         {QStringLiteral("path"), canonical},
         {QStringLiteral("folderScope"), true},
         {QStringLiteral("fileName"), folderName},
+        {QStringLiteral("folderName"),
+         nestedText(metadata,
+                    {QStringLiteral("folder"), QStringLiteral("name")})},
         {QStringLiteral("folder"), canonical},
         {QStringLiteral("sidecarPath"), targetSidecarPath},
         {QStringLiteral("inheritedSidecarPath"),
@@ -2633,6 +3173,12 @@ QVariantMap TelemetryStore::folderMetadata(const QString& folderPath) const {
         {QStringLiteral("trackFileCount"), trackFiles.size()},
         {QStringLiteral("sourceChannelCount"), sourceChannels.size()},
         {QStringLiteral("sourceRecordingCount"), sourceRecordingCount},
+        {QStringLiteral("directRecordingCount"), directRecordingCount},
+        {QStringLiteral("channelSampleCandidateCount"),
+         channelSampleCandidateCount},
+        {QStringLiteral("channelSampleLoading"), channelSampleLoading},
+        {QStringLiteral("channelSampleComplete"),
+         sampled != folderChannelSamples_.cend()},
         {QStringLiteral("metadataSourceCount"), metadataSourceCount},
         {QStringLiteral("suggestedCarNumber"),
          carNumberConsensus.confidentValue()},
@@ -2682,6 +3228,92 @@ QVariantMap TelemetryStore::folderMetadata(const QString& folderPath) const {
         {QStringLiteral("channels"),
          channelRowsWithout(allChannelRows, QStringLiteral("driver_id"))},
     };
+}
+
+void TelemetryStore::sampleFolderChannels(const QString& folderPath) {
+    const QString canonical = canonicalDirectoryPath(folderPath);
+    if (canonical.isEmpty()) return;
+    if (folderChannelSamples_.contains(canonical)) {
+        emit folderChannelSampleReady(folderMetadata(canonical));
+        return;
+    }
+    if (folderChannelSampleRequests_.contains(canonical)) return;
+
+    QStringList candidates;
+    for (const QString& path : discoveredFilePaths_) {
+        const QString relative = QDir(canonical).relativeFilePath(path);
+        if (relative == QStringLiteral("..") ||
+            relative.startsWith(QStringLiteral("../")))
+            continue;
+        candidates.append(path);
+    }
+    std::sort(candidates.begin(), candidates.end(),
+              [](const QString& left, const QString& right) {
+                  const QFileInfo leftInfo(left);
+                  const QFileInfo rightInfo(right);
+                  if (leftInfo.lastModified() != rightInfo.lastModified())
+                      return leftInfo.lastModified() > rightInfo.lastModified();
+                  return left.compare(right, Qt::CaseInsensitive) < 0;
+              });
+    const int candidateCount = candidates.size();
+    constexpr int kFolderChannelSampleLimit = 8;
+    if (candidates.size() > kFolderChannelSampleLimit)
+        candidates.resize(kFolderChannelSampleLimit);
+
+    folderChannelSampleRequests_.insert(canonical);
+    const quint64 generation = folderChannelSampleGeneration_;
+    auto* watcher =
+        new QFutureWatcher<std::shared_ptr<FolderChannelSample>>(this);
+    connect(watcher,
+            &QFutureWatcher<std::shared_ptr<FolderChannelSample>>::finished,
+            this, [this, watcher, canonical, generation]() {
+                const std::shared_ptr<FolderChannelSample> sample =
+                    watcher->result();
+                watcher->deleteLater();
+                if (generation != folderChannelSampleGeneration_) return;
+                folderChannelSampleRequests_.remove(canonical);
+                folderChannelSamples_.insert(canonical, sample);
+                emit folderChannelSampleReady(folderMetadata(canonical));
+            });
+    watcher->setFuture(QtConcurrent::run(
+        &sidebarMetadataPool_, [candidates, candidateCount]() {
+            auto result = std::make_shared<FolderChannelSample>();
+            result->candidateCount = candidateCount;
+            QHash<QString, QHash<QString, int>> mappingCounts;
+            QHash<QString, QHash<QString, QString>> mappingValues;
+            for (const QString& path : candidates) {
+                SessionHandle sampledSession(path);
+                if (!sampledSession.loadChannelSummaryForIndex()) continue;
+                mergeChannelSample(result.get(), sampledSession);
+                for (auto it =
+                         sampledSession.automaticChannelMappings().cbegin();
+                     it != sampledSession.automaticChannelMappings().cend();
+                     ++it) {
+                    const QString key = it.value().toCaseFolded();
+                    ++mappingCounts[it.key()][key];
+                    mappingValues[it.key()][key] = it.value();
+                }
+            }
+            for (auto field = mappingCounts.cbegin();
+                 field != mappingCounts.cend(); ++field) {
+                QString selected;
+                int selectedCount = 0;
+                for (auto candidate = field.value().cbegin();
+                     candidate != field.value().cend(); ++candidate) {
+                    const QString value =
+                        mappingValues[field.key()].value(candidate.key());
+                    if (candidate.value() > selectedCount ||
+                        (candidate.value() == selectedCount &&
+                         value.compare(selected, Qt::CaseInsensitive) < 0)) {
+                        selected = value;
+                        selectedCount = candidate.value();
+                    }
+                }
+                if (!selected.isEmpty())
+                    result->automaticMappings.insert(field.key(), selected);
+            }
+            return result;
+        }));
 }
 
 QVariantMap TelemetryStore::videoMetadata(const QString& videoPath) const {
@@ -2786,6 +3418,17 @@ bool TelemetryStore::saveFolderMetadata(const QString& folderPath,
         return false;
     }
     const QString sidecarPath = omatrack::track_metadata::filePath(canonical);
+    const QString displayName = nestedText(
+        document, {QStringLiteral("folder"), QStringLiteral("name")});
+    const QString requestedPath = normalizedSidebarPinPath(folderPath);
+    const QString canonicalPath = normalizedSidebarPinPath(canonical);
+    if (displayName.isEmpty()) {
+        folderDisplayNames_.remove(requestedPath);
+        folderDisplayNames_.remove(canonicalPath);
+    } else {
+        folderDisplayNames_.insert(requestedPath, displayName);
+        folderDisplayNames_.insert(canonicalPath, displayName);
+    }
     if (!trackMetadataPaths_.contains(sidecarPath)) {
         trackMetadataPaths_.append(sidecarPath);
         std::sort(trackMetadataPaths_.begin(), trackMetadataPaths_.end());
@@ -3286,9 +3929,41 @@ void TelemetryStore::setCompareLapLoading(bool loading) {
     emit lapLoadingChanged();
 }
 
+void TelemetryStore::selectSession(const QString& sessionKey, bool compare) {
+    SessionHandle* session = findSession(sessionKey);
+    if (!session) {
+        resumeSidebarMetadataQueue();
+        emit operationError(
+            QStringLiteral("Unable to select session"),
+            QStringLiteral("The selected session is no longer available."));
+        return;
+    }
+
+    const LapEntry* lap = bestLap(*session);
+    if (!lap && !session->laps().isEmpty()) lap = &session->laps().constFirst();
+    if (lap) {
+        requestLapLoad(session, lap->lapId, compare);
+        return;
+    }
+    if (session->isVideo()) {
+        if (!compare && compareSession_ == session) clearCompare();
+        queueFileOpen(session->path(),
+                      compare ? FileOpenRole::Compare : FileOpenRole::Primary);
+        return;
+    }
+    emit operationError(QStringLiteral("Unable to select session"),
+                        QStringLiteral("%1 does not contain a selectable lap.")
+                            .arg(QFileInfo(session->path()).fileName()));
+}
+
 void TelemetryStore::requestLapLoad(SessionHandle* session, int lapId,
                                     bool compare) {
-    if (!session || lapId < 0) return;
+    if (!session || lapId < 0) {
+        emit operationError(QStringLiteral("Unable to load lap"),
+                            QStringLiteral("The selected lap is invalid."));
+        return;
+    }
+    pauseSidebarMetadataQueue();
     const std::shared_ptr<const UnifiedLap> cached = session->unifiedLap(lapId);
     if (cached) {
         if (compare) {
@@ -3300,6 +3975,7 @@ void TelemetryStore::requestLapLoad(SessionHandle* session, int lapId,
             setPrimaryLapLoading(false);
             setPrimary(session, lapId);
         }
+        resumeSidebarMetadataQueue();
         return;
     }
 
@@ -3310,7 +3986,13 @@ void TelemetryStore::requestLapLoad(SessionHandle* session, int lapId,
             break;
         }
     }
-    if (!wanted) return;
+    if (!wanted) {
+        emit operationError(
+            QStringLiteral("Unable to load lap"),
+            QStringLiteral("The selected lap is no longer available."));
+        resumeSidebarMetadataQueue();
+        return;
+    }
 
     quint64 generation = 0;
     if (compare) {
@@ -3335,7 +4017,10 @@ void TelemetryStore::requestLapLoad(SessionHandle* session, int lapId,
             watcher->deleteLater();
             const quint64 currentGeneration =
                 compare ? compareLoadGeneration_ : primaryLoadGeneration_;
-            if (generation != currentGeneration) return;
+            if (generation != currentGeneration) {
+                resumeSidebarMetadataQueue();
+                return;
+            }
 
             SessionHandle* session = findSession(result->sessionKey);
             if (!session || !result->error.isEmpty() || !result->source ||
@@ -3346,6 +4031,13 @@ void TelemetryStore::requestLapLoad(SessionHandle* session, int lapId,
                     setCompareLapLoading(false);
                 else
                     setPrimaryLapLoading(false);
+                emit operationError(
+                    QStringLiteral("Unable to load lap"),
+                    result->error.isEmpty()
+                        ? QStringLiteral(
+                              "The selected lap could not be loaded.")
+                        : result->error);
+                resumeSidebarMetadataQueue();
                 return;
             }
             session->adoptLoadedLap(result->lapId, std::move(result->source),
@@ -3358,6 +4050,7 @@ void TelemetryStore::requestLapLoad(SessionHandle* session, int lapId,
                 setPrimary(session, result->lapId);
                 setPrimaryLapLoading(false);
             }
+            resumeSidebarMetadataQueue();
         });
     watcher->setFuture(QtConcurrent::run([path, sessionKey, lap, metadata]() {
         return loadSessionLap(path, sessionKey, lap, metadata);
@@ -3401,14 +4094,28 @@ void TelemetryStore::setCompare(SessionHandle* session, int lapId) {
 
 void TelemetryStore::selectLap(const QString& sessionKey, int lapId) {
     SessionHandle* session = findSession(sessionKey);
-    if (!session) return;
-    if (primarySession_ == session && primaryLap_ == lapId) return;
+    if (!session) {
+        resumeSidebarMetadataQueue();
+        emit operationError(
+            QStringLiteral("Unable to select lap"),
+            QStringLiteral("The selected session is no longer available."));
+        return;
+    }
+    if (primarySession_ == session && primaryLap_ == lapId) {
+        resumeSidebarMetadataQueue();
+        return;
+    }
     requestLapLoad(session, lapId, false);
 }
 
 void TelemetryStore::compareLap(const QString& sessionKey, int lapId) {
     SessionHandle* session = findSession(sessionKey);
-    if (!session) return;
+    if (!session) {
+        emit operationError(
+            QStringLiteral("Unable to select reference"),
+            QStringLiteral("The selected session is no longer available."));
+        return;
+    }
     if (primarySession_ == session && primaryLap_ == lapId) return;
     requestLapLoad(session, lapId, true);
 }
@@ -3479,14 +4186,6 @@ void TelemetryStore::setCursorFrac(double v) {
     cursorFrac_ = v;
     emit cursorFracChanged();
     emit videoTimeChanged();
-}
-
-void TelemetryStore::setChannelHeight(int v) {
-    v = qBound(40, v, 400);
-    if (v == channelHeight_) return;
-    channelHeight_ = v;
-    savePreferences();
-    emit channelHeightChanged();
 }
 
 void TelemetryStore::setVideoMuted(bool muted) {
@@ -3796,23 +4495,7 @@ QVariantList TelemetryStore::cornerComparison() const {
         const int hi = std::min(lo + 1, int(values.size()) - 1);
         return values[lo] + (values[hi] - values[lo]) * (position - lo);
     };
-    auto frontDamper = [](const UnifiedLap& lap) {
-        const size_t count = std::min(lap.damperFL.size(), lap.damperFR.size());
-        std::vector<double> values;
-        if (count > 0) {
-            values.reserve(count);
-            for (size_t i = 0; i < count; ++i)
-                values.push_back((lap.damperFL[i] + lap.damperFR[i]) * 0.5);
-        } else if (!lap.damperFL.empty()) {
-            values = lap.damperFL;
-        } else {
-            values = lap.damperFR;
-        }
-        return values;
-    };
-
-    auto stats = [&](const UnifiedLap& lap, const CornerZone& corner,
-                     CornerGraphSeries& graphSeries) {
+    auto stats = [&](const UnifiedLap& lap, const CornerZone& corner) {
         const int last = int(lap.size()) - 1;
         const int first =
             std::clamp(int(std::floor(corner.start * last)), 0, last);
@@ -3883,8 +4566,16 @@ QVariantList TelemetryStore::cornerComparison() const {
 
         int throttleIndex = finish;
         const double noiseFloor = qBound(0.015, minThrottle + 0.015, 0.08);
+        // Pickup is the exit event: the search starts at the throttle
+        // minimum, so a corner entered with partial throttle cannot report
+        // its own entry as the application point.
         int pickupStart = first;
+        double pickupFloor = std::numeric_limits<double>::infinity();
         for (int i = first; i <= finish && i < int(lap.throttle.size()); ++i) {
+            if (lap.throttle[i] < pickupFloor) {
+                pickupFloor = lap.throttle[i];
+                pickupStart = i;
+            }
             if (lap.throttle[i] <= noiseFloor) {
                 pickupStart = i;
                 break;
@@ -3946,19 +4637,6 @@ QVariantList TelemetryStore::cornerComparison() const {
         const double windowEnd =
             std::min(lapEnd, cornerEndDistance + base * 0.55);
         const double windowMeters = std::max(1.0, windowEnd - windowStart);
-        auto fractionAt = [&](double distance) {
-            if (lap.distance.size() < 2) return 0.0;
-            if (distance <= lap.distance.front()) return 0.0;
-            if (distance >= lap.distance.back()) return 1.0;
-            const auto it = std::lower_bound(lap.distance.begin(),
-                                             lap.distance.end(), distance);
-            const int hi = int(it - lap.distance.begin());
-            const int lo = std::max(0, hi - 1);
-            const double span = lap.distance[hi] - lap.distance[lo];
-            const double local =
-                span > 0.0 ? (distance - lap.distance[lo]) / span : 0.0;
-            return (lo + local) / double(lap.distance.size() - 1);
-        };
         auto windowPosition = [&](double distanceFromCornerStart) {
             return (startDistance + distanceFromCornerStart - windowStart) /
                    windowMeters;
@@ -3968,27 +4646,6 @@ QVariantList TelemetryStore::cornerComparison() const {
         const double throttlePosition = windowPosition(throttlePoint);
         const double cornerStartPosition = windowPosition(0.0);
         const double cornerEndPosition = windowPosition(cornerLength);
-
-        // Fixed grid across the context window so primary and compare are
-        // directly overlayable, and so the renderer can walk them without a
-        // per-point QVariant.
-        constexpr int seriesPoints = 200;
-        CornerGraphSeries series;
-        series.speed.reserve(seriesPoints);
-        series.throttle.reserve(seriesPoints);
-        series.brake.reserve(seriesPoints);
-        series.steering.reserve(seriesPoints);
-        series.maxBrake = maxBrake;
-        for (int i = 0; i < seriesPoints; ++i) {
-            const double fraction =
-                fractionAt(windowStart +
-                           windowMeters * double(i) / double(seriesPoints - 1));
-            series.speed.push_back(sample(lap.speed, fraction));
-            series.throttle.push_back(sample(lap.throttle, fraction));
-            series.brake.push_back(sample(lap.brake, fraction));
-            series.steering.push_back(sample(lap.steering, fraction));
-        }
-        graphSeries = std::move(series);
 
         const double entrySpeed = sample(lap.speed, corner.start);
         const double exitSpeed = sample(lap.speed, corner.end);
@@ -4012,6 +4669,7 @@ QVariantList TelemetryStore::cornerComparison() const {
             {"turnInPoint", turnInPoint},
             {"apexPoint", apexPoint},
             {"throttlePoint", throttlePoint},
+            {"apexFraction", last > 0 ? double(apexIndex) / double(last) : 0.0},
             {"cornerStartPosition", cornerStartPosition},
             {"cornerEndPosition", cornerEndPosition},
             {"contextWindowMeters", windowMeters},
@@ -4035,127 +4693,19 @@ QVariantList TelemetryStore::cornerComparison() const {
     const UnifiedLap* compare = compareUnified();
     if (compare && (compare->distance.size() < 2 || compare->time.size() < 2))
         compare = nullptr;
-
-    const std::vector<double> primaryDamper = frontDamper(*primary);
-    const std::vector<double> compareDamper =
-        compare ? frontDamper(*compare) : std::vector<double>();
-    auto damperWindow = [](const UnifiedLap& lap,
-                           const std::vector<double>& damper,
-                           const CornerZone& corner,
-                           std::vector<double>& windowSeries) {
-        QVariantMap result;
-        const int last =
-            std::min(int(lap.size()), int(lap.distance.size())) - 1;
-        if (last < 2 || damper.size() < 2) return result;
-        const int cornerStart =
-            std::clamp(int(std::floor(corner.start * last)), 0, last);
-        const int cornerEnd =
-            std::clamp(int(std::ceil(corner.end * last)), cornerStart, last);
-        const double startDistance = lap.distance[cornerStart];
-        const double windowStart =
-            std::max(lap.distance.front(), startDistance - 300.0);
-        const double windowEnd = lap.distance[cornerEnd];
-        const auto lowerIndex = [&](double distance) {
-            const auto it =
-                std::lower_bound(lap.distance.begin(),
-                                 lap.distance.begin() + last + 1, distance);
-            return std::clamp(int(it - lap.distance.begin()), 0, last);
-        };
-        const int first = lowerIndex(windowStart);
-        const int finish = std::max(first, lowerIndex(windowEnd));
-        if (finish - first < 2) return result;
-
-        std::vector<double> baseline;
-        baseline.reserve(finish - first + 1);
-        for (int i = first; i <= finish; i += 4) {
-            if (i < int(damper.size()) && std::isfinite(damper[i]))
-                baseline.push_back(damper[i]);
-        }
-        if (baseline.empty()) return result;
-        std::sort(baseline.begin(), baseline.end());
-        const double median = baseline[baseline.size() / 2];
-
-        int peak = first;
-        double peakScore = -1.0;
-        auto scoreAt = [&](int i) {
-            return i < int(damper.size()) && std::isfinite(damper[i])
-                       ? std::fabs(damper[i] - median)
-                       : -1.0;
-        };
-        for (int i = first + 1; i < finish && i < int(damper.size()) - 1; ++i) {
-            const double score = scoreAt(i);
-            if (score >= scoreAt(i - 1) && score >= scoreAt(i + 1) &&
-                score > peakScore) {
-                peak = i;
-                peakScore = score;
-            }
-        }
-        if (peakScore < 0.0) {
-            for (int i = first; i <= finish && i < int(damper.size()); ++i) {
-                const double score = scoreAt(i);
-                if (score > peakScore) {
-                    peak = i;
-                    peakScore = score;
-                }
-            }
-        }
-
-        auto valueAtDistance = [&](double distance) {
-            const int hi = lowerIndex(distance);
-            if (hi <= 0) return damper[0];
-            const int lo = hi - 1;
-            const double span = lap.distance[hi] - lap.distance[lo];
-            const double amount =
-                span > 0.0 ? (distance - lap.distance[lo]) / span : 0.0;
-            const double left = damper[std::min(lo, int(damper.size()) - 1)];
-            const double right = damper[std::min(hi, int(damper.size()) - 1)];
-            return left + (right - left) * qBound(0.0, amount, 1.0);
-        };
-
-        constexpr int points = 180;
-        QVariantList samples;
-        samples.reserve(points);
-        windowSeries.clear();
-        windowSeries.reserve(points);
-        const double span = std::max(1.0, windowEnd - windowStart);
-        for (int i = 0; i < points; ++i) {
-            const double distance =
-                windowStart + span * double(i) / double(points - 1);
-            const double value = valueAtDistance(distance);
-            samples.append(value);
-            windowSeries.push_back(value);
-        }
-        result.insert(QStringLiteral("series"), samples);
-        result.insert(QStringLiteral("windowMeters"), span);
-        result.insert(QStringLiteral("cornerStartMeters"),
-                      startDistance - windowStart);
-        result.insert(QStringLiteral("peakDistance"), lap.distance[peak]);
-        result.insert(QStringLiteral("peakScore"), peakScore);
-        return result;
+    const QVector<double>& delta = deltaTrace();
+    auto deltaAt = [&delta](double fraction) {
+        if (delta.isEmpty()) return 0.0;
+        const double position =
+            qBound(0.0, fraction, 1.0) * double(delta.size() - 1);
+        const int lo =
+            std::clamp(int(std::floor(position)), 0, int(delta.size()) - 1);
+        const int hi = std::min(lo + 1, int(delta.size()) - 1);
+        return delta[lo] + (delta[hi] - delta[lo]) * (position - lo);
     };
 
-    cornerGraphs_.clear();
-    cornerGraphs_.reserve(corners_.size());
     for (const CornerZone& corner : corners_) {
-        CornerGraph graph;
-        const QVariantMap primaryStats = stats(*primary, corner, graph.primary);
-        graph.zoneStart = primaryStats.value("cornerStartPosition").toDouble();
-        graph.zoneEnd = primaryStats.value("cornerEndPosition").toDouble();
-        graph.turnIn = primaryStats.value("turnInPosition").toDouble();
-        graph.apex = primaryStats.value("apexPosition").toDouble();
-        graph.pickup = primaryStats.value("throttlePosition").toDouble();
-        graph.windowMeters =
-            primaryStats.value("contextWindowMeters").toDouble();
-        graph.zoneMeters = primaryStats.value("cornerLengthMeters").toDouble();
-        const QVariantMap primaryDamperData =
-            damperWindow(*primary, primaryDamper, corner, graph.damper.primary);
-        const bool hasPrimaryDamper =
-            primaryDamperData.contains(QStringLiteral("series"));
-        graph.damper.windowMeters =
-            primaryDamperData.value(QStringLiteral("windowMeters")).toDouble();
-        graph.damper.cornerStartMeters =
-            primaryDamperData.value(QStringLiteral("cornerStartMeters"))
-                .toDouble();
+        const QVariantMap primaryStats = stats(*primary, corner);
         QVariantMap row{
             {"name", corner.name},
             {"start", corner.start},
@@ -4182,15 +4732,13 @@ QVariantList TelemetryStore::cornerComparison() const {
             {"cornerEndPosition", primaryStats.value("cornerEndPosition")},
             {"contextWindowMeters", primaryStats.value("contextWindowMeters")},
             {"cornerLengthMeters", primaryStats.value("cornerLengthMeters")},
-            {"damperPrimarySeries", primaryDamperData.value("series")},
-            {"damperWindowMeters", primaryDamperData.value("windowMeters")},
-            {"damperCornerStartMeters",
-             primaryDamperData.value("cornerStartMeters")},
-            {"damperPeakPrimary", primaryDamperData.value("peakDistance")},
-            {"damperCompareSeries", QVariantList{}},
-            {"damperAlignment", 0.0},
-            {"damperAlignmentValid", false},
+            {"apexFraction", primaryStats.value("apexFraction")},
             {"hasCompare", compare != nullptr}};
+
+        omatrack::CornerContext context;
+        context.primary = primary;
+        context.primaryMetrics =
+            omatrack::measureCorner(*primary, corner.start, corner.end);
 
         if (compare) {
             const double startDistance =
@@ -4199,35 +4747,23 @@ QVariantList TelemetryStore::cornerComparison() const {
             CornerZone compareCorner = corner;
             compareCorner.start = fractionAtDistance(*compare, startDistance);
             compareCorner.end = fractionAtDistance(*compare, endDistance);
-            const QVariantMap compareStats =
-                stats(*compare, compareCorner, graph.compare);
-            graph.compareTurnIn =
-                compareStats.value("turnInPosition").toDouble();
-            graph.compareApex = compareStats.value("apexPosition").toDouble();
-            graph.comparePickup =
-                compareStats.value("throttlePosition").toDouble();
-            const QVariantMap compareDamperData = damperWindow(
-                *compare, compareDamper, compareCorner, graph.damper.compare);
-            double damperAlignment = 0.0;
-            bool damperAlignmentValid = false;
-            if (hasPrimaryDamper &&
-                compareDamperData.contains(QStringLiteral("peakDistance"))) {
-                damperAlignment =
-                    primaryDamperData.value("peakDistance").toDouble() -
-                    compareDamperData.value("peakDistance").toDouble();
-                damperAlignmentValid = std::fabs(damperAlignment) < 50.0;
-                if (!damperAlignmentValid) damperAlignment = 0.0;
-            }
-            row.insert(QStringLiteral("damperCompareSeries"),
-                       compareDamperData.value("series"));
-            row.insert(QStringLiteral("damperAlignment"), damperAlignment);
-            row.insert(QStringLiteral("damperAlignmentValid"),
-                       damperAlignmentValid);
-            row.insert(QStringLiteral("damperPeakCompare"),
-                       compareDamperData.value("peakDistance"));
+            const QVariantMap compareStats = stats(*compare, compareCorner);
+            // The reference apex, expressed on the primary lap's distance
+            // axis, so both markers land on the same zoomed viewport.
+            row.insert(
+                QStringLiteral("compareApexFraction"),
+                fractionAtDistance(
+                    *primary, startDistance +
+                                  compareStats.value("apexPoint").toDouble()));
 
-            const double timeDelta = primaryStats.value("time").toDouble() -
-                                     compareStats.value("time").toDouble();
+            // Time through the corner comes from the one cached delta trace
+            // whenever it exists, so the panel, the Δ lane and the cursor
+            // readout cannot disagree. Raw corner times are the fallback for
+            // laps the track-station map could not align.
+            const double timeDelta =
+                delta.isEmpty() ? primaryStats.value("time").toDouble() -
+                                      compareStats.value("time").toDouble()
+                                : deltaAt(corner.end) - deltaAt(corner.start);
             const double entryDelta =
                 primaryStats.value("entrySpeed").toDouble() -
                 compareStats.value("entrySpeed").toDouble();
@@ -4252,51 +4788,33 @@ QVariantList TelemetryStore::cornerComparison() const {
             const double throttlePointDelta =
                 primaryStats.value("throttlePoint").toDouble() -
                 compareStats.value("throttlePoint").toDouble();
+            // Entry and exit time come from the one cached delta trace, so
+            // the corner overlay can never disagree with the Δ lane.
+            const double apexFraction =
+                primaryStats.value("apexFraction").toDouble();
+            const double entryTimeDelta =
+                deltaAt(apexFraction) - deltaAt(corner.start);
+            const double exitTimeDelta =
+                deltaAt(corner.end) - deltaAt(apexFraction);
             const double score = qBound(
                 0.0,
                 50.0 - timeDelta * 40.0 + exitDelta * 0.8 + apexDelta * 0.35,
                 100.0);
 
-            QStringList notes;
-            if (timeDelta > 0.03)
-                notes << QStringLiteral(
-                             "Reference gains %1s through the corner")
-                             .arg(timeDelta, 0, 'f', 3);
-            else if (timeDelta < -0.03)
-                notes << QStringLiteral("Primary gains %1s through the corner")
-                             .arg(-timeDelta, 0, 'f', 3);
-            if (exitDelta < -2.0)
-                notes << QStringLiteral("Reference exits %1 km/h faster")
-                             .arg(-exitDelta, 0, 'f', 1);
-            if (apexDelta < -2.0)
-                notes << QStringLiteral(
-                             "Reference carries %1 km/h more at apex")
-                             .arg(-apexDelta, 0, 'f', 1);
-            if (primaryStats.value("maxSteering").toDouble() >
-                compareStats.value("maxSteering").toDouble() + 12.0)
-                notes << QStringLiteral("Primary uses more steering input");
-            if (brakePointDelta < -5.0)
-                notes << QStringLiteral("Primary brakes earlier");
-            else if (brakePointDelta > 5.0)
-                notes << QStringLiteral("Primary brakes later");
-            if (std::fabs(turnInDelta) >= 10.0)
-                notes << QStringLiteral("Turn-in %1m %2 than reference")
-                             .arg(std::fabs(turnInDelta), 0, 'f', 0)
-                             .arg(turnInDelta > 0.0
-                                      ? QStringLiteral("later")
-                                      : QStringLiteral("earlier"));
-            if (std::fabs(throttlePointDelta) >= 10.0)
-                notes << QStringLiteral("Throttle %1m %2 than reference")
-                             .arg(std::fabs(throttlePointDelta), 0, 'f', 0)
-                             .arg(throttlePointDelta > 0.0
-                                      ? QStringLiteral("later")
-                                      : QStringLiteral("earlier"));
-            if (notes.isEmpty()) notes << QStringLiteral("Closely matched");
+            context.reference = compare;
+            context.referenceMetrics = omatrack::measureCorner(
+                *compare, compareCorner.start, compareCorner.end);
+            context.timeDelta = timeDelta;
+            context.entryTimeDelta = entryTimeDelta;
+            context.exitTimeDelta = exitTimeDelta;
 
             row.insert("compareEntrySpeed", compareStats.value("entrySpeed"));
             row.insert("compareApexSpeed", compareStats.value("apexSpeed"));
             row.insert("compareExitSpeed", compareStats.value("exitSpeed"));
-            row.insert("compareTime", compareStats.value("time"));
+            row.insert("compareTime",
+                       delta.isEmpty()
+                           ? compareStats.value("time")
+                           : primaryStats.value("time").toDouble() - timeDelta);
             row.insert("compareMinGear", compareStats.value("minGear"));
             row.insert("compareMaxSteering", compareStats.value("maxSteering"));
             row.insert("compareMaxBrake", compareStats.value("maxBrake"));
@@ -4314,6 +4832,8 @@ QVariantList TelemetryStore::cornerComparison() const {
             row.insert("compareThrottlePoint",
                        compareStats.value("throttlePoint"));
             row.insert("delta", timeDelta);
+            row.insert("entryTimeDelta", entryTimeDelta);
+            row.insert("exitTimeDelta", exitTimeDelta);
             row.insert("entryDelta", entryDelta);
             row.insert("apexDelta", apexDelta);
             row.insert("exitDelta", exitDelta);
@@ -4323,17 +4843,269 @@ QVariantList TelemetryStore::cornerComparison() const {
             row.insert("apexPointDelta", apexPointDelta);
             row.insert("throttlePointDelta", throttlePointDelta);
             row.insert("score", score);
-            row.insert("note", notes.join(QStringLiteral(" · ")));
         }
-        cornerGraphs_.push_back(std::move(graph));
+        const std::vector<omatrack::CornerNote> cornerNotes =
+            omatrack::CornerAnalysisRegistry::instance().run(context);
+        QVariantList notesList;
+        QStringList noteParts;
+        for (const omatrack::CornerNote& n : cornerNotes) {
+            notesList.append(QVariantMap{
+                {"id", QString::fromStdString(n.id)},
+                {"text", QString::fromStdString(n.text)},
+                {"severity",
+                 QString::fromLatin1(omatrack::severityName(n.severity))},
+            });
+            noteParts << QString::fromStdString(n.text);
+        }
+        if (cornerNotes.empty() && compare) {
+            const QString matched = QStringLiteral("Closely matched");
+            notesList.append(QVariantMap{
+                {"id", QStringLiteral("matched")},
+                {"text", matched},
+                {"severity", QString::fromLatin1(omatrack::severityName(
+                                 omatrack::NoteSeverity::Info))},
+            });
+            noteParts << matched;
+        }
+        row.insert("notes", notesList);
+        row.insert("note", noteParts.join(QStringLiteral(" · ")));
+
         out.append(row);
     }
     return out;
 }
 
-const CornerGraph* TelemetryStore::cornerGraph(int index) const {
-    if (index < 0 || index >= int(cornerGraphs_.size())) return nullptr;
-    return &cornerGraphs_[size_t(index)];
+// ── corner focus ────────────────────────────────────────────────────
+
+void TelemetryStore::resetView() {
+    if (focusedCorner_ >= 0) {
+        focusedCorner_ = -1;
+        markers_.clear();
+        emit cornerFocusChanged();
+    }
+    focusReturnStart_ = 0.0;
+    focusReturnEnd_ = 1.0;
+    if (viewStart_ == 0.0 && viewEnd_ == 1.0) return;
+    viewStart_ = 0.0;
+    viewEnd_ = 1.0;
+    emit viewChanged();
+}
+
+void TelemetryStore::focusCorner(int index) {
+    if (index < 0 || index >= corners_.size()) return;
+    if (focusedCorner_ < 0) {
+        focusReturnStart_ = viewStart_;
+        focusReturnEnd_ = viewEnd_;
+    }
+    focusedCorner_ = index;
+
+    // The corner sits in the middle of the left half of the workspace: the
+    // information overlay owns the right side, and the approach and exit
+    // context stays visible on either side of the zone.
+    constexpr double kZoneShareOfView = 0.30;
+    constexpr double kCornerCentre = 0.25;
+    const CornerZone& corner = corners_[index];
+    const double zone = std::max(0.002, corner.end - corner.start);
+    const double span = qBound(0.004, zone / kZoneShareOfView, 1.0);
+    // Deliberately unclamped: a corner near start/finish keeps its place in
+    // the left half and the viewport runs off the end of the lap. The
+    // renderer fills that space with the neighbouring lap, masked, or with
+    // black when there is no more data to show.
+    const double start = corner.mid() - kCornerCentre * span;
+    viewStart_ = start;
+    viewEnd_ = start + span;
+    emit viewChanged();
+    prefetchNeighbourLaps();
+
+    rebuildCornerMarkers();
+    for (const CornerMarker& marker : markers_)
+        if (marker.key == QLatin1String("apex")) {
+            setCursorFrac(marker.fraction);
+            break;
+        }
+}
+
+// ── neighbouring laps ───────────────────────────────────────────────
+
+int TelemetryStore::neighbourLapId(int offset) const {
+    if (!primarySession_ || primaryLap_ < 0) return -1;
+    const QVector<LapEntry>& laps = primarySession_->laps();
+    int index = -1;
+    for (int i = 0; i < laps.size(); ++i)
+        if (laps[i].lapId == primaryLap_) {
+            index = i;
+            break;
+        }
+    if (index < 0) return -1;
+    const int neighbour = index + offset;
+    if (neighbour < 0 || neighbour >= laps.size()) return -1;
+    return laps[neighbour].lapId;
+}
+
+const UnifiedLap* TelemetryStore::neighbourUnified(int offset) const {
+    const int lapId = neighbourLapId(offset);
+    if (lapId < 0 || !primarySession_) return nullptr;
+    // Cache only: the renderer asks for this inside a frame.
+    const std::shared_ptr<const UnifiedLap> lap =
+        primarySession_->unifiedLap(lapId);
+    return lap && lap->size() > 1 ? lap.get() : nullptr;
+}
+
+QString TelemetryStore::neighbourLabel(int offset) const {
+    if (!neighbourUnified(offset)) return QString();
+    const int lapId = neighbourLapId(offset);
+    for (const LapEntry& lap : primarySession_->laps())
+        if (lap.lapId == lapId)
+            return lap.label.isEmpty() ? QStringLiteral("lap %1").arg(lapId)
+                                       : lap.label;
+    return QString();
+}
+
+// Corner focus can frame the viewport past the lap bounds, so the laps on
+// either side are worth having. They load on the worker pool and appear when
+// they arrive; until then the renderer shows black.
+void TelemetryStore::prefetchNeighbourLaps() {
+    if (!primarySession_) return;
+    const QString sessionKey = primarySession_->sessionKey();
+    const QString path = primarySession_->path();
+    const QVariantMap metadata =
+        recordingMetadataForPath(path, recordingMetadata_);
+
+    for (const int offset : {-1, 1}) {
+        const int lapId = neighbourLapId(offset);
+        if (lapId < 0) continue;
+        if (primarySession_->unifiedLap(lapId)) continue;
+        const QString token =
+            sessionKey + QLatin1Char('#') + QString::number(lapId);
+        if (neighbourPrefetch_.contains(token)) continue;
+
+        const LapEntry* wanted = nullptr;
+        for (const LapEntry& lap : primarySession_->laps())
+            if (lap.lapId == lapId) {
+                wanted = &lap;
+                break;
+            }
+        if (!wanted) continue;
+        neighbourPrefetch_.insert(token);
+
+        const LapEntry lap = *wanted;
+        auto* watcher =
+            new QFutureWatcher<std::shared_ptr<SessionLapLoadResult>>(this);
+        connect(
+            watcher,
+            &QFutureWatcher<std::shared_ptr<SessionLapLoadResult>>::finished,
+            this, [this, watcher, token]() {
+                std::shared_ptr<SessionLapLoadResult> result =
+                    watcher->result();
+                watcher->deleteLater();
+                neighbourPrefetch_.remove(token);
+                if (!result || !result->error.isEmpty() || !result->source ||
+                    !result->unified)
+                    return;
+                SessionHandle* session = findSession(result->sessionKey);
+                if (!session) return;
+                session->adoptLoadedLap(
+                    result->lapId, std::move(result->source),
+                    std::move(result->unified), result->driverId,
+                    result->forceDriverId);
+                // Only the viewport needs to know: this lap is context, not
+                // a selection change.
+                if (session == primarySession_) emit viewChanged();
+            });
+        watcher->setFuture(
+            QtConcurrent::run([path, sessionKey, lap, metadata]() {
+                return loadSessionLap(path, sessionKey, lap, metadata);
+            }));
+    }
+}
+
+void TelemetryStore::focusCornerAtCursor() {
+    if (corners_.isEmpty()) return;
+    int index = 0;
+    for (int i = 0; i < corners_.size(); ++i)
+        if (corners_[i].start <= cursorFrac_ &&
+            cursorFrac_ <= corners_[i].end) {
+            index = i;
+            break;
+        }
+    focusCorner(index);
+}
+
+void TelemetryStore::clearCornerFocus() {
+    if (focusedCorner_ < 0) return;
+    focusedCorner_ = -1;
+    markers_.clear();
+    viewStart_ = focusReturnStart_;
+    viewEnd_ = focusReturnEnd_;
+    emit viewChanged();
+    emit cornerFocusChanged();
+}
+
+QVariantMap TelemetryStore::cornerFocusSummary() const {
+    if (focusedCorner_ < 0) return {};
+    const QVariantList rows = cornerComparison();
+    if (focusedCorner_ >= rows.size()) return {};
+    return rows[focusedCorner_].toMap();
+}
+
+// Brake, turn-in, apex and throttle pickup for the focused corner. Both laps
+// are placed on the primary lap's distance axis so the zoomed viewport can
+// draw them against one x scale.
+void TelemetryStore::rebuildCornerMarkers() {
+    markers_.clear();
+    const UnifiedLap* primary = primaryUnified();
+    const QVariantList rows =
+        focusedCorner_ >= 0 ? cornerComparison() : QVariantList();
+    if (focusedCorner_ >= 0 && focusedCorner_ < rows.size() && primary &&
+        primary->distance.size() > 1) {
+        const std::vector<double>& distance = primary->distance;
+        const QVariantMap row = rows[focusedCorner_].toMap();
+        const bool hasCompare =
+            row.value(QStringLiteral("hasCompare")).toBool();
+        auto fractionAt = [&distance](double metres) {
+            if (metres <= distance.front()) return 0.0;
+            if (metres >= distance.back()) return 1.0;
+            const auto it =
+                std::lower_bound(distance.begin(), distance.end(), metres);
+            const int hi = int(it - distance.begin());
+            const int lo = std::max(0, hi - 1);
+            const double span = distance[hi] - distance[lo];
+            const double local =
+                span > 0.0 ? (metres - distance[lo]) / span : 0.0;
+            return (lo + local) / double(distance.size() - 1);
+        };
+        const int startIndex = std::clamp(
+            int(std::lround(row.value(QStringLiteral("start")).toDouble() *
+                            double(distance.size() - 1))),
+            0, int(distance.size()) - 1);
+        const double startDistance = distance[size_t(startIndex)];
+
+        struct MarkerSpec {
+            const char* key;
+            const char* label;
+            const char* primaryField;
+            const char* compareField;
+        };
+        static constexpr MarkerSpec kSpecs[] = {
+            {"brake", "BRAKE", "brakePoint", "compareBrakePoint"},
+            {"turnin", "TURN-IN", "turnInPoint", "compareTurnInPoint"},
+            {"apex", "APEX", "apexPoint", "compareApexPoint"},
+            {"pickup", "THROTTLE", "throttlePoint", "compareThrottlePoint"}};
+        for (const MarkerSpec& spec : kSpecs) {
+            CornerMarker marker;
+            marker.key = QLatin1String(spec.key);
+            marker.label = QLatin1String(spec.label);
+            marker.fraction = fractionAt(
+                startDistance +
+                row.value(QLatin1String(spec.primaryField)).toDouble());
+            if (hasCompare)
+                marker.referenceFraction = fractionAt(
+                    startDistance +
+                    row.value(QLatin1String(spec.compareField)).toDouble());
+            markers_.append(marker);
+        }
+    }
+    emit cornerFocusChanged();
 }
 
 int TelemetryStore::addCorner(double start, double end) {

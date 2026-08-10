@@ -126,93 +126,22 @@ private slots:
     }
 };
 
-// ────────────────────────────────────────────────────────────────────
-// CornerGraphSeries::valid
-// ────────────────────────────────────────────────────────────────────
-
-class CornerGraphSeriesTest : public QObject {
-    Q_OBJECT
-private slots:
-    void emptyIsInvalid() {
-        CornerGraphSeries s;
-        QVERIFY(!s.valid());
-    }
-    void singleSampleIsInvalid() {
-        CornerGraphSeries s;
-        s.speed = {100.0};
-        QVERIFY(!s.valid());
-    }
-    void twoSamplesIsValid() {
-        CornerGraphSeries s;
-        s.speed = {100.0, 80.0};
-        QVERIFY(s.valid());
-    }
-};
-
-// ────────────────────────────────────────────────────────────────────
-// CornerDamperWindow::valid
-// ────────────────────────────────────────────────────────────────────
-
-class CornerDamperWindowTest : public QObject {
-    Q_OBJECT
-private slots:
-    void emptyIsInvalid() {
-        CornerDamperWindow w;
-        QVERIFY(!w.valid());
-    }
-    void bothPopulatedIsValid() {
-        CornerDamperWindow w;
-        w.primary = {1.0, 2.0, 3.0};
-        w.compare = {4.0, 5.0, 6.0};
-        QVERIFY(w.valid());
-    }
-    void onlyPrimaryIsInvalid() {
-        CornerDamperWindow w;
-        w.primary = {1.0, 2.0};
-        QVERIFY(!w.valid());
-    }
-};
-
-// ────────────────────────────────────────────────────────────────────
-// CornerGraph::valid / hasCompare
-// ────────────────────────────────────────────────────────────────────
-
-class CornerGraphTest : public QObject {
-    Q_OBJECT
-private slots:
-    void emptyIsInvalid() {
-        CornerGraph g;
-        QVERIFY(!g.valid());
-    }
-    void primaryOnlyIsValid() {
-        CornerGraph g;
-        g.primary.speed = {100.0, 80.0};
-        QVERIFY(g.valid());
-        QVERIFY(!g.hasCompare());
-    }
-    void withCompareIsValid() {
-        CornerGraph g;
-        g.primary.speed = {100.0, 80.0};
-        g.compare.speed = {90.0, 70.0};
-        QVERIFY(g.valid());
-        QVERIFY(g.hasCompare());
-    }
-    void compareOnlyIsInvalid() {
-        CornerGraph g;
-        g.compare.speed = {90.0, 70.0};
-        QVERIFY(!g.valid());  // primary must also be valid
-    }
-};
-
 // Run all test classes in one executable.
 int main(int argc, char* argv[]) {
     int status = 0;
-    { LapEntryTest t; status |= QTest::qExec(&t, argc, argv); }
-    { CornerZoneTest t; status |= QTest::qExec(&t, argc, argv); }
-    { DamperAlignmentTest t; status |= QTest::qExec(&t, argc, argv); }
-    { CornerGraphSeriesTest t; status |= QTest::qExec(&t, argc, argv); }
-    { CornerDamperWindowTest t; status |= QTest::qExec(&t, argc, argv); }
-    { CornerGraphTest t; status |= QTest::qExec(&t, argc, argv); }
+    {
+        LapEntryTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        CornerZoneTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        DamperAlignmentTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+
     return status;
 }
 #include "AppTypesTest.moc"

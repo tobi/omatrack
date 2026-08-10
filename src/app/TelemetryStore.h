@@ -7,10 +7,13 @@
 
 #pragma once
 
+#include "WebDavCache.h"
+
 #include <QByteArray>
 #include <QColor>
 #include <QObject>
 #include <QSet>
+#include <QThreadPool>
 #include <QStringList>
 #include <QHash>
 #include <QJsonObject>
@@ -43,6 +46,8 @@ class QFutureWatcher;
 struct SessionScanResult;
 struct SessionLapLoadResult;
 struct FileOpenResult;
+struct FolderChannelSample;
+struct SidebarMetadataResult;
 
 // ── damper alignment ────────────────────────────────────────────────
 
@@ -60,53 +65,18 @@ struct DamperAlignment {
     double span() const { return std::max(1e-6, maximum - minimum); }
 };
 
-// ── corner graph payload ────────────────────────────────────────────
+// ── corner focus ────────────────────────────────────────────────────
 
-// Everything the corner graph renderer draws for one corner, resampled onto a
-// fixed grid across the corner's context window. Kept as plain vectors: the
-// previous QVariantList form boxed 800 doubles per lap per corner and the
-// window rebuilds them on every selection change.
-struct CornerGraphSeries {
-    std::vector<double> speed;
-    std::vector<double> throttle;
-    std::vector<double> brake;
-    std::vector<double> steering;
-    double maxBrake = 1.0;
-
-    bool valid() const { return speed.size() > 1; }
-};
-
-// Damper travel across a corner's approach window, used by the fallback
-// alignment tool when a session has no positional GPS.
-struct CornerDamperWindow {
-    std::vector<double> primary;
-    std::vector<double> compare;
-    double windowMeters = 0.0;
-    double cornerStartMeters = 0.0;
-
-    bool valid() const { return primary.size() > 1 && compare.size() > 1; }
-};
-
-struct CornerGraph {
-    CornerGraphSeries primary;
-    CornerGraphSeries compare;
-    CornerDamperWindow damper;
-
-    // Positions are 0-1 across the context window, not the lap.
-    double zoneStart = 0.0;
-    double zoneEnd = 1.0;
-    double turnIn = -1.0;
-    double apex = -1.0;
-    double pickup = -1.0;
-    double compareTurnIn = -1.0;
-    double compareApex = -1.0;
-    double comparePickup = -1.0;
-
-    double windowMeters = 0.0;
-    double zoneMeters = 0.0;
-
-    bool valid() const { return primary.valid(); }
-    bool hasCompare() const { return compare.valid(); }
+// One driver-facing event inside a focused corner, placed on the primary
+// lap's fraction axis. `referenceFraction` is the reference lap's own event
+// mapped back onto the primary distance axis, so both markers can be drawn
+// against the same zoomed viewport; it is negative when there is no
+// reference lap.
+struct CornerMarker {
+    QString key;
+    QString label;
+    double fraction = 0.0;
+    double referenceFraction = -1.0;
 };
 
 // ── corner zone ─────────────────────────────────────────────────────
@@ -134,6 +104,11 @@ struct LapEntry {
     bool isPitLap = false;
     /// Representative timed racing lap: eligible for best-lap statistics.
     bool countsForBest() const { return isComplete && !isPitLap; }
+};
+
+struct SidebarPin {
+    QString kind;
+    QString path;
 };
 
 struct SourceChannelSummary {
@@ -190,7 +165,8 @@ public:
 
     bool hasSummary() const { return summaryLoaded_; }
     bool loadSummaryForIndex();
-    bool loadSummaryForOpen();
+    bool loadChannelSummaryForIndex();
+    bool loadSummaryForOpen(QString* errorString = nullptr);
     QJsonObject metadataForCache() const;
     void adoptLoadedLap(int lapId,
                         std::unique_ptr<omatrack::TelemetrySource> source,
@@ -238,14 +214,13 @@ class TelemetryStore : public QObject {
     Q_PROPERTY(bool comparing READ comparing NOTIFY selectionChanged)
     Q_PROPERTY(bool editingCorners READ editingCorners WRITE setEditingCorners
                    NOTIFY editingCornersChanged)
+    Q_PROPERTY(int focusedCorner READ focusedCorner NOTIFY cornerFocusChanged)
     Q_PROPERTY(double cursorFrac READ cursorFrac WRITE setCursorFrac NOTIFY
                    cursorFracChanged)
     Q_PROPERTY(bool hasGpsData READ hasGpsData NOTIFY selectionChanged)
     Q_PROPERTY(
         double viewStart READ viewStart WRITE setViewStart NOTIFY viewChanged)
     Q_PROPERTY(double viewEnd READ viewEnd WRITE setViewEnd NOTIFY viewChanged)
-    Q_PROPERTY(int channelHeight READ channelHeight WRITE setChannelHeight
-                   NOTIFY channelHeightChanged)
     Q_PROPERTY(QString primaryLabel READ primaryLabel NOTIFY selectionChanged)
     Q_PROPERTY(QString primaryDetail READ primaryDetail NOTIFY selectionChanged)
     Q_PROPERTY(QString primaryDriverName READ primaryDriverName NOTIFY
@@ -307,10 +282,26 @@ public:
     /// is reported through standaloneVideoRequested after background probing.
     Q_INVOKABLE void openFile(const QString& filePath);
     Q_INVOKABLE bool directoryExists(const QString& dirPath) const;
+    /// The default telemetry library folder: the platform's Documents
+    /// location plus `/Telemetry` (honors Windows OneDrive redirection),
+    /// created if it does not exist so a fresh install never lands in a
+    /// missing directory.
+    Q_INVOKABLE QString defaultTelemetryDirectory() const;
     Q_INVOKABLE QString configFilePath() const;
     Q_INVOKABLE void removeSessionDirectory(const QString& dirPath);
     Q_INVOKABLE QStringList sessionDirectories() const;
     Q_INVOKABLE QVariantList fileSources() const;
+    Q_INVOKABLE QVariantList webDavConnections() const;
+    Q_INVOKABLE void connectWebDav(const QString& name, const QString& url,
+                                   const QString& username,
+                                   const QString& password);
+    Q_INVOKABLE void removeWebDavConnection(const QString& id);
+    Q_INVOKABLE void requestSidebarMetadata(const QString& path, bool visible);
+    Q_INVOKABLE void copyFilePath(const QString& path) const;
+    Q_INVOKABLE void openContainingFolder(const QString& path) const;
+    Q_INVOKABLE bool filePinned(const QString& role, const QString& path) const;
+    Q_INVOKABLE void setFilePinned(const QString& role, const QString& path,
+                                   bool pinned);
     Q_INVOKABLE void clearSessions();
     Q_INVOKABLE QVariantList
     trackGroups() const;  // nested: track → dates → sessions → laps
@@ -323,6 +314,7 @@ public:
     Q_INVOKABLE void setSessionTrackAssignment(const QString& sessionKey,
                                                const QString& atlasSlug);
     Q_INVOKABLE QVariantMap folderMetadata(const QString& folderPath) const;
+    Q_INVOKABLE void sampleFolderChannels(const QString& folderPath);
     Q_INVOKABLE bool saveFolderMetadata(const QString& folderPath,
                                         const QVariantMap& metadata);
     Q_INVOKABLE QVariantMap videoMetadata(const QString& videoPath) const;
@@ -330,6 +322,7 @@ public:
                                        const QVariantMap& metadata);
 
     // ── selection ──────────────────────────────────────────────────
+    Q_INVOKABLE void selectSession(const QString& sessionKey, bool compare);
     Q_INVOKABLE void selectLap(const QString& sessionKey, int lapId);
     Q_INVOKABLE void compareLap(const QString& sessionKey, int lapId);
     Q_INVOKABLE void clearCompare();
@@ -343,6 +336,8 @@ public:
     Q_INVOKABLE void seekCursorSeconds(double seconds);
     Q_INVOKABLE void setCursorFromVideoTime(double mediaTime);
     Q_INVOKABLE void jumpToFraction(double frac);
+    /// Full-lap viewport; also leaves corner focus.
+    Q_INVOKABLE void resetView();
     // Front-damper traces for the manual reference-alignment tool. The typed
     // accessor feeds the C++ strip renderer; QML only needs to know whether
     // there is anything worth showing.
@@ -359,10 +354,26 @@ public:
     Q_INVOKABLE QVariantList cornerList() const;
     Q_INVOKABLE void setCornerName(int index, const QString& name);
     Q_INVOKABLE QVariantList cornerComparison() const;
-    // Typed payload for the corner graph renderer, indexed like
-    // cornerComparison(). Populated as a side effect of that call, which the
-    // corner window already makes whenever the selection or corners change.
-    const CornerGraph* cornerGraph(int index) const;
+    // Corner focus: the workspace zooms onto one corner instead of opening a
+    // second window. focusCorner() remembers the viewport it replaced,
+    // clearCornerFocus() puts it back.
+    Q_INVOKABLE void focusCorner(int index);
+    Q_INVOKABLE void focusCornerAtCursor();
+    Q_INVOKABLE void clearCornerFocus();
+    Q_INVOKABLE QVariantMap cornerFocusSummary() const;
+    int focusedCorner() const { return focusedCorner_; }
+    /// Unified lap immediately before (-1) or after (+1) the active lap in the
+    /// same session. Corner focus can frame a corner near start/finish so the
+    /// viewport runs past the lap bounds; this is what fills that space.
+    /// Never parses on the calling thread: returns nullptr while the
+    /// background prefetch is still running, and stays null when there is no
+    /// such lap.
+    const omatrack::UnifiedLap* neighbourUnified(int offset) const;
+    /// "lap 6" for an available neighbour, empty when there is nothing there.
+    Q_INVOKABLE QString neighbourLabel(int offset) const;
+    /// Brake / turn-in / apex / throttle-pickup events of the focused corner,
+    /// on the primary lap's fraction axis. Empty when nothing is focused.
+    const QVector<CornerMarker>& cornerMarkers() const { return markers_; }
     Q_INVOKABLE void updateCorner(int index, double start, double end);
     Q_INVOKABLE int addCorner(double start, double end);
     Q_INVOKABLE void deleteCorner(int index);
@@ -426,8 +437,6 @@ public:
     }
     double referenceAlignment() const { return referenceAlignment_; }
     void setReferenceAlignment(double fraction);
-    int channelHeight() const { return channelHeight_; }
-    void setChannelHeight(int v);
     QString primaryLabel() const;
     QString primaryDetail() const;
     QString primaryDriverName() const;
@@ -463,29 +472,47 @@ signals:
     void viewChanged();
     void sessionsChanged();
     void cornersChanged();
+    void cornerFocusChanged();
     void driverMappingsChanged();
-    void channelHeightChanged();
+    void webDavChanged();
     void channelConfigChanged();
     void referenceAlignmentChanged();
     void trackAtlasChanged();
     void videoTimeChanged();
     void videoMutedChanged();
     void videoMetadataChanged(const QString& videoPath);
+    void folderChannelSampleReady(const QVariantMap& metadata);
+    void filePinsChanged();
+    void sidebarMetadataChanged(const QString& path,
+                                const QVariantMap& details);
     void standaloneVideoRequested(const QUrl& source);
+    void operationError(const QString& title, const QString& message);
 
 private:
+    enum class FileOpenRole { Automatic, Primary, Compare };
+    struct PendingFileOpen {
+        QString path;
+        FileOpenRole role = FileOpenRole::Automatic;
+    };
+
     SessionHandle* findSession(const QString& key) const;
     void setPrimary(SessionHandle* session, int lapId);
     void setCompare(SessionHandle* session, int lapId);
     void requestLapLoad(SessionHandle* session, int lapId, bool compare);
+    void queueFileOpen(const QString& filePath, FileOpenRole role);
     void startNextFileOpen();
+    void pauseSidebarMetadataQueue();
+    void startNextSidebarMetadataLoad();
+    void resumeSidebarMetadataQueue();
     void setPrimaryLapLoading(bool loading);
     void setCompareLapLoading(bool loading);
     QString sessionIndexCachePath() const;
     void startSessionScan();
     void finishSessionScan();
     void loadPreferences();
+    int sidebarPinIndex(const QString& kind, const QString& path) const;
     QString driverDisplay(const SessionHandle* session) const;
+    QVariantMap sidebarFileDetails(const QString& path) const;
     QString assignedTrackSlug(const SessionHandle* session) const;
     QString detectedAtlasSlug(const SessionHandle* session) const;
     QString resolvedTrackSlug(const SessionHandle* session) const;
@@ -493,8 +520,12 @@ private:
     static QString trackAssignmentKey(const SessionHandle* session);
     void savePreferences();
     void loadChannelsConfig();
+    void loadWebDavConnections();
 
     void loadCornersForPrimary();
+    void rebuildCornerMarkers();
+    void prefetchNeighbourLaps();
+    int neighbourLapId(int offset) const;
     QVector<CornerZone> atlasCornersForPrimary();
     bool parseTrackAtlas(const QByteArray& payload);
     void loadTrackAtlasCache();
@@ -511,8 +542,21 @@ private:
     double compareTimeForPrimaryFraction(double fraction) const;
     double compareFractionForPrimaryFraction(double fraction) const;
     QStringList sessionDirs_;
+    QVector<omatrack::WebDavConnection> webdavConnections_;
+    QHash<QString, QString> webdavStatuses_;
     QVariantList fileSources_;
+    QStringList discoveredFilePaths_;
+    QList<QString> sidebarMetadataQueue_;
+    QSet<QString> sidebarMetadataQueued_;
+    QSet<QString> sidebarMetadataLoaded_;
+    QString sidebarMetadataLoadingPath_;
+    QThreadPool sidebarMetadataPool_;
+    QHash<QString, QString> folderDisplayNames_;
+    QHash<QString, std::shared_ptr<const FolderChannelSample>>
+        folderChannelSamples_;
+    QSet<QString> folderChannelSampleRequests_;
     QHash<QString, QVariantMap> fileMetadata_;
+    QVector<SidebarPin> sidebarPins_;
     QFutureWatcher<std::shared_ptr<SessionScanResult>>* scanWatcher_ = nullptr;
     QSet<QString> scanExtraPaths_;
     QHash<QString, QString> driverMappings_;
@@ -525,9 +569,11 @@ private:
     int lastCompareLap_ = -1;
     std::vector<std::unique_ptr<SessionHandle>> sessions_;
     SessionHandle* primarySession_ = nullptr;
-    QStringList pendingFileOpens_;
+    QList<PendingFileOpen> pendingFileOpens_;
     quint64 primaryLoadGeneration_ = 0;
     quint64 compareLoadGeneration_ = 0;
+    quint64 sidebarMetadataGeneration_ = 0;
+    quint64 folderChannelSampleGeneration_ = 0;
     SessionHandle* compareSession_ = nullptr;
     int primaryLap_ = -1;
     int compareLap_ = -1;
@@ -535,7 +581,6 @@ private:
     double cursorFrac_ = 0.5;
     double viewStart_ = 0.0;
     double viewEnd_ = 1.0;
-    int channelHeight_ = 110;
     bool editingCorners_ = false;
     bool ready_ = false;
     bool loading_ = false;
@@ -543,10 +588,12 @@ private:
     bool primaryLapLoading_ = false;
     bool compareLapLoading_ = false;
     bool fileOpenLoading_ = false;
+    bool sidebarMetadataQueuePaused_ = false;
     bool videoMuted_ = false;
     double referenceAlignment_ = 0.0;
     QSet<QString> closedTracks_;
 
+    QSet<QString> neighbourPrefetch_;
     QHash<QString, QJsonObject> atlasTracks_;
     QHash<QString, QVector<QPointF>> atlasCenterlines_;
     QHash<QString, QVector<QPointF>> atlasSpatialMappings_;
@@ -555,13 +602,16 @@ private:
     QNetworkAccessManager* atlasNetwork_ = nullptr;
     QTimer* atlasTimer_ = nullptr;
     QVector<CornerZone> corners_;
+    QVector<CornerMarker> markers_;
+    int focusedCorner_ = -1;
+    double focusReturnStart_ = 0.0;
+    double focusReturnEnd_ = 1.0;
     mutable QHash<QString, bool> channelVisible_;
     mutable QHash<QString, QColor> channelColors_;
     mutable QHash<QString, double> channelWeights_;
     mutable QHash<QString, std::shared_ptr<std::vector<double>>>
         extraChannelCache_;
     QHash<QString, QString> driverAliases_;
-    mutable std::vector<CornerGraph> cornerGraphs_;
     QStringList channelOrder_;
     mutable QVector<double> deltaCache_;
     mutable DamperAlignment damperAlignment_;

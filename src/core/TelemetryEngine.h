@@ -78,6 +78,8 @@ struct UnifiedLap {
     std::vector<int> gear;
     std::vector<double> distance;  // m
     std::vector<double> gForceLong;
+    std::vector<double>
+        gForceLat;  // lateral acceleration (same units as gForceLong)
     std::vector<double> damperFL, damperFR, damperRL, damperRR;
     std::vector<double> gpsLat, gpsLon;
     std::vector<double> gpsPositionAccuracy, gpsSpeedAccuracy;

@@ -45,6 +45,8 @@ Item {
         driversPage.refresh();
     }
 
+    objectName: "preferencesDriversPage"
+
     Component.onCompleted: driversPage.refresh()
     onVisibleChanged: {
         if (visible)
@@ -183,6 +185,7 @@ Item {
                                     }
                                     CompactTextField {
                                         Layout.fillWidth: true
+                                        objectName: "driverRenameEditor" + mappingRow.index
                                         text: driversPage.mappingEditName
                                         visible: mappingRow.editing
 

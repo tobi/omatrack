@@ -208,6 +208,9 @@ private slots:
             path,
             QVariantMap{
                 {QStringLiteral("schema"), QStringLiteral("1")},
+                {QStringLiteral("folder"),
+                 QVariantMap{{QStringLiteral("name"),
+                              QStringLiteral("Old display name")}}},
                 {QStringLiteral("car"), QVariantMap{{QStringLiteral("number"),
                                                      QStringLiteral("old")}}},
                 {QStringLiteral("files"), files},
@@ -219,6 +222,9 @@ private slots:
                 directory.path(),
                 QVariantMap{
                     {QStringLiteral("schema"), QStringLiteral("2")},
+                    {QStringLiteral("folder"),
+                     QVariantMap{{QStringLiteral("name"),
+                                  QStringLiteral("Weekend share")}}},
                     {QStringLiteral("event"), QStringLiteral("Road America")}},
                 &error),
             qPrintable(error));
@@ -228,6 +234,11 @@ private slots:
                  QStringLiteral("keep"));
         QCOMPARE(updated.value(QStringLiteral("event")).toString(),
                  QStringLiteral("Road America"));
+        QCOMPARE(updated.value(QStringLiteral("folder"))
+                     .toMap()
+                     .value(QStringLiteral("name"))
+                     .toString(),
+                 QStringLiteral("Weekend share"));
         QVERIFY(!updated.contains(QStringLiteral("car")));
     }
 
@@ -238,6 +249,9 @@ private slots:
         QVERIFY(YamlConfig::writeDocument(
             path,
             QVariantMap{{QStringLiteral("schema"), QStringLiteral("2")},
+                        {QStringLiteral("folder"),
+                         QVariantMap{{QStringLiteral("name"),
+                                      QStringLiteral("Old display name")}}},
                         {QStringLiteral("event"), QStringLiteral("Old event")},
                         {QStringLiteral("files"),
                          QVariantMap{{QStringLiteral("video.mp4"),
@@ -246,6 +260,7 @@ private slots:
         QVERIFY(omatrack::track_metadata::update(directory.path(), {}));
         const QVariantMap updated = YamlConfig::readDocument(path);
         QVERIFY(!updated.contains(QStringLiteral("schema")));
+        QVERIFY(!updated.contains(QStringLiteral("folder")));
         QVERIFY(!updated.contains(QStringLiteral("event")));
         QVERIFY(updated.contains(QStringLiteral("files")));
     }

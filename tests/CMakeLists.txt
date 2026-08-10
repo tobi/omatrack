@@ -18,6 +18,17 @@ target_link_libraries(core-test PRIVATE
 add_test(NAME core-test COMMAND core-test)
 set_tests_properties(core-test PROPERTIES LABELS unit)
 
+# ── corner-analysis-test ────────────────────────────────────────────
+# Synthetic corners through measureCorner() and the analyzer registry:
+# asserts the notes a driver reads, not the arithmetic behind them.
+qt_add_executable(corner-analysis-test CornerAnalysisTest.cpp)
+target_link_libraries(corner-analysis-test PRIVATE
+  omatrack_core
+  Qt6::Test
+  omatrack_warnings)
+add_test(NAME corner-analysis-test COMMAND corner-analysis-test)
+set_tests_properties(corner-analysis-test PROPERTIES LABELS unit)
+
 # ── yamlconfig-test ─────────────────────────────────────────────────
 # Compiles YamlConfig.cpp directly (it's not in a separate library) and
 # uses a temp XDG_CONFIG_HOME to isolate from the user's real config.
@@ -47,6 +58,21 @@ target_link_libraries(apptypes-test PRIVATE
   omatrack_warnings)
 add_test(NAME apptypes-test COMMAND apptypes-test)
 set_tests_properties(apptypes-test PROPERTIES LABELS unit)
+
+# ── WebDAV cache integration ───────────────────────────────────────
+# Uses a local HTTP/WebDAV responder to verify streamed downloads, ETag reuse,
+# and offline operation from the on-disk cache.
+qt_add_executable(webdav-cache-test WebDavCacheTest.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/WebDavCache.cpp)
+target_include_directories(webdav-cache-test PRIVATE
+  ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(webdav-cache-test PRIVATE
+  Qt6::Test
+  Qt6::Core
+  Qt6::Network
+  omatrack_warnings)
+add_test(NAME webdav-cache-test COMMAND webdav-cache-test)
+set_tests_properties(webdav-cache-test PROPERTIES LABELS unit)
 
 # ── session-metadata-cache-test ─────────────────────────────────────
 # Verifies the bounded fingerprint contract and atomic JSON cache round-trip.

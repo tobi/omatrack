@@ -45,6 +45,7 @@ Pane {
             modified: node.modified || "",
             name: node.name || "",
             path: node.path || "",
+            pinned: node.pinned === true,
             role: role,
             seriesName: node.seriesName || "",
             sessionDate: node.sessionDate || "",
@@ -61,7 +62,7 @@ Pane {
         if (fileFilter.text.trim() !== "")
             return true;
         const stored = browser.expandedNodes[role + ":" + path];
-        return stored === undefined ? role === "source" : stored;
+        return stored === undefined ? role === "source" || role === "pins" : stored;
     }
     function nodeMatches(node, query: string): bool {
         if (query === "")
@@ -109,6 +110,25 @@ Pane {
         browser.expandedNodes = expanded;
         browser.rebuild();
     }
+    function updateFileMetadata(path: string, details: var): void {
+        for (let index = 0; index < treeModel.count; ++index) {
+            const row = treeModel.get(index);
+            if (row.role !== "file" || row.path !== path)
+                continue;
+            treeModel.setProperty(index, "bestTime", details.bestTime || "");
+            treeModel.setProperty(index, "carClass", details.carClass || "");
+            treeModel.setProperty(index, "driveTime", details.driveTime || "");
+            treeModel.setProperty(index, "driver", details.driver || "");
+            treeModel.setProperty(index, "hasSession", details.hasSession === true);
+            treeModel.setProperty(index, "isVideo", details.isVideo === true);
+            treeModel.setProperty(index, "key", details.key || "");
+            treeModel.setProperty(index, "lapCount", details.lapCount || 0);
+            treeModel.setProperty(index, "mappingKey", details.mappingKey || "");
+            treeModel.setProperty(index, "seriesName", details.seriesName || "");
+            treeModel.setProperty(index, "sessionDate", details.sessionDate || "");
+            treeModel.setProperty(index, "topQuartileTime", details.topQuartileTime || "");
+        }
+    }
 
     padding: 0
 
@@ -122,12 +142,18 @@ Pane {
         function onDriverMappingsChanged(): void {
             browser.rebuild();
         }
+        function onFilePinsChanged(): void {
+            browser.rebuild();
+        }
         function onSelectionChanged(): void {
             browser.revealSession(Store.primarySessionKey);
             browser.rebuild();
         }
         function onSessionsChanged(): void {
             browser.rebuild();
+        }
+        function onSidebarMetadataChanged(path: string, details: var): void {
+            browser.updateFileMetadata(path, details);
         }
 
         target: Store

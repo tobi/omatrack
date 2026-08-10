@@ -41,6 +41,8 @@ through braking, turn-in, apex, and throttle pickup.
   retain user-owned YAML overrides.
 - Synchronize embedded onboard video through libmpv's OpenGL Render API.
 - Follow the active Omarchy palette on Linux, with a Qt system-palette fallback elsewhere.
+- Connect WebDAV servers from Preferences; remote telemetry is streamed into a
+  local ETag-aware cache, reused without downloads, and available offline.
 - Inspect parsing, channel mapping, lap detection, and unification through `omatrack-cli`.
 
 ## Architecture
@@ -124,6 +126,18 @@ cmake --build --preset release
 On macOS, run `./build/Omatrack.app/Contents/MacOS/Omatrack`. On Windows, run
 `./build/omatrack.exe` from the UCRT64 shell.
 
+#### Windows release zip
+
+`./scripts/package-windows.sh` builds the release, stages `cmake --install`,
+and writes `dist/omatrack-<version>-windows-x86_64.zip`. The layout is flat:
+`omatrack.exe`, `omatrack-cli.exe`, and the DLLs they load sit at the archive
+root next to a `qt.conf`, while Qt plugins, QML modules, and license/doc files
+live under `lib/` and stay out of the way.
+
+On a fresh install the app defaults to the platform Documents folder (honoring
+Windows OneDrive redirection) and creates `Documents/Telemetry` when it does
+not exist.
+
 Open a single supported file with the file picker or pass its containing directory. Configuration is stored in `$XDG_CONFIG_HOME/omatrack/omatrack.yml` on Linux, falling back to `~/.config/omatrack/omatrack.yml`.
 An existing pre-rename `racecraft.yml`, legacy `QSettings` preferences, and Track Atlas cache are imported once; legacy files remain untouched as a backup.
 
@@ -154,9 +168,20 @@ only operating-system and graphics-driver interfaces remain host-provided.
 
 ## Privacy and network behavior
 
-Telemetry and video stay local. Omatrack does not upload session data. Track Atlas connectivity is independent of telemetry parsing: when its metadata or selected-layout geometry cache is missing or older than 24 hours, Omatrack requests the public data from `raw.githubusercontent.com`; manual refresh performs the same metadata request. Fresh caches are used without a startup request. Offline starts retain cached corner geometry; without it, GPS laps do not silently substitute distance-based corner locations.
+Telemetry and video stay local. Omatrack does not upload session data. Track
+Atlas connectivity is independent of telemetry parsing: when its metadata or
+selected-layout geometry cache is missing or older than 24 hours, Omatrack
+requests the public data from `raw.githubusercontent.com`; manual refresh
+performs the same metadata request. Fresh caches are used without a startup
+request. Offline starts retain cached corner geometry; without it, GPS laps do
+not silently substitute distance-based corner locations.
 
-libmpv can open URLs through its API, but Omatrack's normal file selectors and session library provide local paths.
+WebDAV is opt-in and configured in Preferences. Each enabled connection uses
+authenticated `PROPFIND` discovery and streams changed files into
+`$XDG_CACHE_HOME/omatrack/webdav/` (or the platform cache equivalent). ETag and
+Last-Modified metadata avoid unchanged downloads; a complete previous cache is
+used when the server is unavailable. Credentials remain in the user's
+`omatrack.yml`; Omatrack never rewrites remote files.
 
 
 ## Test and lint

@@ -87,17 +87,45 @@ heuristic pre-filter only.
   `QQuickFramebufferObject`, which Qt documents as OpenGL-only legacy API.
   `QQuickRhiItem` (Qt 6.7+) is the portable replacement, but libmpv's render
   API keeps us on OpenGL — do not "modernize" this without a working mpv path.
-- **`TraceView` is a `QQuickPaintedItem` with a deliberate two-path renderer.**
-  A cached 4096 px raster per channel above `viewSpan >= 0.65`, a
-  stride-limited walk of visible samples below it, and the cursor in a separate
-  `TraceCursorOverlay` so cursor movement never re-rasterizes traces. Measured:
-  hover overlay 0.21 ms, zoom paint 5.2 ms, against 8.33 ms.
-  Replacing both paths with one min/max-per-column envelope walk was tried and
-  measured **35 ms** (48 ms as a per-column zig-zag) — the scan is not the
-  cost, QPainter path rasterisation is. Do not retry that. The next real step
-  is `QSGGeometryNode` line strips, with numbers.
-- `CornerGraphView` and `DamperStripView` are the C++ replacements for the four
-  QML `Canvas` items. There is no `Canvas` left; do not add one.
+- **Every telemetry surface is scene-graph geometry, not `QPainter`.**
+  `TraceView`, `TraceCursorOverlay`, `DamperStripView` and
+  `VideoTelemetryHud` are plain `QQuickItem`s that build their frame in
+  `updatePaintNode()` through `TraceSceneBuilder`: one batched
+  `QSGGeometryNode` of vertex-coloured triangles per surface plus cached text
+  textures (`TraceTextCache`). Lines are quads (core-profile `glLineWidth` is
+  clamped to 1) and edges are antialiased by the 4× multisample default format
+  set in `main.cpp`. Add drawing through that builder — never a
+  `QQuickPaintedItem`, never a `Canvas`.
+  Measured on a full-height Sebring lap, seven lanes: geometry build 0.32 ms
+  average / 0.74 ms worst for ~4900 quads, cursor overlay 0.006 ms, and
+  `QSG_RENDER_TIMING=1` reports `sync=0, render=0`. The QPainter renderer this
+  replaced cost 12.6 ms on the same lap.
+- **65535 vertices is a cliff, not a slope.** The scene graph merges
+  compatible geometry into 16-bit indexed batches, so a large frame loses
+  everything past that vertex count with no warning — lanes simply stop
+  drawing halfway down the workspace. `TraceSceneBuilder` emits indexed quads
+  with `QSGGeometry::UnsignedIntType` to stay out of the merge path. If traces
+  vanish below a certain lane, this is why.
+- **The software adaptation cannot draw geometry nodes.** `offscreen` falls
+  back to it, so trace surfaces render blank there (the builder detects it and
+  emits nothing rather than crashing). Renderer work must be verified with
+  `QT_QPA_PLATFORM=wayland`.
+- **A corner check is a `CornerAnalyzer`, never an `if` in the store.**
+  `src/core/CornerAnalysis.*` is the port of the corner analysis in
+  [tobi/ac-tracer](https://github.com/tobi/ac-tracer)
+  (`lib/windows/corner_analysis.lua`) — read that file before adding a check;
+  it is the spec for what a comparison should say. `measureCorner()` scans the
+  corner once into `CornerMetrics`; analyzers read those scalars and emit
+  `{id, text, severity}`; the registry runs them in order. Registration is
+  compile-time on purpose: the core stays Qt-free so `omatrack-cli corners`
+  and `corner-analysis-test` run exactly what the GUI runs. Do not reach for
+  `QPluginLoader` — it would pull Qt into the core; an app-layer loader
+  calling `CornerAnalysisRegistry::add()` is the extension path if one is ever
+  needed.
+  Verify a new check on real laps, not just the unit test:
+  `./build/omatrack-cli corners ACTIVE.pds --reference REF.pds --zone 0.30:0.36`.
+  A check that fires on every corner is noise; tune the threshold or make it
+  relative to the reference driver.
 - **Imports are version-less** (Qt 6 style) — keep it that way.
 - **No `qsTr()` anywhere.** The app is English-only. Follow the surrounding
   convention rather than half-introducing translation.
@@ -106,17 +134,16 @@ heuristic pre-filter only.
 
 ```sh
 cmake --build build --parallel
-QT_QPA_PLATFORM=offscreen QT_FORCE_STDERR_LOGGING=1 \
+QT_QPA_PLATFORM=wayland QT_FORCE_STDERR_LOGGING=1 \
   OMATRACK_AUTOTEST=/tmp/omatrack.png \
   ./build/omatrack ~/Documents/Telemetry/<event>
 ```
 
 `OMATRACK_AUTOTEST_WINDOWS=1` writes `<base>_window.png`,
-`<base>_cornerWindow.png`, `<base>_channelsWindow.png`, and
-`<base>_settingsWindow.png` **instead of** the base path — a missing base PNG
-under that flag is expected, not a failure. `_HOVER=1` / `_ZOOM=1` print
-average paint time. Budget: 16.67 ms is the 60 fps ceiling, 8.33 ms the design
-target.
+`<base>_channelsWindow.png`, and `<base>_settingsWindow.png` **instead of** the
+base path — a missing base PNG under that flag is expected, not a failure.
+`_HOVER=1` / `_ZOOM=1` print the average scene-graph geometry build time and
+quad count. Budget: 16.67 ms is the 60 fps ceiling, 8.33 ms the design target.
 
 Always look at the PNG. Timings do not catch stale comparison state or
 illegible density. A native (non-offscreen) run is mandatory for anything

@@ -26,4 +26,5 @@ private:
 
     QString path_;
     QJsonObject entries_;
+    QJsonObject dirtyEntries_;
 };

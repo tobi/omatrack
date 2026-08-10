@@ -34,7 +34,7 @@ omatrack::UnifiedLap makeLap(int samples, int sampleRate, bool withSpeed,
     omatrack::UnifiedLap lap;
     lap.sampleRate = sampleRate;
     lap.distanceSource = nativeDistance ? omatrack::DistanceSource::Native
-                                         : omatrack::DistanceSource::SpeedFused;
+                                        : omatrack::DistanceSource::SpeedFused;
     const double dt = 1.0 / double(sampleRate);
     lap.time.reserve(samples);
     if (withSpeed) lap.speed.reserve(samples);
@@ -47,11 +47,11 @@ omatrack::UnifiedLap makeLap(int samples, int sampleRate, bool withSpeed,
     for (int i = 0; i < samples; ++i) {
         lap.time.push_back(i * dt);
         if (withSpeed)
-            lap.speed.push_back(120.0 + 80.0 * std::sin(2.0 * kPi * i / samples));
+            lap.speed.push_back(120.0 +
+                                80.0 * std::sin(2.0 * kPi * i / samples));
         if (withDistance)
-            lap.distance.push_back(samples > 1
-                                       ? double(i) * 1000.0 / double(samples - 1)
-                                       : 0.0);
+            lap.distance.push_back(
+                samples > 1 ? double(i) * 1000.0 / double(samples - 1) : 0.0);
         if (withGps) {
             // ~11 m per sample north/east: distinct enough that the nearest
             // compare fix to primary fix i is compare fix i (distance 0), yet
@@ -103,11 +103,13 @@ private slots:
         QVERIFY(approx(result.time[50], compare.time[50]));
         QVERIFY(approx(result.time.last(), compare.time.back()));
         QVERIFY(monotonicNonDecreasing(result.time));
-        QVERIFY(withinRange(result.time, compare.time.front(), compare.time.back()));
+        QVERIFY(withinRange(result.time, compare.time.front(),
+                            compare.time.back()));
         QVERIFY(withinRange(result.fraction, 0.0, 1.0));
         QVERIFY(monotonicNonDecreasing(result.fraction));
-        QCOMPARE(comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
-                 QStringLiteral("MED"));
+        QCOMPARE(
+            comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
+            QStringLiteral("MED"));
     }
 
     void warpedProfileProducesContinuousMillisecondDelta() {
@@ -121,10 +123,8 @@ private slots:
         for (int i = 0; i < N; ++i) {
             const double progress = double(i) / double(N - 1);
             primary.speed[i] = profile(progress);
-            compare.speed[i] =
-                profile(std::clamp(progress +
-                                       0.025 * std::sin(kPi * progress),
-                                   0.0, 1.0));
+            compare.speed[i] = profile(std::clamp(
+                progress + 0.025 * std::sin(kPi * progress), 0.0, 1.0));
         }
 
         const auto result = computeComparisonAlignment(primary, compare);
@@ -167,8 +167,9 @@ private slots:
         QVERIFY(approx(result.time.first(), compare.time.front()));
         QVERIFY(approx(result.time.last(), compare.time.back()));
         QVERIFY(monotonicNonDecreasing(result.time));
-        QCOMPARE(comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
-                 QStringLiteral("MED"));
+        QCOMPARE(
+            comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
+            QStringLiteral("MED"));
     }
 
     void absentSpeedWithoutDistanceUsesWheelGps() {
@@ -181,8 +182,9 @@ private slots:
         QCOMPARE(result.gpsAnchors, 0);
         QVERIFY(result.time.size() == qsizetype(N));
         QVERIFY(monotonicNonDecreasing(result.time));
-        QCOMPARE(comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
-                 QStringLiteral("LOW"));
+        QCOMPARE(
+            comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
+            QStringLiteral("LOW"));
     }
 
     void misalignedSpeedFallsBackToProgress() {
@@ -196,8 +198,9 @@ private slots:
         QCOMPARE(result.gpsAnchors, 0);
         QVERIFY(result.time.size() == qsizetype(N));
         QVERIFY(monotonicNonDecreasing(result.time));
-        QCOMPARE(comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
-                 QStringLiteral("LOW"));
+        QCOMPARE(
+            comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
+            QStringLiteral("LOW"));
     }
 
     void tooShortSpeedFallsBackToProgress() {
@@ -211,8 +214,9 @@ private slots:
         QCOMPARE(result.gpsAnchors, 0);
         QVERIFY(result.time.size() == qsizetype(N));
         QVERIFY(monotonicNonDecreasing(result.time));
-        QCOMPARE(comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
-                 QStringLiteral("LOW"));
+        QCOMPARE(
+            comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
+            QStringLiteral("LOW"));
     }
 };
 
@@ -238,16 +242,19 @@ private slots:
         }
         const auto result = computeComparisonAlignment(primary, compare);
 
-        QCOMPARE(result.basis, QStringLiteral("GPS anchored · speed landmarks"));
+        QCOMPARE(result.basis,
+                 QStringLiteral("GPS anchored · speed landmarks"));
         QVERIFY(result.gpsAnchors >= 8);
         QVERIFY(result.time.size() == qsizetype(N));
         QVERIFY(result.time[N / 2] > compare.time[N / 2] + 0.1);
         QVERIFY(monotonicNonDecreasing(result.time));
-        QVERIFY(withinRange(result.time, compare.time.front(), compare.time.back()));
+        QVERIFY(withinRange(result.time, compare.time.front(),
+                            compare.time.back()));
         QVERIFY(withinRange(result.fraction, 0.0, 1.0));
         QVERIFY(monotonicNonDecreasing(result.fraction));
-        QCOMPARE(comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
-                 QStringLiteral("HIGH"));
+        QCOMPARE(
+            comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
+            QStringLiteral("HIGH"));
     }
 
     void distributedGpsRefinesFallbackPath() {
@@ -256,12 +263,14 @@ private slots:
         auto compare = primary;
         const auto result = computeComparisonAlignment(primary, compare);
 
-        QCOMPARE(result.basis, QStringLiteral("GPS anchored · wheel/GPS speed"));
+        QCOMPARE(result.basis,
+                 QStringLiteral("GPS anchored · wheel/GPS speed"));
         QVERIFY(result.gpsAnchors >= 8);
         QVERIFY(result.time.size() == qsizetype(N));
         QVERIFY(monotonicNonDecreasing(result.time));
-        QCOMPARE(comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
-                 QStringLiteral("HIGH"));
+        QCOMPARE(
+            comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
+            QStringLiteral("HIGH"));
     }
 };
 
@@ -284,8 +293,9 @@ private slots:
         QCOMPARE(result.basis, QStringLiteral("speed landmarks"));
         QCOMPARE(result.gpsAnchors, 0);
         QVERIFY(result.time.size() == qsizetype(N));
-        QCOMPARE(comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
-                 QStringLiteral("MED"));
+        QCOMPARE(
+            comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
+            QStringLiteral("MED"));
     }
 
     void clusteredGpsFallsBackToSpeedLandmarks() {
@@ -310,8 +320,9 @@ private slots:
 
         QCOMPARE(result.basis, QStringLiteral("speed landmarks"));
         QCOMPARE(result.gpsAnchors, 0);
-        QCOMPARE(comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
-                 QStringLiteral("MED"));
+        QCOMPARE(
+            comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
+            QStringLiteral("MED"));
     }
 };
 
@@ -335,7 +346,8 @@ private slots:
         QVERIFY(result.gpsAnchors >= 8);
         QVERIFY(result.basis.contains(QStringLiteral("GPS anchored")));
         // Time is bounded by the compare lap and non-decreasing.
-        QVERIFY(withinRange(result.time, compare.time.front(), compare.time.back()));
+        QVERIFY(withinRange(result.time, compare.time.front(),
+                            compare.time.back()));
         QVERIFY(monotonicNonDecreasing(result.time));
         // Fraction is a 0-1 non-decreasing remap of time.
         QVERIFY(withinRange(result.fraction, 0.0, 1.0));
@@ -380,7 +392,8 @@ private slots:
                  QStringLiteral("LOW"));
     }
     void anchorsTakePrecedenceOverBasis() {
-        // >= 8 anchors is HIGH even when the basis would otherwise classify MED.
+        // >= 8 anchors is HIGH even when the basis would otherwise classify
+        // MED.
         QCOMPARE(comparisonAlignmentConfidenceLabel(
                      QStringLiteral("speed landmarks"), 8),
                  QStringLiteral("HIGH"));
@@ -403,8 +416,9 @@ private slots:
         QVERIFY(result.fraction.isEmpty());
         QVERIFY(result.basis.isEmpty());
         QCOMPARE(result.gpsAnchors, 0);
-        QCOMPARE(comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
-                 QStringLiteral("NONE"));
+        QCOMPARE(
+            comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
+            QStringLiteral("NONE"));
     }
 
     void compareTooShortYieldsEmpty() {
@@ -423,13 +437,34 @@ private slots:
 // class; a custom main ensures every Q_OBJECT class is executed.
 int main(int argc, char* argv[]) {
     int status = 0;
-    { SpeedLandmarkAlignmentTest t; status |= QTest::qExec(&t, argc, argv); }
-    { ProgressFallbackTest t; status |= QTest::qExec(&t, argc, argv); }
-    { GpsAffineAlignmentTest t; status |= QTest::qExec(&t, argc, argv); }
-    { GpsFallbackTest t; status |= QTest::qExec(&t, argc, argv); }
-    { AlignmentInvariantTest t; status |= QTest::qExec(&t, argc, argv); }
-    { AlignmentConfidenceLabelTest t; status |= QTest::qExec(&t, argc, argv); }
-    { TinyLapTest t; status |= QTest::qExec(&t, argc, argv); }
+    {
+        SpeedLandmarkAlignmentTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        ProgressFallbackTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        GpsAffineAlignmentTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        GpsFallbackTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        AlignmentInvariantTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        AlignmentConfidenceLabelTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        TinyLapTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
     return status;
 }
 

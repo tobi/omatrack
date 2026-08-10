@@ -133,10 +133,10 @@ bool update(const QString& directoryPath, const QVariantMap& ownedMetadata,
     }
 
     static const QSet<QString> ownedKeys{
-        QStringLiteral("schema"),  QStringLiteral("driver"),
-        QStringLiteral("car"),     QStringLiteral("event"),
-        QStringLiteral("series"),  QStringLiteral("track"),
-        QStringLiteral("channels")};
+        QStringLiteral("schema"), QStringLiteral("driver"),
+        QStringLiteral("folder"), QStringLiteral("car"),
+        QStringLiteral("event"),  QStringLiteral("series"),
+        QStringLiteral("track"),  QStringLiteral("channels")};
     for (const QString& key : ownedKeys) document.remove(key);
     for (auto it = ownedMetadata.cbegin(); it != ownedMetadata.cend(); ++it)
         if (ownedKeys.contains(it.key())) document.insert(it.key(), it.value());

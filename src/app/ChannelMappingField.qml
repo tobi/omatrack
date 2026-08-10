@@ -13,6 +13,7 @@ Item {
     required property string channelKey
     required property string detail
     required property string expectedUnit
+    property bool folderScope: false
     required property string inheritedValue
     required property string label
     property var quickRows: []
@@ -66,7 +67,7 @@ Item {
     function suggestionTip(row: var): string {
         let parts = [];
         if (row.automatic)
-            parts.push("Automatic match for this video");
+            parts.push(mappingField.folderScope ? "Automatic match from sampled recordings" : "Automatic match for this video");
         if (row.unit)
             parts.push("Source unit " + row.unit);
         if (row.examples && row.examples.length > 0)
@@ -74,7 +75,7 @@ Item {
         if (row.historicalCount > 0)
             parts.push("Used by " + row.historicalCount + (row.historicalCount === 1 ? " TRACK.yml file" : " TRACK.yml files"));
         if (!row.available)
-            parts.push("Not present in this video");
+            parts.push(mappingField.folderScope ? "Not present in sampled recordings" : "Not present in this video");
         return parts.join(" · ");
     }
 
@@ -215,6 +216,7 @@ Item {
 
         destinationLabel: mappingField.label
         expectedUnit: mappingField.expectedUnit
+        folderScope: mappingField.folderScope
         rows: mappingField.autocompleteRows
 
         onChannelChosen: value => mappingField.chooseSuggestion(value)

@@ -113,6 +113,24 @@ private slots:
             QVERIFY(cache.lookup(QStringLiteral("missing")).found == false);
         }
     }
+
+    void concurrentSnapshotsMergeOnSave() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("index.json"));
+        SessionMetadataCache first(path);
+        SessionMetadataCache second(path);
+        first.store(QStringLiteral("first"), QStringLiteral("/first.pds"), true,
+                    QJsonObject{{QStringLiteral("driver"), "First"}});
+        second.store(QStringLiteral("second"), QStringLiteral("/second.pds"),
+                     true, QJsonObject{{QStringLiteral("driver"), "Second"}});
+        QVERIFY(first.save());
+        QVERIFY(second.save());
+
+        SessionMetadataCache reloaded(path);
+        QVERIFY(reloaded.lookup(QStringLiteral("first")).found);
+        QVERIFY(reloaded.lookup(QStringLiteral("second")).found);
+    }
 };
 
 QTEST_MAIN(SessionMetadataCacheTest)

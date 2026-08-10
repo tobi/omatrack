@@ -52,7 +52,7 @@ qt_add_qml_module(omatrack
     Style.qml
     AppHeader.qml
     ChannelsWindow.qml
-    CornerInspectorWindow.qml
+    CornerFocusOverlay.qml
     DriverMetadataSection.qml
     FileBrowserPane.qml
     FileTreeDelegate.qml
@@ -66,7 +66,6 @@ qt_add_qml_module(omatrack
     VideoMetadataDialog.qml
     VideoTelemetryOverlay.qml
   SOURCES
-    CornerGraphView.h CornerGraphView.cpp
     DamperStripView.h DamperStripView.cpp
     MpvVideoItem.h MpvVideoItem.cpp
     OmarchyTheme.h OmarchyTheme.cpp
@@ -74,7 +73,10 @@ qt_add_qml_module(omatrack
     SessionMetadataCache.h SessionMetadataCache.cpp
     TrackMetadata.h TrackMetadata.cpp
     TelemetryStore.h TelemetryStore.cpp
+    WebDavCache.h WebDavCache.cpp
     TrackAtlasSpatial.h TrackAtlasSpatial.cpp
+    TraceSceneBuilder.h TraceSceneBuilder.cpp
+    TraceTextCache.h TraceTextCache.cpp
     TraceView.h TraceView.cpp
     VideoTelemetryHud.h VideoTelemetryHud.cpp
     YamlConfig.h YamlConfig.cpp

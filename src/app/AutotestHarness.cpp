@@ -3,7 +3,9 @@
 
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
+#include <QQuickItem>
 #include <QQuickWindow>
+#include <QSet>
 #include <QTimer>
 #include <QElapsedTimer>
 #include <QEventLoop>
@@ -13,7 +15,6 @@
 #include <QWheelEvent>
 #include <QFileInfo>
 #include <QImage>
-#include <QPainter>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QThread>
@@ -25,6 +26,44 @@
 #include "TraceView.h"
 
 #include "AutotestHarness.h"
+
+namespace {
+void appendAutotestFilePaths(const QVariantList& nodes, QStringList* paths,
+                             QSet<QString>* seen) {
+    if (!paths || !seen) return;
+    for (const QVariant& value : nodes) {
+        const QVariantMap node = value.toMap();
+        if (node.value(QStringLiteral("role")).toString() ==
+            QStringLiteral("file")) {
+            const QString path = node.value(QStringLiteral("path")).toString();
+            if (!path.isEmpty() && !seen->contains(path)) {
+                seen->insert(path);
+                paths->append(path);
+            }
+        }
+        appendAutotestFilePaths(node.value(QStringLiteral("children")).toList(),
+                                paths, seen);
+    }
+}
+
+QStringList autotestFilePaths(TelemetryStore& store) {
+    QStringList paths;
+    QSet<QString> seen;
+    appendAutotestFilePaths(store.fileSources(), &paths, &seen);
+    return paths;
+}
+
+// Repeater and ListView delegates are not QObject children of the view, so
+// QObject::findChild() cannot reach them. Search the visual tree instead.
+QQuickItem* autotestFindItem(QQuickItem* item, const QString& objectName) {
+    if (!item) return nullptr;
+    if (item->objectName() == objectName) return item;
+    const QList<QQuickItem*> children = item->childItems();
+    for (QQuickItem* child : children)
+        if (QQuickItem* hit = autotestFindItem(child, objectName)) return hit;
+    return nullptr;
+}
+}  // namespace
 
 bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                  TelemetryStore& store) {
@@ -39,6 +78,8 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
         !qgetenv("OMATRACK_AUTOTEST_ALIGNMENT").isEmpty();
     const bool autotestZoom = !qgetenv("OMATRACK_AUTOTEST_ZOOM").isEmpty();
     const bool autotestCorner = !qgetenv("OMATRACK_AUTOTEST_CORNER").isEmpty();
+    const bool autotestVideoHud =
+        !qgetenv("OMATRACK_AUTOTEST_VIDEO_HUD").isEmpty();
     const bool autotestRename = !qgetenv("OMATRACK_AUTOTEST_RENAME").isEmpty();
     const bool autotestBrakeSync =
         !qgetenv("OMATRACK_AUTOTEST_BRAKE_SYNC").isEmpty();
@@ -58,6 +99,8 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
         !qgetenv("OMATRACK_AUTOTEST_LOADING").isEmpty();
     const bool autotestLapLoading =
         !qgetenv("OMATRACK_AUTOTEST_LAP_LOADING").isEmpty();
+    const bool autotestIndexedVideoClick =
+        !qgetenv("OMATRACK_AUTOTEST_INDEXED_VIDEO_CLICK").isEmpty();
     const QString startupVideoPath = qEnvironmentVariable("OMATRACK_VIDEO");
     const QString videoMetadataPath =
         qEnvironmentVariable("OMATRACK_AUTOTEST_VIDEO_METADATA") ==
@@ -97,6 +140,178 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
         });
         return true;
     }
+    // Regression guard for the folder/video metadata driver editors: typing a
+    // name must not lose focus. The rows are a plain JS array, so a model
+    // binding that rebuilds delegates per keystroke silently swallows every
+    // character after the first.
+    const QString driverTypingPath =
+        qEnvironmentVariable("OMATRACK_AUTOTEST_DRIVER_TYPING");
+    if (!driverTypingPath.isEmpty()) {
+        auto* typingTimer = new QTimer(&engine);
+        typingTimer->setInterval(200);
+        QObject::connect(
+            typingTimer, &QTimer::timeout, &engine,
+            [typingTimer, &store, &engine, shotPath, driverTypingPath]() {
+                if (store.loading() || !store.ready()) return;
+                typingTimer->stop();
+                typingTimer->deleteLater();
+                QObject* root = engine.rootObjects().isEmpty()
+                                    ? nullptr
+                                    : engine.rootObjects().first();
+                QObject* dialog =
+                    root ? root->findChild<QObject*>(
+                               QStringLiteral("videoMetadataDialog"))
+                         : nullptr;
+                auto* window = qobject_cast<QQuickWindow*>(root);
+                if (!dialog || !window) {
+                    qWarning() << "AUTOTEST driver typing: no dialog";
+                    qApp->exit(1);
+                    return;
+                }
+                const auto settle = [](int ms) {
+                    QElapsedTimer timer;
+                    timer.start();
+                    while (timer.elapsed() < ms) {
+                        QCoreApplication::processEvents(QEventLoop::AllEvents,
+                                                        10);
+                        QThread::msleep(5);
+                    }
+                };
+                const bool opened = QMetaObject::invokeMethod(
+                    dialog, "openForFolder", Q_ARG(QString, driverTypingPath));
+                settle(400);
+                // A fresh row is the one a user edits after "+ Add Driver
+                // ID = Name"; inherited rows may not exist for every folder.
+                const bool added =
+                    QMetaObject::invokeMethod(dialog, "addDriverMapping");
+                settle(400);
+                if (!opened || !added) {
+                    qWarning() << "AUTOTEST driver typing: dialog refused"
+                               << opened << added;
+                    qApp->exit(1);
+                    return;
+                }
+
+                // Delegate items are not QObject children of the Repeater, so
+                // findChild() cannot see them; walk the visual tree instead.
+                QQuickItem* editor = autotestFindItem(
+                    window->contentItem(), QStringLiteral("driverNameEditor0"));
+                if (!editor) {
+                    qWarning() << "AUTOTEST driver typing: no editor";
+                    qApp->exit(1);
+                    return;
+                }
+                const QString before = editor->property("text").toString();
+                editor->forceActiveFocus();
+                settle(100);
+                const QString typed = QStringLiteral("Ana");
+                for (const QChar letter : typed) {
+                    QKeyEvent press(QEvent::KeyPress, Qt::Key_A, Qt::NoModifier,
+                                    QString(letter));
+                    QCoreApplication::sendEvent(window, &press);
+                    QKeyEvent release(QEvent::KeyRelease, Qt::Key_A,
+                                      Qt::NoModifier, QString(letter));
+                    QCoreApplication::sendEvent(window, &release);
+                    settle(60);
+                }
+                QObject* focused = qGuiApp->focusObject();
+                QQuickItem* editorNow = autotestFindItem(
+                    window->contentItem(), QStringLiteral("driverNameEditor0"));
+                const QString after =
+                    editorNow ? editorNow->property("text").toString()
+                              : QString();
+                const bool focusKept = focused == editor && editorNow == editor;
+                const bool textKept = after == before + typed;
+                qWarning() << "AUTOTEST driver typing: focus kept:" << focusKept
+                           << "text:" << after
+                           << "expected:" << (before + typed);
+
+                // A suggestion chip must reach the editor through the model,
+                // not by assigning text and breaking its binding.
+                QQuickItem* chip =
+                    autotestFindItem(window->contentItem(),
+                                     QStringLiteral("driverNameSuggestion0_0"));
+                if (!chip) {
+                    qWarning() << "AUTOTEST driver typing: no suggestion chip";
+                    qApp->exit(1);
+                    return;
+                }
+                const QString suggested = chip->property("text").toString();
+                QMetaObject::invokeMethod(chip, "clicked");
+                settle(200);
+                QQuickItem* editorAfterChip = autotestFindItem(
+                    window->contentItem(), QStringLiteral("driverNameEditor0"));
+                const bool suggestionApplied =
+                    editorAfterChip &&
+                    editorAfterChip->property("text").toString() == suggested;
+                qWarning() << "AUTOTEST driver suggestion:" << suggestionApplied
+                           << suggested;
+
+                // The preferences drivers list is the other place a driver
+                // name is typed; it must survive the same keystrokes.
+                auto* settings =
+                    qobject_cast<QQuickWindow*>(root->findChild<QObject*>(
+                        QStringLiteral("settingsWindow")));
+                QObject* page = root->findChild<QObject*>(
+                    QStringLiteral("preferencesDriversPage"));
+                const QVariantList mappings = store.driverMappings();
+                if (!settings || !page || mappings.isEmpty()) {
+                    qWarning() << "AUTOTEST driver typing: no preferences page";
+                    qApp->exit(1);
+                    return;
+                }
+                settings->setProperty("currentSection", 1);
+                settings->show();
+                settle(300);
+                const QVariantMap first = mappings.first().toMap();
+                QMetaObject::invokeMethod(
+                    page, "beginEdit",
+                    Q_ARG(QVariant, first.value(QStringLiteral("key"))),
+                    Q_ARG(QVariant, first.value(QStringLiteral("display"))));
+                settle(300);
+                QQuickItem* rename =
+                    autotestFindItem(settings->contentItem(),
+                                     QStringLiteral("driverRenameEditor0"));
+                if (!rename) {
+                    qWarning() << "AUTOTEST driver typing: no rename editor";
+                    qApp->exit(1);
+                    return;
+                }
+                const QString renameBefore =
+                    rename->property("text").toString();
+                rename->forceActiveFocus();
+                settle(100);
+                for (const QChar letter : typed) {
+                    QKeyEvent press(QEvent::KeyPress, Qt::Key_A, Qt::NoModifier,
+                                    QString(letter));
+                    QCoreApplication::sendEvent(settings, &press);
+                    QKeyEvent release(QEvent::KeyRelease, Qt::Key_A,
+                                      Qt::NoModifier, QString(letter));
+                    QCoreApplication::sendEvent(settings, &release);
+                    settle(60);
+                }
+                QQuickItem* renameNow =
+                    autotestFindItem(settings->contentItem(),
+                                     QStringLiteral("driverRenameEditor0"));
+                const QString renameAfter =
+                    renameNow ? renameNow->property("text").toString()
+                              : QString();
+                const bool renameFocusKept =
+                    qGuiApp->focusObject() == rename && renameNow == rename;
+                const bool renameTextKept = renameAfter == renameBefore + typed;
+                qWarning() << "AUTOTEST preferences rename: focus kept:"
+                           << renameFocusKept << "text:" << renameAfter
+                           << "expected:" << (renameBefore + typed);
+                const QImage image = window->grabWindow();
+                const bool saved = !image.isNull() && image.save(shotPath);
+                qApp->exit(focusKept && textKept && suggestionApplied &&
+                                   renameFocusKept && renameTextKept && saved
+                               ? 0
+                               : 1);
+            });
+        typingTimer->start();
+        return true;
+    }
     auto* startTimer = new QTimer(&engine);
     startTimer->setInterval(200);
     QObject::connect(
@@ -104,13 +319,63 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
         [startTimer, &store, &engine, shotPath, startupVideoPath,
          autotestCompare, autotestWindows, autotestHover, autotestSelection,
          autotestAlignment, autotestZoom, autotestCorner, autotestRename,
-         autotestBrakeSync, autotestCornerEdit, autotestDualVideo,
-         autotestVideoMetadata, autotestChannelBrowser, videoMetadataPath,
-         autotestLapLoading, autotestStandaloneVideo, sequentialVideoReady]() {
+         autotestVideoHud, autotestBrakeSync, autotestCornerEdit,
+         autotestDualVideo, autotestVideoMetadata, autotestChannelBrowser,
+         videoMetadataPath, autotestLapLoading, autotestStandaloneVideo,
+         autotestIndexedVideoClick, sequentialVideoReady]() {
             if (store.loading() || store.lapLoading() || !store.ready()) return;
+            if (autotestIndexedVideoClick && !startupVideoPath.isEmpty()) {
+                startTimer->stop();
+                startTimer->deleteLater();
+                QObject* root = engine.rootObjects().isEmpty()
+                                    ? nullptr
+                                    : engine.rootObjects().first();
+                if (root)
+                    QMetaObject::invokeMethod(
+                        root, "setSessionActive",
+                        Q_ARG(QVariant, QVariant(startupVideoPath)));
+                auto* indexedVideoTimer = new QTimer(&engine);
+                indexedVideoTimer->setInterval(100);
+                QObject::connect(
+                    indexedVideoTimer, &QTimer::timeout, &engine,
+                    [indexedVideoTimer, &store, &engine, shotPath,
+                     startupVideoPath]() {
+                        if (store.lapLoading()) return;
+                        indexedVideoTimer->stop();
+                        indexedVideoTimer->deleteLater();
+                        QObject* root = engine.rootObjects().isEmpty()
+                                            ? nullptr
+                                            : engine.rootObjects().first();
+                        auto* window = qobject_cast<QQuickWindow*>(root);
+                        const bool selected =
+                            store.primarySessionKey() == startupVideoPath &&
+                            !store.lapsForSession(startupVideoPath).isEmpty() &&
+                            !store.primaryVideoSource().isEmpty();
+                        const QImage image =
+                            window ? window->grabWindow() : QImage();
+                        const bool saved =
+                            !image.isNull() && image.save(shotPath);
+                        qWarning()
+                            << "AUTOTEST indexed video click:" << selected
+                            << "saved:" << saved << image.size();
+                        qApp->exit(selected && saved ? 0 : 1);
+                    });
+                indexedVideoTimer->start();
+                return;
+            }
+            const QVariantList groups = store.trackGroups();
+            if (groups.isEmpty()) {
+                const QStringList paths = autotestFilePaths(store);
+                const int index =
+                    startTimer->property("autotestFileOpenIndex").toInt();
+                if (index < paths.size()) {
+                    startTimer->setProperty("autotestFileOpenIndex", index + 1);
+                    store.openFile(paths.at(index));
+                    return;
+                }
+            }
             startTimer->stop();
             startTimer->deleteLater();
-            const QVariantList groups = store.trackGroups();
             for (const QVariant& gv : groups) {
                 const QVariantMap g = gv.toMap();
                 const QVariantList dates = g.value("dates").toList();
@@ -313,14 +578,27 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                                                 "est")
                                                          .toBool())
                                                     continue;
-                                                // First selected
-                                                // session is the fixed
-                                                // reference; second is
-                                                // the active run.
+                                                // The two loads must not race:
+                                                // let the active lap settle
+                                                // before the reference is
+                                                // queued, exactly as a user's
+                                                // two clicks would.
                                                 store.selectLap(
                                                     otherKey,
                                                     otherLap.value("lapId")
                                                         .toInt());
+                                                QElapsedTimer settle;
+                                                settle.start();
+                                                while (store.lapLoading() &&
+                                                       settle.elapsed() <
+                                                           30000) {
+                                                    QCoreApplication::
+                                                        processEvents(
+                                                            QEventLoop::
+                                                                AllEvents,
+                                                            20);
+                                                    QThread::msleep(5);
+                                                }
                                                 store.compareLap(key, best);
                                                 comparisonSelected = true;
                                                 break;
@@ -340,6 +618,10 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                     QEventLoop::AllEvents, 20);
                                 QThread::msleep(5);
                             }
+                            if (autotestCompare)
+                                qWarning() << "AUTOTEST comparison:"
+                                           << store.comparing() << "reference"
+                                           << store.compareSessionKey();
                             // Never clobber Track Atlas ranges or a
                             // saved omatrack.yml override with
                             // brake-zone guesses.
@@ -421,29 +703,6 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                     "cornerEditAutotestReady",
                                     addedReady && renamedReady && menuReady &&
                                         store.cornerList().size() == before);
-                                auto* window = root->findChild<QQuickWindow*>(
-                                    QStringLiteral("cornerWindow"));
-                                if (window) {
-                                    window->show();
-                                    window->requestActivate();
-                                    const QString zonesShot =
-                                        QFileInfo(shotPath).path() + "/" +
-                                        QFileInfo(shotPath).completeBaseName() +
-                                        "_zones.png";
-                                    QTimer::singleShot(
-                                        900, &engine, [window, zonesShot]() {
-                                            const QImage image =
-                                                window->grabWindow();
-                                            qWarning() << "AUTOTEST zone "
-                                                          "editor:"
-                                                       << image.save(zonesShot)
-                                                       << zonesShot;
-                                        });
-                                    QTimer::singleShot(1000, &engine, [root]() {
-                                        QMetaObject::invokeMethod(
-                                            root, "dismissCornerPopover");
-                                    });
-                                }
                             }
                             if (autotestAlignment && comparisonSelected)
                                 store.setReferenceAlignment(0.02);
@@ -461,20 +720,19 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                     const QPointF finish(
                                         trace->width() * 0.62,
                                         trace->height() * 0.35);
+                                    // Left-drag is the range gesture now:
+                                    // press, move with the button held, then
+                                    // release away from the press point.
                                     QMouseEvent begin(
-                                        QEvent::MouseButtonDblClick, start,
-                                        start, start, Qt::LeftButton,
-                                        Qt::LeftButton, Qt::NoModifier);
+                                        QEvent::MouseButtonPress, start, start,
+                                        start, Qt::LeftButton, Qt::LeftButton,
+                                        Qt::NoModifier);
                                     QCoreApplication::sendEvent(trace, &begin);
-                                    QHoverEvent move(QEvent::HoverMove, finish,
-                                                     finish, start,
-                                                     Qt::NoModifier);
-                                    QCoreApplication::sendEvent(trace, &move);
-                                    QMouseEvent commit(
-                                        QEvent::MouseButtonPress, finish,
-                                        finish, finish, Qt::LeftButton,
-                                        Qt::LeftButton, Qt::NoModifier);
-                                    QCoreApplication::sendEvent(trace, &commit);
+                                    QMouseEvent drag(
+                                        QEvent::MouseMove, finish, finish,
+                                        finish, Qt::NoButton, Qt::LeftButton,
+                                        Qt::NoModifier);
+                                    QCoreApplication::sendEvent(trace, &drag);
                                     QMouseEvent release(
                                         QEvent::MouseButtonRelease, finish,
                                         finish, finish, Qt::LeftButton,
@@ -485,12 +743,12 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                             }
                             if (autotestCorner &&
                                 !engine.rootObjects().isEmpty()) {
-                                auto* trace =
-                                    engine.rootObjects()
-                                        .first()
-                                        ->findChild<TraceView*>(
-                                            QStringLiteral("traceView"));
+                                auto* root = engine.rootObjects().first();
+                                auto* trace = root->findChild<TraceView*>(
+                                    QStringLiteral("traceView"));
                                 const QVariantList corners = store.cornerList();
+                                const double beforeStart = store.viewStart();
+                                const double beforeEnd = store.viewEnd();
                                 if (trace && !corners.isEmpty()) {
                                     const QVariantMap corner =
                                         corners.first().toMap();
@@ -516,6 +774,126 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                     QCoreApplication::sendEvent(trace,
                                                                 &release);
                                 }
+                                // The framing is set synchronously by the
+                                // click; later benchmarks move the viewport,
+                                // so measure it now. Only the overlay fade
+                                // and the restore need the event loop.
+                                const double span =
+                                    store.viewEnd() - store.viewStart();
+                                const QVariantList zones = store.cornerList();
+                                const QVariantMap zone =
+                                    zones.isEmpty() ? QVariantMap()
+                                                    : zones.first().toMap();
+                                const double mid =
+                                    (zone.value("start").toDouble() +
+                                     zone.value("end").toDouble()) *
+                                    0.5;
+                                const double centre =
+                                    span > 0.0
+                                        ? (mid - store.viewStart()) / span
+                                        : -1.0;
+                                const bool zoomed =
+                                    span < (beforeEnd - beforeStart) &&
+                                    centre > 0.0 && centre < 0.5;
+                                QTimer::singleShot(
+                                    300, &engine,
+                                    [&engine, &store, root, shotPath, centre,
+                                     zoomed, beforeStart, beforeEnd]() {
+                                        QCoreApplication::processEvents();
+                                        const int focused =
+                                            store.focusedCorner();
+                                        QObject* overlay =
+                                            root->findChild<QObject*>(
+                                                QStringLiteral(
+                                                    "cornerFocusOverlay"));
+                                        const bool overlayVisible =
+                                            overlay &&
+                                            overlay->property("visible")
+                                                .toBool();
+
+                                        // The frame a user actually sees on
+                                        // click: the neighbouring lap has not
+                                        // loaded yet, so the space past the
+                                        // lap bounds must read as black.
+                                        if (auto* window =
+                                                qobject_cast<QQuickWindow*>(
+                                                    root)) {
+                                            const QFileInfo info(shotPath);
+                                            const QString focusShot =
+                                                info.path() + "/" +
+                                                info.completeBaseName() +
+                                                "_focus." + info.suffix();
+                                            const QImage image =
+                                                window->grabWindow();
+                                            qWarning()
+                                                << "AUTOTEST corner focus "
+                                                   "frame:"
+                                                << image.save(focusShot)
+                                                << focusShot;
+                                        }
+                                        store.clearCornerFocus();
+                                        const bool restored =
+                                            store.focusedCorner() < 0 &&
+                                            std::abs(store.viewStart() -
+                                                     beforeStart) < 1e-6 &&
+                                            std::abs(store.viewEnd() -
+                                                     beforeEnd) < 1e-6;
+                                        qWarning()
+                                            << "AUTOTEST corner focus:"
+                                            << focused
+                                            << "overlay:" << overlayVisible
+                                            << "zoomed:" << zoomed << centre
+                                            << "restored:" << restored;
+                                        root->setProperty(
+                                            "cornerFocusAutotestReady",
+                                            focused >= 0 && overlayVisible &&
+                                                zoomed && restored);
+                                        // Leave the workspace focused and a
+                                        // marker hovered so the screenshot
+                                        // shows the state under test.
+                                        store.focusCorner(focused);
+                                        auto* view =
+                                            root->findChild<TraceView*>(
+                                                QStringLiteral("traceView"));
+                                        const QVector<CornerMarker>& markers =
+                                            store.cornerMarkers();
+                                        if (view && !markers.isEmpty()) {
+                                            const double x =
+                                                62.0 +
+                                                (markers.last().fraction -
+                                                 store.viewStart()) /
+                                                    std::max(
+                                                        1e-6,
+                                                        store.viewEnd() -
+                                                            store.viewStart()) *
+                                                    std::max(
+                                                        1.0,
+                                                        view->width() - 62.0);
+                                            const QPointF spot(
+                                                x, view->height() - 22.0);
+                                            // A plain move (no button) is the
+                                            // pointer path a real hover takes
+                                            // through the item.
+                                            QMouseEvent move(
+                                                QEvent::MouseMove, spot, spot,
+                                                spot, Qt::NoButton,
+                                                Qt::NoButton, Qt::NoModifier);
+                                            QCoreApplication::sendEvent(view,
+                                                                        &move);
+                                            QCoreApplication::processEvents();
+                                        }
+                                    });
+                            }
+                            if (autotestVideoHud &&
+                                !engine.rootObjects().isEmpty()) {
+                                // The telemetry HUD only exists over
+                                // fullscreen video; put it on screen so its
+                                // scene-graph geometry is exercised.
+                                QObject* root = engine.rootObjects().first();
+                                root->setProperty("videoOverlayVisible", true);
+                                QMetaObject::invokeMethod(
+                                    root, "videoSetFullscreen",
+                                    Q_ARG(QVariant, true));
                             }
                             if (autotestHover &&
                                 !engine.rootObjects().isEmpty()) {
@@ -526,26 +904,21 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                             QStringLiteral("traceOverlay"));
                                 if (overlay && overlay->width() > 0 &&
                                     overlay->height() > 0) {
-                                    QImage benchmark(
-                                        QSize(int(overlay->width()),
-                                              int(overlay->height())),
-                                        QImage::Format_ARGB32_Premultiplied);
-                                    QElapsedTimer clock;
-                                    clock.start();
+                                    // The overlay is scene-graph geometry: the
+                                    // measurable per-frame cost is building
+                                    // it, the GPU draws it in one batch.
                                     constexpr int frames = 120;
-                                    for (int frame = 0; frame < frames;
-                                         ++frame) {
+                                    for (int frame = 0; frame < frames; ++frame)
                                         store.setCursorFrac(double(frame) /
                                                             (frames - 1));
-                                        benchmark.fill(Qt::transparent);
-                                        QPainter painter(&benchmark);
-                                        overlay->paint(&painter);
-                                    }
+                                    const QVariantMap result =
+                                        overlay->benchmarkGeometry(frames);
                                     qWarning()
                                         << "AUTOTEST hover overlay "
                                            "average_ms:"
-                                        << (clock.nsecsElapsed() / 1.0e6) /
-                                               frames;
+                                        << result.value("averageMs").toDouble()
+                                        << "quads:"
+                                        << result.value("quads").toInt();
                                 }
                             }
                             if (autotestZoom &&
@@ -577,18 +950,12 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                                << wheelZoomReady;
                                     store.setViewStart(0.0);
                                     store.setViewEnd(1.0);
-                                    QImage benchmark(
-                                        QSize(int(trace->width()),
-                                              int(trace->height())),
-                                        QImage::Format_ARGB32_Premultiplied);
-                                    benchmark.fill(Qt::transparent);
-                                    {
-                                        QPainter warmup(&benchmark);
-                                        trace->paint(&warmup);
-                                    }
                                     QElapsedTimer clock;
                                     clock.start();
                                     constexpr int frames = 80;
+                                    double worstMs = 0.0;
+                                    int quads = 0;
+                                    int lanes = 0;
                                     for (int frame = 0; frame < frames;
                                          ++frame) {
                                         const double phase =
@@ -603,15 +970,22 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                             (1.0 - span) * phase;
                                         store.setViewStart(start);
                                         store.setViewEnd(start + span);
-                                        benchmark.fill(Qt::transparent);
-                                        QPainter painter(&benchmark);
-                                        trace->paint(&painter);
+                                        const QVariantMap result =
+                                            trace->benchmarkGeometry(1);
+                                        worstMs = std::max(
+                                            worstMs, result.value("averageMs")
+                                                         .toDouble());
+                                        quads = result.value("quads").toInt();
+                                        lanes = result.value("lanes").toInt();
                                     }
                                     qWarning()
-                                        << "AUTOTEST zoom paint "
+                                        << "AUTOTEST zoom geometry "
                                            "average_ms:"
                                         << (clock.nsecsElapsed() / 1.0e6) /
-                                               frames;
+                                               frames
+                                        << "worst_ms:" << worstMs
+                                        << "quads:" << quads
+                                        << "lanes:" << lanes;
                                     store.setViewStart(0.0);
                                     store.setViewEnd(1.0);
                                 }
@@ -812,8 +1186,8 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                 [&store, &engine, shotPath, startupVideoPath,
                                  autotestWindows, autotestRename,
                                  autotestBrakeSync, autotestCornerEdit,
-                                 autotestZoom, autotestDualVideo,
-                                 autotestStandaloneVideo,
+                                 autotestCorner, autotestZoom,
+                                 autotestDualVideo, autotestStandaloneVideo,
                                  sequentialVideoReady]() {
                                     QList<QQuickWindow*> windows;
                                     for (QObject* root : engine.rootObjects()) {
@@ -1198,45 +1572,28 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                                     : -1);
                                     }
                                     bool cornerMutationReady = true;
-                                    bool cornerEscapeReady = true;
                                     if (autotestCornerEdit) {
                                         QObject* root =
                                             engine.rootObjects().isEmpty()
                                                 ? nullptr
                                                 : engine.rootObjects().first();
-                                        auto* cornerWindow =
-                                            root ? root->findChild<
-                                                       QQuickWindow*>(
-                                                       QStringLiteral("c"
-                                                                      "o"
-                                                                      "r"
-                                                                      "n"
-                                                                      "e"
-                                                                      "r"
-                                                                      "W"
-                                                                      "i"
-                                                                      "n"
-                                                                      "d"
-                                                                      "o"
-                                                                      "w"))
-                                                 : nullptr;
                                         cornerMutationReady =
                                             root && root->property(
-                                                            "cornerE"
-                                                            "ditAuto"
-                                                            "testRea"
-                                                            "dy")
+                                                            "cornerEditAutotest"
+                                                            "Ready")
                                                         .toBool();
-                                        cornerEscapeReady =
-                                            cornerWindow &&
-                                            !cornerWindow->isVisible();
                                         qWarning()
-                                            << "AUTOTEST "
-                                               "corner "
-                                               "mutations:"
-                                            << cornerMutationReady
-                                            << "escape:" << cornerEscapeReady;
+                                            << "AUTOTEST corner mutations:"
+                                            << cornerMutationReady;
                                     }
+                                    const bool cornerFocusReady =
+                                        !autotestCorner ||
+                                        (!engine.rootObjects().isEmpty() &&
+                                         engine.rootObjects()
+                                             .first()
+                                             ->property("cornerFocusAutotestRe"
+                                                        "ady")
+                                             .toBool());
                                     const bool zoomReady =
                                         !autotestZoom ||
                                         (!engine.rootObjects().isEmpty() &&
@@ -1277,12 +1634,12 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                     }
                                     videoReady = videoReady && renameReady &&
                                                  cornerMutationReady &&
-                                                 cornerEscapeReady &&
+                                                 cornerFocusReady &&
                                                  zoomReady && dualVideoReady;
                                     const int exitCode =
                                         videoReady             ? 0
                                         : !cornerMutationReady ? 3
-                                        : !cornerEscapeReady   ? 4
+                                        : !cornerFocusReady    ? 4
                                                                : 2;
                                     qApp->exit(exitCode);
                                 });

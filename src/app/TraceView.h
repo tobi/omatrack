@@ -1,25 +1,35 @@
-// TraceView — custom-painted telemetry trace canvas.
+// TraceView — scene-graph telemetry trace surface.
 //
-// QPainter-based rendering on a QQuickPaintedItem so the Qt Quick Material UI
-// can host it while keeping omatrack's canvas drawing semantics. Renders the
-// unified 50 Hz lap channels (speed, throttle, brake, steering, gear, dampers,
-// delta-time), a shared cursor, zoom/pan viewport, and corner zones with
-// drag-to-edit.
+// A QQuickItem that builds its frame as QSGGeometryNode content through
+// TraceSceneBuilder: every lane, grid line, corner zone and trace becomes
+// vertex-coloured triangles in a single batch, and text is composited from
+// cached textures. Nothing is rasterised with QPainter on the frame path, so
+// the cost of a frame is geometry generation plus one GPU draw call rather
+// than QPainter path filling.
+//
+// Renders the unified 50 Hz lap channels (speed, throttle, brake, steering,
+// gear, dampers, delta-time), a shared cursor, zoom/pan viewport, and corner
+// zones with drag-to-edit.
+//
+// Every visible lane always fits the item height: lane height is the channel's
+// weight share of the available space, so the workspace never scrolls
+// vertically. A focused corner zooms the viewport, dims the traces outside the
+// zone, and annotates the zoomed view with brake / turn-in / apex / throttle
+// markers.
 
 #pragma once
 
 #include <QtQml/qqmlregistration.h>
 #include <QColor>
-#include <QQuickPaintedItem>
 #include <QElapsedTimer>
 #include <QFont>
 #include <QHash>
-#include <QImage>
-#include <QPainterPath>
-#include <QSet>
+#include <QQuickItem>
+#include <QVariantMap>
 #include <QVector>
 
 #include "TelemetryStore.h"
+#include "TraceSceneBuilder.h"
 
 #include <vector>
 
@@ -29,7 +39,7 @@ namespace omatrack {
 struct UnifiedLap;
 }
 
-class TraceView : public QQuickPaintedItem {
+class TraceView : public QQuickItem {
     Q_OBJECT
     QML_ELEMENT
     Q_PROPERTY(
@@ -45,16 +55,23 @@ public:
     QColor backgroundColor() const { return backgroundColor_; }
     void setBackgroundColor(const QColor& color);
 
-    void paint(QPainter* painter) override;
-
     // Context-menu actions, driven by the QML Material menus.
     Q_INVOKABLE int addCornerAt(double fraction);
-    Q_INVOKABLE void toggleSticky(const QString& key);
-    Q_INVOKABLE void unpinAllChannels();
     Q_INVOKABLE void hideChannel(const QString& key);
     Q_INVOKABLE void showAllStandardChannels();
 
+    /// Rebuilds the frame's geometry `frames` times without committing it and
+    /// reports {averageMs, quads, lanes}. This is the CPU half of the
+    /// renderer — the only part of a frame this process controls — and is what
+    /// the acceptance harness benchmarks.
+    Q_INVOKABLE QVariantMap benchmarkGeometry(int frames);
+
 protected:
+    QSGNode* updatePaintNode(QSGNode* oldNode,
+                             UpdatePaintNodeData* data) override;
+    void releaseResources() override;
+    void geometryChange(const QRectF& newGeometry,
+                        const QRectF& oldGeometry) override;
     void mouseDoubleClickEvent(QMouseEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
@@ -62,19 +79,17 @@ protected:
     void wheelEvent(QWheelEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
     void hoverMoveEvent(QHoverEvent* event) override;
-    bool event(QEvent* event) override;
 
 signals:
     void storeChanged();
     void backgroundColorChanged();
     void cursorChangedFromCanvas();
-    void cornerActivated(int index);
     void cornerEdited();
     void cornerRenameRequested(int index);
     void cornerMenuRequested(int cornerIndex, const QString& cornerName,
                              double fraction, qreal x, qreal y);
     void channelMenuRequested(const QString& key, const QString& title,
-                              bool pinned, qreal x, qreal y);
+                              double weight, qreal x, qreal y);
     void overlayChanged();
     void channelsRequested();
 
@@ -93,7 +108,6 @@ private:
         QColor color;
         Clamp clamp;
         bool filled = false;
-        bool showDots = false;
         // which UnifiedLap field to read; empty = derived
         QString field;
     };
@@ -107,50 +121,65 @@ private:
         bool gear = false;
     };
 
-    struct ChannelGeometry {
-        QPainterPath primaryLine;
-        QPainterPath primaryFill;
-        QPainterPath compareLine;
+    // One visible lane, sized as its weight share of the item height.
+    struct Lane {
+        int spec = 0;
+        double y = 0.0;
+        double height = 0.0;
+    };
+
+    // Cached vertical range of one channel across the whole lap. Only the
+    // range is cached: the vertices themselves are cheap to regenerate and
+    // depend on the viewport.
+    struct ChannelRange {
         double min = 0.0;
-        QImage primaryRaster;
-        QImage compareRaster;
         double max = 1.0;
         bool gear = false;
-        bool filled = false;
+        bool empty = true;
     };
 
     void rebuildChannelSpecs();
-    void paintStatic(QPainter* painter);
-    void paintCursorOverlay(QPainter* painter);
-    void paintSelectionOverlay(QPainter* painter);
-    void invalidateStaticLayer();
-    void invalidateGeometry();
-    const ChannelGeometry& geometryFor(const ChannelSpec& spec,
-                                       const omatrack::UnifiedLap* primary,
-                                       const omatrack::UnifiedLap* compare);
-    void paintChannel(QPainter& p, const ChannelSpec& spec, const QRectF& rect,
-                      int index, const omatrack::UnifiedLap* primary,
-                      const omatrack::UnifiedLap* compare,
-                      const std::vector<double>* primaryField,
-                      const std::vector<double>* compareField);
-    void paintDelta(QPainter& p, const QRectF& rect);
-    void paintCornerZones(QPainter& p, const QRectF& totalRect);
+    QVector<Lane> layoutLanes() const;
+    void buildScene(TraceSceneBuilder& builder);
+    void buildCursorScene(TraceSceneBuilder& builder);
+    void buildSelection(TraceSceneBuilder& builder);
+    void buildCornerMarkers(TraceSceneBuilder& builder);
+    void invalidateScene();
+    void invalidateRanges();
+    const ChannelRange& rangeFor(const ChannelSpec& spec,
+                                 const omatrack::UnifiedLap* primary,
+                                 const omatrack::UnifiedLap* compare);
+    void buildChannel(TraceSceneBuilder& builder, const ChannelSpec& spec,
+                      const QRectF& rect, const omatrack::UnifiedLap* primary,
+                      const omatrack::UnifiedLap* compare);
+    /// Emits one lap's trace for `values` into `rect`. Each pixel column
+    /// contributes the min/max of the samples it covers, joined to the
+    /// previous column, so the same code draws a whole lap and a 20 m zoom.
+    void buildSeries(TraceSceneBuilder& builder,
+                     const std::vector<double>* values, const QRectF& rect,
+                     const ChannelRange& range, const QColor& color, bool fill,
+                     bool alignCompare, double shift, qreal width,
+                     double clipLow = 0.0, double clipHigh = 1.0);
+    /// Masks the space outside the lap and names the lap on the other side.
+    void buildOutOfLap(TraceSceneBuilder& builder, const QRectF& totalRect);
+    void buildDelta(TraceSceneBuilder& builder, const QRectF& rect);
+    void buildCornerZones(TraceSceneBuilder& builder, const QRectF& totalRect);
+    void buildCornerFocus(TraceSceneBuilder& builder, const QRectF& totalRect);
     double xForFrac(double frac) const;
     int cornerIndexAt(const QPointF& position) const;
+    int markerIndexAt(const QPointF& position) const;
+    void updateHoveredMarker(const QPointF& position);
     double fracForX(double x) const;
     int channelIndexAt(const QPointF& position) const;
     void showChannelMenu(const QPointF& position);
     void showCornerMenu(const QPointF& position);
-    bool isSticky(const QString& key) const;
-    double rowHeightFor(const ChannelSpec& spec) const;
+    double laneWeightFor(const ChannelSpec& spec) const;
     const std::vector<double>* fieldFor(const omatrack::UnifiedLap& lap,
                                         const QString& field) const;
-    QColor colorForDriver() const;
 
-    QImage deltaRaster_;
     double deltaMaxAbs_ = 0.001;
     QVector<CursorLane> cursorLanes_;
-    QHash<QString, ChannelGeometry> geometryCache_;
+    QHash<QString, ChannelRange> rangeCache_;
     double cursorTop_ = 0.0;
     double cursorBottom_ = 0.0;
     double selectionStart_ = -1.0;
@@ -166,20 +195,24 @@ private:
     bool dragCornerMove_ = false;
     double dragStartFrac_ = 0.0;
     double lastPanFrac_ = 0.0;
-    QSet<QString> stickyChannels_;
-    double secondaryScroll_ = 0.0;
+    int hoveredMarker_ = -1;
+    double pressX_ = 0.0;
     QFont canvasFont_;
     QFont emptyStateFont_;
     QFont labelFont_;
     QFont unitFont_;
-    QFont stickyFont_;
+    QFont valueFont_;
+    QFont markerFont_;
+    QFont zoneFont_;
+    QFont pillFont_;
     friend class TraceCursorOverlay;
     QElapsedTimer cursorTimer_;
+    TraceSceneBuilder builder_;
     mutable std::vector<double> scratch_[2];
     mutable int scratchIdx_ = 0;
 };
 
-class TraceCursorOverlay : public QQuickPaintedItem {
+class TraceCursorOverlay : public QQuickItem {
     Q_OBJECT
     QML_ELEMENT
     Q_PROPERTY(TraceView* trace READ trace WRITE setTrace NOTIFY traceChanged)
@@ -188,11 +221,20 @@ public:
     explicit TraceCursorOverlay(QQuickItem* parent = nullptr);
     TraceView* trace() const { return trace_; }
     void setTrace(TraceView* trace);
-    void paint(QPainter* painter) override;
+
+    /// Rebuilds the overlay geometry `frames` times and reports
+    /// {averageMs, quads}; the hot path while the pointer moves.
+    Q_INVOKABLE QVariantMap benchmarkGeometry(int frames);
+
+protected:
+    QSGNode* updatePaintNode(QSGNode* oldNode,
+                             UpdatePaintNodeData* data) override;
+    void releaseResources() override;
 
 signals:
     void traceChanged();
 
 private:
     TraceView* trace_ = nullptr;
+    TraceSceneBuilder builder_;
 };

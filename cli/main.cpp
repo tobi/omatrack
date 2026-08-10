@@ -2,13 +2,16 @@
 //
 //   omatrack-cli parse <file>
 //   omatrack-cli unify <file> --output <csv>
+//   omatrack-cli corners <file> [--reference <file>] --zone <start:end> ...
 //
 // Exit code is the acceptance signal: 0 = success, non-zero = failure.
 
+#include "core/CornerAnalysis.h"
 #include "core/TelemetryEngine.h"
 
 #include <algorithm>
 #include <cstdio>
+#include <cmath>
 #include <filesystem>
 #include <string>
 
@@ -137,7 +140,7 @@ static int cmdUnify(const std::string& path, const std::string& outputPath) {
     }
     fprintf(f,
             "time,speed,throttle,driverThrottle,brake,clutch,steering,gear,"
-            "distance,gForceLong,gpsLat,gpsLon,gpsPositionAccuracy,"
+            "distance,gForceLong,gForceLat,gpsLat,gpsLon,gpsPositionAccuracy,"
             "gpsSpeedAccuracy\n");
     for (size_t i = 0; i < u.size(); ++i) {
         auto writeDouble = [&](const std::vector<double>& values,
@@ -156,6 +159,7 @@ static int cmdUnify(const std::string& path, const std::string& outputPath) {
         if (i < u.gear.size()) fprintf(f, "%d", u.gear[i]);
         writeDouble(u.distance, "%.2f");
         writeDouble(u.gForceLong, "%.4f");
+        writeDouble(u.gForceLat, "%.4f");
         writeDouble(u.gpsLat, "%.8f");
         writeDouble(u.gpsLon, "%.8f");
         writeDouble(u.gpsPositionAccuracy, "%.3f");
@@ -175,22 +179,175 @@ static int cmdUnify(const std::string& path, const std::string& outputPath) {
     return 0;
 }
 
+// Fastest lap that is long enough to be a real timed lap, mirroring how the
+// GUI picks a default.
+static int fastestLapIndex(const std::vector<Lap>& laps) {
+    int best = 0;
+    double bestMs = 1e18;
+    for (size_t i = 0; i < laps.size(); ++i) {
+        if (laps[i].timeMs < bestMs && laps[i].timeMs > 30000) {
+            bestMs = laps[i].timeMs;
+            best = int(i);
+        }
+    }
+    return best;
+}
+
+// Runs the same corner analyzers the GUI runs, on the same unified laps, so a
+// check can be developed and regression-tested without a display.
+static int cmdCorners(const std::string& path, const std::string& referencePath,
+                      const std::vector<std::pair<double, double>>& zones) {
+    std::string error;
+    auto src = TelemetrySource::open(path, &error);
+    if (!src) {
+        std::fprintf(stderr, "omatrack-cli: %s\n", error.c_str());
+        return 1;
+    }
+    auto laps = src->detectLaps();
+    if (laps.empty()) {
+        printf("FAIL: no laps\n");
+        return 1;
+    }
+    const Lap& lap = laps[size_t(fastestLapIndex(laps))];
+    const UnifiedLap primary = src->unifyLap(lap.startTime, lap.endTime);
+    printf("active: lap %d %s\n", lap.id, formatLapTime(lap.timeMs).c_str());
+
+    std::unique_ptr<TelemetrySource> referenceSource;
+    UnifiedLap reference;
+    if (!referencePath.empty()) {
+        referenceSource = TelemetrySource::open(referencePath, &error);
+        if (!referenceSource) {
+            std::fprintf(stderr, "omatrack-cli: %s\n", error.c_str());
+            return 1;
+        }
+        auto referenceLaps = referenceSource->detectLaps();
+        if (referenceLaps.empty()) {
+            printf("FAIL: reference has no laps\n");
+            return 1;
+        }
+        const Lap& pick = referenceLaps[size_t(fastestLapIndex(referenceLaps))];
+        reference = referenceSource->unifyLap(pick.startTime, pick.endTime);
+        printf("reference: lap %d %s\n", pick.id,
+               formatLapTime(pick.timeMs).c_str());
+    }
+
+    for (const auto& zone : zones) {
+        CornerContext context;
+        context.primary = &primary;
+        context.primaryMetrics =
+            measureCorner(primary, zone.first, zone.second);
+        if (!reference.time.empty()) {
+            // Map the zone onto the reference lap by distance, the way the
+            // store does, so both metrics describe the same piece of track.
+            const auto fractionAtDistance = [](const UnifiedLap& target,
+                                               double metres) {
+                if (target.distance.size() < 2) return 0.0;
+                const auto it = std::lower_bound(target.distance.begin(),
+                                                 target.distance.end(), metres);
+                if (it == target.distance.end()) return 1.0;
+                return double(it - target.distance.begin()) /
+                       double(target.distance.size() - 1);
+            };
+            const double startMetres =
+                primary.distance[size_t(context.primaryMetrics.firstIndex)];
+            const double endMetres =
+                primary.distance[size_t(context.primaryMetrics.lastIndex)];
+            context.reference = &reference;
+            context.referenceMetrics = measureCorner(
+                reference, fractionAtDistance(reference, startMetres),
+                fractionAtDistance(reference, endMetres));
+        }
+
+        const CornerMetrics& metrics = context.primaryMetrics;
+        printf("\nzone %.4f-%.4f  %.1fm  %.3fs\n", zone.first, zone.second,
+               metrics.lengthMeters, metrics.time);
+        if (!metrics.valid) {
+            printf("  (no samples)\n");
+            continue;
+        }
+        printf("  speed   entry %.1f  apex %.1f  exit %.1f km/h\n",
+               metrics.entrySpeed, metrics.apexSpeed, metrics.exitSpeed);
+        // A point the lap never reached is missing, not zero.
+        const auto metres = [](double value) {
+            static char text[6][24];
+            static int slot = 0;
+            char* buffer = text[slot++ % 6];
+            if (std::isfinite(value))
+                std::snprintf(buffer, sizeof(text[0]), "%.0fm", value);
+            else
+                std::snprintf(buffer, sizeof(text[0]), "-");
+            return buffer;
+        };
+        printf("  points  brake %-7s turn-in %-7s apex %-7s throttle %s\n",
+               metres(metrics.brakePoint), metres(metrics.turnInPoint),
+               metres(metrics.apexPoint), metres(metrics.throttlePoint));
+        printf(
+            "  control gear %d  steer %.0f°  brake %.0f bar  trail %.2fs  "
+            "lateral-g %s\n",
+            metrics.minGear, metrics.maxSteering, metrics.maxBrake,
+            metrics.trailBrakeSeconds, metrics.hasLateralG ? "yes" : "no");
+
+        const std::vector<CornerNote> notes =
+            CornerAnalysisRegistry::instance().run(context);
+        if (notes.empty()) {
+            printf("  notes   (none)\n");
+            continue;
+        }
+        for (const CornerNote& note : notes)
+            printf("  %-7s %s [%s]\n", severityName(note.severity),
+                   note.text.c_str(), note.id.c_str());
+    }
+    printf("\ncorners: OK\n");
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         fprintf(stderr,
                 "usage:\n"
                 "  %s parse <file.pds|file.ld|file.vbo|file.mp4>\n"
-                "  %s unify <file> --output <csv>\n\n"
+                "  %s unify <file> --output <csv>\n"
+                "  %s corners <file> [--reference <file>] "
+                "--zone <start:end> [--zone ...]\n\n"
                 "unify exports location-bearing GPS fields when available; "
                 "choose an explicit output path and handle it as sensitive "
-                "data.\n",
-                argv[0], argv[0]);
+                "data.\n"
+                "corners runs the corner analyzers on the fastest lap; zones "
+                "are lap fractions.\n",
+                argv[0], argv[0], argv[0]);
         return 2;
     }
     const std::string cmd = argv[1];
     if (cmd == "parse" && argc == 3) return cmdParse(argv[2]);
     if (cmd == "unify" && argc == 5 && std::string(argv[3]) == "--output")
         return cmdUnify(argv[2], argv[4]);
+    if (cmd == "corners" && argc >= 3) {
+        std::string reference;
+        std::vector<std::pair<double, double>> zones;
+        for (int i = 3; i < argc; ++i) {
+            const std::string option = argv[i];
+            if (option == "--reference" && i + 1 < argc) {
+                reference = argv[++i];
+            } else if (option == "--zone" && i + 1 < argc) {
+                const std::string value = argv[++i];
+                const size_t colon = value.find(':');
+                if (colon == std::string::npos) {
+                    fprintf(stderr, "--zone wants start:end lap fractions\n");
+                    return 2;
+                }
+                zones.emplace_back(std::stod(value.substr(0, colon)),
+                                   std::stod(value.substr(colon + 1)));
+            } else {
+                fprintf(stderr, "unknown option %s\n", option.c_str());
+                return 2;
+            }
+        }
+        if (zones.empty()) {
+            fprintf(stderr, "corners needs at least one --zone start:end\n");
+            return 2;
+        }
+        return cmdCorners(argv[2], reference, zones);
+    }
     fprintf(stderr, "invalid arguments; run %s without arguments for usage\n",
             argv[0]);
     return 2;

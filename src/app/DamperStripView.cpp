@@ -1,17 +1,14 @@
 #include "DamperStripView.h"
 
-#include <QPainter>
-#include <QPainterPath>
+#include <QSGNode>
 
 #include <algorithm>
 #include <cmath>
-#include <limits>
 
 #include "TelemetryStore.h"
 
-DamperStripView::DamperStripView(QQuickItem* parent)
-    : QQuickPaintedItem(parent) {
-    setAntialiasing(true);
+DamperStripView::DamperStripView(QQuickItem* parent) : QQuickItem(parent) {
+    setFlag(QQuickItem::ItemHasContents, true);
 }
 
 void DamperStripView::setStore(TelemetryStore* store) {
@@ -30,24 +27,10 @@ void DamperStripView::setStore(TelemetryStore* store) {
     update();
 }
 
-void DamperStripView::setSource(Source source) {
-    if (source_ == source) return;
-    source_ = source;
-    emit sourceChanged();
-    update();
-}
-
 void DamperStripView::setSeries(Series series) {
     if (series_ == series) return;
     series_ = series;
     emit seriesChanged();
-    update();
-}
-
-void DamperStripView::setCornerIndex(int index) {
-    if (cornerIndex_ == index) return;
-    cornerIndex_ = index;
-    emit cornerIndexChanged();
     update();
 }
 
@@ -72,55 +55,47 @@ void DamperStripView::setStrokeOpacity(qreal opacity) {
     update();
 }
 
-void DamperStripView::paint(QPainter* painter) {
-    if (!store_) return;
-    const std::vector<double>* values = nullptr;
-    double low = 0.0;
-    double span = 1.0;
-    double offsetFraction = 0.0;
+QSGNode* DamperStripView::updatePaintNode(QSGNode* oldNode,
+                                          UpdatePaintNodeData*) {
+    QSGNode* root = oldNode ? oldNode : new QSGNode;
+    builder_.begin(window());
 
-    if (source_ == LapAlignment) {
-        const DamperAlignment& alignment = store_->damperAlignment();
-        if (!alignment.valid()) return;
-        values = series_ == Primary ? &alignment.primary : &alignment.compare;
-        low = alignment.minimum;
-        span = alignment.span();
-        offsetFraction = shift_;
-    } else {
-        const CornerGraph* graph = store_->cornerGraph(cornerIndex_);
-        if (!graph || !graph->damper.valid()) return;
-        const CornerDamperWindow& damper = graph->damper;
-        values = series_ == Primary ? &damper.primary : &damper.compare;
-        // Both traces share one scale so a shift reads as a shift.
-        low = std::numeric_limits<double>::infinity();
-        double high = -std::numeric_limits<double>::infinity();
-        for (const std::vector<double>* set :
-             {&damper.primary, &damper.compare})
-            for (double value : *set) {
-                low = std::min(low, value);
-                high = std::max(high, value);
-            }
-        if (!std::isfinite(low) || !std::isfinite(high) || high <= low) {
-            low = 0.0;
-            high = 1.0;
-        }
-        span = std::max(1e-6, high - low);
-        offsetFraction = shift_ / std::max(1.0, damper.windowMeters);
+    if (!store_ || width() <= 0.0 || height() <= 0.0) {
+        builder_.commit(root);
+        return root;
     }
-    if (!values || values->size() < 2) return;
+
+    const DamperAlignment& alignment = store_->damperAlignment();
+    if (!alignment.valid()) {
+        builder_.commit(root);
+        return root;
+    }
+
+    const std::vector<double>* values =
+        series_ == Primary ? &alignment.primary : &alignment.compare;
+    const double low = alignment.minimum;
+    const double span = alignment.span();
+    if (values->size() < 2) {
+        builder_.commit(root);
+        return root;
+    }
 
     const double w = width();
     const double h = height();
-    if (w <= 1.0 || h <= 1.0) return;
+    if (w <= 1.0 || h <= 1.0) {
+        builder_.commit(root);
+        return root;
+    }
 
     // One point per pixel column: a lap of damper travel is tens of thousands
     // of samples and the strip is a few hundred pixels wide, so submitting
     // every sample would cost the same image for far more work.
     const int columns = std::max(2, int(w));
     const double last = double(values->size() - 1);
-    const double offset = offsetFraction * w;
+    const double offset = shift_ * w;
 
-    QPainterPath path;
+    points_.clear();
+    points_.resize(columns);
     for (int column = 0; column < columns; ++column) {
         const double position = double(column) / double(columns - 1) * last;
         const size_t index = size_t(position);
@@ -130,15 +105,19 @@ void DamperStripView::paint(QPainter* painter) {
             (*values)[index] + ((*values)[next] - (*values)[index]) * fraction;
         const double x = double(column) / double(columns - 1) * w + offset;
         const double y = h - (value - low) / span * h;
-        if (column == 0)
-            path.moveTo(x, y);
-        else
-            path.lineTo(x, y);
+        points_[column] = QPointF(x, y);
     }
 
-    painter->setOpacity(strokeOpacity_);
-    painter->setBrush(Qt::NoBrush);
-    painter->setPen(QPen(color_, 1.3));
-    painter->drawPath(path);
-    painter->setOpacity(1.0);
+    // The builder has no separate opacity concept, so fold strokeOpacity into
+    // the colour alpha.
+    QColor stroke = color_;
+    stroke.setAlphaF(color_.alphaF() * strokeOpacity_);
+
+    builder_.reserveQuads(points_.size());
+    builder_.polyline(points_.constData(), points_.size(), 1.3, stroke);
+
+    builder_.commit(root);
+    return root;
 }
+
+void DamperStripView::releaseResources() { builder_.releaseResources(); }

@@ -73,10 +73,11 @@ Track Atlas connectivity is independent of telemetry parsing. Cache upstream dat
 
 Application-wide user configuration state belongs in `omatrack.yml`
 (`$XDG_CONFIG_HOME/omatrack/omatrack.yml`, else `~/.config/omatrack/omatrack.yml`).
-It is the single source of truth for telemetry directories, channel display,
-driver naming, last selection, and per-track corner overrides, and it is meant
-to be read, diffed, and hand-edited. Never add a second configuration store,
-and never write configuration into telemetry, caches, or `QSettings`.
+It is the single source of truth for telemetry directories, WebDAV connection
+settings, channel display, driver naming, last selection, and per-track corner
+overrides, and it is meant to be read, diffed, and hand-edited. Never add a
+second configuration store, and never write configuration into telemetry,
+caches, or `QSettings`.
 
 Portable recording metadata is the deliberate exception: a folder may contain
 a `TRACK.yml`, and recordings inherit metadata from every `TRACK.yml` above
@@ -94,7 +95,8 @@ wins on load. Caches (Track Atlas snapshot, thumbnails) stay outside the file.
 
 ### Ingestion and session library
 
-- Recursively scan configured directories and open individual telemetry files.
+- Recursively scan configured local directories and locally cached WebDAV
+  sources, opening individual telemetry files.
 - Run directory discovery and lightweight lap-summary parsing off the UI thread;
   expose `TelemetryStore::loading` so every session-library surface can retain
   its current data and show progress while a replacement snapshot is built.
@@ -110,7 +112,13 @@ wins on load. Caches (Track Atlas snapshot, thumbnails) stay outside the file.
 - Cache parsed/unified laps lazily per session. Opening and normalizing active
   and reference laps runs on the worker pool; `TelemetryStore::lapLoading`
   drives feedback, and per-role generations discard stale rapid selections.
-- Persist telemetry directories and user-facing aliases in `omatrack.yml`; `~/Documents/Telemetry` is the default directory on a fresh install.
+- Persist telemetry directories and user-facing aliases in `omatrack.yml`; `~/Documents/Telemetry` (resolved through the platform Documents location, so Windows OneDrive redirection is honored) is the default directory on a fresh install and is created if missing.
+- Persist WebDAV connections under `webdav.connections` in `omatrack.yml`.
+  Credentials are used only for authenticated requests; remote files and
+  `TRACK.yml` metadata are streamed into an atomic cache under
+  `$XDG_CACHE_HOME/omatrack/webdav/` (or the platform cache equivalent).
+  ETag/Last-Modified metadata avoids unchanged downloads, and an unavailable
+  server falls back to its last complete cache.
 
 ### Normalization and analysis
 
@@ -131,9 +139,9 @@ Native lap distance is accepted only when its continuity and total agree with in
 - Overlay an active lap and optional reference lap.
 - Show a track-station-aligned cumulative delta that starts at zero. The same GPS/speed alignment maps every reference trace and synchronized video frame.
 - Render standard channels plus opt-in raw source channels.
-- Configure channel visibility, color, and lane weight; pin lanes while scrolling.
+- Configure channel visibility, color, and lane weight; lanes always fit the pane height with no vertical scrolling or pinning, sized in proportion to channel weight. Right-click a lane for size (double/normal/half) and hide.
 - Share one cursor/readout across traces.
-- Pan, zoom, select ranges, scroll channels, and navigate with mouse and keyboard.
+- Left-drag selects a range; middle-drag pans; wheel, shift+wheel, and ctrl+wheel zoom; double-click resets zoom; on-screen zoom icons back the gestures. Navigate with mouse and keyboard.
 - Keep corner/complex ranges visible without obscuring the data.
 - Allow manual reference alignment for signals such as damper traces without changing the underlying lap data. The damper-alignment tool is a fallback for sessions without positional GPS: show it automatically when the active lap has no varying GPS latitude/longitude, and keep it out of the way when GPS is available.
 
@@ -177,23 +185,86 @@ Native lap distance is accepted only when its continuity and total agree with in
 - Preserve complex membership and any Track Atlas landmarks instead of reconstructing them in QML.
 - Provide single-lap and primary/reference summaries: time, entry/apex/exit speed, gear, steering, brake/lift/turn-in/apex/throttle points, deltas, and trace excerpts.
 - Support automatic brake-zone fallback, direct range editing, add/rename/delete of zones, and local user overrides when authoritative data is unavailable.
-- Draw corner traces with surrounding context: at least a 500 m window around the zone, more approach before it and a longer exit after it, with the context dimmed and the selected zone kept at full contrast between its boundaries.
+- Inspect corners in place in the trace workspace: clicking a corner in the trace ruler zooms the viewport onto that corner (centred in the middle of the left half of the trace area), dims the traces outside the corner range, and annotates the zoomed view with brake / turn-in / apex / throttle-pickup markers — small ticks along the bottom that become full-height lines on hover.
+- Keep the corner in that position even at start/finish. The viewport is
+  allowed to run past the lap, and what lies beyond is either the
+  neighbouring lap — masked and dimmed so it can never be confused with the
+  lap under analysis, behind a boundary rule labelled `« L8` / `L10 »` — or
+  black when there is no such lap. Never re-frame the corner to keep the
+  viewport inside the lap.
+- Fade in a right-side information overlay with entry/apex/exit speeds, time made on entry and exit, brake-point and turn-in deltas, and a checks text area; Escape or the overlay close button restores the previous viewport.
 - Keep Track Atlas cache refresh and offline fallback explicit in preferences; corner edits are copied into `omatrack.yml` as a per-track override.
 
 The current implementation imports `corner_ranges`, downloads the selected
-layout centerline to map those ranges onto GPS laps spatially, and exposes a
-corner inspector. `corner_complexes`, full geometry rendering/modeling, and the
-rest of the Track Atlas range layers are product requirements still to be
-carried through the application model; extend the model rather than overloading
-`CornerZone` until it loses meaning.
+layout centerline to map those ranges onto GPS laps spatially, and inspects
+corners in place in the trace workspace. The separate corner inspector window
+and its dedicated corner renderer are removed; the corner-scoped damper
+alignment window is removed with it, leaving the lap-level damper alignment
+strip as the no-GPS fallback tool. `corner_complexes`, full geometry
+rendering/modeling, and the rest of the Track Atlas range layers are product
+requirements still to be carried through the application model; extend the
+model rather than overloading `CornerZone` until it loses meaning.
+
+#### Corner checks are plugins
+
+The comparison notes a driver reads ("turn-in 18m earlier than reference",
+"throttle while braking") come from `src/core/CornerAnalysis.*`, ported from
+the corner analysis in [tobi/ac-tracer](https://github.com/tobi/ac-tracer)
+(`lib/windows/corner_analysis.lua`). That Lua file is the reference for what a
+corner comparison should say; treat it as the spec when adding checks.
+
+The pipeline is three steps and one extension point:
+
+```text
+measureCorner(lap, start, end)      one pass over the corner's samples
+        -> CornerMetrics            entry/apex/exit, brake, turn-in, coast,
+                                    trail braking, downshift timing, grip
+CornerContext{primary, reference metrics, delta-trace time deltas}
+        -> CornerAnalysisRegistry::run()
+        -> std::vector<CornerNote>{id, text, severity}
+```
+
+- A check is a `CornerAnalyzer` subclass with a stable `id()` and a body that
+  reads `CornerContext` scalars. Register it in the registry constructor;
+  nothing else changes, because the store renders whatever notes come back.
+- Efficiency is the reason for the split. Every scan of the sample arrays
+  happens once, in `measureCorner()`; analyzers are O(1) over precomputed
+  scalars, so the check list can grow without touching the comparison cost.
+  Analyzers never read the raw channel arrays and never allocate per sample.
+- `requiresReference()` marks the comparisons. Single-lap corners still run
+  the primary-only checks.
+- Compile-time registration, deliberately — **not** `QPluginLoader`.
+  `omatrack_core` is Qt-free (invariant 1) so the CLI and the unit tests run
+  the same analyzers the GUI does; a Qt plugin interface would drag Qt into
+  the core and buy nothing for a first-party check list. If out-of-tree checks
+  are ever wanted, add a loader in the app layer that calls
+  `CornerAnalysisRegistry::add()` — the interface is already the boundary.
+- Thresholds are named constants at the top of `CornerAnalysis.cpp` because
+  the numbers are the product decision, not the code.
+- Deviations from the Lua original, all deliberate and commented at the call
+  site: the downshift-reaction check compares against the reference instead of
+  an absolute 5 m (every corner of a real LMP2 lap clears 5 m), and the
+  brake-pressure check requires a real brake zone on one of the two laps
+  before commenting (otherwise a flat-out corner reports "lighter braking
+  (0 vs 11 bar)").
+- Not ported, because `UnifiedLap` has no channel for them: wheel lockups,
+  traction-control interventions, off-track excursions, and rev-limiter hits.
+  Those need per-wheel speeds and ECU status flags. Lateral G is mapped
+  (`g_lat`) but absent from every local fixture, so turn-in currently runs the
+  Lua's steering-only fallback and the combined-grip checks stay silent.
 
 ### Headless tools and automation
 
-`omatrack-cli` is the headless acceptance surface for parsing, mapping, lap detection, and 50 Hz unification. The GUI also has screenshot and paint-benchmark modes driven by `OMATRACK_AUTOTEST*` environment variables.
+`omatrack-cli` is the headless acceptance surface for parsing, mapping, lap detection, 50 Hz unification, and corner analysis. The GUI also has screenshot and paint-benchmark modes driven by `OMATRACK_AUTOTEST*` environment variables.
 
 ## Architecture
 
 ```text
+WebDAV server -----------------------> src/app/WebDavCache
+                                           streamed local cache
+                                           |
+                                           v
+                                      TelemetryStore scan
 .pds / .ld(+.ldx) / .vbo / .mp4(aimd) / future race formats
               |
               v
@@ -241,15 +312,15 @@ upstream project. `src/core` builds the Qt-free
 and Qt Quick Controls configuration are the only bundled data resources.
 Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
 
-### Layer responsibilities
-
 | Layer | Paths | Owns | Must not own |
 |---|---|---|---|
 | Vendor parsers | Git-pinned `tobi/motorsport-telemetry-rs` crates | File validation, memory mapping, chunks, typed decoding, vendor metadata | Qt, UI state, omatrack-specific presentation |
 | C ABI | `third_party/motorsport-telemetry/bridge/` | Extension dispatch, opaque handles, format-neutral lap metadata, bulk decode, stable strings, thread-local errors | Vendor decoding, analysis policy, or exceptions/panics crossing FFI |
 | Core | `src/core/TelemetryEngine.*` | Channel mapping, units, lap detection, resampling, `UnifiedLap` | Qt types, QML, settings, network access |
+| Corner analysis | `src/core/CornerAnalysis.*` | Per-corner metrics and the pluggable checks that produce driver-facing notes | Qt types, UI text layout, Track Atlas fetching |
 | Session/store | `src/app/TelemetryStore.*` | Lazy session handles, selection, cached GPS/speed track-station alignment, comparison, viewport, preferences, Track Atlas, corner analysis | Pixel-level paint loops or vendor byte parsing |
-| Renderer | `src/app/TraceView.*` | Frame-budget-sensitive painting and direct trace interaction | Parsing, network access, persistent product state |
+| WebDAV cache | `src/app/WebDavCache.*` | Authenticated PROPFIND discovery, streamed downloads, ETag/Last-Modified reuse, offline cache fallback | Telemetry normalization, UI state, source-file mutation |
+| Renderer | `src/app/TraceView.*`, `src/app/TraceSceneBuilder.*`, `src/app/TraceTextCache.*` | Scene-graph geometry generation for the trace surfaces and direct trace interaction | Parsing, network access, persistent product state |
 | Video renderer | `src/app/MpvVideoItem.*` | libmpv lifecycle, OpenGL FBO rendering, playback state, and exact seek | Telemetry extraction, session association, or QML layout policy |
 | QML UI | `src/app/*.qml` | Material windows, layout, delegates, controls, high-level orchestration | Full telemetry loops, duplicated analysis, format branches |
 | Bootstrap | `src/app/main.cpp` | Qt startup, style, fonts, store ownership, initial properties, module load | Product analysis, autotest behaviour |
@@ -296,12 +367,17 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
     nested function declaration silently disables `qmllint`'s semantic
     analysis for the whole document, so the file appears clean while nothing
     is being checked.
+16. A view whose delegates contain editors never binds its model to a JS array
+    that an edit replaces. Assigning a new array rebuilds every delegate and
+    destroys the focused item, so typing stops after one character. Bind the
+    model to the row *count* and read the row through the index, so an edit
+    re-evaluates bindings instead of recreating items.
 
 ## Where changes belong
 
 - New file format or source encoding: add/extend it upstream in `motorsport-telemetry-rs`, advance the pinned revision, and expose only generic capabilities through the bridge.
 - New cross-format channel or unit rule: `TelemetryEngine` and `UnifiedLap`.
-- New lap/corner comparison metric: C++ analysis in the store/core, exposed as compact view data.
+- New lap/corner comparison metric: C++ analysis in the store/core, exposed as compact view data. A new corner *check* is a `CornerAnalyzer` in `src/core/CornerAnalysis.cpp` — never an inline `if` in the store and never a string built in QML.
 - New persistent user preference: `TelemetryStore` + `omatrack.yml` through `YamlConfig`; never `QSettings`, and never write it into telemetry.
 - New Material control, inspector, or layout: QML.
 - New high-frequency visual: `TraceView` or another focused C++ Quick item, with measured frame cost.
@@ -323,9 +399,20 @@ OMATRACK_VIDEO=/path/to/onboard.mp4 ./build/omatrack /path/to/telemetry-director
 ./build/omatrack-cli parse /path/to/copied-session.pds
 ./build/omatrack-cli unify /path/to/copied-session.pds \
   --output /tmp/session.unified.csv
+./build/omatrack-cli corners /path/to/active.pds \
+  --reference /path/to/reference.pds --zone 0.30:0.36
 ```
 
 `omatrack-cli unify` requires an explicit output path, refuses to overwrite it, and includes GPS coordinates when available. Treat the exported CSV as sensitive location data.
+
+Windows release zips use a flat layout: the executables and their load-time
+DLLs install at the archive root next to a generated `qt.conf`, while Qt
+plugins, QML modules, and docs land under `lib/`. `scripts/package-windows.sh`
+builds, stages, and zips that layout from the `release` preset:
+
+```sh
+./scripts/package-windows.sh   # dist/omatrack-<version>-windows-x86_64.zip
+```
 
 Other presets: `debug` (`./build-debug`, `QT_QML_DEBUG` for `qmlprofiler`) and
 `asan` (`./build-asan`, ASan + UBSan).
@@ -380,21 +467,34 @@ Use real, copied telemetry for the format and behavior being changed. Synthetic 
 2. Select active and reference laps with different lengths.
 3. Exercise cursor, distance delta, raw channels, corner selection, and alignment as applicable.
 4. For Track Atlas work, verify a cached/offline start and a known track/layout match. Verify both individual corners and complexes when the changed model supports them.
+5. For a corner check, run `omatrack-cli corners` on two real laps of the same
+   track and read the notes: they must be true of that driving, and a corner
+   the driver did nothing wrong in must stay silent. A check that fires on
+   every corner is noise, not analysis. `corner-analysis-test` covers the
+   thresholds with synthetic corners.
 
 ### UI and renderer
 
 The production `release` preset excludes the GUI acceptance harness. Configure
 the dedicated preset before running UI automation; the base autotest opens the
-first session’s fastest lap, renders the app, saves a screenshot, and exits:
+first session’s fastest lap, renders the app, saves a screenshot, and exits.
+
+The telemetry surfaces are scene-graph geometry, which the offscreen
+platform's software adaptation cannot draw, so a renderer run needs a real GL
+context — the running compositor is the simplest one:
 
 ```sh
 cmake --preset acceptance
 cmake --build --preset acceptance
-QT_QPA_PLATFORM=offscreen \
+QT_QPA_PLATFORM=wayland \
 QT_FORCE_STDERR_LOGGING=1 \
 OMATRACK_AUTOTEST=/tmp/omatrack.png \
 ./build-acceptance/omatrack /path/to/copied-telemetry
 ```
+
+`QT_QPA_PLATFORM=offscreen` still runs and still writes a screenshot — use it
+for dialogs, windows, loading states and selection logic — but every trace,
+overlay, damper strip and video HUD comes out blank there.
 
 Add feature flags as needed:
 
@@ -413,14 +513,16 @@ Add feature flags as needed:
 - `OMATRACK_AUTOTEST_VIDEO_METADATA=/path/to/video`
 - `OMATRACK_AUTOTEST_CHANNEL_BROWSER=1`
 - `OMATRACK_AUTOTEST_FOLDER_METADATA=/path/to/folder`
+- `OMATRACK_AUTOTEST_DRIVER_TYPING=/path/to/folder`
 - `OMATRACK_AUTOTEST_STANDALONE_VIDEO=1`
+- `OMATRACK_AUTOTEST_VIDEO_HUD=1`
 - `OMATRACK_VIDEO=/path/to/onboard.mp4`
 
-`HOVER` and `ZOOM` print average paint time. Treat 16.67 ms as the hard 60 fps ceiling and 8.33 ms as the design target for continuous interaction. Inspect the screenshot as well; timing alone cannot catch illegible density, overlap, incorrect colors, or stale comparison state.
+`HOVER` and `ZOOM` print the average time to build one frame's scene-graph geometry (and its quad count); the GPU draws that batch in a single call, and `QSG_RENDER_TIMING=1` shows the resulting `sync`/`render` cost as 0 ms. Treat 16.67 ms as the hard 60 fps ceiling and 8.33 ms as the design target for continuous interaction. Inspect the screenshot as well; timing alone cannot catch illegible density, overlap, incorrect colors, or stale comparison state.
 
 For visual work, also run the app in the target Linux/Omarchy desktop. Offscreen output does not verify native palette integration, font rendering, window behavior, pointer feel, or high-refresh animation.
 
-Embedded libmpv playback must be verified on the native Linux/Omarchy OpenGL scene graph. The offscreen platform can capture the surrounding QML but does not establish the shared `QQuickFramebufferObject` render context. When `OMATRACK_VIDEO` is set, the native autotest exits non-zero unless the player is ready, the file is loaded, duration is available, the default volume is 75%, keyboard seeks remain mapped, playback advances the telemetry cursor, and media time stays aligned. `OMATRACK_AUTOTEST_BRAKE_SYNC=1` pauses on a real heavy-braking sample so the telemetry cursor can be checked against the video's own lap timer and brake graphic. `OMATRACK_AUTOTEST_RENAME=1` exercises the driver rename dialog and persistence path.
+Embedded libmpv playback must be verified on the native Linux/Omarchy OpenGL scene graph. The offscreen platform can capture the surrounding QML but does not establish the shared `QQuickFramebufferObject` render context. When `OMATRACK_VIDEO` is set, the native autotest exits non-zero unless the player is ready, the file is loaded, duration is available, the default volume is 75%, keyboard seeks remain mapped, playback advances the telemetry cursor, and media time stays aligned. `OMATRACK_AUTOTEST_BRAKE_SYNC=1` pauses on a real heavy-braking sample so the telemetry cursor can be checked against the video's own lap timer and brake graphic. `OMATRACK_AUTOTEST_RENAME=1` exercises the driver rename dialog and persistence path. `OMATRACK_AUTOTEST_DRIVER_TYPING=/path/to/folder` types real key events into the folder-metadata driver-name editor and the preferences driver rename field, and fails unless both keep keyboard focus and all characters: a model binding that rebuilds delegates per keystroke destroys the focused editor after one character.
 
 ## Current boundaries to keep explicit
 
@@ -428,22 +530,47 @@ Embedded libmpv playback must be verified on the native Linux/Omarchy OpenGL sce
 - Session parsing is lazy, but opening a source currently decodes and retains whole channel arrays. Do not describe it as streaming.
 - Every format crate memory-maps its input (`cosworth`, `aim`, `motec`, `vbo`), but the decoders still materialise whole channel arrays into `Vec<f64>` before the C++ side sees them. The mapping avoids the read copy; it is not a zero-copy channel walker. Pushing zero-copy further would change the C ABI, and the renderer measurements below show sample access is not the frame-budget bottleneck — so do it for memory, if at all, not for frame time.
 - `TelemetryStore` hands QML `QVariantList`/`QVariantMap` for channel rows, corner rows, driver mappings, directories, and the cursor readout. That is why `qmllint` still reports `[compiler]` warnings and why several QML properties remain `var`. Typed value types are the fix, not more `var`.
-- No QML `Canvas` remains. Every trace surface is a C++ Quick item:
-  `TraceView` + `TraceCursorOverlay` for the main lanes, `CornerGraphView` for
-  the corner speed/pedal/steering panels, and `DamperStripView` for both the
-  lap alignment strips and the corner damper window. Do not add a `Canvas` —
-  JavaScript painting runs on the GUI thread and cannot hold the frame budget.
-- `TraceView` keeps a deliberate two-path renderer: a cached 4096 px raster per
-  channel above `viewSpan >= 0.65`, and a stride-limited walk of the visible
-  samples below it. This looks redundant and is not. Replacing both with a
-  single min/max-per-pixel-column envelope walk was measured on a real
-  Road America lap: **5.2 ms → 35 ms** average zoom paint (48 ms with a
-  per-column vertical zig-zag), against an 8.33 ms design budget. The scan is
-  not the cost — capping the per-column scan to 8 samples changed nothing —
-  QPainter path rasterisation is. A real improvement here needs
-  `QSGGeometryNode` line strips on the GPU, not another QPainter geometry
-  scheme. `CornerGraphView` and `DamperStripView` do walk per column, which is
-  correct for their point counts.
+- No QML `Canvas` and no `QQuickPaintedItem` remain. Every telemetry surface —
+  `TraceView`, `TraceCursorOverlay`, `DamperStripView`, `VideoTelemetryHud` —
+  is a `QQuickItem` that builds its frame in `updatePaintNode()` through
+  `TraceSceneBuilder`. Do not add a `Canvas` or a painted item: JavaScript and
+  QPainter both draw on a CPU thread and cannot hold the frame budget.
+- `TraceSceneBuilder` is the one drawing convention. It batches every
+  flat-coloured quad of a surface into a single `QSGGeometryNode`
+  (`QSGVertexColorMaterial`, `DrawTriangles`) — one draw call per surface — and
+  composites text as `QSGTexture` quads cached by `TraceTextCache` on
+  (string, font, colour). Lines are expanded to quads because OpenGL core
+  profile clamps `glLineWidth` to 1; edge antialiasing comes from the 4×
+  multisample format requested in `main()`. Rotated text goes through
+  `rotatedText()`, which parents the quad to a `QSGTransformNode`.
+- The batch geometry is **indexed with `QSGGeometry::UnsignedIntType`, and that
+  is load-bearing**. The scene graph's batch renderer merges compatible
+  geometry into 16-bit indexed batches; a zoomed workspace passes 65535
+  vertices and every lane after that point silently disappears from the frame
+  — no warning, no error, just missing traces. Declaring 32-bit indices keeps
+  the node out of that merge path. Do not "simplify" it back to unindexed
+  triangles.
+- `TraceView` draws one min/max envelope column per pixel, joined to the
+  previous column, for both laps of every lane. The old two-path renderer (a
+  4096 px cached raster above `viewSpan >= 0.65`, a stride-limited
+  `QPolygonF` walk below it) existed only because QPainter path rasterisation
+  dominated the frame; on the GPU the envelope walk is the cheap path and the
+  raster cache is gone. Only each channel's vertical range is cached.
+- Measured on a full-height Sebring lap, seven lanes, 1280×800 at dpr 1.94
+  (`OMATRACK_AUTOTEST_ZOOM=1`, `OMATRACK_AUTOTEST_HOVER=1`): geometry build
+  **0.32 ms average, 0.74 ms worst** for ~4900 quads, and **0.006 ms** for the
+  cursor overlay's 78 quads. The same lap through QPainter cost 12.6 ms.
+  `QSG_RENDER_TIMING=1` reports `sync=0, render=0` per frame — the frame is
+  bounded by presentation, not by drawing. The harness therefore benchmarks
+  `benchmarkGeometry()`, the CPU half of the renderer, because the GPU half no
+  longer registers.
+- The scene-graph **software** adaptation cannot render custom geometry nodes;
+  it is what `QT_QPA_PLATFORM=offscreen` falls back to without a GL context.
+  `TraceSceneBuilder` detects it and emits nothing, so offscreen runs still
+  produce screenshots and exercise every non-drawing path, but the telemetry
+  surfaces are blank. Renderer verification needs a real GL context:
+  `QT_QPA_PLATFORM=wayland` (or any real display) against the running
+  compositor.
 - The app consumes Track Atlas `corner_ranges` and the selected layout's
   centerline for GPS-based corner station mapping. First-class complexes, full
   geometry rendering/modeling, and the remaining range layers are not wired

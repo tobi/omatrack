@@ -10,7 +10,9 @@ Dialog {
     id: metadataDialog
 
     property var autoCompletedFields: []
+    property bool channelOverridesExpanded: true
     property var channelRows: []
+    property bool channelSampleLoading: false
     property var channelValues: ({})
     property var driverChannel: ({})
     property var driverRows: []
@@ -38,6 +40,8 @@ Dialog {
         metadataDialog.channelRows = loaded.channels || [];
         metadataDialog.driverChannel = loaded.driverChannel || {};
         metadataDialog.driverRows = loaded.driverMappings || [];
+        metadataDialog.channelOverridesExpanded = loaded.folderScope !== true || (loaded.directRecordingCount || 0) > 0;
+        metadataDialog.channelSampleLoading = loaded.channelSampleLoading === true;
         let values = {};
         for (let index = 0; index < metadataDialog.channelRows.length; ++index)
             values[metadataDialog.channelRows[index].key] = metadataDialog.channelRows[index].value || "";
@@ -45,6 +49,7 @@ Dialog {
             values[metadataDialog.driverChannel.key] = metadataDialog.driverChannel.value || "";
         metadataDialog.channelValues = values;
         metadataDialog.autoCompletedFields = metadataDialog.autoCompletionLabels(loaded);
+        folderNameField.text = loaded.folderName || "";
         carNumberField.text = metadataDialog.completedValue(loaded, "carNumber", "inheritedCarNumber", "suggestedCarNumber");
         carClassField.text = metadataDialog.completedValue(loaded, "carClass", "inheritedCarClass", "suggestedCarClass");
         eventField.text = metadataDialog.completedValue(loaded, "event", "inheritedEvent", "suggestedEvent");
@@ -52,6 +57,10 @@ Dialog {
         trackNameField.text = metadataDialog.completedValue(loaded, "trackName", "inheritedTrackName", "suggestedTrackName");
         trackSlugField.text = metadataDialog.completedValue(loaded, "trackSlug", "inheritedTrackSlug", "suggestedTrackSlug");
         metadataDialog.open();
+        if (loaded.folderScope === true && loaded.channelSampleComplete !== true) {
+            metadataDialog.channelSampleLoading = true;
+            Store.sampleFolderChannels(loaded.path);
+        }
     }
     function autoCompletionLabels(loaded: var): var {
         if (loaded.folderScope !== true)
@@ -147,6 +156,7 @@ Dialog {
     function savePayload(): var {
         return {
             driverMappings: metadataDialog.driverMappingPayload(),
+            folderName: folderNameField.text,
             carNumber: carNumberField.text,
             carClass: carClassField.text,
             event: eventField.text,
@@ -168,6 +178,21 @@ Dialog {
         row.value = name;
         rows[index] = row;
         metadataDialog.driverRows = rows;
+    }
+    function updateChannelSample(loaded: var): void {
+        metadataDialog.metadata = loaded;
+        metadataDialog.channelRows = loaded.channels || [];
+        metadataDialog.driverChannel = loaded.driverChannel || {};
+        let values = Object.assign({}, metadataDialog.channelValues);
+        for (let index = 0; index < metadataDialog.channelRows.length; ++index) {
+            const row = metadataDialog.channelRows[index];
+            if (values[row.key] === undefined)
+                values[row.key] = row.value || "";
+        }
+        if (metadataDialog.driverChannel.key && values[metadataDialog.driverChannel.key] === undefined)
+            values[metadataDialog.driverChannel.key] = metadataDialog.driverChannel.value || "";
+        metadataDialog.channelValues = values;
+        metadataDialog.channelSampleLoading = false;
     }
 
     closePolicy: Popup.CloseOnEscape
@@ -216,14 +241,14 @@ Dialog {
                         color: Style.foregroundColor
                         elide: Text.ElideMiddle
                         font.bold: true
-                        text: metadataDialog.metadata.fileName || ""
+                        text: metadataDialog.folderScope && folderNameField.text.trim() !== "" ? folderNameField.text.trim() : metadataDialog.metadata.fileName || ""
                     }
                     Label {
                         color: Style.mutedTextColor
                         font.family: Style.monoFontFamily
                         font.pixelSize: Style.smallFontSize
-                        text: metadataDialog.folderScope ? (metadataDialog.metadata.sourceChannelCount || 0) + " channels across " + (metadataDialog.metadata.sourceRecordingCount || 0) + " videos" : (metadataDialog.metadata.sourceChannelCount || 0) + " source channels"
-                        visible: !metadataDialog.folderScope || (metadataDialog.metadata.sourceChannelCount || 0) > 0
+                        text: (metadataDialog.metadata.sourceChannelCount || 0) + " source channels"
+                        visible: !metadataDialog.folderScope && (metadataDialog.metadata.sourceChannelCount || 0) > 0
                     }
                 }
                 Label {
@@ -264,10 +289,57 @@ Dialog {
                 spacing: 10
                 width: parent.width
 
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 4
+                    Layout.preferredHeight: folderIdentityLayout.implicitHeight + 20
+                    Layout.rightMargin: 4
+                    Layout.topMargin: 10
+                    border.color: Style.borderColor
+                    border.width: 1
+                    color: Style.surfaceColor
+                    radius: 4
+                    visible: metadataDialog.folderScope
+
+                    RowLayout {
+                        id: folderIdentityLayout
+
+                        anchors.fill: parent
+                        anchors.margins: 10
+                        spacing: 10
+
+                        ColumnLayout {
+                            Layout.preferredWidth: 150
+                            spacing: 1
+
+                            Label {
+                                Layout.fillWidth: true
+                                color: Style.foregroundColor
+                                font.bold: true
+                                text: "Folder display name"
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                color: Style.dimTextColor
+                                font.pixelSize: Style.smallFontSize
+                                text: "Does not rename the folder on disk"
+                            }
+                        }
+                        CompactTextField {
+                            id: folderNameField
+
+                            Layout.fillWidth: true
+                            objectName: "folderNameField"
+                            placeholderText: metadataDialog.metadata.fileName || "Folder name"
+                            placeholderTextColor: Style.dimTextColor
+                        }
+                    }
+                }
                 DriverMetadataSection {
                     Layout.leftMargin: 4
                     Layout.rightMargin: 4
-                    Layout.topMargin: 10
+                    Layout.topMargin: metadataDialog.folderScope ? 0 : 10
+                    channelMappingVisible: !metadataDialog.folderScope || metadataDialog.channelOverridesExpanded
                     channelRow: metadataDialog.driverChannel
                     folderScope: metadataDialog.folderScope
                     mappingRows: metadataDialog.driverRows
@@ -392,18 +464,67 @@ Dialog {
                         placeholderTextColor: metadataDialog.placeholderColor(metadataDialog.metadata.inheritedTrackSlug || "")
                     }
                 }
+                ToolButton {
+                    id: channelOverridesButton
+
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 4
+                    Layout.preferredHeight: 38
+                    Layout.rightMargin: 4
+                    checkable: true
+                    checked: metadataDialog.channelOverridesExpanded
+                    visible: metadataDialog.folderScope
+
+                    background: Rectangle {
+                        border.color: channelOverridesButton.hovered ? Style.accentColor : Style.borderColor
+                        border.width: 1
+                        color: channelOverridesButton.hovered ? Style.surfaceColor : Style.darkBackgroundColor
+                        radius: 4
+                    }
+                    contentItem: RowLayout {
+                        spacing: 8
+
+                        Label {
+                            color: Style.mutedTextColor
+                            font.family: Style.monoFontFamily
+                            text: channelOverridesButton.checked ? "▾" : "▸"
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            color: Style.foregroundColor
+                            font.bold: true
+                            text: "Channel overrides"
+                        }
+                        BusyIndicator {
+                            Layout.preferredHeight: 18
+                            Layout.preferredWidth: 18
+                            running: metadataDialog.channelSampleLoading
+                            visible: running
+                        }
+                        Label {
+                            color: Style.mutedTextColor
+                            font.family: Style.monoFontFamily
+                            font.pixelSize: Style.smallFontSize
+                            text: metadataDialog.channelSampleLoading ? "Sampling recordings…" : (metadataDialog.metadata.sourceChannelCount || 0) + " channels · sampled " + (metadataDialog.metadata.sourceRecordingCount || 0) + " of " + Math.min(8, metadataDialog.metadata.channelSampleCandidateCount || 0) + " files"
+                        }
+                    }
+
+                    onToggled: metadataDialog.channelOverridesExpanded = checked
+                }
                 Rectangle {
                     Layout.fillWidth: true
                     Layout.leftMargin: 4
                     Layout.preferredHeight: 1
                     Layout.rightMargin: 4
                     color: Style.borderColor
+                    visible: !metadataDialog.folderScope || metadataDialog.channelOverridesExpanded
                 }
                 RowLayout {
                     Layout.fillWidth: true
                     Layout.leftMargin: 4
                     Layout.rightMargin: 4
                     spacing: 8
+                    visible: !metadataDialog.folderScope || metadataDialog.channelOverridesExpanded
 
                     ColumnLayout {
                         Layout.fillWidth: true
@@ -439,12 +560,14 @@ Dialog {
                     font.family: Style.monoFontFamily
                     font.pixelSize: Style.smallFontSize
                     text: metadataDialog.folderScope ? (metadataDialog.metadata.inheritedSidecarPath ? "Nearest inherited file: " + metadataDialog.metadata.inheritedSidecarPath : "No parent TRACK.yml; this folder starts a new metadata scope") : (metadataDialog.metadata.sidecarPath ? "Nearest inherited file: " + metadataDialog.metadata.sidecarPath : "No inherited TRACK.yml in this folder tree")
+                    visible: !metadataDialog.folderScope || metadataDialog.channelOverridesExpanded
                 }
                 ColumnLayout {
                     Layout.fillWidth: true
                     Layout.leftMargin: 4
                     Layout.rightMargin: 4
                     spacing: 10
+                    visible: !metadataDialog.folderScope || metadataDialog.channelOverridesExpanded
 
                     Repeater {
                         model: metadataDialog.channelRows
@@ -459,6 +582,7 @@ Dialog {
                             channelKey: channelField.modelData.key
                             detail: channelField.modelData.detail
                             expectedUnit: channelField.modelData.expectedUnit
+                            folderScope: metadataDialog.folderScope
                             inheritedValue: channelField.modelData.inheritedValue || ""
                             label: channelField.modelData.label
                             suggestions: channelField.modelData.suggestions || []
@@ -476,6 +600,7 @@ Dialog {
                     color: Style.dimTextColor
                     font.pixelSize: Style.smallFontSize
                     text: metadataDialog.folderScope ? "This folder's values are written atomically to TRACK.yml. Existing files and unrelated keys in that document are preserved." : "Video overrides are stored in omatrack.yml. Source videos and inherited TRACK.yml files remain unchanged."
+                    visible: !metadataDialog.folderScope || metadataDialog.channelOverridesExpanded
                     wrapMode: Text.WordWrap
                 }
             }
@@ -487,5 +612,14 @@ Dialog {
             Store.saveFolderMetadata(metadataDialog.targetPath, metadataDialog.savePayload());
         else
             Store.saveVideoMetadata(metadataDialog.targetPath, metadataDialog.savePayload());
+    }
+
+    Connections {
+        function onFolderChannelSampleReady(loaded: var): void {
+            if (metadataDialog.folderScope && loaded.path === metadataDialog.targetPath)
+                metadataDialog.updateChannelSample(loaded);
+        }
+
+        target: Store
     }
 }
