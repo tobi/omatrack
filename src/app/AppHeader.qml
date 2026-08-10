@@ -17,18 +17,29 @@ import QtQuick.Layouts
 ToolBar {
     id: appBar
 
+    property list<string> recentFileRows: []
+
     // Root-window state the tooltip text reads.
     required property bool sidebarVisible
 
+    signal addTelemetryDirectoryRequested
     signal channelsRequested
     signal cornersRequested
+    signal driverRenameRequested(string key, string name)
     signal metadataRequested(string path, bool folderScope)
-    signal openTelemetryRequested
-    signal openVideoRequested
+    signal openFileRequested
     signal preferencesRequested
 
     // Overflow / toggle actions handed back to the root window.
     signal sidebarToggleRequested
+
+    function recentFileLabel(filePath: string): string {
+        const normalized = filePath.replace(/\\/g, "/");
+        return normalized.substring(normalized.lastIndexOf("/") + 1);
+    }
+    function refreshRecentFiles(): void {
+        appBar.recentFileRows = Store.recentFiles;
+    }
 
     Material.elevation: 2
     height: 48
@@ -45,11 +56,17 @@ ToolBar {
         }
     }
 
-    Component.onCompleted: readout.refresh()
+    Component.onCompleted: {
+        readout.refresh();
+        appBar.refreshRecentFiles();
+    }
 
     Connections {
         function onCursorFracChanged(): void {
             readout.refresh();
+        }
+        function onRecentFilesChanged(): void {
+            appBar.refreshRecentFiles();
         }
         function onSelectionChanged(): void {
             readout.refresh();
@@ -200,14 +217,39 @@ ToolBar {
         y: appBar.height
 
         MenuItem {
-            text: "Open telemetry…"
+            text: "Open file…"
 
-            onTriggered: appBar.openTelemetryRequested()
+            onTriggered: appBar.openFileRequested()
+        }
+        Menu {
+            id: recentFilesMenu
+
+            enabled: appBar.recentFileRows.length > 0
+            title: "Open recent"
+
+            Instantiator {
+                model: appBar.recentFileRows
+
+                delegate: MenuItem {
+                    id: recentFileItem
+
+                    required property string modelData
+
+                    ToolTip.text: recentFileItem.modelData
+                    ToolTip.visible: recentFileItem.hovered
+                    text: appBar.recentFileLabel(recentFileItem.modelData)
+
+                    onTriggered: Store.openFile(recentFileItem.modelData)
+                }
+
+                onObjectAdded: (index, object) => recentFilesMenu.insertItem(index, object)
+                onObjectRemoved: (index, object) => recentFilesMenu.removeItem(object)
+            }
         }
         MenuItem {
-            text: "Open video…"
+            text: "Add telemetry folder…"
 
-            onTriggered: appBar.openVideoRequested()
+            onTriggered: appBar.addTelemetryDirectoryRequested()
         }
         MenuSeparator {
         }

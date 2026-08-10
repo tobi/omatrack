@@ -263,6 +263,8 @@ class TelemetryStore : public QObject {
                    selectionChanged)
     Q_PROPERTY(bool videoMuted READ videoMuted WRITE setVideoMuted NOTIFY
                    videoMutedChanged)
+    Q_PROPERTY(
+        QStringList recentFiles READ recentFiles NOTIFY recentFilesChanged)
 public:
     // Registered as the `Store` singleton of the Omatrack QML module. The
     // QML engine owns the single instance and default-constructs it while
@@ -288,6 +290,7 @@ public:
     /// missing directory.
     Q_INVOKABLE QString defaultTelemetryDirectory() const;
     Q_INVOKABLE QString configFilePath() const;
+    QStringList recentFiles() const { return recentFiles_; }
     Q_INVOKABLE void removeSessionDirectory(const QString& dirPath);
     Q_INVOKABLE QStringList sessionDirectories() const;
     Q_INVOKABLE QVariantList fileSources() const;
@@ -485,6 +488,7 @@ signals:
     void filePinsChanged();
     void sidebarMetadataChanged(const QString& path,
                                 const QVariantMap& details);
+    void recentFilesChanged();
     void standaloneVideoRequested(const QUrl& source);
     void operationError(const QString& title, const QString& message);
 
@@ -511,6 +515,7 @@ private:
     void finishSessionScan();
     void loadPreferences();
     int sidebarPinIndex(const QString& kind, const QString& path) const;
+    void rememberRecentFile(const QString& filePath);
     QString driverDisplay(const SessionHandle* session) const;
     QVariantMap sidebarFileDetails(const QString& path) const;
     QString assignedTrackSlug(const SessionHandle* session) const;
@@ -558,7 +563,8 @@ private:
     QHash<QString, QVariantMap> fileMetadata_;
     QVector<SidebarPin> sidebarPins_;
     QFutureWatcher<std::shared_ptr<SessionScanResult>>* scanWatcher_ = nullptr;
-    QSet<QString> scanExtraPaths_;
+    QSet<QString> transientSessionPaths_;
+    QStringList recentFiles_;
     QHash<QString, QString> driverMappings_;
     QHash<QString, QString> trackAssignments_;
     QHash<QString, QVariantMap> recordingMetadata_;

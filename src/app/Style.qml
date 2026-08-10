@@ -35,6 +35,7 @@ QtObject {
         colorGroup: SystemPalette.Active
     }
     readonly property color dimTextColor: Theme.colors.dark_foreground || style.desktopPalette.mid
+    readonly property color dropOverlayColor: Qt.rgba(0, 0, 0, 0.72)
     readonly property int fontSize: 11
     readonly property color foregroundColor: Theme.colors.foreground || style.desktopPalette.windowText
     readonly property color graphDimColor: Qt.rgba(0, 0, 0, 0.58)

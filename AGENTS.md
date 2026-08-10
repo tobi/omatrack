@@ -74,10 +74,10 @@ Track Atlas connectivity is independent of telemetry parsing. Cache upstream dat
 Application-wide user configuration state belongs in `omatrack.yml`
 (`$XDG_CONFIG_HOME/omatrack/omatrack.yml`, else `~/.config/omatrack/omatrack.yml`).
 It is the single source of truth for telemetry directories, WebDAV connection
-settings, channel display, driver naming, last selection, and per-track corner
-overrides, and it is meant to be read, diffed, and hand-edited. Never add a
-second configuration store, and never write configuration into telemetry,
-caches, or `QSettings`.
+settings, recent file history, channel display, driver naming, last selection,
+and per-track corner overrides, and it is meant to be read, diffed, and
+hand-edited. Never add a second configuration store, and never write
+configuration into telemetry, caches, or `QSettings`.
 
 Portable recording metadata is the deliberate exception: a folder may contain
 a `TRACK.yml`, and recordings inherit metadata from every `TRACK.yml` above
@@ -96,7 +96,10 @@ wins on load. Caches (Track Atlas snapshot, thumbnails) stay outside the file.
 ### Ingestion and session library
 
 - Recursively scan configured local directories and locally cached WebDAV
-  sources, opening individual telemetry files.
+  sources, and open individual telemetry or video files from the command line,
+  file dialog, recent-file menu, or application drag/drop. Individual files do
+  not become configured scan roots; persist at most the six most recent
+  successful opens in `omatrack.yml`.
 - Run directory discovery and lightweight lap-summary parsing off the UI thread;
   expose `TelemetryStore::loading` so every session-library surface can retain
   its current data and show progress while a replacement snapshot is built.

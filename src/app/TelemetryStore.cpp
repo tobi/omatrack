@@ -49,6 +49,7 @@
 namespace {
 constexpr qint64 kTrackAtlasMaxAgeSeconds = 24 * 60 * 60;
 constexpr int kTrackAtlasCheckIntervalMs = 6 * 60 * 60 * 1000;
+constexpr int kMaximumRecentFiles = 6;
 const QUrl kTrackAtlasUrl(QStringLiteral(
     "https://raw.githubusercontent.com/tobi/track-atlas/main/tracks.jsonl"));
 const QString kTrackAtlasRawBase = QStringLiteral(
@@ -71,6 +72,13 @@ QString telemetryPathForInput(const QString& path) {
         if (QFileInfo::exists(companion)) return companion;
     }
     return {};
+}
+
+bool isVideoPath(const QString& path) {
+    static const QSet<QString> extensions{
+        QStringLiteral("mp4"), QStringLiteral("mov"), QStringLiteral("mkv"),
+        QStringLiteral("avi"), QStringLiteral("m4v"), QStringLiteral("webm")};
+    return extensions.contains(QFileInfo(path).suffix().toLower());
 }
 
 QDate sessionDate(const SessionHandle* session) {
@@ -178,13 +186,6 @@ QString canonicalDirectoryPath(const QString& path) {
     if (!info.exists() || !info.isDir()) return {};
     const QString canonical = info.canonicalFilePath();
     return canonical.isEmpty() ? info.absoluteFilePath() : canonical;
-}
-
-bool isVideoPath(const QString& path) {
-    static const QSet<QString> extensions{
-        QStringLiteral("mp4"), QStringLiteral("mov"), QStringLiteral("mkv"),
-        QStringLiteral("avi"), QStringLiteral("m4v"), QStringLiteral("webm")};
-    return extensions.contains(QFileInfo(path).suffix().toLower());
 }
 
 QString sidebarPinKind(const QString& role, const QString& path) {
@@ -1348,7 +1349,7 @@ IndexedSession indexSession(const QString& path, SessionMetadataCache& cache,
     if (cached.found && !cached.supported) {
         if (cacheHits) ++*cacheHits;
         IndexedSession result;
-        result.unsupportedVideo = true;
+        result.unsupportedVideo = isVideoPath(path);
         return result;
     }
     if (cached.found) {
@@ -1368,7 +1369,7 @@ IndexedSession indexSession(const QString& path, SessionMetadataCache& cache,
                 supported ? handle->metadataForCache() : QJsonObject{});
     IndexedSession result;
     if (!supported) {
-        result.unsupportedVideo = handle->isVideo();
+        result.unsupportedVideo = isVideoPath(path);
         return result;
     }
     result.handle = std::move(handle);
@@ -1734,6 +1735,13 @@ void TelemetryStore::loadPreferences() {
         sidebarPins_.append(SidebarPin{kind, path});
     }
 
+    const QStringList configuredRecentFiles =
+        config.value(QStringLiteral("recent_files")).toStringList();
+    for (const QString& filePath : configuredRecentFiles) {
+        if (filePath.isEmpty() || recentFiles_.contains(filePath)) continue;
+        recentFiles_.append(filePath);
+        if (recentFiles_.size() == kMaximumRecentFiles) break;
+    }
     videoMuted_ = yamlBool(config.value(QStringLiteral("video/muted")), false);
     const QVariantMap selection = config.map({QStringLiteral("selection")});
     lastPrimaryKey_ = selection.value(QStringLiteral("primary_key")).toString();
@@ -1806,6 +1814,7 @@ void TelemetryStore::savePreferences() {
     YamlConfig& config = YamlConfig::instance();
     config.setValue(QStringList{QStringLiteral("telemetry_dirs")},
                     QVariant(sessionDirs_));
+    config.setValue(QStringLiteral("recent_files"), recentFiles_);
     config.setValue(QStringLiteral("video/muted"), videoMuted_);
     QVariantList pinRows;
     pinRows.reserve(sidebarPins_.size());
@@ -2153,7 +2162,7 @@ void TelemetryStore::startSessionScan() {
         emit loadingChanged();
     }
     const QStringList directories = sessionDirs_;
-    const QSet<QString> extraPaths = scanExtraPaths_;
+    const QSet<QString> extraPaths = transientSessionPaths_;
     const QString cachePath = sessionIndexCachePath();
     const QVector<WebDavConnection> webdavConnections = webdavConnections_;
     scanWatcher_->setFuture(QtConcurrent::run(
@@ -2177,7 +2186,7 @@ void TelemetryStore::finishSessionScan() {
     folderDisplayNames_ = result->folderDisplayNames;
     trackMetadataPaths_ = result->trackMetadataPaths;
     webdavStatuses_ = result->webdavStatuses;
-    scanExtraPaths_.clear();
+    transientSessionPaths_.clear();
     qInfo() << "File discovery:" << result->elapsedMs
             << "ms; sidebar metadata remains lazy";
     if (!ready_) {
@@ -2240,7 +2249,7 @@ void TelemetryStore::queueFileOpen(const QString& filePath, FileOpenRole role) {
                                       ? resolved.absoluteFilePath()
                                       : resolved.canonicalFilePath();
     if (loading_) {
-        scanExtraPaths_.insert(telemetryPath);
+        transientSessionPaths_.insert(telemetryPath);
         rescanPending_ = true;
     }
     pendingFileOpens_.append(PendingFileOpen{telemetryPath, role});
@@ -2275,11 +2284,15 @@ void TelemetryStore::startNextFileOpen() {
                 // playback to QML so stale traces are never presented as if
                 // they belonged to this recording.
                 clearPrimary();
+                transientSessionPaths_.remove(result->path);
+                rememberRecentFile(result->path);
                 emit standaloneVideoRequested(
                     QUrl::fromLocalFile(result->path));
             } else if (result->handle && result->lap &&
                        result->lap->error.isEmpty() && result->lap->source &&
                        result->lap->unified) {
+                transientSessionPaths_.insert(result->path);
+                rememberRecentFile(result->path);
                 SessionHandle* session = findSession(result->path);
                 bool added = false;
                 if (!session) {
@@ -2325,6 +2338,7 @@ void TelemetryStore::startNextFileOpen() {
                     emit readyChanged();
                 }
             } else {
+                transientSessionPaths_.remove(result->path);
                 qWarning() << "Unable to open telemetry file" << result->path
                            << result->error;
                 const QString detail =
@@ -2351,6 +2365,14 @@ void TelemetryStore::startNextFileOpen() {
         QtConcurrent::run([path, cachePath, metadata, expectTelemetry]() {
             return openIndexedFile(path, cachePath, metadata, expectTelemetry);
         }));
+}
+
+void TelemetryStore::rememberRecentFile(const QString& filePath) {
+    recentFiles_.removeAll(filePath);
+    recentFiles_.prepend(filePath);
+    while (recentFiles_.size() > kMaximumRecentFiles) recentFiles_.removeLast();
+    savePreferences();
+    emit recentFilesChanged();
 }
 
 void TelemetryStore::clearSessions() {

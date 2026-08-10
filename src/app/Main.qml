@@ -141,6 +141,10 @@ ApplicationWindow {
         driverRenameField.text = displayName || "";
         driverRenameDialog.open();
     }
+    function openDroppedFiles(urls): void {
+        for (let i = 0; i < urls.length; ++i)
+            Store.openFile(root.toLocalPath(urls[i]));
+    }
     function openPendingVideo() {
         const source = pendingVideoSource;
         if (source.toString() === "" || videoPlayer.source.toString() === source.toString())
@@ -460,6 +464,7 @@ ApplicationWindow {
         sidebarVisible: root.sidebarVisible
         visible: !root.videoFullscreen
 
+        onAddTelemetryDirectoryRequested: drawer.open()
         onChannelsRequested: {
             channelsWindow.refresh();
             channelsWindow.show();
@@ -468,14 +473,14 @@ ApplicationWindow {
         onCornersRequested: {
             Store.focusCornerAtCursor();
         }
+        onDriverRenameRequested: (key, name) => root.openDriverRename(key, name)
         onMetadataRequested: (path, folderScope) => {
             if (folderScope)
                 videoMetadataDialog.openForFolder(path);
             else
                 videoMetadataDialog.openForVideo(path);
         }
-        onOpenTelemetryRequested: drawer.open()
-        onOpenVideoRequested: videoFileDialog.open()
+        onOpenFileRequested: fileDialog.open()
         onPreferencesRequested: {
             settingsWindow.refresh();
             settingsWindow.show();
@@ -496,6 +501,36 @@ ApplicationWindow {
         }
         if (root.videoVisible && root.width < 1000)
             root.sidebarVisible = false;
+    }
+
+    DropArea {
+        id: fileDropArea
+
+        anchors.fill: parent
+        z: 10000
+
+        onDropped: drop => {
+            if (!drop.hasUrls)
+                return;
+            root.openDroppedFiles(drop.urls);
+            drop.acceptProposedAction();
+        }
+
+        Rectangle {
+            anchors.fill: parent
+            border.color: Style.accentColor
+            border.width: 2
+            color: Style.dropOverlayColor
+            visible: fileDropArea.containsDrag
+
+            Label {
+                anchors.centerIn: parent
+                color: Style.foregroundColor
+                font.bold: true
+                font.pixelSize: 16
+                text: "Drop telemetry or video to open"
+            }
+        }
     }
 
     // One item tree with two homes: docked above the traces, or filling the
@@ -1051,8 +1086,8 @@ ApplicationWindow {
         id: fileDialog
 
         fileMode: Platform.FileDialog.OpenFile
-        nameFilters: ["Telemetry (*.pds *.ld *.ldx *.vbo *.mp4 *.MP4)", "All files (*)"]
-        title: "Open telemetry file"
+        nameFilters: ["Telemetry and video (*.pds *.PDS *.ld *.LD *.ldx *.LDX *.vbo *.VBO *.mp4 *.MP4 *.mov *.MOV *.mkv *.MKV *.avi *.AVI *.m4v *.M4V *.webm *.WEBM)", "Telemetry (*.pds *.PDS *.ld *.LD *.ldx *.LDX *.vbo *.VBO *.mp4 *.MP4)", "Video (*.mp4 *.MP4 *.mov *.MOV *.mkv *.MKV *.avi *.AVI *.m4v *.M4V *.webm *.WEBM)", "All files (*)"]
+        title: "Open telemetry or video"
 
         onAccepted: Store.openFile(root.toLocalPath(fileDialog.file))
     }

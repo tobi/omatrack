@@ -138,7 +138,7 @@ On a fresh install the app defaults to the platform Documents folder (honoring
 Windows OneDrive redirection) and creates `Documents/Telemetry` when it does
 not exist.
 
-Open a single supported file with the file picker or pass its containing directory. Configuration is stored in `$XDG_CONFIG_HOME/omatrack/omatrack.yml` on Linux, falling back to `~/.config/omatrack/omatrack.yml`.
+Open a single supported telemetry or video file with the file picker, by dropping it on the window, or by passing it directly (`./build/omatrack /path/to/file`). The six most recently opened files are kept separately from configured telemetry directories. Configuration is stored in `$XDG_CONFIG_HOME/omatrack/omatrack.yml` on Linux, falling back to `~/.config/omatrack/omatrack.yml`.
 An existing pre-rename `racecraft.yml`, legacy `QSettings` preferences, and Track Atlas cache are imported once; legacy files remain untouched as a backup.
 
 ## Headless inspection
