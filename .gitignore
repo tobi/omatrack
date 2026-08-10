@@ -30,3 +30,5 @@ CMakeUserPresets.json
 *.webm
 *.WebM
 *.unified.csv
+# Profiler traces, screenshots, and benchmark outputs are local artifacts.
+profiler/
