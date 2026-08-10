@@ -78,16 +78,23 @@ void SessionMetadataCache::store(const QString& fingerprint,
 bool SessionMetadataCache::save() {
     const QMutexLocker locker(&s_cacheMutex);
     QJsonObject mergedEntries;
-    QFile existing(path_);
-    if (existing.open(QIODevice::ReadOnly)) {
-        QJsonParseError error;
-        const QJsonDocument document =
-            QJsonDocument::fromJson(existing.readAll(), &error);
-        if (error.error == QJsonParseError::NoError && document.isObject()) {
-            const QJsonObject root = document.object();
-            if (root.value(QStringLiteral("version")).toInt() == kSchemaVersion)
-                mergedEntries =
-                    root.value(QStringLiteral("entries")).toObject();
+    // Scoped so the read handle is closed before QSaveFile commits below.
+    // Windows refuses to replace a file that anyone still has open, so leaving
+    // this handle alive would fail every save after the first one.
+    {
+        QFile existing(path_);
+        if (existing.open(QIODevice::ReadOnly)) {
+            QJsonParseError error;
+            const QJsonDocument document =
+                QJsonDocument::fromJson(existing.readAll(), &error);
+            if (error.error == QJsonParseError::NoError &&
+                document.isObject()) {
+                const QJsonObject root = document.object();
+                if (root.value(QStringLiteral("version")).toInt() ==
+                    kSchemaVersion)
+                    mergedEntries =
+                        root.value(QStringLiteral("entries")).toObject();
+            }
         }
     }
     for (auto it = dirtyEntries_.constBegin(); it != dirtyEntries_.constEnd();
