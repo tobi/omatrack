@@ -142,3 +142,13 @@ add_test(NAME cli-contract
     -DCLI=$<TARGET_FILE:omatrack-cli>
     -P ${CMAKE_CURRENT_SOURCE_DIR}/CliContract.cmake)
 set_tests_properties(cli-contract PROPERTIES LABELS unit)
+
+# ── Make failures readable on Windows ───────────────────────────────
+# QTest only writes to stdout when stderr has a console attached. Under
+# CTest it never does, so on Windows every PASS/FAIL line goes to the
+# debugger through OutputDebugString instead and a failing test reports
+# no output at all — the CI log shows "***Failed" and nothing else.
+# Forcing stderr logging puts the assertion back in the log.
+get_property(omatrack_tests DIRECTORY PROPERTY TESTS)
+set_tests_properties(${omatrack_tests} PROPERTIES
+  ENVIRONMENT QT_FORCE_STDERR_LOGGING=1)
