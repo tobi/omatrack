@@ -919,7 +919,8 @@ struct SessionScanResult {
     QHash<QString, QString> folderDisplayNames;
     QStringList trackMetadataPaths;
     QHash<QString, QString> remoteSourceNames;
-    QHash<QString, QString> webdavStatuses;
+    QHash<QString, QString> locationStatuses;
+    QHash<QString, int> locationFileCounts;
     qint64 elapsedMs = 0;
 };
 
@@ -1445,33 +1446,81 @@ std::shared_ptr<SessionLapLoadResult> loadSessionLap(
     return result;
 }
 
-std::shared_ptr<SessionScanResult> scanSessionDirectories(
-    const QStringList& directories, const QSet<QString>& extraPaths,
-    const QString&, const QVector<WebDavConnection>& webdavConnections) {
+/// The label shown when the user has not named a location: a folder's own
+/// directory name, or a server's host.
+QString defaultLocationName(const LibraryLocation& location) {
+    if (location.type == LocationType::Folder) {
+        const QString name = QDir(location.target).dirName();
+        return name.isEmpty() ? location.target : name;
+    }
+    const QUrl url(location.target);
+    return url.host().isEmpty() ? location.target : url.host();
+}
+
+/// Resolves one location to the local directory that should be scanned for
+/// it, synchronizing connections into their cache first. Returns an empty
+/// path when the location cannot contribute to this scan, and always reports
+/// a status line for the preferences list.
+QString resolveLocationDirectory(const LibraryLocation& location,
+                                 QString* status) {
+    if (!location.enabled) {
+        *status = QStringLiteral("Disabled");
+        return {};
+    }
+    if (location.type == LocationType::Folder) {
+        const QFileInfo info(location.target);
+        if (!info.exists() || !info.isDir()) {
+            *status = QStringLiteral("Folder not found");
+            return {};
+        }
+        if (!info.isReadable()) {
+            *status = QStringLiteral("Folder not readable");
+            return {};
+        }
+        *status = QStringLiteral("Available");
+        return location.target;
+    }
+
+    WebDavConnection connection;
+    connection.id = location.id;
+    connection.name = location.name;
+    connection.url = location.target;
+    connection.username = location.username;
+    connection.password = location.password;
+    connection.enabled = true;
+    const WebDavSyncResult synced = WebDavCache::sync(connection);
+    *status = synced.status;
+    if (!synced.success || synced.cachePath.isEmpty()) return {};
+    return synced.cachePath;
+}
+
+std::shared_ptr<SessionScanResult> scanLibraryLocations(
+    const QVector<LibraryLocation>& locations, const QSet<QString>& extraPaths,
+    const QString&) {
     QElapsedTimer timer;
     timer.start();
     auto result = std::make_shared<SessionScanResult>();
     QSet<QString> uniquePaths = extraPaths;
     QSet<QString> metadataPaths;
-    QStringList scanDirectories = directories;
     const QStringList filters{
         "*.pds", "*.PDS", "*.ld",  "*.LD",  "*.ldx",  "*.LDX",  "*.vbo",
         "*.VBO", "*.mp4", "*.MP4", "*.mov", "*.MOV",  "*.mkv",  "*.MKV",
         "*.avi", "*.AVI", "*.m4v", "*.M4V", "*.webm", "*.WEBM", "TRACK.yml"};
 
-    for (const WebDavConnection& connection : webdavConnections) {
-        if (!connection.enabled) continue;
-        const WebDavSyncResult synced = WebDavCache::sync(connection);
-        result->webdavStatuses.insert(synced.id, synced.status);
-        if (!synced.success || synced.cachePath.isEmpty()) continue;
-        scanDirectories.append(synced.cachePath);
-        result->remoteSourceNames.insert(
-            normalizedSidebarPinPath(synced.cachePath),
-            connection.name.trimmed().isEmpty() ? connection.url
-                                                : connection.name.trimmed());
-    }
+    for (const LibraryLocation& location : locations) {
+        QString status;
+        const QString directory = resolveLocationDirectory(location, &status);
+        result->locationStatuses.insert(location.id, status);
+        if (directory.isEmpty()) {
+            result->locationFileCounts.insert(location.id, 0);
+            continue;
+        }
+        if (location.isConnection())
+            result->remoteSourceNames.insert(
+                normalizedSidebarPinPath(directory),
+                location.name.trimmed().isEmpty() ? location.target
+                                                  : location.name.trimmed());
 
-    for (const QString& directory : scanDirectories) {
         QSet<QString> sourcePaths;
         QDirIterator it(directory, filters, QDir::Files,
                         QDirIterator::Subdirectories);
@@ -1491,6 +1540,8 @@ std::shared_ptr<SessionScanResult> scanSessionDirectories(
             sourcePaths.insert(canonical);
             uniquePaths.insert(canonical);
         }
+        result->locationFileCounts.insert(location.id, sourcePaths.size());
+
         QVariantMap source = buildFileSource(directory, sourcePaths);
         const QString sourcePath = normalizedSidebarPinPath(directory);
         const auto remoteName = result->remoteSourceNames.constFind(sourcePath);
@@ -1498,6 +1549,8 @@ std::shared_ptr<SessionScanResult> scanSessionDirectories(
             source.insert(QStringLiteral("name"), remoteName.value());
             source.insert(QStringLiteral("remote"), true);
         }
+        if (!location.name.trimmed().isEmpty())
+            source.insert(QStringLiteral("name"), location.name.trimmed());
         result->fileSources.append(source);
     }
     result->trackMetadataPaths =
@@ -1620,7 +1673,7 @@ TelemetryStore::TelemetryStore(QObject* parent) : QObject(parent) {
         if (focusedCorner_ >= 0) rebuildCornerMarkers();
     });
     loadPreferences();
-    loadWebDavConnections();
+    loadLocations();
     loadChannelsConfig();
     // A fresh install gets a real omatrack.yml immediately, so the defaults
     // are visible and hand-editable instead of implicit.
@@ -1715,14 +1768,6 @@ void TelemetryStore::loadPreferences() {
             config.setMap({QStringLiteral("channels")}, channels);
         }
     }
-    const QVariant configuredDirs =
-        config.value(QStringLiteral("telemetry_dirs"));
-    const QStringList dirs = configuredDirs.isValid()
-                                 ? configuredDirs.toStringList()
-                                 : QStringList{defaultTelemetryDirectory()};
-    for (const QString& directory : dirs)
-        if (!sessionDirs_.contains(directory)) sessionDirs_.append(directory);
-
     const QVariantList pinRows =
         config.value({QStringLiteral("sidebar"), QStringLiteral("pins")})
             .toList();
@@ -1784,39 +1829,137 @@ void TelemetryStore::loadPreferences() {
             recordingMetadata_.insert(it.key(), it.value().toMap());
 }
 
-void TelemetryStore::loadWebDavConnections() {
-    const QVariantList rows =
-        YamlConfig::instance()
-            .value({QStringLiteral("webdav"), QStringLiteral("connections")})
-            .toList();
-    for (const QVariant& value : rows) {
-        const QVariantMap row = value.toMap();
-        WebDavConnection connection;
-        connection.url = row.value(QStringLiteral("url")).toString().trimmed();
-        connection.username =
-            row.value(QStringLiteral("username")).toString().trimmed();
-        connection.password = row.value(QStringLiteral("password")).toString();
-        connection.name =
-            row.value(QStringLiteral("name")).toString().trimmed();
-        connection.enabled =
-            yamlBool(row.value(QStringLiteral("enabled")), true);
-        connection.id = row.value(QStringLiteral("id")).toString().trimmed();
-        if (connection.id.isEmpty())
-            connection.id =
-                WebDavCache::connectionId(connection.url, connection.username);
-        if (connection.url.isEmpty() || !QUrl(connection.url).isValid() ||
-            std::none_of(webdavConnections_.cbegin(), webdavConnections_.cend(),
-                         [&connection](const WebDavConnection& existing) {
-                             return existing.id == connection.id;
-                         }))
-            webdavConnections_.append(std::move(connection));
+void TelemetryStore::loadLocations() {
+    YamlConfig& config = YamlConfig::instance();
+    const QVariant configured = config.value(QStringLiteral("locations"));
+
+    // `locations` replaced the split `telemetry_dirs` list and
+    // `webdav.connections` map. Fold the old shape into the new one once and
+    // prune the superseded keys, so the file only ever holds one library.
+    if (!configured.isValid()) {
+        const QVariant legacyDirs =
+            config.value(QStringLiteral("telemetry_dirs"));
+        const QStringList dirs = legacyDirs.isValid()
+                                     ? legacyDirs.toStringList()
+                                     : QStringList{defaultTelemetryDirectory()};
+        for (const QString& directory : dirs)
+            appendFolderLocation(directory, /*requireExists=*/false);
+
+        const QVariantList legacyConnections =
+            config
+                .value(
+                    {QStringLiteral("webdav"), QStringLiteral("connections")})
+                .toList();
+        for (const QVariant& value : legacyConnections) {
+            const QVariantMap row = value.toMap();
+            LibraryLocation location;
+            location.type = LocationType::WebDav;
+            location.target =
+                row.value(QStringLiteral("url")).toString().trimmed();
+            if (location.target.isEmpty()) continue;
+            location.username =
+                row.value(QStringLiteral("username")).toString().trimmed();
+            location.password =
+                row.value(QStringLiteral("password")).toString();
+            location.name =
+                row.value(QStringLiteral("name")).toString().trimmed();
+            location.enabled =
+                yamlBool(row.value(QStringLiteral("enabled")), true);
+            location.id = row.value(QStringLiteral("id")).toString().trimmed();
+            if (location.id.isEmpty())
+                location.id = WebDavCache::connectionId(location.target,
+                                                        location.username);
+            if (locationIndex(location.id) < 0)
+                locations_.append(std::move(location));
+        }
+        config.remove({QStringLiteral("telemetry_dirs")});
+        config.remove({QStringLiteral("webdav")});
+        savePreferences();
+        return;
     }
+
+    for (const QVariant& value : configured.toList()) {
+        const QVariantMap row = value.toMap();
+        bool knownType = false;
+        const LocationType type = locationTypeFromKey(
+            row.value(QStringLiteral("type")).toString().trimmed(), &knownType);
+        // An unknown type is a newer config than this build understands.
+        // Skipping it keeps the entry in the file untouched rather than
+        // silently reinterpreting it as a folder.
+        if (!knownType) continue;
+
+        LibraryLocation location;
+        location.type = type;
+        location.target =
+            row.value(QStringLiteral("target")).toString().trimmed();
+        if (location.target.isEmpty()) continue;
+        location.name = row.value(QStringLiteral("name")).toString().trimmed();
+        location.username =
+            row.value(QStringLiteral("username")).toString().trimmed();
+        location.password = row.value(QStringLiteral("password")).toString();
+        location.enabled = yamlBool(row.value(QStringLiteral("enabled")), true);
+        location.id = row.value(QStringLiteral("id")).toString().trimmed();
+        if (location.id.isEmpty())
+            location.id =
+                location.type == LocationType::Folder
+                    ? WebDavCache::connectionId(location.target, QString())
+                    : WebDavCache::connectionId(location.target,
+                                                location.username);
+        if (locationIndex(location.id) < 0)
+            locations_.append(std::move(location));
+    }
+}
+
+int TelemetryStore::locationIndex(const QString& id) const {
+    for (int i = 0; i < locations_.size(); ++i)
+        if (locations_[i].id == id) return i;
+    return -1;
+}
+
+bool TelemetryStore::appendFolderLocation(const QString& dirPath,
+                                          bool requireExists) {
+    const QString trimmed = dirPath.trimmed();
+    if (trimmed.isEmpty()) return false;
+    const QFileInfo info(trimmed);
+    if (requireExists && (!info.exists() || !info.isDir())) return false;
+    const QString absolute = info.absoluteFilePath();
+
+    LibraryLocation location;
+    location.type = LocationType::Folder;
+    location.target = absolute;
+    location.id = WebDavCache::connectionId(absolute, QString());
+    for (const LibraryLocation& existing : std::as_const(locations_))
+        if (existing.type == LocationType::Folder &&
+            existing.target == absolute)
+            return false;
+    locations_.append(std::move(location));
+    return true;
 }
 
 void TelemetryStore::savePreferences() {
     YamlConfig& config = YamlConfig::instance();
-    config.setValue(QStringList{QStringLiteral("telemetry_dirs")},
-                    QVariant(sessionDirs_));
+    QVariantList locationRows;
+    locationRows.reserve(locations_.size());
+    for (const LibraryLocation& location : std::as_const(locations_)) {
+        QVariantMap row{
+            {QStringLiteral("id"), location.id},
+            {QStringLiteral("type"), locationTypeKey(location.type)},
+            {QStringLiteral("target"), location.target},
+            {QStringLiteral("enabled"), location.enabled},
+        };
+        if (!location.name.isEmpty())
+            row.insert(QStringLiteral("name"), location.name);
+        if (location.isConnection()) {
+            if (!location.username.isEmpty())
+                row.insert(QStringLiteral("username"), location.username);
+            if (!location.password.isEmpty())
+                row.insert(QStringLiteral("password"), location.password);
+        }
+        locationRows.append(row);
+    }
+    config.setValue(
+        {QStringLiteral("locations")},
+        locationRows.isEmpty() ? QVariant() : QVariant(locationRows));
     config.setValue(QStringLiteral("recent_files"), recentFiles_);
     config.setValue(QStringLiteral("video/muted"), videoMuted_);
     QVariantList pinRows;
@@ -1855,21 +1998,6 @@ void TelemetryStore::savePreferences() {
          ++it)
         recordingMetadata.insert(it.key(), it.value());
     config.setMap({QStringLiteral("recording_metadata")}, recordingMetadata);
-
-    QVariantList webdavRows;
-    webdavRows.reserve(webdavConnections_.size());
-    for (const WebDavConnection& connection :
-         std::as_const(webdavConnections_)) {
-        webdavRows.append(
-            QVariantMap{{QStringLiteral("id"), connection.id},
-                        {QStringLiteral("name"), connection.name},
-                        {QStringLiteral("url"), connection.url},
-                        {QStringLiteral("username"), connection.username},
-                        {QStringLiteral("password"), connection.password},
-                        {QStringLiteral("enabled"), connection.enabled}});
-    }
-    config.setValue({QStringLiteral("webdav"), QStringLiteral("connections")},
-                    webdavRows.isEmpty() ? QVariant() : QVariant(webdavRows));
 
     QVariantMap channels = config.map({QStringLiteral("channels")});
     for (const QString& key : channelOrder_)
@@ -2164,14 +2292,12 @@ void TelemetryStore::startSessionScan() {
         loading_ = true;
         emit loadingChanged();
     }
-    const QStringList directories = sessionDirs_;
+    const QVector<LibraryLocation> locations = locations_;
     const QSet<QString> extraPaths = transientSessionPaths_;
     const QString cachePath = sessionIndexCachePath();
-    const QVector<WebDavConnection> webdavConnections = webdavConnections_;
-    scanWatcher_->setFuture(QtConcurrent::run(
-        [directories, extraPaths, cachePath, webdavConnections]() {
-            return scanSessionDirectories(directories, extraPaths, cachePath,
-                                          webdavConnections);
+    scanWatcher_->setFuture(
+        QtConcurrent::run([locations, extraPaths, cachePath]() {
+            return scanLibraryLocations(locations, extraPaths, cachePath);
         }));
 }
 
@@ -2188,7 +2314,8 @@ void TelemetryStore::finishSessionScan() {
     discoveredFilePaths_ = result->discoveredFilePaths;
     folderDisplayNames_ = result->folderDisplayNames;
     trackMetadataPaths_ = result->trackMetadataPaths;
-    webdavStatuses_ = result->webdavStatuses;
+    locationStatuses_ = result->locationStatuses;
+    locationFileCounts_ = result->locationFileCounts;
     transientSessionPaths_.clear();
     qInfo() << "File discovery:" << result->elapsedMs
             << "ms; sidebar metadata remains lazy";
@@ -2199,21 +2326,27 @@ void TelemetryStore::finishSessionScan() {
     loading_ = false;
     emit loadingChanged();
     emit sessionsChanged();
-    emit webDavChanged();
+    emit locationsChanged();
 }
 
 void TelemetryStore::addSessionDirectory(const QString& dirPath) {
-    if (dirPath.isEmpty() || !QFileInfo::exists(dirPath) ||
-        sessionDirs_.contains(dirPath))
-        return;
-    sessionDirs_.append(dirPath);
+    if (!appendFolderLocation(dirPath)) return;
     savePreferences();
+    emit locationsChanged();
     scan();
 }
+
 void TelemetryStore::removeSessionDirectory(const QString& dirPath) {
-    if (!sessionDirs_.removeAll(dirPath)) return;
-    savePreferences();
-    scan();
+    const QFileInfo info(dirPath);
+    const QString absolute =
+        info.absoluteFilePath().isEmpty() ? dirPath : info.absoluteFilePath();
+    for (int i = 0; i < locations_.size(); ++i) {
+        if (locations_[i].type != LocationType::Folder) continue;
+        if (locations_[i].target != absolute && locations_[i].target != dirPath)
+            continue;
+        removeLocation(locations_[i].id);
+        return;
+    }
 }
 
 void TelemetryStore::openFile(const QString& filePath) {
@@ -2410,75 +2543,177 @@ void TelemetryStore::clearSessions() {
     emit cornersChanged();
 }
 
-QStringList TelemetryStore::sessionDirectories() const { return sessionDirs_; }
+QStringList TelemetryStore::sessionDirectories() const {
+    QStringList directories;
+    directories.reserve(locations_.size());
+    for (const LibraryLocation& location : std::as_const(locations_)) {
+        if (!location.enabled) continue;
+        if (location.type == LocationType::Folder) {
+            directories.append(location.target);
+            continue;
+        }
+        WebDavConnection connection;
+        connection.url = location.target;
+        connection.username = location.username;
+        const QString cache = WebDavCache::cachePath(connection);
+        if (!cache.isEmpty() && QFileInfo::exists(cache))
+            directories.append(cache);
+    }
+    return directories;
+}
 
-QVariantList TelemetryStore::webDavConnections() const {
+QVariantList TelemetryStore::connectionTypes() const {
+    return QVariantList{QVariantMap{
+        {QStringLiteral("type"), locationTypeKey(LocationType::WebDav)},
+        {QStringLiteral("label"), QStringLiteral("WebDAV server")},
+        {QStringLiteral("placeholder"),
+         QStringLiteral("https://server.example/dav/")},
+        {QStringLiteral("needsCredentials"), true},
+        {QStringLiteral("detail"),
+         QStringLiteral("Files are synchronized into a local cache before "
+                        "scanning, and stay available offline.")}}};
+}
+
+QVariantList TelemetryStore::libraryLocations() const {
     QVariantList rows;
-    rows.reserve(webdavConnections_.size());
-    for (const WebDavConnection& connection :
-         std::as_const(webdavConnections_)) {
+    rows.reserve(locations_.size());
+    for (const LibraryLocation& location : std::as_const(locations_)) {
+        const bool folder = location.type == LocationType::Folder;
+        QString cachePath;
+        if (!folder) {
+            WebDavConnection connection;
+            connection.url = location.target;
+            connection.username = location.username;
+            cachePath = WebDavCache::cachePath(connection);
+        }
+        // A folder reports liveness directly; a connection only knows what
+        // the last sync said, so it falls back to "Not connected yet".
+        const QString fallback =
+            folder ? (QFileInfo(location.target).isDir()
+                          ? QStringLiteral("Not scanned yet")
+                          : QStringLiteral("Folder not found"))
+                   : QStringLiteral("Not connected yet");
+        const QString status =
+            location.enabled ? locationStatuses_.value(location.id, fallback)
+                             : QStringLiteral("Disabled");
         rows.append(QVariantMap{
-            {QStringLiteral("id"), connection.id},
-            {QStringLiteral("name"), connection.name},
-            {QStringLiteral("url"), connection.url},
-            {QStringLiteral("username"), connection.username},
-            {QStringLiteral("status"),
-             webdavStatuses_.value(connection.id,
-                                   QStringLiteral("Not scanned yet"))},
-            {QStringLiteral("cachePath"), WebDavCache::cachePath(connection)}});
+            {QStringLiteral("id"), location.id},
+            {QStringLiteral("type"), locationTypeKey(location.type)},
+            {QStringLiteral("isConnection"), location.isConnection()},
+            {QStringLiteral("name"), location.name.isEmpty()
+                                         ? defaultLocationName(location)
+                                         : location.name},
+            {QStringLiteral("target"), location.target},
+            {QStringLiteral("username"), location.username},
+            {QStringLiteral("hasPassword"), !location.password.isEmpty()},
+            {QStringLiteral("enabled"), location.enabled},
+            // A connection counts as available once it has a populated cache:
+            // that is what the library can actually scan, online or not.
+            {QStringLiteral("available"),
+             folder ? QFileInfo(location.target).isDir()
+                    : !cachePath.isEmpty() && QFileInfo(cachePath).isDir()},
+            {QStringLiteral("status"), status},
+            {QStringLiteral("fileCount"),
+             locationFileCounts_.value(location.id, -1)},
+            {QStringLiteral("cachePath"), cachePath}});
     }
     return rows;
 }
 
-void TelemetryStore::connectWebDav(const QString& name, const QString& url,
-                                   const QString& username,
-                                   const QString& password) {
-    const QUrl parsed(url.trimmed());
+QString TelemetryStore::saveConnection(const QVariantMap& fields) {
+    bool knownType = false;
+    const LocationType type = locationTypeFromKey(
+        fields.value(QStringLiteral("type")).toString().trimmed(), &knownType);
+    if (!knownType || type == LocationType::Folder)
+        return QStringLiteral("Unsupported connection type.");
+
+    const QUrl parsed(
+        fields.value(QStringLiteral("target")).toString().trimmed());
     if (!parsed.isValid() ||
         (parsed.scheme() != QStringLiteral("http") &&
          parsed.scheme() != QStringLiteral("https")) ||
-        parsed.host().isEmpty()) {
-        emit operationError(
-            QStringLiteral("Unable to connect WebDAV"),
-            QStringLiteral("Enter a valid http(s) WebDAV URL."));
-        return;
-    }
-    WebDavConnection connection;
-    connection.url = parsed.toString(QUrl::FullyEncoded);
-    connection.username = username.trimmed();
-    connection.name = name.trimmed().isEmpty() ? parsed.host() : name.trimmed();
-    connection.id =
-        WebDavCache::connectionId(connection.url, connection.username);
-    const auto existing =
-        std::find_if(webdavConnections_.begin(), webdavConnections_.end(),
-                     [&connection](const WebDavConnection& candidate) {
-                         return candidate.id == connection.id;
-                     });
-    if (existing != webdavConnections_.end()) {
-        connection.password =
-            password.isEmpty() ? existing->password : password;
-        *existing = connection;
+        parsed.host().isEmpty())
+        return QStringLiteral("Enter a valid http(s) URL.");
+
+    LibraryLocation location;
+    location.type = type;
+    location.target = parsed.toString(QUrl::FullyEncoded);
+    location.username =
+        fields.value(QStringLiteral("username")).toString().trimmed();
+    location.name = fields.value(QStringLiteral("name")).toString().trimmed();
+    location.enabled = fields.value(QStringLiteral("enabled"), true).toBool();
+    const QString password =
+        fields.value(QStringLiteral("password")).toString();
+    location.id = WebDavCache::connectionId(location.target, location.username);
+
+    // Editing keeps the stored password when the field was left blank, so the
+    // dialog never has to round-trip a secret it does not display.
+    const QString editingId =
+        fields.value(QStringLiteral("id")).toString().trimmed();
+    const int editing = editingId.isEmpty() ? -1 : locationIndex(editingId);
+    const int duplicate = locationIndex(location.id);
+    if (duplicate >= 0 && duplicate != editing)
+        return QStringLiteral("That server is already connected.");
+
+    if (editing >= 0) {
+        location.password =
+            password.isEmpty() ? locations_[editing].password : password;
+        locations_[editing] = location;
     } else {
-        connection.password = password;
-        webdavConnections_.append(connection);
+        location.password = password;
+        locations_.append(location);
     }
-    webdavStatuses_.remove(connection.id);
+    locationStatuses_.remove(location.id);
+    locationFileCounts_.remove(location.id);
     savePreferences();
-    emit webDavChanged();
+    emit locationsChanged();
+    scan();
+    return {};
+}
+
+void TelemetryStore::removeLocation(const QString& id) {
+    const int index = locationIndex(id);
+    if (index < 0) return;
+    locations_.remove(index);
+    locationStatuses_.remove(id);
+    locationFileCounts_.remove(id);
+    savePreferences();
+    emit locationsChanged();
     scan();
 }
 
-void TelemetryStore::removeWebDavConnection(const QString& id) {
-    const auto existing =
-        std::remove_if(webdavConnections_.begin(), webdavConnections_.end(),
-                       [&id](const WebDavConnection& connection) {
-                           return connection.id == id;
-                       });
-    if (existing == webdavConnections_.end()) return;
-    webdavConnections_.erase(existing, webdavConnections_.end());
-    webdavStatuses_.remove(id);
+void TelemetryStore::setLocationEnabled(const QString& id, bool enabled) {
+    const int index = locationIndex(id);
+    if (index < 0 || locations_[index].enabled == enabled) return;
+    locations_[index].enabled = enabled;
+    locationStatuses_.remove(id);
+    locationFileCounts_.remove(id);
     savePreferences();
-    emit webDavChanged();
+    emit locationsChanged();
+    scan();
+}
+
+void TelemetryStore::setLocationName(const QString& id, const QString& name) {
+    const int index = locationIndex(id);
+    if (index < 0) return;
+    const QString trimmed = name.trimmed();
+    if (locations_[index].name == trimmed) return;
+    locations_[index].name = trimmed;
+    savePreferences();
+    emit locationsChanged();
+    // Folder display names feed the session tree, so refresh discovery too.
+    scan();
+}
+
+void TelemetryStore::moveLocation(const QString& id, int delta) {
+    const int index = locationIndex(id);
+    if (index < 0 || delta == 0) return;
+    const int target =
+        std::clamp(index + delta, 0, static_cast<int>(locations_.size()) - 1);
+    if (target == index) return;
+    locations_.move(index, target);
+    savePreferences();
+    emit locationsChanged();
     scan();
 }
 

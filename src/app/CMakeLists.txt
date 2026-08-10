@@ -47,6 +47,7 @@ qt_add_qml_module(omatrack
     RoleDot.qml
     ChannelBrowserPopup.qml
     ChannelMappingField.qml
+    ConnectionDialog.qml
     CompactTextField.qml
     CompactButton.qml
     Style.qml
@@ -73,6 +74,7 @@ qt_add_qml_module(omatrack
     SessionMetadataCache.h SessionMetadataCache.cpp
     TrackMetadata.h TrackMetadata.cpp
     TelemetryStore.h TelemetryStore.cpp
+    LibraryLocation.h LibraryLocation.cpp
     WebDavCache.h WebDavCache.cpp
     TrackAtlasSpatial.h TrackAtlasSpatial.cpp
     TraceSceneBuilder.h TraceSceneBuilder.cpp

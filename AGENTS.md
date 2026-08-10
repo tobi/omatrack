@@ -121,13 +121,22 @@ wins on load. Caches (Track Atlas snapshot, thumbnails) stay outside the file.
   (`src_`) are freed after unification in `adoptLoadedLap()`;
   `extraChannelData()` re-opens the file on demand for the opt-in raw-channel
   feature.
-- Persist telemetry directories and user-facing aliases in `omatrack.yml`; `~/Documents/Telemetry` (resolved through the platform Documents location, so Windows OneDrive redirection is honored) is the default directory on a fresh install and is created if missing.
-- Persist WebDAV connections under `webdav.connections` in `omatrack.yml`.
-  Credentials are used only for authenticated requests; remote files and
-  `TRACK.yml` metadata are streamed into an atomic cache under
-  `$XDG_CACHE_HOME/omatrack/webdav/` (or the platform cache equivalent).
-  ETag/Last-Modified metadata avoids unchanged downloads, and an unavailable
-  server falls back to its last complete cache.
+- The library is one ordered list of locations under `locations` in
+  `omatrack.yml`. A location is either a local folder (`type: folder`) or a
+  connection to an outside server (`type: webdav` today), and both carry
+  `id`, `name`, `target`, and `enabled`. Disabled locations stay configured
+  and are skipped by every scan. Keep this list heterogeneous: a new remote
+  source is a new `LocationType` plus a `connectionTypes()` entry, never a
+  second parallel list. `~/Documents/Telemetry` (resolved through the platform
+  Documents location, so Windows OneDrive redirection is honored) is the only
+  location on a fresh install and is created if missing.
+- Connections are synchronized into a local cache and the cache is scanned, so
+  everything downstream of discovery sees plain local paths and never learns
+  which kind of location produced them. Credentials are used only for
+  authenticated requests; remote files and `TRACK.yml` metadata are streamed
+  into an atomic cache under `$XDG_CACHE_HOME/omatrack/webdav/` (or the
+  platform cache equivalent). ETag/Last-Modified metadata avoids unchanged
+  downloads, and an unavailable server falls back to its last complete cache.
 
 ### Normalization and analysis
 

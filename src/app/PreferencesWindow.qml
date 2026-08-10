@@ -150,7 +150,7 @@ ApplicationWindow {
                         }
                         model: ListModel {
                             ListElement {
-                                detail: "Folders and scanning"
+                                detail: "Folders and connections"
                                 label: "Telemetry library"
                             }
                             ListElement {

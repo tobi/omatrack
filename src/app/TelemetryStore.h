@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include "LibraryLocation.h"
 #include "WebDavCache.h"
 
 #include <QByteArray>
@@ -296,13 +297,27 @@ public:
     Q_INVOKABLE QString configFilePath() const;
     QStringList recentFiles() const { return recentFiles_; }
     Q_INVOKABLE void removeSessionDirectory(const QString& dirPath);
+    /// Enabled local folders, including the cache directories that stand in
+    /// for connected servers. This is the scan input.
     Q_INVOKABLE QStringList sessionDirectories() const;
     Q_INVOKABLE QVariantList fileSources() const;
-    Q_INVOKABLE QVariantList webDavConnections() const;
-    Q_INVOKABLE void connectWebDav(const QString& name, const QString& url,
-                                   const QString& username,
-                                   const QString& password);
-    Q_INVOKABLE void removeWebDavConnection(const QString& id);
+
+    // ── Library locations ────────────────────────────────────────────────
+    // One ordered list of folders and server connections. Every row carries
+    // `type`, `name`, `target`, `enabled`, plus the live `status`/`detail`
+    // and `fileCount` from the last scan.
+    Q_INVOKABLE QVariantList libraryLocations() const;
+    /// The connection kinds offered by the "Connect" menu, as
+    /// {type, label, placeholder, needsCredentials} rows.
+    Q_INVOKABLE QVariantList connectionTypes() const;
+    /// Saves a new connection or updates an existing one when `id` is set.
+    /// Returns an empty string on success, otherwise the reason it failed.
+    Q_INVOKABLE QString saveConnection(const QVariantMap& fields);
+    Q_INVOKABLE void removeLocation(const QString& id);
+    Q_INVOKABLE void setLocationEnabled(const QString& id, bool enabled);
+    Q_INVOKABLE void setLocationName(const QString& id, const QString& name);
+    /// Moves a location within the list so users can order their library.
+    Q_INVOKABLE void moveLocation(const QString& id, int delta);
     Q_INVOKABLE void requestSidebarMetadata(const QString& path, bool visible);
     Q_INVOKABLE void copyFilePath(const QString& path) const;
     Q_INVOKABLE void openContainingFolder(const QString& path) const;
@@ -467,7 +482,7 @@ public:
     int comparisonGpsAnchors() const;
     bool videoMuted() const { return videoMuted_; }
     void setVideoMuted(bool muted);
-    QStringList sessionDirectoriesList() const { return sessionDirs_; }
+    QStringList sessionDirectoriesList() const { return sessionDirectories(); }
 
 signals:
     void readyChanged();
@@ -481,7 +496,7 @@ signals:
     void cornersChanged();
     void cornerFocusChanged();
     void driverMappingsChanged();
-    void webDavChanged();
+    void locationsChanged();
     void channelConfigChanged();
     void referenceAlignmentChanged();
     void trackAtlasChanged();
@@ -529,7 +544,14 @@ private:
     static QString trackAssignmentKey(const SessionHandle* session);
     void savePreferences();
     void loadChannelsConfig();
-    void loadWebDavConnections();
+    void loadLocations();
+    int locationIndex(const QString& id) const;
+    /// Appends a folder location, returning false when the path is empty or
+    /// already configured. `requireExists` is false when importing paths the
+    /// user already configured: an unmounted drive must survive the import
+    /// and show as "Folder not found", not vanish from the library.
+    bool appendFolderLocation(const QString& dirPath,
+                              bool requireExists = true);
 
     void loadCornersForPrimary();
     void rebuildCornerMarkers();
@@ -550,9 +572,11 @@ private:
     void rebuildComparisonAlignment();
     double compareTimeForPrimaryFraction(double fraction) const;
     double compareFractionForPrimaryFraction(double fraction) const;
-    QStringList sessionDirs_;
-    QVector<omatrack::WebDavConnection> webdavConnections_;
-    QHash<QString, QString> webdavStatuses_;
+    QVector<omatrack::LibraryLocation> locations_;
+    /// Per-location scan outcome, keyed by location id: the status line shown
+    /// in preferences and the number of telemetry files discovered.
+    QHash<QString, QString> locationStatuses_;
+    QHash<QString, int> locationFileCounts_;
     QVariantList fileSources_;
     QStringList discoveredFilePaths_;
     QList<QString> sidebarMetadataQueue_;

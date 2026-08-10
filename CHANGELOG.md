@@ -4,6 +4,15 @@ All notable user-facing changes are documented here.
 
 ## 0.9.6 — 2026-08-10
 
+- The telemetry library is now one list of locations in preferences. Local
+  folders and server connections sit in the same list with the same enable
+  switch, status, and file count, and each row can be renamed, reordered, or
+  disabled without being forgotten. "Connect…" builds its menu from the
+  connection types the backend offers, so WebDAV is the first of a set rather
+  than a special case. Configuration moved from `telemetry_dirs` plus
+  `webdav.connections` to a single `locations` list in `omatrack.yml`, and
+  existing files are folded into the new shape on first launch.
+
 - Fixed driver names in the recording/folder metadata dialog losing keyboard
   focus after a single character; the editors now survive model updates.
 - Added authenticated WebDAV telemetry sources with streamed, locally cached
