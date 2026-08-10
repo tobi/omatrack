@@ -145,7 +145,27 @@ endif()
 # Windows and macOS releases are self-contained application bundles. Linux
 # distribution installs deliberately retain their system Qt dependencies; the
 # release workflow turns that install tree into a portable AppImage.
-if(WIN32 OR APPLE)
+if(WIN32)
+  # Qt does not deploy translations that omatrack never loads, and keeping
+  # them out of the tree keeps the qt.conf written below fully consistent.
+  qt_generate_deploy_qml_app_script(
+    TARGET omatrack
+    OUTPUT_SCRIPT omatrack_deploy_script
+    NO_TRANSLATIONS)
+  # Flat Windows release layout. Runtime DLLs are deployed next to the exe at
+  # the install root (QT_DEPLOY_BIN_DIR "."), while Qt plugins and QML modules
+  # land under lib/. The deploy support script leaves these alone because of
+  # its `if(NOT ...)` guards, so they must be set before the generated script
+  # is included. Generating a qt.conf is how the deploy step reconciles the
+  # binaries-with-bundled-DLLs root with the lib/ plugin and QML tree.
+  file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/omatrack_deploy_flat.cmake
+    "set(QT_DEPLOY_BIN_DIR \".\")\n"
+    "set(QT_DEPLOY_LIB_DIR \"lib\")\n"
+    "set(QT_DEPLOY_PLUGINS_DIR \"lib/plugins\")\n"
+    "set(QT_DEPLOY_QML_DIR \"lib/qml\")\n"
+    "include(\"${omatrack_deploy_script}\")\n")
+  install(SCRIPT ${CMAKE_CURRENT_BINARY_DIR}/omatrack_deploy_flat.cmake)
+elseif(APPLE)
   qt_generate_deploy_qml_app_script(
     TARGET omatrack
     OUTPUT_SCRIPT omatrack_deploy_script)

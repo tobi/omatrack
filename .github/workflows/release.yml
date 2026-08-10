@@ -271,8 +271,9 @@ jobs:
 
           # Qt deploys its own runtime and QML imports. Close over the remaining
           # MinGW dependencies (mpv, yaml, and compiler runtimes) recursively.
+          # The install tree is flat: executables and their load-time DLLs sit
+          # at the stage root, so collected dependencies land there too.
           source packaging/windows/runtime-policy.sh
-          mkdir -p stage/bin
           mapfile -d '' binaries < <(
             find stage -type f \( -iname '*.exe' -o -iname '*.dll' \) -print0
           )
@@ -302,7 +303,7 @@ jobs:
                 continue
               fi
               if [[ -f "/ucrt64/bin/$dependency" ]]; then
-                destination="stage/bin/$dependency"
+                destination="stage/$dependency"
                 cp "/ucrt64/bin/$dependency" "$destination"
                 binaries+=("$destination")
                 bundled[$dependency_key]=1
@@ -317,8 +318,10 @@ jobs:
           done
           ((unresolved == 0))
           packaging/windows/verify-bundle.sh stage
+          test -f stage/omatrack.exe
+          test -f stage/qt.conf
           set +e
-          cli_output=$(stage/bin/omatrack-cli.exe 2>&1)
+          cli_output=$(stage/omatrack-cli.exe 2>&1)
           cli_status=$?
           set -e
           test "$cli_status" -eq 2

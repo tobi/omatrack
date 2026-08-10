@@ -24,8 +24,21 @@
   <url type="bugtracker">https://github.com/tobi/omatrack/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.9.6" date="2026-08-10">
+      <description>
+        <p>GPU scene-graph trace renderer, in-place corner analysis with a
+        pluggable check system, authenticated WebDAV telemetry sources, Windows
+        flat release zips, and unified telemetry/video file opening with
+        recent-file history.</p>
+      </description>
+    </release>
     <release version="0.9.0" date="2026-08-09">
-      <description><p>Cross-platform release with shared GPS/speed lap and video alignment.</p></description>
+      <description>
+        <p>Cached GPS/speed track-station alignment shared by traces, delta and
+        synchronized video; lazy cached library indexing; pinned upstream Rust
+        telemetry crates; fullscreen telemetry HUD and video/folder metadata
+        workflow; downloadable Linux, macOS and Windows builds.</p>
+      </description>
     </release>
     <release version="0.1.0" date="2026-08-05">
       <description><p>Initial public development release.</p></description>

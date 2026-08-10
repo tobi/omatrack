@@ -1,0 +1,451 @@
+{
+  "range_events_total_ms": 678.88,
+  "total_events": 115392,
+  "by_type": [
+    {
+      "type": "Creating",
+      "count": 7267,
+      "total_ms": 285.23,
+      "ms_per_frame": 1.75
+    },
+    {
+      "type": "Javascript",
+      "count": 19595,
+      "total_ms": 178.03,
+      "ms_per_frame": 1.092
+    },
+    {
+      "type": "Compiling",
+      "count": 63,
+      "total_ms": 79.31,
+      "ms_per_frame": 0.487
+    },
+    {
+      "type": "Binding",
+      "count": 14326,
+      "total_ms": 79.12,
+      "ms_per_frame": 0.485
+    },
+    {
+      "type": "HandlingSignal",
+      "count": 141,
+      "total_ms": 57.2,
+      "ms_per_frame": 0.351
+    }
+  ],
+  "hotspots": [
+    {
+      "filename": "qrc:/qt/qml/Omatrack/Main.qml",
+      "line": 10,
+      "type": "Creating",
+      "name": "Main.qml:10",
+      "details": "ApplicationWindow",
+      "count": 1,
+      "total_ms": 47.77,
+      "avg_ms": 47.77,
+      "ms_per_frame": 0.293
+    },
+    {
+      "filename": "qrc:/qt/qml/Omatrack/Main.qml",
+      "line": 0,
+      "type": "Compiling",
+      "name": "Main.qml:0",
+      "details": "qrc:/qt/qml/Omatrack/Main.qml",
+      "count": 2,
+      "total_ms": 35.41,
+      "avg_ms": 17.704,
+      "ms_per_frame": 0.217
+    },
+    {
+      "filename": "qrc:/qt-project.org/imports/QtQuick/Controls/Material/ApplicationWindow.qml",
+      "line": 10,
+      "type": "Creating",
+      "name": "ApplicationWindow.qml:10",
+      "details": "QtQuick.Templates/ApplicationWindow",
+      "count": 6,
+      "total_ms": 33.4,
+      "avg_ms": 5.566,
+      "ms_per_frame": 0.205
+    },
+    {
+      "filename": "qrc:/qt/qml/Omatrack/Main.qml",
+      "line": 504,
+      "type": "HandlingSignal",
+      "name": "Main.qml:504",
+      "details": "",
+      "count": 1,
+      "total_ms": 20.75,
+      "avg_ms": 20.753,
+      "ms_per_frame": 0.127
+    },
+    {
+      "filename": "qrc:/qt/qml/Omatrack/Main.qml",
+      "line": 504,
+      "type": "Javascript",
+      "name": "Main.qml:504",
+      "details": "expression for onCompleted",
+      "count": 1,
+      "total_ms": 20.75,
+      "avg_ms": 20.752,
+      "ms_per_frame": 0.127
+    },
+    {
+      "filename": "qrc:/qt/qml/Omatrack/ChannelsWindow.qml",
+      "line": 20,
+      "type": "Javascript",
+      "name": "ChannelsWindow.qml:20",
+      "details": "refresh",
+      "count": 1,
+      "total_ms": 20.53,
+      "avg_ms": 20.531,
+      "ms_per_frame": 0.126
+    },
+    {
+      "filename": "qrc:/qt/qml/Omatrack/ChannelsWindow.qml",
+      "line": 73,
+      "type": "Binding",
+      "name": "ChannelsWindow.qml:73",
+      "details": "",
+      "count": 2,
+      "total_ms": 20.48,
+      "avg_ms": 10.242,
+      "ms_per_frame": 0.126
+    },
+    {
+      "filename": "qrc:/qt/qml/Omatrack/Main.qml",
+      "line": 970,
+      "type": "HandlingSignal",
+      "name": "Main.qml:970",
+      "details": "",
+      "count": 4,
+      "total_ms": 18.14,
+      "avg_ms": 4.536,
+      "ms_per_frame": 0.111
+    },
+    {
+      "filename": "qrc:/qt/qml/Omatrack/Main.qml",
+      "line": 970,
+      "type": "Javascript",
+      "name": "Main.qml:970",
+      "details": "onSelectionChanged",
+      "count": 4,
+      "total_ms": 18.14,
+      "avg_ms": 4.535,
+      "ms_per_frame": 0.111
+    },
+    {
+      "filename": "qrc:/qt/qml/Omatrack/Main.qml",
+      "line": 188,
+      "type": "Javascript",
+      "name": "Main.qml:188",
+      "details": "refreshLapStrip",
+      "count": 6,
+      "total_ms": 17.96,
+      "avg_ms": 2.993,
+      "ms_per_frame": 0.11
+    },
+    {
+      "filename": "qrc:/qt/qml/Omatrack/Main.qml",
+      "line": 238,
+      "type": "Javascript",
+      "name": "Main.qml:238",
+      "details": "sessionNameForKey",
+      "count": 6,
+      "total_ms": 15.79,
+      "avg_ms": 2.632,
+      "ms_per_frame": 0.097
+    },
+    {
+      "filename": "qrc:/qt/qml/Omatrack/Main.qml",
+      "line": 218,
+      "type": "Javascript",
+      "name": "Main.qml:218",
+      "details": "sessionInfoForKey",
+      "count": 7,
+      "total_ms": 15.79,
+      "avg_ms": 2.255,
+      "ms_per_frame": 0.097
+    },
+    {
+      "filename": "qrc:/qt-project.org/imports/QtQuick/Controls/Material/Switch.qml",
+      "line": 10,
+      "type": "Creating",
+      "name": "Switch.qml:10",
+      "details": "QtQuick.Templates/Switch",
+      "count": 22,
+      "total_ms": 15.69,
+      "avg_ms": 0.713,
+      "ms_per_frame": 0.096
+    },
+    {
+      "filename": "qrc:/qt-project.org/imports/QtQuick/Controls/Material/impl/SwitchIndicator.qml",
+      "line": 92,
+      "type": "Creating",
+      "name": "SwitchIndicator.qml:92",
+      "details": "QtQuick.Controls.impl/IconImage",
+      "count": 22,
+      "total_ms": 14.42,
+      "avg_ms": 0.656,
+      "ms_per_frame": 0.088
+    },
+    {
+      "filename": "qrc:/qt-project.org/imports/QtQuick/Controls/Material/Label.qml",
+      "line": 9,
+      "type": "Creating",
+      "name": "Label.qml:9",
+      "details": "QtQuick.Templates/Label",
+      "count": 652,
+      "total_ms": 10.85,
+      "avg_ms": 0.017,
+      "ms_per_frame": 0.067
+    },
+    {
+      "filename": "qrc:/qt-project.org/imports/QtQuick/Controls/Material/MenuItem.qml",
+      "line": 11,
+      "type": "Creating",
+      "name": "MenuItem.qml:11",
+      "details": "QtQuick.Templates/MenuItem",
+      "count": 80,
+      "total_ms": 10.5,
+      "avg_ms": 0.131,
+      "ms_per_frame": 0.064
+    },
+    {
+      "filename": "qrc:/qt/qml/Omatrack/TrackAssignmentDialog.qml",
+      "line": 0,
+      "type": "Compiling",
+      "name": "TrackAssignmentDialog.qml:0",
+      "details": "qrc:/qt/qml/Omatrack/TrackAssignmentDialog.qml",
+      "count": 1,
+      "total_ms": 8.14,
+      "avg_ms": 8.142,
+      "ms_per_frame": 0.05
+    },
+    {
+      "filename": "qrc:/qt/qml/Omatrack/FileBrowserPane.qml",
+      "line": 172,
+      "type": "HandlingSignal",
+      "name": "FileBrowserPane.qml:172",
+      "details": "",
+      "count": 1,
+      "total_ms": 7.47,
+      "avg_ms": 7.468,
+      "ms_per_frame": 0.046
+    },
+    {
+      "filename": "qrc:/qt/qml/Omatrack/FileBrowserPane.qml",
+      "line": 172,
+      "type": "Javascript",
+      "name": "FileBrowserPane.qml:172",
+      "details": "onSessionsChanged",
+      "count": 1,
+      "total_ms": 7.47,
+      "avg_ms": 7.466,
+      "ms_per_frame": 0.046
+    },
+    {
+      "filename": "qrc:/qt/qml/Omatrack/Main.qml",
+      "line": 475,
+      "type": "Creating",
+      "name": "Main.qml:475",
+      "details": "AppHeader",
+      "count": 1,
+      "total_ms": 6.12,
+      "avg_ms": 6.117,
+      "ms_per_frame": 0.038
+    },
+    {
+      "filename": "qrc:/qt-project.org/imports/QtQuick/Controls/Material/Button.qml",
+      "line": 50,
+      "type": "Creating",
+      "name": "Button.qml:50",
+      "details": "QtQuick/Rectangle",
+      "count": 66,
+      "total_ms": 6.1,
+      "avg_ms": 0.092,
+      "ms_per_frame": 0.037
+    },
+    {
+      "filename": "qrc:/qt/qml/Omatrack/AppHeader.qml",
+      "line": 17,
+      "type": "Creating",
+      "name": "AppHeader.qml:17",
+      "details": "ToolBar",
+      "count": 1,
+      "total_ms": 6.07,
+      "avg_ms": 6.068,
+      "ms_per_frame": 0.037
+    },
+    {
+      "filename": "qrc:/qt-project.org/imports/QtQuick/Controls/Material/Button.qml",
+      "line": 11,
+      "type": "Creating",
+      "name": "Button.qml:11",
+      "details": "QtQuick.Templates/Button",
+      "count": 72,
+      "total_ms": 6.01,
+      "avg_ms": 0.084,
+      "ms_per_frame": 0.037
+    },
+    {
+      "filename": "qrc:/qt/qml/Omatrack/AppHeader.qml",
+      "line": 213,
+      "type": "Creating",
+      "name": "AppHeader.qml:213",
+      "details": "Menu",
+      "count": 1,
+      "total_ms": 5.77,
+      "avg_ms": 5.771,
+      "ms_per_frame": 0.035
+    },
+    {
+      "filename": "qrc:/qt-project.org/imports/QtQuick/Controls/Material/MenuItem.qml",
+      "line": 35,
+      "type": "Creating",
+      "name": "MenuItem.qml:35",
+      "details": "QtQuick.Controls.impl/ColorImage",
+      "count": 80,
+      "total_ms": 5.67,
+      "avg_ms": 0.071,
+      "ms_per_frame": 0.035
+    },
+    {
+      "filename": "qrc:/qt/qml/Omatrack/AppHeader.qml",
+      "line": 124,
+      "type": "Binding",
+      "name": "AppHeader.qml:124",
+      "details": "",
+      "count": 5,
+      "total_ms": 5.4,
+      "avg_ms": 1.08,
+      "ms_per_frame": 0.033
+    },
+    {
+      "filename": "qrc:/qt/qml/Omatrack/AppHeader.qml",
+      "line": 124,
+      "type": "Javascript",
+      "name": "AppHeader.qml:124",
+      "details": "expression for text",
+      "count": 5,
+      "total_ms": 5.36,
+      "avg_ms": 1.071,
+      "ms_per_frame": 0.033
+    },
+    {
+      "filename": "qrc:/qt-project.org/imports/QtQuick/Controls/Material/ToolButton.qml",
+      "line": 25,
+      "type": "Creating",
+      "name": "ToolButton.qml:25",
+      "details": "QtQuick.Controls.impl/IconLabel",
+      "count": 44,
+      "total_ms": 4.94,
+      "avg_ms": 0.112,
+      "ms_per_frame": 0.03
+    },
+    {
+      "filename": "qrc:/qt-project.org/imports/QtQuick/Controls/Material/Dialog.qml",
+      "line": 0,
+      "type": "Compiling",
+      "name": "Dialog.qml:0",
+      "details": "qrc:/qt-project.org/imports/QtQuick/Controls/Material/Dialog.qml",
+      "count": 1,
+      "total_ms": 4.47,
+      "avg_ms": 4.473,
+      "ms_per_frame": 0.027
+    },
+    {
+      "filename": "qrc:/qt/qml/Omatrack/FileBrowserPane.qml",
+      "line": 98,
+      "type": "Javascript",
+      "name": "FileBrowserPane.qml:98",
+      "details": "rebuildAncestorCache",
+      "count": 2,
+      "total_ms": 4.41,
+      "avg_ms": 2.205,
+      "ms_per_frame": 0.027
+    }
+  ],
+  "memory": {
+    "heap_pages": {
+      "alloc_count": 61,
+      "alloc_bytes": 4533760,
+      "freed_bytes": 2072576,
+      "peak_live_bytes": 4533760,
+      "final_live_bytes": 2461184
+    },
+    "large_items": {
+      "alloc_count": 0,
+      "alloc_bytes": 0,
+      "freed_bytes": 0,
+      "peak_live_bytes": 0,
+      "final_live_bytes": 0
+    },
+    "small_items": {
+      "alloc_count": 70278,
+      "alloc_bytes": 5744096,
+      "freed_bytes": 3571648,
+      "peak_live_bytes": 4480864,
+      "final_live_bytes": 2172448
+    },
+    "total_allocations": 70278,
+    "total_allocated_bytes": 5744096,
+    "peak_heap_bytes": 4533760
+  },
+  "wall_ms_est": 2746.0,
+  "animations": {
+    "frame_count": 163,
+    "frame_ms_p50": 17.24,
+    "frame_ms_p95": 17.24,
+    "frame_ms_p99": 17.24,
+    "frame_ms_max": 17.24,
+    "frames_over_25ms": 0,
+    "frames_over_33ms": 0,
+    "frames_over_50ms": 0,
+    "avg_framerate": 59.3,
+    "min_framerate": 58,
+    "max_framerate": 62
+  },
+  "pixmap_cache": {
+    "load_requests": 6,
+    "loaded": 6,
+    "removed": 6,
+    "pixmaps": [
+      {
+        "filename": "file::/qt-project.org/imports/QtQuick/Controls/Material/images/check@2x.png",
+        "width": 86,
+        "height": 66,
+        "pixels": 5676
+      },
+      {
+        "filename": "file::/qt-project.org/imports/QtQuick/Controls/Material/images/drop-indicator@2x.png",
+        "width": 80,
+        "height": 48,
+        "pixels": 3840
+      },
+      {
+        "filename": "file:///usr/share/icons/Yaru/scalable/actions/document-properties-symbolic.svg",
+        "width": 48,
+        "height": 48,
+        "pixels": 2304
+      },
+      {
+        "filename": "qrc:/qt-project.org/imports/QtQuick/Controls/Material/images/drop-indicator.png",
+        "width": 40,
+        "height": 24,
+        "pixels": 960
+      },
+      {
+        "filename": "file:///usr/share/icons/Yaru/scalable/actions/document-properties-symbolic.svg",
+        "width": 24,
+        "height": 24,
+        "pixels": 576
+      },
+      {
+        "filename": "file::/qt-project.org/imports/QtQuick/Controls/Material/images/arrow-indicator@2x.png",
+        "width": 10,
+        "height": 20,
+        "pixels": 200
+      }
+    ]
+  }
+}

@@ -1,0 +1,22 @@
+scenario	data	frame_p50	frame_p95	frame_p99	frame_max	frames_>33	frames_>50	js_ms	creating_ms	binding_ms	peak_rss_mb	final_rss_mb	samples	top_hotspot	hotspot_ms	hotspot_file	hover_ms	zoom_avg_ms	zoom_worst_ms	zoom_quads
+startup	sebring	33.33	50.00	333.33	333.33	101	5	124	247	59	ApplicationWindow	47.3	Main.qml	725.5	523.3	99	n/a	n/a	n/a	n/a
+interaction	sebring	33.33	52.63	250.00	333.33	90	6	151	316	66	ApplicationWindow	55.9	Main.qml	1045.8	495.1	98	0.00510709	0.178654	0.20584	2786
+comparison	sebring	33.33	50.00	333.33	500.00	104	6	224	286	89	ApplicationWindow	47.0	Main.qml	1098.8	380.0	116	n/a	n/a	n/a	n/a
+corner-edit	sebring	33.33	35.71	71.43	333.33	89	3	91	241	56	ApplicationWindow	45.9	Main.qml	725.7	473.3	96	n/a	n/a	n/a	n/a
+windows	sebring	17.24	34.48	71.43	76.92	26	5	204	347	93	ApplicationWindow	50.1	Main.qml	928.2	599.5	101	n/a	n/a	n/a	n/a
+lap-loading	sebring	17.24	58.82	333.33	333.33	7	2	68	243	48	ApplicationWindow	47.0	Main.qml	741.2	741.2	34	n/a	n/a	n/a	n/a
+lap-switch	sebring	33.33	37.04	83.33	333.33	105	2	119	251	76	ApplicationWindow	49.8	Main.qml	801.9	557.0	106	n/a	n/a	n/a	n/a
+lap-switch-compare	sebring	33.33	50.00	333.33	333.33	125	6	201	311	104	ApplicationWindow	53.6	Main.qml	1514.4	472.7	127	n/a	n/a	n/a	n/a
+channel-browser	sebring	33.33	52.63	333.33	333.33	95	8	142	246	57	ApplicationWindow	47.2	Main.qml	719.7	517.3	98	n/a	n/a	n/a	n/a
+video-race	ram	17.24	34.48	1000.00	1000.00	15	7	99	252	54	ApplicationWindow	50.6	Main.qml	997.7	467.8	194	n/a	n/a	n/a	n/a
+video-tl	ram	17.24	50.00	1000.00	1000.00	28	7	133	244	68	ApplicationWindow	47.0	Main.qml	1044.1	519.8	192	n/a	n/a	n/a	n/a
+video-compare	ram	17.24	71.43	1000.00	1000.00	9	7	141	253	67	ApplicationWindow	50.8	Main.qml	1259.1	462.1	188	n/a	n/a	n/a	n/a
+heavy-ram	ram	17.24	34.48	1000.00	1000.00	23	5	110	244	56	ApplicationWindow	46.8	Main.qml	1030.2	549.8	196	0.00527682	0.114649	0.133466	1748
+lap-switch-ram	ram	17.24	52.63	333.33	333.33	38	10	142	265	77	ApplicationWindow	50.4	Main.qml	788.5	536.8	195	n/a	n/a	n/a	n/a
+brake-sync	ram	33.33	34.48	111.11	111.11	101	3	117	264	66	ApplicationWindow	57.0	Main.qml	755.4	549.0	99	n/a	n/a	n/a	n/a
+dual-video	ram	33.33	34.48	111.11	125.00	171	7	135	245	65	ApplicationWindow	47.6	Main.qml	892.7	460.3	184	n/a	n/a	n/a	n/a
+standalone-video	ram	33.33	37.04	111.11	111.11	111	3	165	277	70	ApplicationWindow	55.5	Main.qml	763.6	491.3	107	n/a	n/a	n/a	n/a
+alignment	ram	33.33	50.00	100.00	111.11	108	5	123	245	68	ApplicationWindow	46.8	Main.qml	760.5	481.3	99	n/a	n/a	n/a	n/a
+cli-parse-pds	sebring	n/a	n/a	n/a	n/a	n/a	n/a	n/a	n/a	n/a	n/a	n/a	n/a	1	PDS parse+unify	n/a	n/a	32	n/a	n/a	n/a
+cli-corners	sebring	n/a	n/a	n/a	n/a	n/a	n/a	n/a	n/a	n/a	n/a	n/a	n/a	1	corner analysis	n/a	n/a	392	n/a	n/a	n/a
+cli-parse-mp4	ram	n/a	n/a	n/a	n/a	n/a	n/a	n/a	n/a	n/a	n/a	n/a	n/a	1	MP4 parse+unify	n/a	n/a	43	n/a	n/a	n/a

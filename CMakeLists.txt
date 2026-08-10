@@ -1,5 +1,19 @@
 cmake_minimum_required(VERSION 3.21)
-project(omatrack VERSION 0.9.0 LANGUAGES CXX)
+project(omatrack VERSION 0.9.6 LANGUAGES CXX)
+if(WIN32)
+  # Windows release layout: the app ships as a flat zip, so executables and
+  # their load-time DLLs install at the prefix root and every non-binary
+  # payload lands under lib/. src/app/CMakeLists.txt deploys Qt with a
+  # matching qt.conf so the flat tree runs standalone.
+  set(CMAKE_INSTALL_BINDIR "." CACHE STRING
+    "Windows release binary directory (flat app root)")
+  set(CMAKE_INSTALL_LIBDIR "lib" CACHE STRING
+    "Windows release library directory")
+  set(CMAKE_INSTALL_DATADIR "lib/share" CACHE STRING
+    "Windows release data directory")
+  set(CMAKE_INSTALL_DOCDIR "lib/share/doc" CACHE STRING
+    "Windows release documentation directory")
+endif()
 include(GNUInstallDirs)
 
 set(CMAKE_CXX_STANDARD 17)
