@@ -99,6 +99,8 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
         !qgetenv("OMATRACK_AUTOTEST_LOADING").isEmpty();
     const bool autotestLapLoading =
         !qgetenv("OMATRACK_AUTOTEST_LAP_LOADING").isEmpty();
+    const bool autotestLapSwitch =
+        !qgetenv("OMATRACK_AUTOTEST_LAP_SWITCH").isEmpty();
     const bool autotestIndexedVideoClick =
         !qgetenv("OMATRACK_AUTOTEST_INDEXED_VIDEO_CLICK").isEmpty();
     const QString startupVideoPath = qEnvironmentVariable("OMATRACK_VIDEO");
@@ -322,7 +324,7 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
          autotestVideoHud, autotestBrakeSync, autotestCornerEdit,
          autotestDualVideo, autotestVideoMetadata, autotestChannelBrowser,
          videoMetadataPath, autotestLapLoading, autotestStandaloneVideo,
-         autotestIndexedVideoClick, sequentialVideoReady]() {
+         autotestIndexedVideoClick, autotestLapSwitch, sequentialVideoReady]() {
             if (store.loading() || store.lapLoading() || !store.ready()) return;
             if (autotestIndexedVideoClick && !startupVideoPath.isEmpty()) {
                 startTimer->stop();
@@ -430,6 +432,44 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                 QCoreApplication::processEvents(
                                     QEventLoop::AllEvents, 20);
                                 QThread::msleep(5);
+                            }
+                            if (autotestLapSwitch) {
+                                // Simulate a user clicking through laps in
+                                // the filmstrip: select 3-5 representative
+                                // laps in the same session, waiting for each
+                                // to load. This exercises the async lap-
+                                // loading path, viewport/trace rebuild, and
+                                // lap strip update.
+                                const QVariantList allLaps =
+                                    store.lapsForSession(key);
+                                QList<int> lapIds;
+                                for (const QVariant& lv : allLaps) {
+                                    const QVariantMap lm = lv.toMap();
+                                    if (lm.value("countsForBest").toBool())
+                                        lapIds.append(
+                                            lm.value("lapId").toInt());
+                                }
+                                // Select up to 5 laps, skipping the already-
+                                // loaded fastest lap (lap 0 of the list).
+                                int switched = 0;
+                                const int lapCount = int(lapIds.size());
+                                for (int idx = std::min(1, lapCount - 1);
+                                     idx < lapCount && switched < 5; ++idx) {
+                                    store.selectLap(key, lapIds[idx]);
+                                    QElapsedTimer switchTimer;
+                                    switchTimer.start();
+                                    while (store.lapLoading() &&
+                                           switchTimer.elapsed() < 30000) {
+                                        QCoreApplication::processEvents(
+                                            QEventLoop::AllEvents, 20);
+                                        QThread::msleep(5);
+                                    }
+                                    if (store.lapLoading()) break;
+                                    ++switched;
+                                }
+                                qWarning()
+                                    << "AUTOTEST lap switch: switched"
+                                    << switched << "laps in session" << key;
                             }
                             if (autotestStandaloneVideo &&
                                 !startupVideoPath.isEmpty()) {
@@ -1254,6 +1294,48 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                                     lap =
                                                         store.primaryUnified();
                                                 if (autotestBrakeSync) {
+                                                    // Scan the brake channel
+                                                    // for the peak pressure
+                                                    // sample so the check
+                                                    // pauses on real heavy
+                                                    // braking, not whatever
+                                                    // cursor position the
+                                                    // video happened to land
+                                                    // on.
+                                                    size_t peakSample = 0;
+                                                    double peakBrake = 0.0;
+                                                    if (lap &&
+                                                        !lap->brake.empty()) {
+                                                        for (size_t i = 0;
+                                                             i <
+                                                             lap->brake.size();
+                                                             ++i) {
+                                                            if (lap->brake[i] >
+                                                                peakBrake) {
+                                                                peakBrake =
+                                                                    lap->brake
+                                                                        [i];
+                                                                peakSample = i;
+                                                            }
+                                                        }
+                                                        // Seek cursor to
+                                                        // the peak brake
+                                                        // sample. Guard
+                                                        // against size()==1
+                                                        // to avoid 0/0 NaN.
+                                                        const double frac =
+                                                            lap->brake.size() >
+                                                                    1
+                                                                ? double(
+                                                                      peakSample) /
+                                                                      double(
+                                                                          lap->brake
+                                                                              .size() -
+                                                                          1)
+                                                                : 0.0;
+                                                        store.setCursorFrac(
+                                                            frac);
+                                                    }
                                                     const size_t sample =
                                                         lap && !lap->brake
                                                                     .empty()
@@ -1284,7 +1366,11 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                                                         .empty()
                                                                 ? lap->time
                                                                       [sample]
-                                                                : -1.0);
+                                                                : -1.0)
+                                                        << "peak brake"
+                                                        << peakBrake
+                                                        << "at sample"
+                                                        << peakSample;
                                                     videoReady = videoReady &&
                                                                  brakeReady;
                                                 } else {
