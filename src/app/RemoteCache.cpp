@@ -159,6 +159,34 @@ QVector<RemoteObject> cachedObjects(const QJsonObject& entries,
     return result;
 }
 
+/// Empty when `relative` names a file this machine can actually hold under
+/// the cache root, else why it cannot.
+///
+/// A server chooses these names, so they are untrusted input in both
+/// directions. An href or an object key can be built to climb out of the
+/// cache directory, and S3 permits characters — `:`, `?`, `*`, `|` — that
+/// Windows simply will not create. The rule is applied on every platform so
+/// that a library looks the same everywhere rather than quietly holding files
+/// that vanish when the same bucket is opened on another machine.
+QString localPathError(const QString& relative) {
+    if (relative.isEmpty()) return QStringLiteral("empty name");
+    if (relative != QDir::cleanPath(relative) ||
+        relative.startsWith(QLatin1Char('/')) ||
+        relative == QStringLiteral("..") ||
+        relative.startsWith(QStringLiteral("../")) ||
+        relative.contains(QStringLiteral("/../")))
+        return QStringLiteral("path escapes the cache folder");
+    for (const QChar character : relative) {
+        const char16_t code = character.unicode();
+        if (code < 0x20 || code == u'<' || code == u'>' || code == u':' ||
+            code == u'"' || code == u'|' || code == u'?' || code == u'*' ||
+            code == u'\\')
+            return QStringLiteral("name contains %1, which cannot be a file")
+                .arg(character);
+    }
+    return {};
+}
+
 RemoteSyncResult offlineResult(RemoteSyncResult result,
                                const QVector<RemoteObject>& cached,
                                const QString& reason) {
@@ -210,6 +238,8 @@ HttpResponse sendFollowing(QNetworkAccessManager& manager, const QUrl& url,
         result.status =
             reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         result.body = reply->readAll();
+        for (const auto& [name, value] : reply->rawHeaderPairs())
+            result.headers.insert(name.toLower(), value);
         if (timedOut)
             result.error = QStringLiteral("Request timed out");
         else if (!next.isValid() && reply->error() != QNetworkReply::NoError)
@@ -251,9 +281,22 @@ QString cacheDirectory(const RemoteConnection& connection) {
 QString validateTarget(LocationType type, const QString& target) {
     switch (type) {
         case LocationType::WebDav: return webDavTargetError(target);
+        case LocationType::S3: return s3TargetError(type, target);
         case LocationType::Folder: break;
     }
     return QStringLiteral("Unsupported connection type.");
+}
+
+QString normalizeTarget(LocationType type, const QString& target) {
+    switch (type) {
+        case LocationType::WebDav:
+            // Unchanged from when WebDAV stood alone, so no configured server
+            // gets a new id and loses the cache it already downloaded.
+            return QUrl(target.trimmed()).toString(QUrl::FullyEncoded);
+        case LocationType::S3: return s3NormalizedTarget(type, target);
+        case LocationType::Folder: break;
+    }
+    return target.trimmed();
 }
 
 RemoteSyncResult syncConnection(const RemoteConnection& connection) {
@@ -287,6 +330,7 @@ RemoteSyncResult syncConnection(const RemoteConnection& connection) {
         case LocationType::WebDav:
             backend = makeWebDavBackend(connection);
             break;
+        case LocationType::S3: backend = makeS3Backend(connection); break;
         case LocationType::Folder: break;
     }
 
@@ -308,6 +352,13 @@ RemoteSyncResult syncConnection(const RemoteConnection& connection) {
     for (const RemoteObject& object : objects) {
         if (seen.contains(object.relativePath)) continue;
         seen.insert(object.relativePath);
+        // Left out of newEntries as well as of the download, so the prune
+        // below cannot mistake a name this machine never stored for a file
+        // the server deleted.
+        if (!localPathError(object.relativePath).isEmpty()) {
+            result.skipped.append(object.relativePath);
+            continue;
+        }
         const QJsonObject old =
             oldEntries.value(object.relativePath).toObject();
         const QString localPath =
@@ -377,6 +428,12 @@ RemoteSyncResult syncConnection(const RemoteConnection& connection) {
                        'f', 1)
             : QStringLiteral("Connected · %1 files (cached)")
                   .arg(result.files.size());
+    // Say so rather than letting files quietly go missing: a driver comparing
+    // the bucket to the library would otherwise have no way to tell why.
+    if (!result.skipped.isEmpty())
+        result.status.append(QStringLiteral(" · %1 unusable name%2")
+                                 .arg(result.skipped.size())
+                                 .arg(result.skipped.size() == 1 ? "" : "s"));
     return result;
 }
 

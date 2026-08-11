@@ -78,6 +78,7 @@ qt_add_qml_module(omatrack
     RemoteCache.h RemoteCache.cpp
     WebDavBackend.cpp
     SigV4.h SigV4.cpp
+    S3Backend.cpp
     TrackAtlasSpatial.h TrackAtlasSpatial.cpp
     TraceSceneBuilder.h TraceSceneBuilder.cpp
     TraceTextCache.h TraceTextCache.cpp

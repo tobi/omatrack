@@ -1689,6 +1689,7 @@ RemoteConnection connectionFor(const LibraryLocation& location) {
     connection.target = location.target;
     connection.username = location.username;
     connection.password = location.password;
+    connection.options = location.options;
     return connection;
 }
 
@@ -2141,6 +2142,10 @@ void TelemetryStore::loadLocations() {
         location.username =
             row.value(QStringLiteral("username")).toString().trimmed();
         location.password = row.value(QStringLiteral("password")).toString();
+        const QVariantMap options =
+            row.value(QStringLiteral("options")).toMap();
+        for (auto it = options.cbegin(); it != options.cend(); ++it)
+            location.options.insert(it.key(), it.value().toString().trimmed());
         location.enabled = yamlBool(row.value(QStringLiteral("enabled")), true);
         location.id = row.value(QStringLiteral("id")).toString().trimmed();
         if (location.id.isEmpty())
@@ -2196,6 +2201,12 @@ void TelemetryStore::savePreferences() {
                 row.insert(QStringLiteral("username"), location.username);
             if (!location.password.isEmpty())
                 row.insert(QStringLiteral("password"), location.password);
+            QVariantMap options;
+            for (auto it = location.options.cbegin();
+                 it != location.options.cend(); ++it)
+                if (!it.value().isEmpty()) options.insert(it.key(), it.value());
+            if (!options.isEmpty())
+                row.insert(QStringLiteral("options"), options);
         }
         locationRows.append(row);
     }
@@ -2802,15 +2813,44 @@ QStringList TelemetryStore::sessionDirectories() const {
 }
 
 QVariantList TelemetryStore::connectionTypes() const {
-    return QVariantList{QVariantMap{
-        {QStringLiteral("type"), locationTypeKey(LocationType::WebDav)},
-        {QStringLiteral("label"), QStringLiteral("WebDAV server")},
-        {QStringLiteral("placeholder"),
-         QStringLiteral("https://server.example/dav/")},
-        {QStringLiteral("needsCredentials"), true},
-        {QStringLiteral("detail"),
-         QStringLiteral("Files are synchronized into a local cache before "
-                        "scanning, and stay available offline.")}}};
+    // ConnectionDialog builds its whole form from this list — the labels on
+    // the credential fields and any protocol-specific rows included — so a
+    // new connection kind appears in the UI without touching any QML.
+    return QVariantList{
+        QVariantMap{
+            {QStringLiteral("type"), locationTypeKey(LocationType::WebDav)},
+            {QStringLiteral("label"), QStringLiteral("WebDAV server")},
+            {QStringLiteral("placeholder"),
+             QStringLiteral("https://server.example/dav/")},
+            {QStringLiteral("needsCredentials"), true},
+            {QStringLiteral("detail"),
+             QStringLiteral("Files are synchronized into a local cache before "
+                            "scanning, and stay available offline.")}},
+        QVariantMap{
+            {QStringLiteral("type"), locationTypeKey(LocationType::S3)},
+            {QStringLiteral("label"), QStringLiteral("S3 bucket")},
+            {QStringLiteral("placeholder"),
+             QStringLiteral("s3://bucket/season-2026/")},
+            {QStringLiteral("needsCredentials"), true},
+            {QStringLiteral("usernameLabel"), QStringLiteral("Access key")},
+            {QStringLiteral("passwordLabel"), QStringLiteral("Secret key")},
+            {QStringLiteral("detail"),
+             QStringLiteral(
+                 "Telemetry is synchronized into a local cache and stays "
+                 "available offline. Leave the keys empty for a public "
+                 "bucket.")},
+            {QStringLiteral("extraFields"),
+             QVariantList{
+                 QVariantMap{
+                     {QStringLiteral("key"), QStringLiteral("region")},
+                     {QStringLiteral("label"), QStringLiteral("Region")},
+                     {QStringLiteral("placeholder"),
+                      QStringLiteral("Detected automatically")}},
+                 QVariantMap{
+                     {QStringLiteral("key"), QStringLiteral("endpoint")},
+                     {QStringLiteral("label"), QStringLiteral("Endpoint")},
+                     {QStringLiteral("placeholder"),
+                      QStringLiteral("For MinIO, R2, or another S3 API")}}}}}};
 }
 
 QVariantList TelemetryStore::libraryLocations() const {
@@ -2819,6 +2859,10 @@ QVariantList TelemetryStore::libraryLocations() const {
     for (const LibraryLocation& location : std::as_const(locations_)) {
         const bool folder = location.type == LocationType::Folder;
         const QString cachePath = cachePathFor(location);
+        QVariantMap options;
+        for (auto it = location.options.cbegin(); it != location.options.cend();
+             ++it)
+            options.insert(it.key(), it.value());
         // A folder reports liveness directly; a connection only knows what
         // the last sync said, so it falls back to "Not connected yet".
         const QString fallback =
@@ -2839,6 +2883,7 @@ QVariantList TelemetryStore::libraryLocations() const {
             {QStringLiteral("target"), location.target},
             {QStringLiteral("username"), location.username},
             {QStringLiteral("hasPassword"), !location.password.isEmpty()},
+            {QStringLiteral("options"), options},
             {QStringLiteral("enabled"), location.enabled},
             // A connection counts as available once it has a populated cache:
             // that is what the library can actually scan, online or not.
@@ -2866,15 +2911,22 @@ QString TelemetryStore::saveConnection(const QVariantMap& fields) {
         fields.value(QStringLiteral("target")).toString().trimmed();
     const QString invalid = validateTarget(type, target);
     if (!invalid.isEmpty()) return invalid;
-    const QUrl parsed(target);
 
     LibraryLocation location;
     location.type = type;
-    location.target = parsed.toString(QUrl::FullyEncoded);
+    // Normalization is the protocol's, not QUrl's: QUrl lowercases an
+    // authority, and an S3 bucket is not a hostname — a capital letter in one
+    // would be silently rewritten into a bucket that does not exist.
+    location.target = normalizeTarget(type, target);
     location.username =
         fields.value(QStringLiteral("username")).toString().trimmed();
     location.name = fields.value(QStringLiteral("name")).toString().trimmed();
     location.enabled = fields.value(QStringLiteral("enabled"), true).toBool();
+    const QVariantMap options = fields.value(QStringLiteral("options")).toMap();
+    for (auto it = options.cbegin(); it != options.cend(); ++it) {
+        const QString value = it.value().toString().trimmed();
+        if (!value.isEmpty()) location.options.insert(it.key(), value);
+    }
     const QString password =
         fields.value(QStringLiteral("password")).toString();
     location.id = locationId(location.target, location.username);

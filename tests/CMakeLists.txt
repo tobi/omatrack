@@ -79,6 +79,8 @@ set_tests_properties(sigv4-test PROPERTIES LABELS unit)
 qt_add_executable(remote-cache-test RemoteCacheTest.cpp
   ${CMAKE_SOURCE_DIR}/src/app/RemoteCache.cpp
   ${CMAKE_SOURCE_DIR}/src/app/WebDavBackend.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/S3Backend.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/SigV4.cpp
   ${CMAKE_SOURCE_DIR}/src/app/LibraryLocation.cpp)
 target_include_directories(remote-cache-test PRIVATE
   ${CMAKE_SOURCE_DIR}/src)

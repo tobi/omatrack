@@ -13,6 +13,7 @@
 #include "LibraryLocation.h"
 
 #include <QByteArray>
+#include <QMap>
 #include <QString>
 #include <QStringList>
 #include <QUrl>
@@ -45,6 +46,8 @@ struct RemoteConnection {
     QString target;
     QString username;
     QString password;
+    /// See LibraryLocation::options — protocol tuning kept out of the target.
+    QMap<QString, QString> options;
 };
 
 struct RemoteSyncResult {
@@ -53,6 +56,9 @@ struct RemoteSyncResult {
     QString status;
     QString error;
     QStringList files;
+    /// Objects the server offers that this filesystem cannot hold — an S3 key
+    /// may legally contain `:` or `?`, which Windows will not create.
+    QStringList skipped;
     qint64 downloadedBytes = 0;
     /// The server could not be reached and this is the previous cache.
     bool fromCache = false;
@@ -77,6 +83,9 @@ struct RemoteBackend {
 struct HttpResponse {
     int status = 0;
     QByteArray body;
+    /// Lowercased header names. S3 answers a bucket's region here, including
+    /// on the 403 an unsigned probe gets back.
+    QMap<QByteArray, QByteArray> headers;
     QString error;
 };
 
@@ -111,10 +120,19 @@ QString cacheRoot();
 /// Empty when `target` is usable for `type`, else the reason it is not.
 QString validateTarget(LocationType type, const QString& target);
 
+/// The form of `target` to store. Normalizing per protocol matters because
+/// the connection id hashes the target: two spellings of one bucket must
+/// settle on the same string or they become two caches of the same files.
+QString normalizeTarget(LocationType type, const QString& target);
+
 RemoteSyncResult syncConnection(const RemoteConnection& connection);
 
 // ── Protocols ───────────────────────────────────────────────────────
 RemoteBackend makeWebDavBackend(const RemoteConnection& connection);
 QString webDavTargetError(const QString& target);
+
+RemoteBackend makeS3Backend(const RemoteConnection& connection);
+QString s3TargetError(LocationType type, const QString& target);
+QString s3NormalizedTarget(LocationType type, const QString& target);
 
 }  // namespace omatrack
