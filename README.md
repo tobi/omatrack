@@ -41,8 +41,10 @@ through braking, turn-in, apex, and throttle pickup.
   retain user-owned YAML overrides.
 - Synchronize embedded onboard video through libmpv's OpenGL Render API.
 - Follow the active Omarchy palette on Linux, with a Qt system-palette fallback elsewhere.
-- Connect WebDAV servers from Preferences; remote telemetry is streamed into a
-  local ETag-aware cache, reused without downloads, and available offline.
+- Connect WebDAV servers, S3 buckets, and Google Cloud Storage buckets from
+  Preferences; remote telemetry is streamed into a local ETag-aware cache,
+  reused without downloads, and available offline. Onboard video plays over
+  the network rather than being downloaded.
 - Inspect parsing, channel mapping, lap detection, and unification through `omatrack-cli`.
 
 ## Architecture
@@ -176,12 +178,28 @@ performs the same metadata request. Fresh caches are used without a startup
 request. Offline starts retain cached corner geometry; without it, GPS laps do
 not silently substitute distance-based corner locations.
 
-WebDAV is opt-in and configured in Preferences. Each enabled connection uses
-authenticated `PROPFIND` discovery and streams changed files into
-`$XDG_CACHE_HOME/omatrack/webdav/` (or the platform cache equivalent). ETag and
-Last-Modified metadata avoid unchanged downloads; a complete previous cache is
-used when the server is unavailable. Credentials remain in the user's
-`omatrack.yml`; Omatrack never rewrites remote files.
+Server connections are opt-in and configured in Preferences. WebDAV uses
+authenticated `PROPFIND` discovery; `s3://` and `gs://` buckets use
+ListObjectsV2 with AWS Signature Version 4 — Google Cloud Storage through its
+S3-compatible XML endpoint, which means an HMAC interoperability key rather
+than a service-account file. Each enabled connection streams changed telemetry
+into `$XDG_CACHE_HOME/omatrack/<protocol>/` (or the platform cache
+equivalent). ETag and Last-Modified metadata avoid unchanged downloads; a
+previous cache is used when the server is unavailable. Omatrack never rewrites
+remote files.
+
+Onboard video is not downloaded. A session's video runs 5–30 GB against
+telemetry's kilobytes, so the player streams it directly over HTTP range
+requests — from a time-limited presigned URL for S3 and GCS. Everything else
+the cache holds stays under `cache: {limit: 20 GB}` in `omatrack.yml`, past
+which the least recently opened files are dropped and re-fetched if they are
+wanted again. Preferences shows what the cache is holding and can empty it.
+
+Credentials — a WebDAV password, an S3 or GCS access key and secret — are
+stored in plain text in the user's `omatrack.yml`, which the connection dialog
+says plainly. They leave the machine only in a request to the server that was
+configured, and, for video, inside the URL handed to the player; nothing logs
+or displays such a URL.
 
 
 ## Test and lint

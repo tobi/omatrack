@@ -73,10 +73,10 @@ Track Atlas connectivity is independent of telemetry parsing. Cache upstream dat
 
 Application-wide user configuration state belongs in `omatrack.yml`
 (`$XDG_CONFIG_HOME/omatrack/omatrack.yml`, else `~/.config/omatrack/omatrack.yml`).
-It is the single source of truth for telemetry directories, WebDAV connection
-settings, recent file history, channel display, driver naming, last selection,
-and per-track corner overrides, and it is meant to be read, diffed, and
-hand-edited. Never add a second configuration store, and never write
+It is the single source of truth for telemetry directories, server connection
+settings, the download cache limit, recent file history, channel display,
+driver naming, last selection, and per-track corner overrides, and it is meant
+to be read, diffed, and hand-edited. Never add a second configuration store, and never write
 configuration into telemetry, caches, or `QSettings`.
 
 Portable recording metadata is the deliberate exception: a folder may contain
@@ -95,8 +95,9 @@ wins on load. Caches (Track Atlas snapshot, thumbnails) stay outside the file.
 
 ### Ingestion and session library
 
-- Recursively scan configured local directories and locally cached WebDAV
-  sources, and open individual telemetry or video files from the command line,
+- Recursively scan configured local directories and the local caches of
+  connected servers, and open individual telemetry or video files from the
+  command line,
   file dialog, recent-file menu, or application drag/drop. Individual files do
   not become configured scan roots; persist at most the six most recent
   successful opens in `omatrack.yml`.
@@ -123,8 +124,12 @@ wins on load. Caches (Track Atlas snapshot, thumbnails) stay outside the file.
   feature.
 - The library is one ordered list of locations under `locations` in
   `omatrack.yml`. A location is either a local folder (`type: folder`) or a
-  connection to an outside server (`type: webdav` today), and both carry
-  `id`, `name`, `target`, and `enabled`. Disabled locations stay configured
+  connection to an outside server (`type: webdav`, `s3`, or `gcs`), and both
+  carry `id`, `name`, `target`, and `enabled`; a connection may also carry an
+  `options` map for protocol tuning such as an S3 `region` or a non-AWS
+  `endpoint`. Keep tuning out of `target`: the connection id is a hash of it,
+  so a knob added there orphans the whole downloaded cache the first time it
+  is adjusted. Disabled locations stay configured
   and are skipped by every scan. Keep this list heterogeneous: a new remote
   source is a new `LocationType` plus a `connectionTypes()` entry, never a
   second parallel list. `~/Documents/Telemetry` (resolved through the platform
@@ -133,10 +138,24 @@ wins on load. Caches (Track Atlas snapshot, thumbnails) stay outside the file.
 - Connections are synchronized into a local cache and the cache is scanned, so
   everything downstream of discovery sees plain local paths and never learns
   which kind of location produced them. Credentials are used only for
-  authenticated requests; remote files and `TRACK.yml` metadata are streamed
-  into an atomic cache under `$XDG_CACHE_HOME/omatrack/webdav/` (or the
-  platform cache equivalent). ETag/Last-Modified metadata avoids unchanged
-  downloads, and an unavailable server falls back to its last complete cache.
+  authenticated requests; remote telemetry and `TRACK.yml` metadata are
+  streamed into an atomic cache under `$XDG_CACHE_HOME/omatrack/<protocol>/`
+  (or the platform cache equivalent). ETag/Last-Modified metadata avoids
+  unchanged downloads, and an unavailable server falls back to its last cache.
+- Video is never downloaded. One onboard recording runs 5–30 GB against
+  telemetry's kilobytes, so the sync writes a zero-byte stand-in at the cache
+  path — which keeps discovery, pairing, pins and recents keyed on a local
+  path — and the player is handed a streaming URL instead: presigned SigV4 for
+  S3 and GCS, credentials in the URL for WebDAV. Those URLs are secrets. Never
+  log one and never put one on screen; use `QUrl::toDisplayString()` wherever
+  one has to be shown.
+- The cache stays under `cache: {limit: 20 GB}`, evicting the least recently
+  opened files first. Age is the local file's modification time, refreshed
+  only on a deliberate open; recording it in `index.json` instead would lose
+  the race with a sync, which reads that file once and writes it back minutes
+  later. Stubs, `index.json`, and the file being played are never evicted, and
+  the index deliberately keeps listing what was evicted so the next sync
+  re-fetches it rather than reading the gap as a server-side delete.
 
 ### Normalization and analysis
 
@@ -278,8 +297,10 @@ CornerContext{primary, reference metrics, delta-trace time deltas}
 ## Architecture
 
 ```text
-WebDAV server -----------------------> src/app/WebDavCache
-                                           streamed local cache
+WebDAV / S3 / GCS server ------------> src/app/RemoteCache
+                                           + WebDavBackend, S3Backend, SigV4
+                                           bounded local cache
+                                           (video stays remote)
                                            |
                                            v
                                       TelemetryStore scan
@@ -337,7 +358,8 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
 | Core | `src/core/TelemetryEngine.*` | Channel mapping, units, lap detection, resampling, `UnifiedLap` | Qt types, QML, settings, network access |
 | Corner analysis | `src/core/CornerAnalysis.*` | Per-corner metrics and the pluggable checks that produce driver-facing notes | Qt types, UI text layout, Track Atlas fetching |
 | Session/store | `src/app/TelemetryStore.*` | Lazy session handles, selection, cached GPS/speed track-station alignment, comparison, viewport, preferences, Track Atlas, corner analysis | Pixel-level paint loops or vendor byte parsing |
-| WebDAV cache | `src/app/WebDavCache.*` | Authenticated PROPFIND discovery, streamed downloads, ETag/Last-Modified reuse, offline cache fallback | Telemetry normalization, UI state, source-file mutation |
+| Remote cache | `src/app/RemoteCache.*` | Sync engine: cache layout, ETag/Last-Modified reuse, stale prune, offline fallback, the LRU budget, video stubs and stream URLs | Protocol details, telemetry normalization, UI state, source-file mutation |
+| Remote protocols | `src/app/WebDavBackend.cpp`, `src/app/S3Backend.cpp`, `src/app/SigV4.*` | Listing a server and signing a request — PROPFIND/XML, ListObjectsV2, AWS Signature Version 4 | Cache layout, eviction policy, anything that outlives one request |
 | Renderer | `src/app/TraceView.*`, `src/app/TraceSceneBuilder.*`, `src/app/TraceTextCache.*` | Scene-graph geometry generation for the trace surfaces and direct trace interaction | Parsing, network access, persistent product state |
 | Video renderer | `src/app/MpvVideoItem.*` | libmpv lifecycle, OpenGL FBO rendering, playback state, and exact seek | Telemetry extraction, session association, or QML layout policy |
 | QML UI | `src/app/*.qml` | Material windows, layout, delegates, controls, high-level orchestration | Full telemetry loops, duplicated analysis, format branches |

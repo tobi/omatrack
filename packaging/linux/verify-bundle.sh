@@ -77,4 +77,23 @@ for candidate in "${elf_files[@]}"; do
   )
 done
 
+# Remote onboard video plays straight from the server over https, so a bundle
+# whose ffmpeg cannot negotiate TLS loses that feature — and only for users of
+# the release artifact, never in a development build against the system mpv.
+avformat=""
+for name in "${!bundled_elf_names[@]}"; do
+  case "$name" in libavformat.so.*) avformat=$name ;; esac
+done
+if [[ -z "$avformat" ]]; then
+  echo "No libavformat in $bundle: video playback is not bundled" >&2
+  failures=1
+else
+  avformat_path=$(find "$bundle" -name "$avformat" -print -quit)
+  if ! readelf -d "$avformat_path" |
+    grep -qE '\(NEEDED\).*\[lib(gnutls|ssl|mbedtls)\.so'; then
+    echo "No TLS library behind $avformat: https video will not play" >&2
+    failures=1
+  fi
+fi
+
 exit "$failures"

@@ -2,6 +2,27 @@
 
 All notable user-facing changes are documented here.
 
+## Unreleased
+
+- S3 and Google Cloud Storage buckets can now be telemetry sources, alongside
+  WebDAV. Pick "S3 bucket" or "Google Cloud Storage" from "Connect…", give it
+  an `s3://bucket/prefix` or `gs://bucket/prefix` address and an access key,
+  and the bucket appears in the library like any other location — synchronized
+  into a local cache, reused without downloads, and readable offline. Google
+  is reached through its S3-compatible endpoint, so it wants an HMAC
+  interoperability key rather than a service-account file. A `region` and an
+  `endpoint` can be set per connection, which is also what makes MinIO,
+  Cloudflare R2, and Backblaze work.
+- Onboard video from a server now plays over the network instead of being
+  downloaded first. A session's video is thousands of times larger than its
+  telemetry, and mirroring one filled the disk to hold something the player
+  reads perfectly well over the wire. Video that an earlier version already
+  downloaded is handed back on the first synchronization after upgrading.
+- The download cache now has a limit — 20 GB unless `cache: {limit: …}` in
+  `omatrack.yml` says otherwise — and drops the files least recently opened
+  when it is exceeded. Anything dropped is fetched again when it is next
+  wanted. Preferences shows how much the cache is holding and can empty it.
+
 ## 0.9.6 — 2026-08-10
 
 - The telemetry library is now one list of locations in preferences. Local
