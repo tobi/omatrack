@@ -122,14 +122,25 @@ QString cacheDirectory(const RemoteConnection& connection);
 /// The root under which every protocol's caches sit.
 QString cacheRoot();
 
-/// Bytes currently held in every protocol's cache.
+/// What the cache holds, split by who decided to put it there.
+struct CacheUsage {
+    /// Everything the sync downloaded on its own, which the budget governs.
+    qint64 bytes = 0;
+    /// Video somebody asked for by name, which it does not. Reported apart
+    /// because a single recording dwarfs a whole library of telemetry, and a
+    /// limit that counted it would evict thousands of laps to make room for
+    /// one file the user deliberately chose to keep.
+    qint64 videoBytes = 0;
+};
+
+/// What is currently held in every protocol's cache.
 ///
 /// Measured from the filesystem rather than summed from index entries, which
 /// is the only way it can be honest: it also counts the caches of locations
 /// that have since been removed and the temporary files a download that died
 /// mid-write left behind. Both are exactly what someone checking this number
 /// wants to know about.
-qint64 cacheUsageBytes();
+CacheUsage cacheUsage();
 
 /// Deletes every downloaded file, and returns how many bytes that freed.
 /// Nothing here cannot be fetched again.
@@ -157,6 +168,10 @@ qint64 parseByteSize(const QString& text, qint64 fallback);
 /// open right now. Unlinking one of those succeeds on Linux and leaves the
 /// next read failing; on Windows the delete fails and the index quietly stops
 /// describing the disk.
+///
+/// Downloaded video is outside this entirely, neither counted nor evicted:
+/// it is only ever here because somebody chose it for a flight, and it is
+/// removed the same way it arrived — by asking.
 qint64 enforceCacheBudget(qint64 limitBytes, const QSet<QString>& keepPaths);
 
 /// True when `path` names a video container this application plays.
@@ -174,12 +189,42 @@ constexpr int kStreamExpirySeconds = 12 * 60 * 60;
 
 /// What a media player should open for a file inside a connection's cache, or
 /// an invalid URL when `localPath` is an ordinary file the caller should open
-/// directly.
+/// directly — including a video already downloaded for offline use, where the
+/// bytes on disk are the better answer than any URL.
+///
+/// A fresh signature every call is what makes this safe to call again: a
+/// laptop that slept past the expiry, or a connection that dropped, is
+/// recovered by asking for the source a second time.
 ///
 /// The result carries the credential — a presigned signature for S3 and GCS,
 /// `user:pass` for WebDAV — so it is safe to hand to a player and to nothing
 /// else. Never log one, and use QUrl::toDisplayString() anywhere one is shown.
 QUrl streamSource(const RemoteConnection& connection, const QString& localPath);
+
+/// True when `localPath` is a video this connection has been asked to keep on
+/// disk rather than stream. The pin lives in the cache index next to the file
+/// it names, so it survives both a restart and a re-sync.
+bool offlineVideoPinned(const RemoteConnection& connection,
+                        const QString& localPath);
+
+/// Records — or withdraws — the wish to hold `localPath` locally, and returns
+/// the reason it could not be. Withdrawing also hands the bytes back
+/// immediately; a pin on its own downloads nothing, because a recording takes
+/// long enough that it belongs in a job with a progress bar rather than in
+/// whatever happened to be running.
+QString pinOfflineVideo(const RemoteConnection& connection,
+                        const QString& localPath, bool pinned);
+
+/// Reports bytes received against the total the server declared, which is -1
+/// until it says. Returning false abandons the download.
+using DownloadProgress = std::function<bool(qint64 received, qint64 total)>;
+
+/// Downloads one already-listed object into the place in the cache it belongs,
+/// blocking until it is there. Returns the reason it failed, or an empty
+/// string. Meant for the one file a person asked for by name — a whole
+/// connection goes through syncConnection().
+QString fetchObject(const RemoteConnection& connection,
+                    const QString& localPath, const DownloadProgress& progress);
 
 /// Empty when `target` is usable for `type`, else the reason it is not.
 QString validateTarget(LocationType type, const QString& target);

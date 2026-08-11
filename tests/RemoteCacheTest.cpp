@@ -343,6 +343,87 @@ private slots:
         QVERIFY(!source.toDisplayString().contains(QStringLiteral("word")));
     }
 
+    // ── offline downloads ───────────────────────────────────────────
+
+    /// Streaming is no use on a plane. A recording can be asked for by name,
+    /// and once it is here it plays from disk, survives a re-sync, and is
+    /// beyond the reach of the budget until it is given back.
+    void keepsAPinnedVideoForTheFlight() {
+        gets_ = 0;
+        scenario_ = QStringLiteral("video");
+        const RemoteConnection connection = s3Connection(
+            QStringLiteral("s3://team-telemetry/"), QStringLiteral("offline"));
+
+        const RemoteSyncResult first = syncConnection(connection);
+        QVERIFY2(first.success, qPrintable(first.error));
+        const QString stub = QDir(first.cachePath).filePath("onboard.mp4");
+        QCOMPARE(QFileInfo(stub).size(), 0);
+        QVERIFY(!offlineVideoPinned(connection, stub));
+
+        // Pinning is a wish, not a transfer: a library scan must never be
+        // where thirty gigabytes start moving.
+        QCOMPARE(pinOfflineVideo(connection, stub, true), QString());
+        QVERIFY(offlineVideoPinned(connection, stub));
+        QCOMPARE(QFileInfo(stub).size(), 0);
+
+        qint64 announced = -2;
+        QCOMPARE(fetchObject(connection, stub,
+                             [&announced](qint64, qint64 total) {
+                                 announced = total;
+                                 return true;
+                             }),
+                 QString());
+        QCOMPARE(QFileInfo(stub).size(), 9);
+        QCOMPARE(announced, 9);
+
+        // Here, so the player is handed the file rather than a signature.
+        QVERIFY(!streamSource(connection, stub).isValid());
+
+        // Neither counted against the budget nor a candidate for it: one
+        // recording would otherwise evict a whole season of telemetry.
+        const CacheUsage usage = cacheUsage();
+        QVERIFY2(usage.videoBytes >= 9,
+                 qPrintable(QString::number(usage.videoBytes)));
+        QCOMPARE(enforceCacheBudget(usage.bytes, {}), 0);
+        QCOMPARE(QFileInfo(stub).size(), 9);
+
+        // A sync neither hands the bytes back nor fetches them again.
+        gets_ = 0;
+        const RemoteSyncResult again = syncConnection(connection);
+        QVERIFY2(again.success, qPrintable(again.error));
+        QCOMPARE(gets_, 0);
+        QCOMPARE(QFileInfo(stub).size(), 9);
+        QVERIFY(offlineVideoPinned(connection, stub));
+
+        // And withdrawing the wish returns the space and the stream.
+        QCOMPARE(pinOfflineVideo(connection, stub, false), QString());
+        QVERIFY(!offlineVideoPinned(connection, stub));
+        QCOMPARE(QFileInfo(stub).size(), 0);
+        QVERIFY(streamSource(connection, stub).isValid());
+    }
+
+    /// A download nobody can use is worse than none: if the server replaced
+    /// the recording, what is on disk is the wrong one, and the sync says so
+    /// by handing the space back rather than quietly keeping it.
+    void reclaimsAPinnedVideoTheServerReplaced() {
+        scenario_ = QStringLiteral("video");
+        const RemoteConnection connection = s3Connection(
+            QStringLiteral("s3://team-telemetry/"), QStringLiteral("replaced"));
+        QVERIFY(syncConnection(connection).success);
+        const QString stub =
+            QDir(cacheDirectory(connection)).filePath("onboard.mp4");
+        QCOMPARE(pinOfflineVideo(connection, stub, true), QString());
+        QCOMPARE(fetchObject(connection, stub, {}), QString());
+        QCOMPARE(QFileInfo(stub).size(), 9);
+
+        scenario_ = QStringLiteral("video-recut");
+        QVERIFY(syncConnection(connection).success);
+        QCOMPARE(QFileInfo(stub).size(), 0);
+        // The wish stands — it is the file that went stale, not the intent.
+        QVERIFY(offlineVideoPinned(connection, stub));
+        scenario_ = QStringLiteral("video");
+    }
+
     // ── the budget ──────────────────────────────────────────────────
 
     void readsASizeTheWayItIsWritten() {
@@ -379,7 +460,7 @@ private slots:
         const QString index = write(directory, "index.json", 40'000,
                                     now.addSecs(-6000));
 
-        const qint64 before = cacheUsageBytes();
+        const qint64 before = cacheUsage().bytes;
         const qint64 freed =
             enforceCacheBudget(before - 50'000, QSet<QString>{openNow});
 
@@ -393,7 +474,7 @@ private slots:
         QVERIFY(QFileInfo::exists(index));
 
         // Under the limit is a no-op, not a trim to some watermark.
-        QCOMPARE(enforceCacheBudget(cacheUsageBytes() + 1, {}), 0);
+        QCOMPARE(enforceCacheBudget(cacheUsage().bytes + 1, {}), 0);
         // And a limit of zero means "unset", not "keep nothing".
         QCOMPARE(enforceCacheBudget(0, {}), 0);
 
@@ -435,11 +516,12 @@ private slots:
         QCOMPARE(stray.write(QByteArray(4096, 'x')), 4096);
         stray.close();
 
-        const qint64 before = cacheUsageBytes();
-        QVERIFY2(before > 4096, qPrintable(QString::number(before)));
+        const CacheUsage before = cacheUsage();
+        QVERIFY2(before.bytes > 4096, qPrintable(QString::number(before.bytes)));
 
-        QCOMPARE(clearCache(), before);
-        QCOMPARE(cacheUsageBytes(), 0);
+        QCOMPARE(clearCache(), before.bytes + before.videoBytes);
+        QCOMPARE(cacheUsage().bytes, 0);
+        QCOMPARE(cacheUsage().videoBytes, 0);
         QVERIFY(!QFileInfo::exists(orphan));
     }
 
@@ -508,11 +590,14 @@ private:
             body += contents(second ? QStringLiteral("page-two.vbo")
                                     : QStringLiteral("page-one.vbo"),
                              QStringLiteral("e1"));
-        } else if (scenario_ == QStringLiteral("video")) {
+        } else if (scenario_ == QStringLiteral("video") ||
+                   scenario_ == QStringLiteral("video-recut")) {
             body += "<IsTruncated>false</IsTruncated>";
             body += contents(QStringLiteral("data.vbo"), QStringLiteral("e1"));
-            body +=
-                contents(QStringLiteral("onboard.mp4"), QStringLiteral("e2"));
+            body += contents(QStringLiteral("onboard.mp4"),
+                             scenario_.endsWith(QStringLiteral("recut"))
+                                 ? QStringLiteral("e9")
+                                 : QStringLiteral("e2"));
         } else if (scenario_ == QStringLiteral("awkward")) {
             body += "<IsTruncated>false</IsTruncated>";
             body += contents(QStringLiteral("clean.vbo"), QStringLiteral("e1"));

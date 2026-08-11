@@ -1067,6 +1067,7 @@ struct SessionConfidenceLoadResult {
     QString key;
     int lapCount = 0;
     QHash<QString, TraceConfidenceBand> bands;
+    std::vector<double> consistency;
     QString error;
 };
 
@@ -1682,6 +1683,43 @@ std::shared_ptr<SessionConfidenceLoadResult> loadSessionConfidence(
             band.upper[sample] = quantile(values, 0.90);
         }
         result->bands.insert(matrix.key, std::move(band));
+    }
+    // Composite session variation: each channel's robust p10–p90 spread also
+    // includes the active lap, then physical-unit thresholds make the four
+    // fields commensurate before their contributions are averaged.
+    struct ConsistencyField {
+        TraceConfidenceField field;
+        QString key;
+        double fullHeatSpread;
+    };
+    const ConsistencyField consistencyFields[] = {
+        {TraceConfidenceField::Throttle, QStringLiteral("throttle"), 0.25},
+        {TraceConfidenceField::Brake, QStringLiteral("brake"), 25.0},
+        {TraceConfidenceField::Steering, QStringLiteral("steering"), 15.0},
+        {TraceConfidenceField::Gear, QStringLiteral("gear"), 1.0},
+    };
+    result->consistency.assign(sampleCount, nan);
+    for (size_t sample = 0; sample < sampleCount; ++sample) {
+        double score = 0.0;
+        int fields = 0;
+        const double fraction =
+            double(sample) / double(std::max<size_t>(1, sampleCount - 1));
+        for (const ConsistencyField& field : consistencyFields) {
+            const auto band = result->bands.constFind(field.key);
+            if (band == result->bands.cend() || !band->valid()) continue;
+            const double active =
+                sampleTraceConfidence(*primary, field.field, fraction);
+            const double lower = band->lower[sample];
+            const double upper = band->upper[sample];
+            if (!std::isfinite(active) || !std::isfinite(lower) ||
+                !std::isfinite(upper))
+                continue;
+            const double spread =
+                std::max(active, upper) - std::min(active, lower);
+            score += std::clamp(spread / field.fullHeatSpread, 0.0, 1.0);
+            ++fields;
+        }
+        if (fields > 0) result->consistency[sample] = score / double(fields);
     }
     return result;
 }
@@ -2912,16 +2950,159 @@ QVariantList TelemetryStore::connectionTypes() const {
 }
 
 QVariantMap TelemetryStore::cacheUsage() const {
-    const qint64 bytes = cacheUsageBytes();
+    const CacheUsage usage = omatrack::cacheUsage();
     return QVariantMap{
-        {QStringLiteral("bytes"), bytes},
-        {QStringLiteral("text"), QLocale().formattedDataSize(bytes)},
+        {QStringLiteral("bytes"), usage.bytes},
+        {QStringLiteral("text"), QLocale().formattedDataSize(usage.bytes)},
         {QStringLiteral("limitText"),
-         QLocale().formattedDataSize(cacheLimitBytes_)}};
+         QLocale().formattedDataSize(cacheLimitBytes_)},
+        {QStringLiteral("videoBytes"), usage.videoBytes},
+        {QStringLiteral("videoText"),
+         QLocale().formattedDataSize(usage.videoBytes)}};
+}
+
+QVariantMap TelemetryStore::videoOffline(const QString& path) const {
+    const LibraryLocation* location =
+        isVideoFile(path) ? connectionHolding(path) : nullptr;
+    if (!location)
+        return QVariantMap{{QStringLiteral("remote"), false},
+                           {QStringLiteral("offline"), false},
+                           {QStringLiteral("busy"), false}};
+    return QVariantMap{
+        {QStringLiteral("remote"), true},
+        {QStringLiteral("offline"),
+         offlineVideoPinned(connectionFor(*location), path)},
+        {QStringLiteral("busy"),
+         path == videoDownloadPath_ || videoDownloadQueue_.contains(path)}};
+}
+
+void TelemetryStore::setVideoOffline(const QString& path, bool offline) {
+    const LibraryLocation* location =
+        isVideoFile(path) ? connectionHolding(path) : nullptr;
+    if (!location) return;
+    if (offline &&
+        (path == videoDownloadPath_ || videoDownloadQueue_.contains(path)))
+        return;
+
+    const RemoteConnection connection = connectionFor(*location);
+    const QString failure = pinOfflineVideo(connection, path, offline);
+    if (!failure.isEmpty()) {
+        emit operationError(QStringLiteral("Offline recording"), failure);
+        return;
+    }
+    if (!offline) {
+        // The player is holding a local path that just became a stub again,
+        // so re-resolve it: what was a file is a stream once more.
+        streamUrls_.remove(path);
+        emit selectionChanged();
+        emit locationsChanged();
+        return;
+    }
+    videoDownloadQueue_.append(path);
+    startNextVideoDownload();
+    emit videoDownloadChanged();
+}
+
+void TelemetryStore::cancelVideoDownloads() {
+    videoDownloadQueue_.clear();
+    if (videoDownloadCancelled_) videoDownloadCancelled_->store(true);
+}
+
+void TelemetryStore::setVideoDownloadStatus(const QString& status) {
+    if (videoDownloadStatus_ == status) return;
+    videoDownloadStatus_ = status;
+    emit videoDownloadChanged();
+}
+
+void TelemetryStore::startNextVideoDownload() {
+    if (!videoDownloadPath_.isEmpty() || videoDownloadQueue_.isEmpty()) return;
+    const QString path = videoDownloadQueue_.takeFirst();
+    const LibraryLocation* location = connectionHolding(path);
+    if (!location) {
+        startNextVideoDownload();
+        return;
+    }
+
+    videoDownloadPath_ = path;
+    videoDownloadName_ = QFileInfo(path).fileName();
+    videoDownloadReceived_ = std::make_shared<std::atomic<qint64>>(0);
+    videoDownloadTotal_ = std::make_shared<std::atomic<qint64>>(-1);
+    videoDownloadCancelled_ = std::make_shared<std::atomic<bool>>(false);
+    setVideoDownloadStatus(
+        QStringLiteral("Downloading %1…").arg(videoDownloadName_));
+
+    if (!videoDownloadTicker_) {
+        // The transfer runs on another thread and cannot touch a property, so
+        // the counters it bumps are read here at a rate a person can follow.
+        videoDownloadTicker_ = new QTimer(this);
+        videoDownloadTicker_->setInterval(500);
+        connect(videoDownloadTicker_, &QTimer::timeout, this, [this]() {
+            if (videoDownloadPath_.isEmpty() || !videoDownloadReceived_) return;
+            const qint64 received = videoDownloadReceived_->load();
+            const qint64 total = videoDownloadTotal_->load();
+            const QString progress =
+                total > 0 ? QStringLiteral("%1 of %2")
+                                .arg(QLocale().formattedDataSize(received),
+                                     QLocale().formattedDataSize(total))
+                          : QLocale().formattedDataSize(received);
+            setVideoDownloadStatus(QStringLiteral("Downloading %1 — %2")
+                                       .arg(videoDownloadName_, progress));
+        });
+    }
+    videoDownloadTicker_->start();
+
+    const RemoteConnection connection = connectionFor(*location);
+    auto* watcher = new QFutureWatcher<QString>(this);
+    connect(watcher, &QFutureWatcher<QString>::finished, this,
+            [this, watcher, path]() {
+                const QString failure = watcher->result();
+                watcher->deleteLater();
+                videoDownloadPath_.clear();
+                if (videoDownloadTicker_) videoDownloadTicker_->stop();
+                if (failure.isEmpty()) {
+                    setVideoDownloadStatus(QString());
+                    // The next time this recording is opened it comes off the
+                    // disk. Whatever is playing right now is left alone:
+                    // re-pointing it would restart it at zero to change
+                    // nothing the viewer can see.
+                    streamUrls_.remove(path);
+                    emit locationsChanged();
+                } else {
+                    setVideoDownloadStatus(QString());
+                    // A cancellation is what was asked for, not a fault.
+                    if (failure != QStringLiteral("Download cancelled")) {
+                        const LibraryLocation* owner = connectionHolding(path);
+                        if (owner)
+                            pinOfflineVideo(connectionFor(*owner), path, false);
+                        emit operationError(
+                            QStringLiteral("Offline recording"),
+                            QStringLiteral("%1 could not be downloaded: %2")
+                                .arg(QFileInfo(path).fileName(), failure));
+                    }
+                }
+                startNextVideoDownload();
+                emit videoDownloadChanged();
+            });
+    const auto received = videoDownloadReceived_;
+    const auto total = videoDownloadTotal_;
+    const auto cancelled = videoDownloadCancelled_;
+    watcher->setFuture(
+        QtConcurrent::run([connection, path, received, total, cancelled]() {
+            return fetchObject(
+                connection, path,
+                [received, total, cancelled](qint64 got, qint64 declared) {
+                    received->store(got);
+                    total->store(declared);
+                    return !cancelled->load();
+                });
+        }));
 }
 
 void TelemetryStore::clearCache() {
+    cancelVideoDownloads();
     omatrack::clearCache();
+    streamUrls_.clear();
+    streamedPaths_.clear();
     // The library was scanning those files a moment ago, so re-scan rather
     // than leave rows pointing at paths that no longer exist. Every enabled
     // connection downloads again as part of it.
@@ -5741,6 +5922,7 @@ void TelemetryStore::invalidateTraceConfidence() {
     ++traceConfidenceGeneration_;
     traceConfidenceKey_ = key;
     traceConfidenceBands_.clear();
+    traceConsistency_.clear();
     traceConfidenceLapIds_.clear();
     traceConfidenceLapCount_ = 0;
     traceConfidenceLoading_ = false;
@@ -5808,6 +5990,7 @@ void TelemetryStore::requestTraceConfidence() {
             traceConfidenceReady_ = true;
             traceConfidenceLapCount_ = result->lapCount;
             traceConfidenceBands_ = std::move(result->bands);
+            traceConsistency_ = std::move(result->consistency);
             if (!result->error.isEmpty())
                 qWarning() << "Unable to build session trace confidence"
                            << result->error;
@@ -6508,18 +6691,57 @@ void TelemetryStore::markRecentlyUsed(const QString& path) const {
                      QFileDevice::FileModificationTime);
 }
 
-QUrl TelemetryStore::videoSourceFor(const QString& path) const {
+const LibraryLocation* TelemetryStore::connectionHolding(
+    const QString& path) const {
     for (const LibraryLocation& location : locations_) {
         if (!location.isConnection()) continue;
         const QString cache = cachePathFor(location);
-        if (cache.isEmpty() || !path.startsWith(cache + QLatin1Char('/')))
-            continue;
-        const QUrl stream = streamSource(connectionFor(location), path);
-        // A connection also caches real files, and after "Clear cache" it
-        // holds neither — either way the local path is still the answer.
-        return stream.isValid() ? stream : QUrl::fromLocalFile(path);
+        if (!cache.isEmpty() && path.startsWith(cache + QLatin1Char('/')))
+            return &location;
     }
-    return QUrl::fromLocalFile(path);
+    return nullptr;
+}
+
+QUrl TelemetryStore::videoSourceFor(const QString& path) const {
+    return videoSourceFor(path, false);
+}
+
+QUrl TelemetryStore::videoSourceFor(const QString& path, bool renew) const {
+    const LibraryLocation* location = connectionHolding(path);
+    if (!location) return QUrl::fromLocalFile(path);
+
+    // Signing on every read would hand out a different URL each time, and
+    // everything that asks "is the player already showing this?" — the
+    // telemetry sync, the dual-video test — would answer no and reload. So a
+    // signature is kept and reused, and replaced well before it runs out.
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const auto known = streamUrls_.constFind(path);
+    if (!renew && known != streamUrls_.cend() &&
+        now - known->signedAtMs < qint64(kStreamExpirySeconds) * 500)
+        return known->url;
+
+    const QUrl stream = streamSource(connectionFor(*location), path);
+    // A connection also caches real files, holds a recording downloaded for a
+    // flight, and after "Clear cache" holds neither — in every one of those
+    // the local path is still the answer.
+    if (!stream.isValid()) {
+        streamUrls_.remove(path);
+        return QUrl::fromLocalFile(path);
+    }
+    streamUrls_.insert(path, StreamUrl{stream, now});
+    // Remembered in reverse so that an address the server stops honouring can
+    // be replaced without the player having to know where it came from.
+    streamedPaths_.insert(stream.toString(QUrl::RemoveQuery), path);
+    return stream;
+}
+
+QUrl TelemetryStore::refreshedVideoSource(const QUrl& source) const {
+    const auto known =
+        streamedPaths_.constFind(source.toString(QUrl::RemoveQuery));
+    if (known == streamedPaths_.cend()) return {};
+    // The same recording, signed afresh: an address the server will accept
+    // for another twelve hours.
+    return videoSourceFor(known.value(), true);
 }
 
 QUrl TelemetryStore::primaryVideoSource() const {

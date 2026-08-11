@@ -19,6 +19,8 @@ Item {
     property real cacheBytes: 0
     property string cacheLimitText: ""
     property string cacheText: ""
+    property real cacheVideoBytes: 0
+    property string cacheVideoText: ""
     property var locationRows: []
 
     function addDirectory(path): bool {
@@ -40,6 +42,8 @@ Item {
         libraryPage.cacheBytes = usage.bytes;
         libraryPage.cacheText = usage.text;
         libraryPage.cacheLimitText = usage.limitText;
+        libraryPage.cacheVideoBytes = usage.videoBytes;
+        libraryPage.cacheVideoText = usage.videoText;
     }
     function toLocalPath(value): string {
         const text = value.toString();
@@ -328,7 +332,7 @@ Item {
             spacing: 8
             // Only connections download anything, so with none configured
             // this row would report zero for something that cannot happen.
-            visible: libraryPage.cacheBytes > 0
+            visible: libraryPage.cacheBytes > 0 || libraryPage.cacheVideoBytes > 0
 
             Label {
                 Layout.fillWidth: true
@@ -344,6 +348,17 @@ Item {
 
                 onClicked: clearCacheDialog.open()
             }
+        }
+        Label {
+            Layout.fillWidth: true
+            color: Style.mutedTextColor
+            font.pixelSize: Style.smallFontSize
+            // Outside the limit on purpose. A recording is here because
+            // somebody chose it for a flight, so nothing evicts it and it is
+            // removed the way it arrived — from the file's context menu.
+            text: "Recordings kept for offline use: " + libraryPage.cacheVideoText
+            visible: libraryPage.cacheVideoBytes > 0
+            wrapMode: Text.WordWrap
         }
         Label {
             Layout.fillWidth: true
@@ -373,7 +388,7 @@ Item {
             anchors.fill: parent
             // Worth saying plainly: this costs time and bandwidth, and on a
             // metered connection it costs money.
-            text: "Delete " + libraryPage.cacheText + " downloaded from connected servers. Every enabled connection will download its files again on the next scan."
+            text: "Delete " + libraryPage.cacheText + " downloaded from connected servers, and any recordings kept for offline use. Every enabled connection will download its files again on the next scan."
             wrapMode: Text.WordWrap
         }
     }

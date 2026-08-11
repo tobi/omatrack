@@ -193,12 +193,17 @@ Pane {
     Menu {
         id: fileContextMenu
 
+        property bool ctxDownloading
         property string ctxDriver
         property bool ctxHasSession
         property string ctxKey
         property string ctxMappingKey
+        property bool ctxOffline
         property string ctxPath
         property bool ctxPinned
+        /// Whether this recording streams from a server, whether it is being
+        /// kept on this machine, and whether that is happening right now.
+        property bool ctxRemoteVideo
         property string ctxRole
         property bool ctxVideoFile
 
@@ -220,6 +225,14 @@ Pane {
             visible: fileContextMenu.ctxVideoFile
 
             onTriggered: Store.setFilePinned(fileContextMenu.ctxRole, fileContextMenu.ctxPath, !fileContextMenu.ctxPinned)
+        }
+        MenuItem {
+            enabled: !fileContextMenu.ctxDownloading
+            height: visible ? implicitHeight : 0
+            text: fileContextMenu.ctxDownloading ? "Downloading for offline…" : fileContextMenu.ctxOffline ? "Remove offline download" : "Download for offline use"
+            visible: fileContextMenu.ctxRemoteVideo
+
+            onTriggered: Store.setVideoOffline(fileContextMenu.ctxPath, !fileContextMenu.ctxOffline)
         }
         MenuSeparator {
         }
@@ -420,6 +433,10 @@ Pane {
                             fileContextMenu.ctxDriver = driver;
                             fileContextMenu.ctxPinned = pinned;
                             fileContextMenu.ctxRole = role;
+                            const offline = Store.videoOffline(path);
+                            fileContextMenu.ctxRemoteVideo = offline.remote;
+                            fileContextMenu.ctxOffline = offline.offline;
+                            fileContextMenu.ctxDownloading = offline.busy;
                             fileContextMenu.popup();
                         } else {
                             folderContextMenu.ctxPath = path;
@@ -453,6 +470,42 @@ Pane {
                     font.family: Style.monoFontFamily
                     font.pixelSize: 10
                     text: "SCANNING FILES"
+                }
+            }
+        }
+        // A recording is tens of gigabytes, so the one being fetched for
+        // offline use says so for as long as it takes, and can be called off.
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 26
+            color: Style.surfaceColor
+            visible: Store.videoDownloadStatus !== ""
+
+            Rectangle {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                color: Style.borderColor
+                height: 1
+            }
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 8
+                anchors.rightMargin: 4
+                spacing: 6
+
+                Label {
+                    Layout.fillWidth: true
+                    color: Style.mutedTextColor
+                    elide: Text.ElideMiddle
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: 10
+                    text: Store.videoDownloadStatus
+                }
+                CompactButton {
+                    text: "Cancel"
+
+                    onClicked: Store.cancelVideoDownloads()
                 }
             }
         }

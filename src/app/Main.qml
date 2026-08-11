@@ -208,6 +208,19 @@ ApplicationWindow {
             strips.push(lapStripEntry(referenceSessionKey, true));
         filmstripSessions = strips;
     }
+    // A streamed recording is reached through a signature that expires, and a
+    // laptop closed at the circuit and opened on the plane home wakes up
+    // holding a dead one. The store can sign a new address for the same file;
+    // the player picks up where it was. If it has nothing to offer — a local
+    // file, or a recording it never produced — the error already on screen is
+    // the right answer.
+    function reopenExpiredVideo(player: MpvVideoItem): void {
+        if (!player)
+            return;
+        const fresh = Store.refreshedVideoSource(player.source);
+        if (fresh.toString() !== "")
+            player.reopenMedia(fresh);
+    }
     function seekVideoRelative(seconds) {
         if (telemetryVideoActive)
             Store.seekCursorSeconds(seconds);
@@ -621,6 +634,7 @@ ApplicationWindow {
                         else if (root.dualVideo && loaded && paused && root.referenceSyncPauseAttempts > 0)
                             pausedVideoAlignmentTimer.restart();
                     }
+                    onSourceExpired: root.reopenExpiredVideo(videoPlayer)
                 }
                 Label {
                     anchors.left: parent.left
@@ -693,6 +707,7 @@ ApplicationWindow {
                                             root.syncReferenceVideo(true);
                                     });
                             }
+                            onSourceExpired: root.reopenExpiredVideo(this)
                         }
                     }
 

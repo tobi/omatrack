@@ -57,6 +57,12 @@ public:
     void setPlaybackRate(double rate);
 
     Q_INVOKABLE void openMedia(const QUrl& source);
+    /// Reopens the same recording from a new address, resuming where it was.
+    ///
+    /// A streamed source is signed and expires, so a laptop that slept through
+    /// the afternoon holds a URL the server will refuse. This is what a fresh
+    /// one is loaded through: the answer to sourceExpired().
+    Q_INVOKABLE void reopenMedia(const QUrl& source);
     Q_INVOKABLE void closeMedia();
     Q_INVOKABLE void togglePaused();
     Q_INVOKABLE void seek(double seconds);
@@ -76,6 +82,11 @@ signals:
     void titleChanged();
     void errorStringChanged();
     void sourceChanged();
+    /// Playback stopped on an error the address may be to blame for — an
+    /// expired signature, a connection that went away while the machine
+    /// slept. Whoever produced the source can offer a new one through
+    /// reopenMedia(); if nobody does, the error stands.
+    void sourceExpired();
 
 private slots:
     void processEvents();
@@ -101,6 +112,11 @@ private:
     double volume_ = 75.0;
     double playbackRate_ = 1.0;
     int exactSeekCount_ = 0;
+    /// Where a reopen puts the playhead back, and how many reopens have been
+    /// tried since a file last loaded. Without the count, a recording that is
+    /// simply broken would be retried for as long as the window is open.
+    double resumePosition_ = 0.0;
+    int reopenAttempts_ = 0;
     bool ready_ = false;
     bool loaded_ = false;
     bool paused_ = true;

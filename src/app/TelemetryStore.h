@@ -24,6 +24,7 @@
 #include <QVariantList>
 #include <QVariantMap>
 
+#include <atomic>
 #include <memory>
 #include <cmath>
 #include <limits>
@@ -289,6 +290,11 @@ class TelemetryStore : public QObject {
         QUrl compareVideoSource READ compareVideoSource NOTIFY selectionChanged)
     Q_PROPERTY(
         double compareVideoTime READ compareVideoTime NOTIFY videoTimeChanged)
+    /// One line about the recording being fetched for offline use, empty when
+    /// none is. Gigabytes take minutes, so this is the only honest way to show
+    /// that something is happening.
+    Q_PROPERTY(QString videoDownloadStatus READ videoDownloadStatus NOTIFY
+                   videoDownloadChanged)
     Q_PROPERTY(double comparisonVideoRate READ comparisonVideoRate NOTIFY
                    videoTimeChanged)
     Q_PROPERTY(QString comparisonAlignmentBasis READ comparisonAlignmentBasis
@@ -343,10 +349,26 @@ public:
     /// the credential-field labels and an `extraFields` list of protocol
     /// settings — which is what keeps ConnectionDialog free of protocols.
     Q_INVOKABLE QVariantList connectionTypes() const;
-    /// What every connection has downloaded, as {bytes, text}. Measured by
-    /// walking the cache, not by adding up index entries, so it also counts
-    /// what a removed location or an interrupted download left behind.
+    /// What every connection has downloaded, as {bytes, text} for what the
+    /// limit governs and {videoBytes, videoText} for the recordings kept for
+    /// offline use, which it does not. Measured by walking the cache, not by
+    /// adding up index entries, so it also counts what a removed location or
+    /// an interrupted download left behind.
     Q_INVOKABLE QVariantMap cacheUsage() const;
+    /// Whether `path` is a recording on a server and, if so, whether it is
+    /// being kept locally: {remote, offline, busy}. What the context menu on a
+    /// file needs to know to offer the right thing.
+    Q_INVOKABLE QVariantMap videoOffline(const QString& path) const;
+    /// Keeps `path` on this machine, or gives the space back. Downloading
+    /// happens in the background and is reported through videoDownloadStatus;
+    /// asking for one already queued cancels nothing and starts nothing.
+    Q_INVOKABLE void setVideoOffline(const QString& path, bool offline);
+    /// Abandons the download in progress and everything queued behind it.
+    Q_INVOKABLE void cancelVideoDownloads();
+    /// A freshly signed address for a recording whose last one stopped
+    /// working — the answer to MpvVideoItem's sourceExpired(). Empty when the
+    /// player is holding something this store never produced.
+    Q_INVOKABLE QUrl refreshedVideoSource(const QUrl& source) const;
     /// Deletes every downloaded file. Nothing is lost that the servers cannot
     /// send again, but everything still configured has to be fetched afresh.
     Q_INVOKABLE void clearCache();
@@ -481,6 +503,9 @@ public:
     const std::vector<double>* extraChannelData(const QString& key,
                                                 bool reference) const;
     const TraceConfidenceBand* traceConfidenceBand(const QString& field) const;
+    const std::vector<double>& traceConsistency() const {
+        return traceConsistency_;
+    }
     bool trackAtlasReady() const { return !atlasTracks_.isEmpty(); }
     QString trackAtlasStatus() const { return trackAtlasStatus_; }
 
@@ -524,6 +549,7 @@ public:
     QUrl compareVideoSource() const;
     double compareVideoTime() const;
     double comparisonVideoRate() const;
+    QString videoDownloadStatus() const { return videoDownloadStatus_; }
     QString comparisonAlignmentBasis() const;
     QString comparisonAlignmentConfidence() const;
     int comparisonGpsAnchors() const;
@@ -551,6 +577,7 @@ signals:
     void trackAtlasChanged();
     void videoTimeChanged();
     void videoMutedChanged();
+    void videoDownloadChanged();
     void videoMetadataChanged(const QString& videoPath);
     void folderChannelSampleReady(const QVariantMap& metadata);
     void filePinsChanged();
@@ -577,6 +604,15 @@ private:
     /// it goes to the player and nowhere else — see RemoteCache's
     /// streamSource().
     QUrl videoSourceFor(const QString& path) const;
+    /// `renew` throws away the signature already held for this file, which is
+    /// what recovers from one the server has stopped accepting.
+    QUrl videoSourceFor(const QString& path, bool renew) const;
+    /// The connection whose cache holds `path`, or null when it is an
+    /// ordinary local file.
+    const omatrack::LibraryLocation* connectionHolding(
+        const QString& path) const;
+    void startNextVideoDownload();
+    void setVideoDownloadStatus(const QString& status);
     void setPrimary(SessionHandle* session, int lapId);
     void setCompare(SessionHandle* session, int lapId);
     void requestLapLoad(SessionHandle* session, int lapId, bool compare);
@@ -653,6 +689,28 @@ private:
     QVector<SidebarPin> sidebarPins_;
     QFutureWatcher<std::shared_ptr<SessionScanResult>>* scanWatcher_ = nullptr;
     QSet<QString> transientSessionPaths_;
+    /// Offline downloads, one at a time: two concurrent transfers of tens of
+    /// gigabytes finish no sooner and make the progress meaningless.
+    QStringList videoDownloadQueue_;
+    QString videoDownloadPath_;
+    QString videoDownloadStatus_;
+    QString videoDownloadName_;
+    std::shared_ptr<std::atomic<qint64>> videoDownloadReceived_;
+    std::shared_ptr<std::atomic<qint64>> videoDownloadTotal_;
+    std::shared_ptr<std::atomic<bool>> videoDownloadCancelled_;
+    QTimer* videoDownloadTicker_ = nullptr;
+    /// The signature in force for each streamed recording, and when it was
+    /// made. Reused rather than remade so the URL a player is holding stays
+    /// equal to itself.
+    struct StreamUrl {
+        QUrl url;
+        qint64 signedAtMs = 0;
+    };
+    mutable QHash<QString, StreamUrl> streamUrls_;
+    /// Which cached file each streaming URL was built for, so that one the
+    /// server has stopped honouring can be signed again. Keyed without the
+    /// query string, which is the part a signature lives in.
+    mutable QHash<QString, QString> streamedPaths_;
     QStringList recentFiles_;
     QHash<QString, QString> driverMappings_;
     QHash<QString, QString> trackAssignments_;
@@ -707,6 +765,7 @@ private:
     quint64 cornerConsistencyGeneration_ = 0;
     QHash<QString, TraceConfidenceBand> traceConfidenceBands_;
     QSet<int> traceConfidenceLapIds_;
+    std::vector<double> traceConsistency_;
     QString traceConfidenceKey_;
     quint64 traceConfidenceGeneration_ = 0;
     int traceConfidenceLapCount_ = 0;

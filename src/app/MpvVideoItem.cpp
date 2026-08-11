@@ -1,6 +1,9 @@
 #include "MpvVideoItem.h"
 
+#include "RemoteCache.h"
+
 #include <QDebug>
+#include <QDir>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QOpenGLContext>
@@ -28,6 +31,11 @@ struct MpvSharedState {
 };
 
 namespace {
+
+/// How many times a failed stream is reopened before the error is left to
+/// stand. Three covers an expired signature and a flaky reconnect; more would
+/// only hammer a recording that is genuinely broken.
+constexpr int kMaximumReopens = 3;
 
 void* resolveOpenGl(void*, const char* name) {
     QOpenGLContext* context = QOpenGLContext::currentContext();
@@ -196,6 +204,26 @@ MpvVideoItem::MpvVideoItem(QQuickItem* parent)
     setOption(state_->handle, "audio-client-name", "Omatrack");
     setOption(state_->handle, "volume", "75");
 
+    // Onboard video from a server is played over the wire, so let mpv do what
+    // it is good at and buffer it properly. "auto" means network streams only:
+    // a local recording is already random-access and gains nothing from being
+    // copied. The window is what a scrub back through the previous corner
+    // costs — well past the 150 MiB default, because a lap of 4K onboard is
+    // several hundred megabytes and re-fetching it over hotel wifi is the
+    // difference between analysis and waiting.
+    setOption(state_->handle, "cache", "auto");
+    setOption(state_->handle, "cache-on-disk", "yes");
+    setOption(state_->handle, "demuxer-max-bytes", "1GiB");
+    setOption(state_->handle, "demuxer-max-back-bytes", "512MiB");
+    const QString streamCache = omatrack::cacheRoot() + QStringLiteral("/mpv");
+    if (QDir().mkpath(streamCache))
+        setOption(state_->handle, "demuxer-cache-dir",
+                  streamCache.toUtf8().constData());
+    // mpv unlinks this file the moment it creates it, so nothing survives the
+    // session and a crash leaks no disk. It buys smooth seeking inside one
+    // sitting, and nothing at all on a plane — which is what downloading a
+    // recording is for.
+
     const int result = mpv_initialize(state_->handle);
     if (result < 0) {
         setError(QStringLiteral("Unable to initialize libmpv: %1")
@@ -251,6 +279,13 @@ void MpvVideoItem::processEvents() {
                     emit loadedChanged();
                 }
                 setError(QString());
+                // Whatever went wrong is behind us, so the next failure gets
+                // the full allowance of retries again.
+                reopenAttempts_ = 0;
+                if (resumePosition_ > 0.0) {
+                    seek(resumePosition_);
+                    resumePosition_ = 0.0;
+                }
                 if (autoplayPending_) {
                     autoplayPending_ = false;
                     setPaused(false);
@@ -258,10 +293,16 @@ void MpvVideoItem::processEvents() {
                 break;
             case MPV_EVENT_END_FILE: {
                 const auto* end = static_cast<mpv_event_end_file*>(event->data);
-                if (end && end->reason == MPV_END_FILE_REASON_ERROR)
-                    setError(QStringLiteral("Video playback failed: %1")
-                                 .arg(QString::fromUtf8(
-                                     mpv_error_string(end->error))));
+                if (!end || end->reason != MPV_END_FILE_REASON_ERROR) break;
+                setError(
+                    QStringLiteral("Video playback failed: %1")
+                        .arg(QString::fromUtf8(mpv_error_string(end->error))));
+                // A streamed recording usually fails for a reason a new
+                // address fixes — a signature that expired while the machine
+                // slept, a connection dropped and re-made. Ask for one; the
+                // error above stands if nothing answers.
+                if (!source_.isLocalFile() && reopenAttempts_ < kMaximumReopens)
+                    emit sourceExpired();
                 break;
             }
             case MPV_EVENT_SEEK:
@@ -376,6 +417,8 @@ void MpvVideoItem::openMedia(const QUrl& source) {
         return;
     }
     exactSeekCount_ = 0;
+    resumePosition_ = 0.0;
+    reopenAttempts_ = 0;
 
     source_ = source;
     pendingSource_ = source;
@@ -391,6 +434,23 @@ void MpvVideoItem::openMedia(const QUrl& source) {
     emit durationChanged();
     emit loadedChanged();
     emit titleChanged();
+    loadPendingMedia();
+}
+
+void MpvVideoItem::reopenMedia(const QUrl& source) {
+    if (!source.isValid() || source.isEmpty()) return;
+    ++reopenAttempts_;
+    // Where it was, and whether it was running: reopening has to be invisible
+    // beyond a stutter, or it is just a different way of losing your place.
+    resumePosition_ = position_;
+    const bool wasPlaying = !paused_;
+    source_ = source;
+    pendingSource_ = source;
+    loaded_ = false;
+    autoplayPending_ = wasPlaying;
+    setError(QString());
+    emit sourceChanged();
+    emit loadedChanged();
     loadPendingMedia();
 }
 
@@ -416,6 +476,8 @@ void MpvVideoItem::loadPendingMedia() {
 void MpvVideoItem::closeMedia() {
     pendingSource_ = QUrl();
     autoplayPending_ = false;
+    resumePosition_ = 0.0;
+    reopenAttempts_ = 0;
     if (state_ && state_->handle) command({QByteArrayLiteral("stop")});
     source_ = QUrl();
     title_.clear();
