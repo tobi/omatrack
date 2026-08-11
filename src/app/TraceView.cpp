@@ -44,6 +44,15 @@ QColor alpha(QColor c, int a) {
     return c;
 }
 
+QColor mixColors(const QColor& from, const QColor& to, double amount) {
+    const double factor = std::clamp(amount, 0.0, 1.0);
+    return QColor::fromRgbF(
+        from.redF() + (to.redF() - from.redF()) * factor,
+        from.greenF() + (to.greenF() - from.greenF()) * factor,
+        from.blueF() + (to.blueF() - from.blueF()) * factor,
+        from.alphaF() + (to.alphaF() - from.alphaF()) * factor);
+}
+
 // The scene graph has no dashed-line primitive; a dash is just a short quad.
 void dashedHLine(TraceSceneBuilder& builder, double y, double left,
                  double right, const QColor& color) {
@@ -51,6 +60,19 @@ void dashedHLine(TraceSceneBuilder& builder, double y, double left,
     constexpr double kGap = 4.0;
     for (double x = left; x < right; x += kDash + kGap)
         builder.hLine(y, x, std::min(x + kDash, right), 1.0, color);
+}
+void dashedVLine(TraceSceneBuilder& builder, double x, double top,
+                 double bottom, double dash, double gap, double width,
+                 const QColor& color) {
+    for (double y = top; y < bottom; y += dash + gap)
+        builder.vLine(x, y, std::min(y + dash, bottom), width, color);
+}
+
+QColor cornerMarkerColor(const QString& key) {
+    if (key == QStringLiteral("brake")) return kRed;
+    if (key == QStringLiteral("apex")) return kMagenta;
+    if (key == QStringLiteral("pickup")) return kGreen;
+    return kAccent;
 }
 
 void outline(TraceSceneBuilder& builder, const QRectF& rect,
@@ -130,6 +152,8 @@ void TraceView::setStore(TelemetryStore* store) {
         });
         connect(store_, &TelemetryStore::referenceAlignmentChanged, this,
                 &TraceView::invalidateScene);
+        connect(store_, &TelemetryStore::traceConfidenceChanged, this,
+                &TraceView::invalidateRanges);
     }
     invalidateRanges();
     emit storeChanged();
@@ -339,6 +363,7 @@ void TraceView::buildScene(TraceSceneBuilder& builder) {
 
     const QVector<Lane> lanes = layoutLanes();
     if (lanes.isEmpty()) return;
+    buildCornerMarkerGuides(builder);
 
     for (const Lane& lane : lanes) {
         const ChannelSpec& spec = channelSpecs_[lane.spec];
@@ -348,6 +373,26 @@ void TraceView::buildScene(TraceSceneBuilder& builder) {
         else
             buildChannel(builder, spec, rect, primary, compare);
         builder.hLine(lane.y, kLabelW, width(), 1.0, alpha(kGridStrong, 110));
+    }
+
+    if (store_->traceConfidenceMode()) {
+        QString text;
+        QColor textColor = kAccent;
+        if (store_->traceConfidenceLoading()) {
+            text = QStringLiteral("FASTEST 50% · ALIGNING LAPS…");
+            textColor = kOrange;
+        } else if (store_->traceConfidenceLapCount() >= 2) {
+            text = QStringLiteral("FASTEST 50% · %1 OTHER LAPS")
+                       .arg(store_->traceConfidenceLapCount());
+        } else {
+            text = QStringLiteral("FASTEST 50% · NEED 2 OTHER LAPS");
+            textColor = kMuted;
+        }
+        const QRectF badge(std::max(kLabelW, width() - 250.0), 2.0,
+                           std::min(242.0, width() - kLabelW), 17.0);
+        builder.rect(badge, alpha(backgroundColor_, 220));
+        builder.text(text, canvasFont_, textColor, badge.adjusted(6, 0, -6, 0),
+                     Qt::AlignRight | Qt::AlignVCenter);
     }
 
     const double axisTop = height() - kBottomPad;
@@ -434,6 +479,13 @@ const TraceView::ChannelRange& TraceView::rangeFor(const ChannelSpec& spec,
         };
         includeRange(primaryData);
         includeRange(compareData);
+        if (store_->traceConfidenceMode()) {
+            if (const TraceConfidenceBand* band =
+                    store_->traceConfidenceBand(spec.field)) {
+                includeRange(&band->lower);
+                includeRange(&band->upper);
+            }
+        }
         if (!(range.max > range.min)) {
             range.min = 0.0;
             range.max = 1.0;
@@ -553,6 +605,113 @@ void TraceView::buildSeries(TraceSceneBuilder& builder,
     }
 }
 
+void TraceView::buildConfidenceBand(TraceSceneBuilder& builder,
+                                    const TraceConfidenceBand* band,
+                                    const QRectF& rect,
+                                    const ChannelRange& range) {
+    if (!band || !band->valid() || rect.width() < 2.0) return;
+    const int valueLast = int(band->lower.size()) - 1;
+    const int columns = std::max(2, int(rect.width()));
+    const double columnWidth = rect.width() / double(columns);
+    const double viewStart = store_->viewStart();
+    const double viewSpan = store_->viewSpan();
+    const double rangeSpan = std::max(1.0e-12, range.max - range.min);
+    const auto toY = [&](double value) {
+        return std::clamp(rect.top() + (1.0 - (value - range.min) / rangeSpan) *
+                                           rect.height(),
+                          rect.top(), rect.bottom());
+    };
+    const auto interpolate = [valueLast](const std::vector<double>& values,
+                                         double position) {
+        position = std::clamp(position, 0.0, double(valueLast));
+        const int low = std::clamp(int(std::floor(position)), 0, valueLast);
+        const int high = std::min(low + 1, valueLast);
+        const double first = values[size_t(low)];
+        const double second = values[size_t(high)];
+        if (!std::isfinite(first) || !std::isfinite(second))
+            return std::numeric_limits<double>::quiet_NaN();
+        return first + (second - first) * (position - double(low));
+    };
+
+    builder.reserveQuads(columns * 4);
+    bool hasPrevious = false;
+    double previousTop = 0.0;
+    double previousBottom = 0.0;
+    double previousMedian = 0.0;
+    for (int column = 0; column < columns; ++column) {
+        const double startFraction =
+            viewStart + viewSpan * double(column) / double(columns);
+        const double endFraction =
+            viewStart + viewSpan * double(column + 1) / double(columns);
+        const double centre = (startFraction + endFraction) * 0.5;
+        if (centre < 0.0 || centre > 1.0) {
+            hasPrevious = false;
+            continue;
+        }
+
+        double from = std::clamp(startFraction, 0.0, 1.0) * valueLast;
+        double to = std::clamp(endFraction, 0.0, 1.0) * valueLast;
+        if (to < from) std::swap(from, to);
+        const int firstIndex = std::clamp(int(std::floor(from)), 0, valueLast);
+        const int lastIndex = std::clamp(int(std::ceil(to)), 0, valueLast);
+        double low = std::numeric_limits<double>::infinity();
+        double high = -std::numeric_limits<double>::infinity();
+        for (int index = firstIndex; index <= lastIndex; ++index) {
+            const double lower = band->lower[size_t(index)];
+            const double upper = band->upper[size_t(index)];
+            if (!std::isfinite(lower) || !std::isfinite(upper)) continue;
+            low = std::min(low, lower);
+            high = std::max(high, upper);
+        }
+        const double median = interpolate(band->median, (from + to) * 0.5);
+        if (!(low <= high) || !std::isfinite(median)) {
+            hasPrevious = false;
+            continue;
+        }
+
+        const double top = toY(high);
+        const double bottom = toY(low);
+        const double medianY = toY(median);
+        const double spread = std::max(0.0, high - low) / rangeSpan;
+        const double heat = std::clamp((spread - 0.015) / 0.16, 0.0, 1.0);
+        QColor heatColor = heat < 0.5
+                               ? mixColors(kGreen, kOrange, heat * 2.0)
+                               : mixColors(kOrange, kRed, (heat - 0.5) * 2.0);
+        const double x = rect.left() + columnWidth * column;
+        builder.rect(QRectF(x, top, columnWidth, std::max(1.0, bottom - top)),
+                     alpha(heatColor, int(std::lround(28.0 + heat * 34.0))));
+
+        double topLine = top;
+        double bottomLine = bottom;
+        double medianLine = medianY;
+        if (hasPrevious) {
+            builder.rect(
+                QRectF(x, std::min(topLine, previousTop) - 0.5, columnWidth,
+                       std::fabs(topLine - previousTop) + 1.0),
+                alpha(heatColor, 145));
+            builder.rect(QRectF(x, std::min(bottomLine, previousBottom) - 0.5,
+                                columnWidth,
+                                std::fabs(bottomLine - previousBottom) + 1.0),
+                         alpha(heatColor, 145));
+            builder.rect(QRectF(x, std::min(medianLine, previousMedian) - 0.5,
+                                columnWidth,
+                                std::fabs(medianLine - previousMedian) + 1.0),
+                         alpha(kForeground, 90));
+        } else {
+            builder.rect(QRectF(x, topLine - 0.5, columnWidth, 1.0),
+                         alpha(heatColor, 145));
+            builder.rect(QRectF(x, bottomLine - 0.5, columnWidth, 1.0),
+                         alpha(heatColor, 145));
+            builder.rect(QRectF(x, medianLine - 0.5, columnWidth, 1.0),
+                         alpha(kForeground, 90));
+        }
+        previousTop = topLine;
+        previousBottom = bottomLine;
+        previousMedian = medianLine;
+        hasPrevious = true;
+    }
+}
+
 void TraceView::buildChannel(TraceSceneBuilder& builder,
                              const ChannelSpec& spec, const QRectF& rect,
                              const UnifiedLap* primary,
@@ -613,6 +772,9 @@ void TraceView::buildChannel(TraceSceneBuilder& builder,
                         false, false, 1.0, 1.2, 1.0, 2.0);
         }
     }
+    if (store_->traceConfidenceMode())
+        buildConfidenceBand(builder, store_->traceConfidenceBand(spec.field),
+                            dataRect, range);
     buildSeries(builder, compareData, dataRect, range, alpha(kMuted, 175),
                 false, true, store_->referenceAlignment(), 1.5);
     buildSeries(builder, primaryData, dataRect, range, traceColor, spec.filled,
@@ -949,52 +1111,49 @@ void TraceView::buildSelection(TraceSceneBuilder& builder) {
     builder.text(label, pillFont_, labelColor, pill, Qt::AlignCenter);
 }
 
-// Corner events read as small ticks along the bottom of the zoomed view and
-// open into a full-height line with a label only under the pointer, so they
-// annotate the corner without covering it.
+// Hover keeps the event name available without redrawing the guide over the
+// channel geometry. The guide itself lives in the static scene behind traces.
 void TraceView::buildCornerMarkers(TraceSceneBuilder& builder) {
+    if (!store_ || store_->focusedCorner() < 0 || hoveredMarker_ < 0) return;
+    const QVector<CornerMarker>& markers = store_->cornerMarkers();
+    if (hoveredMarker_ >= markers.size()) return;
+
+    const CornerMarker& marker = markers[hoveredMarker_];
+    const double x = xForFrac(marker.fraction);
+    if (x < kLabelW || x > width()) return;
+    const QColor color = cornerMarkerColor(marker.key);
+    builder.vLine(x, cursorBottom_ - 10.0, cursorBottom_, 2.0,
+                  alpha(color, 220));
+
+    const QFontMetricsF metrics(markerFont_);
+    const QSizeF size = metrics.size(Qt::TextSingleLine, marker.label);
+    QRectF pill(x + 4, cursorBottom_ - size.height() - 20, size.width() + 10,
+                size.height() + 4);
+    if (pill.right() > width()) pill.moveRight(x - 4);
+    builder.rect(pill, alpha(backgroundColor_, 235));
+    outline(builder, pill, alpha(color, 190));
+    builder.text(marker.label, markerFont_, color, pill, Qt::AlignCenter);
+}
+// Focused-corner events sit behind the channel geometry as dim dashed guides.
+// They reach from the corner-label band to the distance axis, so the event is
+// easy to track across every lane without obscuring a trace.
+void TraceView::buildCornerMarkerGuides(TraceSceneBuilder& builder) {
     if (!store_ || store_->focusedCorner() < 0) return;
     const QVector<CornerMarker>& markers = store_->cornerMarkers();
-    if (markers.isEmpty()) return;
-
-    const double tickTop = cursorBottom_ - 12.0;
-    for (int i = 0; i < markers.size(); ++i) {
-        const CornerMarker& marker = markers[i];
+    const double bottom = height() - kBottomPad;
+    for (const CornerMarker& marker : markers) {
         const double x = xForFrac(marker.fraction);
         if (x < kLabelW || x > width()) continue;
-        const bool hovered = i == hoveredMarker_;
-        const QColor color = marker.key == QStringLiteral("brake")    ? kRed
-                             : marker.key == QStringLiteral("apex")   ? kMagenta
-                             : marker.key == QStringLiteral("pickup") ? kGreen
-                                                                      : kAccent;
-        if (hovered) {
-            builder.vLine(x, cursorTop_, cursorBottom_, 1.0, alpha(color, 210));
-            if (marker.referenceFraction >= 0.0) {
-                const double referenceX = xForFrac(marker.referenceFraction);
-                for (double y = cursorTop_; y < cursorBottom_; y += 8.0)
-                    builder.vLine(referenceX, y,
-                                  std::min(y + 4.0, cursorBottom_), 1.0,
-                                  alpha(color, 130));
-            }
-            const QFontMetricsF metrics(markerFont_);
-            const QSizeF size = metrics.size(Qt::TextSingleLine, marker.label);
-            QRectF pill(x + 4, cursorBottom_ - size.height() - 20,
-                        size.width() + 10, size.height() + 4);
-            if (pill.right() > width()) pill.moveRight(x - 4);
-            builder.rect(pill, alpha(backgroundColor_, 235));
-            outline(builder, pill, alpha(color, 190));
-            builder.text(marker.label, markerFont_, color, pill,
-                         Qt::AlignCenter);
-        } else {
-            if (marker.referenceFraction >= 0.0) {
-                const double referenceX = xForFrac(marker.referenceFraction);
-                for (double y = tickTop + 4.0; y < cursorBottom_; y += 5.0)
-                    builder.vLine(referenceX, y,
-                                  std::min(y + 2.0, cursorBottom_), 1.0,
-                                  alpha(color, 90));
-            }
-            builder.vLine(x, tickTop, cursorBottom_, 2.0, alpha(color, 200));
-        }
+        const QColor color = cornerMarkerColor(marker.key);
+        dashedVLine(builder, x, 2.0, bottom, 5.0, 4.0, 1.0, alpha(color, 105));
+
+        if (marker.referenceFraction < 0.0) continue;
+        const double referenceX = xForFrac(marker.referenceFraction);
+        if (referenceX < kLabelW || referenceX > width() ||
+            std::fabs(referenceX - x) < 0.5)
+            continue;
+        dashedVLine(builder, referenceX, 2.0, bottom, 2.0, 5.0, 1.0,
+                    alpha(color, 70));
     }
 }
 
@@ -1223,8 +1382,6 @@ void TraceView::mouseMoveEvent(QMouseEvent* event) {
         return;
     }
     updateHoveredMarker(event->position());
-    store_->setCursorFrac(fracForX(x));
-    emit cursorChangedFromCanvas();
 }
 
 void TraceView::mouseReleaseEvent(QMouseEvent* event) {
@@ -1288,13 +1445,10 @@ void TraceView::hoverMoveEvent(QHoverEvent* event) {
     }
     cursorTimer_.restart();
     updateHoveredMarker(event->position());
-    const double fraction = fracForX(event->position().x());
     if (selecting_) {
-        selectionEnd_ = fraction;
+        selectionEnd_ = fracForX(event->position().x());
         emit overlayChanged();
     }
-    store_->setCursorFrac(fraction);
-    emit cursorChangedFromCanvas();
     event->accept();
 }
 

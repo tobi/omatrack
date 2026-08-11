@@ -21,7 +21,7 @@ Dialog {
     property var types: []
 
     function openForEdit(row): void {
-        dialog.reset();
+        dialog.resetForm();
         dialog.editingId = row.id;
         dialog.hasStoredPassword = row.hasPassword;
         for (let i = 0; i < dialog.types.length; ++i)
@@ -33,13 +33,13 @@ Dialog {
         dialog.open();
     }
     function openForNew(type): void {
-        dialog.reset();
+        dialog.resetForm();
         for (let i = 0; i < dialog.types.length; ++i)
             if (dialog.types[i].type === type)
                 typePicker.currentIndex = i;
         dialog.open();
     }
-    function reset(): void {
+    function resetForm(): void {
         dialog.types = Store.connectionTypes();
         dialog.editingId = "";
         dialog.errorText = "";

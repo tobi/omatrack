@@ -78,6 +78,8 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
         !qgetenv("OMATRACK_AUTOTEST_ALIGNMENT").isEmpty();
     const bool autotestZoom = !qgetenv("OMATRACK_AUTOTEST_ZOOM").isEmpty();
     const bool autotestCorner = !qgetenv("OMATRACK_AUTOTEST_CORNER").isEmpty();
+    const bool autotestConfidence =
+        !qgetenv("OMATRACK_AUTOTEST_CONFIDENCE").isEmpty();
     const bool autotestVideoHud =
         !qgetenv("OMATRACK_AUTOTEST_VIDEO_HUD").isEmpty();
     const bool autotestRename = !qgetenv("OMATRACK_AUTOTEST_RENAME").isEmpty();
@@ -320,11 +322,12 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
         startTimer, &QTimer::timeout, &engine,
         [startTimer, &store, &engine, shotPath, startupVideoPath,
          autotestCompare, autotestWindows, autotestHover, autotestSelection,
-         autotestAlignment, autotestZoom, autotestCorner, autotestRename,
-         autotestVideoHud, autotestBrakeSync, autotestCornerEdit,
-         autotestDualVideo, autotestVideoMetadata, autotestChannelBrowser,
-         videoMetadataPath, autotestLapLoading, autotestStandaloneVideo,
-         autotestIndexedVideoClick, autotestLapSwitch, sequentialVideoReady]() {
+         autotestAlignment, autotestZoom, autotestCorner, autotestConfidence,
+         autotestRename, autotestVideoHud, autotestBrakeSync,
+         autotestCornerEdit, autotestDualVideo, autotestVideoMetadata,
+         autotestChannelBrowser, videoMetadataPath, autotestLapLoading,
+         autotestStandaloneVideo, autotestIndexedVideoClick, autotestLapSwitch,
+         secondVideoPath, sequentialVideoReady]() {
             if (store.loading() || store.lapLoading() || !store.ready()) return;
             if (autotestIndexedVideoClick && !startupVideoPath.isEmpty()) {
                 startTimer->stop();
@@ -387,6 +390,9 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                     for (const QVariant& sv : sessions) {
                         const QVariantMap s = sv.toMap();
                         const QString key = s.value("key").toString();
+                        if (!secondVideoPath.isEmpty() &&
+                            key != store.primarySessionKey())
+                            continue;
                         const QVariantList laps = store.lapsForSession(key);
                         int best = -1;
                         for (const QVariant& lv : laps) {
@@ -585,8 +591,9 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                     QMetaObject::invokeMethod(dialog, "accept");
                                 }
                             }
-                            bool comparisonSelected = false;
-                            if (autotestCompare) {
+                            bool comparisonSelected =
+                                !secondVideoPath.isEmpty();
+                            if (autotestCompare && secondVideoPath.isEmpty()) {
                                 for (const QVariant& otherGroupValue : groups) {
                                     if (comparisonSelected) break;
                                     const QVariantList otherDates =
@@ -884,14 +891,13 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                             << "overlay:" << overlayVisible
                                             << "zoomed:" << zoomed << centre
                                             << "restored:" << restored;
-                                        root->setProperty(
-                                            "cornerFocusAutotestReady",
-                                            focused >= 0 && overlayVisible &&
-                                                zoomed && restored);
                                         // Leave the workspace focused and a
                                         // marker hovered so the screenshot
                                         // shows the state under test.
                                         store.focusCorner(focused);
+                                        const double cursorBeforeHover =
+                                            store.cursorFrac();
+                                        bool hoverPreservedCursor = false;
                                         auto* view =
                                             root->findChild<TraceView*>(
                                                 QStringLiteral("traceView"));
@@ -921,7 +927,84 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                             QCoreApplication::sendEvent(view,
                                                                         &move);
                                             QCoreApplication::processEvents();
+                                            hoverPreservedCursor =
+                                                std::abs(store.cursorFrac() -
+                                                         cursorBeforeHover) <
+                                                1e-6;
                                         }
+                                        qWarning()
+                                            << "AUTOTEST trace hover preserves "
+                                               "cursor:"
+                                            << hoverPreservedCursor;
+                                        root->setProperty(
+                                            "cornerFocusAutotestReady",
+                                            focused >= 0 && overlayVisible &&
+                                                zoomed && restored &&
+                                                hoverPreservedCursor);
+                                    });
+                            }
+                            if (autotestConfidence) {
+                                QTimer::singleShot(
+                                    6500, &engine, [&engine, &store]() {
+                                        if (engine.rootObjects().isEmpty())
+                                            return;
+                                        QObject* root =
+                                            engine.rootObjects().first();
+                                        auto* trace =
+                                            root->findChild<TraceView*>(
+                                                QStringLiteral("traceView"));
+                                        auto* button =
+                                            root->findChild<QQuickItem*>(
+                                                QStringLiteral(
+                                                    "confidenceButton"));
+                                        if (button) {
+                                            const QPointF center(
+                                                button->width() * 0.5,
+                                                button->height() * 0.5);
+                                            QMouseEvent press(
+                                                QEvent::MouseButtonPress,
+                                                center, center, center,
+                                                Qt::LeftButton, Qt::LeftButton,
+                                                Qt::NoModifier);
+                                            QCoreApplication::sendEvent(button,
+                                                                        &press);
+                                            QMouseEvent release(
+                                                QEvent::MouseButtonRelease,
+                                                center, center, center,
+                                                Qt::LeftButton, Qt::NoButton,
+                                                Qt::NoModifier);
+                                            QCoreApplication::sendEvent(
+                                                button, &release);
+                                            QCoreApplication::processEvents();
+                                        }
+                                        const bool buttonReady =
+                                            button &&
+                                            button->property("checked")
+                                                .toBool() &&
+                                            store.traceConfidenceMode();
+                                        if (trace) {
+                                            trace->forceActiveFocus();
+                                            QCoreApplication::processEvents();
+                                            QKeyEvent press(QEvent::KeyPress,
+                                                            Qt::Key_Period,
+                                                            Qt::NoModifier);
+                                            QCoreApplication::sendEvent(trace,
+                                                                        &press);
+                                        }
+                                        root->setProperty(
+                                            "confidenceButtonAutotestReady",
+                                            buttonReady);
+                                        root->setProperty(
+                                            "confidencePressAutotestReady",
+                                            trace &&
+                                                store.traceConfidenceMode());
+                                        qWarning()
+                                            << "AUTOTEST confidence button:"
+                                            << buttonReady << "key press:"
+                                            << root->property(
+                                                       "confidencePressAutotest"
+                                                       "Ready")
+                                                   .toBool();
                                     });
                             }
                             if (autotestVideoHud &&
@@ -1221,12 +1304,16 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                                 : -1);
                                     });
                             }
+                            const int finalDelay = autotestDualVideo    ? 7000
+                                                   : autotestConfidence ? 8000
+                                                                        : 2500;
                             QTimer::singleShot(
-                                autotestDualVideo ? 7000 : 2500, &engine,
+                                finalDelay, &engine,
                                 [&store, &engine, shotPath, startupVideoPath,
                                  autotestWindows, autotestRename,
                                  autotestBrakeSync, autotestCornerEdit,
-                                 autotestCorner, autotestZoom,
+                                 autotestCorner, autotestConfidence,
+                                 autotestVideoHud, autotestZoom,
                                  autotestDualVideo, autotestStandaloneVideo,
                                  sequentialVideoReady]() {
                                     QList<QQuickWindow*> windows;
@@ -1395,10 +1482,11 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                                             : 1.0;
                                                     videoReady =
                                                         videoReady &&
-                                                        !video->paused() &&
-                                                        store.cursorFrac() >
-                                                            playbackStart +
-                                                                0.002;
+                                                        (autotestVideoHud ||
+                                                         (!video->paused() &&
+                                                          store.cursorFrac() >
+                                                              playbackStart +
+                                                                  0.002));
                                                 }
                                             }
                                             qWarning() << "AUTOTEST"
@@ -1414,6 +1502,77 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                                           "to "
                                                           "load or "
                                                           "sync";
+                                    }
+                                    if (autotestVideoHud) {
+                                        QObject* root =
+                                            engine.rootObjects().isEmpty()
+                                                ? nullptr
+                                                : engine.rootObjects().first();
+                                        auto* overlay =
+                                            root ? root->findChild<QQuickItem*>(
+                                                       QStringLiteral(
+                                                           "videoTelemetryOverl"
+                                                           "ay"))
+                                                 : nullptr;
+                                        QQuickItem* parent =
+                                            overlay ? overlay->parentItem()
+                                                    : nullptr;
+                                        const double unscaledWidth =
+                                            parent
+                                                ? std::min(
+                                                      {parent->width() - 16.0,
+                                                       1000.0,
+                                                       std::max(
+                                                           520.0,
+                                                           parent->width() *
+                                                               0.72)})
+                                                : 0.0;
+                                        const double expectedWidth =
+                                            std::max(0.0, unscaledWidth * 0.65);
+                                        const double expectedHeight =
+                                            expectedWidth * 0.21;
+                                        const double expectedX =
+                                            parent ? (parent->width() -
+                                                      expectedWidth) *
+                                                         0.5
+                                                   : 0.0;
+                                        const double expectedY =
+                                            parent
+                                                ? std::max(
+                                                      0.0,
+                                                      std::min(
+                                                          parent->height() -
+                                                              expectedHeight,
+                                                          parent->height() *
+                                                                  0.9 -
+                                                              expectedHeight *
+                                                                  0.5))
+                                                : 0.0;
+                                        const bool hudReady =
+                                            overlay && parent &&
+                                            overlay->isVisible() &&
+                                            std::abs(overlay->width() -
+                                                     expectedWidth) <= 1.0 &&
+                                            std::abs(overlay->height() -
+                                                     expectedHeight) <= 1.0 &&
+                                            std::abs(overlay->x() -
+                                                     expectedX) <= 1.0 &&
+                                            std::abs(overlay->y() -
+                                                     expectedY) <= 1.0;
+                                        qWarning()
+                                            << "AUTOTEST video HUD layout:"
+                                            << hudReady << "size"
+                                            << QSizeF(overlay ? overlay->width()
+                                                              : 0.0,
+                                                      overlay
+                                                          ? overlay->height()
+                                                          : 0.0)
+                                            << "position"
+                                            << QPointF(
+                                                   overlay ? overlay->x() : 0.0,
+                                                   overlay ? overlay->y()
+                                                           : 0.0);
+                                        videoReady = videoReady && hudReady;
                                     }
                                     if (windows.isEmpty())
                                         qWarning() << "AUTOTEST "
@@ -1680,6 +1839,46 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                              ->property("cornerFocusAutotestRe"
                                                         "ady")
                                              .toBool());
+                                    const QVariantMap cornerSummary =
+                                        autotestCorner
+                                            ? store.cornerFocusSummary()
+                                            : QVariantMap();
+                                    const bool cornerConsistencyReady =
+                                        !autotestCorner ||
+                                        (!cornerSummary
+                                              .value("consistencyLoading")
+                                              .toBool() &&
+                                         cornerSummary
+                                                 .value("consistencyLapCount")
+                                                 .toInt() >= 2 &&
+                                         cornerSummary
+                                                 .value(
+                                                     "consistencyValidLapCount")
+                                                 .toInt() >= 2 &&
+                                         cornerSummary
+                                             .value("brakeConsistencyAvailable")
+                                             .toBool());
+                                    if (autotestCorner)
+                                        qWarning()
+                                            << "AUTOTEST corner consistency:"
+                                            << cornerConsistencyReady << "laps"
+                                            << cornerSummary
+                                                   .value("consistencyLapCount")
+                                                   .toInt()
+                                            << "braking"
+                                            << cornerSummary
+                                                   .value(
+                                                       "consistencyBrakeLapCoun"
+                                                       "t")
+                                                   .toInt()
+                                            << "sigma"
+                                            << cornerSummary
+                                                   .value("brakePointStdDev")
+                                                   .toDouble()
+                                            << "range"
+                                            << cornerSummary
+                                                   .value("brakePointRange")
+                                                   .toDouble();
                                     const bool zoomReady =
                                         !autotestZoom ||
                                         (!engine.rootObjects().isEmpty() &&
@@ -1689,6 +1888,53 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                                         "utotestRea"
                                                         "dy")
                                              .toBool());
+                                    bool confidenceReady = true;
+                                    TraceView* confidenceTrace = nullptr;
+                                    if (autotestConfidence) {
+                                        QObject* root =
+                                            engine.rootObjects().isEmpty()
+                                                ? nullptr
+                                                : engine.rootObjects().first();
+                                        confidenceTrace =
+                                            root ? root->findChild<TraceView*>(
+                                                       QStringLiteral(
+                                                           "traceView"))
+                                                 : nullptr;
+                                        const TraceConfidenceBand* speedBand =
+                                            store.traceConfidenceBand(
+                                                QStringLiteral("speed"));
+                                        const QVariantMap benchmark =
+                                            confidenceTrace
+                                                ? confidenceTrace
+                                                      ->benchmarkGeometry(60)
+                                                : QVariantMap();
+                                        const double averageMs =
+                                            benchmark.value("averageMs")
+                                                .toDouble();
+                                        confidenceReady =
+                                            root && confidenceTrace &&
+                                            root->property(
+                                                    "confidenceButtonAutotestRe"
+                                                    "ady")
+                                                .toBool() &&
+                                            root->property(
+                                                    "confidencePressAutotestRea"
+                                                    "dy")
+                                                .toBool() &&
+                                            store.traceConfidenceMode() &&
+                                            !store.traceConfidenceLoading() &&
+                                            store.traceConfidenceLapCount() >=
+                                                2 &&
+                                            speedBand && speedBand->valid() &&
+                                            averageMs < 8.33;
+                                        qWarning()
+                                            << "AUTOTEST confidence overlay:"
+                                            << confidenceReady << "laps"
+                                            << store.traceConfidenceLapCount()
+                                            << "average_ms" << averageMs
+                                            << "quads"
+                                            << benchmark.value("quads").toInt();
+                                    }
                                     const QFileInfo requested(shotPath);
                                     for (QQuickWindow* window : windows) {
                                         QString output = shotPath;
@@ -1718,15 +1964,70 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                                           "failed:"
                                                        << output;
                                     }
+                                    if (autotestConfidence && confidenceTrace) {
+                                        QKeyEvent release(QEvent::KeyRelease,
+                                                          Qt::Key_Period,
+                                                          Qt::NoModifier);
+                                        QCoreApplication::sendEvent(
+                                            confidenceTrace, &release);
+                                        QCoreApplication::processEvents();
+                                        const bool releaseRestoredLatch =
+                                            store.traceConfidenceMode();
+                                        auto* button =
+                                            engine.rootObjects()
+                                                .first()
+                                                ->findChild<QQuickItem*>(
+                                                    QStringLiteral(
+                                                        "confidenceButton"));
+                                        if (button) {
+                                            const QPointF center(
+                                                button->width() * 0.5,
+                                                button->height() * 0.5);
+                                            QMouseEvent press(
+                                                QEvent::MouseButtonPress,
+                                                center, center, center,
+                                                Qt::LeftButton, Qt::LeftButton,
+                                                Qt::NoModifier);
+                                            QCoreApplication::sendEvent(button,
+                                                                        &press);
+                                            QMouseEvent buttonRelease(
+                                                QEvent::MouseButtonRelease,
+                                                center, center, center,
+                                                Qt::LeftButton, Qt::NoButton,
+                                                Qt::NoModifier);
+                                            QCoreApplication::sendEvent(
+                                                button, &buttonRelease);
+                                            QCoreApplication::processEvents();
+                                        }
+                                        const bool buttonDisabled =
+                                            button &&
+                                            !button->property("checked")
+                                                 .toBool() &&
+                                            !store.traceConfidenceMode();
+                                        confidenceReady =
+                                            confidenceReady &&
+                                            releaseRestoredLatch &&
+                                            buttonDisabled;
+                                        qWarning()
+                                            << "AUTOTEST confidence key "
+                                               "release preserves button:"
+                                            << releaseRestoredLatch
+                                            << "button off:" << buttonDisabled;
+                                    }
                                     videoReady = videoReady && renameReady &&
                                                  cornerMutationReady &&
                                                  cornerFocusReady &&
-                                                 zoomReady && dualVideoReady;
+                                                 cornerConsistencyReady &&
+                                                 confidenceReady && zoomReady &&
+                                                 dualVideoReady;
                                     const int exitCode =
                                         videoReady             ? 0
                                         : !cornerMutationReady ? 3
-                                        : !cornerFocusReady    ? 4
-                                                               : 2;
+                                        : !cornerFocusReady ||
+                                                !cornerConsistencyReady
+                                            ? 4
+                                        : !confidenceReady ? 5
+                                                           : 2;
                                     qApp->exit(exitCode);
                                 });
                             return;

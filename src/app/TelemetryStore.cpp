@@ -44,6 +44,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <utility>
 
 namespace {
@@ -1046,6 +1047,20 @@ struct SessionLapLoadResult {
     bool forceDriverId = false;
     QString error;
 };
+struct CornerConsistencyLoadResult {
+    QString key;
+    QString sessionKey;
+    int lapCount = 0;
+    int validLapCount = 0;
+    std::vector<double> brakePoints;
+    QString error;
+};
+struct SessionConfidenceLoadResult {
+    QString key;
+    int lapCount = 0;
+    QHash<QString, TraceConfidenceBand> bands;
+    QString error;
+};
 
 QVariantMap configuredRecordingMetadataForPath(
     const QString& path, const QHash<QString, QVariantMap>& saved) {
@@ -1445,6 +1460,215 @@ std::shared_ptr<SessionLapLoadResult> loadSessionLap(
     result->unified = std::move(unified);
     return result;
 }
+std::shared_ptr<CornerConsistencyLoadResult> loadCornerConsistency(
+    const QString& path, const QString& sessionKey, const QString& key,
+    const QVector<LapEntry>& laps, const QVariantMap& metadata,
+    double startDistance, double endDistance) {
+    auto result = std::make_shared<CornerConsistencyLoadResult>();
+    result->key = key;
+    result->sessionKey = sessionKey;
+    result->lapCount = laps.size();
+
+    std::string error;
+    const std::unique_ptr<TelemetrySource> source =
+        TelemetrySource::open(path.toStdString(), &error);
+    if (!source) {
+        result->error = error.empty()
+                            ? QStringLiteral("Unable to open telemetry source")
+                            : QString::fromStdString(error);
+        return result;
+    }
+
+    const ChannelOverrides overrides = channelOverrides(metadata);
+    const auto fractionAtDistance = [](const UnifiedLap& lap, double distance) {
+        if (lap.distance.size() < 2) return 0.0;
+        if (distance <= lap.distance.front()) return 0.0;
+        if (distance >= lap.distance.back()) return 1.0;
+        const auto it = std::lower_bound(lap.distance.begin(),
+                                         lap.distance.end(), distance);
+        const int hi = int(it - lap.distance.begin());
+        const int lo = hi - 1;
+        const double span = lap.distance[size_t(hi)] - lap.distance[size_t(lo)];
+        const double local =
+            span > 0.0 ? (distance - lap.distance[size_t(lo)]) / span : 0.0;
+        return (lo + local) / double(lap.distance.size() - 1);
+    };
+
+    for (const LapEntry& lap : laps) {
+        const UnifiedLap unified =
+            source->unifyLap(lap.startTime, lap.endTime, overrides);
+        if (unified.size() < 3 || unified.distance.size() < 3) continue;
+        const double start = fractionAtDistance(unified, startDistance);
+        const double end = fractionAtDistance(unified, endDistance);
+        const omatrack::CornerMetrics metrics =
+            omatrack::measureCorner(unified, start, end);
+        if (!metrics.valid) continue;
+        ++result->validLapCount;
+        if (metrics.brakeIndex >= 0)
+            result->brakePoints.push_back(metrics.brakePoint);
+    }
+    return result;
+}
+
+enum class TraceConfidenceField {
+    Speed,
+    Throttle,
+    DriverThrottle,
+    Brake,
+    Clutch,
+    Steering,
+    Gear,
+    DamperFrontLeft,
+    LongitudinalG,
+};
+
+const std::vector<double>* traceConfidenceValues(const UnifiedLap& lap,
+                                                 TraceConfidenceField field) {
+    switch (field) {
+        case TraceConfidenceField::Speed: return &lap.speed;
+        case TraceConfidenceField::Throttle: return &lap.throttle;
+        case TraceConfidenceField::DriverThrottle: return &lap.driverThrottle;
+        case TraceConfidenceField::Brake: return &lap.brake;
+        case TraceConfidenceField::Clutch: return &lap.clutch;
+        case TraceConfidenceField::Steering: return &lap.steering;
+        case TraceConfidenceField::DamperFrontLeft: return &lap.damperFL;
+        case TraceConfidenceField::LongitudinalG: return &lap.gForceLong;
+        case TraceConfidenceField::Gear: break;
+    }
+    return nullptr;
+}
+
+bool traceConfidenceFieldAvailable(const UnifiedLap& lap,
+                                   TraceConfidenceField field) {
+    if (field == TraceConfidenceField::Gear) return lap.gear.size() >= 2;
+    const std::vector<double>* values = traceConfidenceValues(lap, field);
+    return values && values->size() >= 2;
+}
+
+double sampleTraceConfidence(const UnifiedLap& lap, TraceConfidenceField field,
+                             double fraction) {
+    fraction = std::clamp(fraction, 0.0, 1.0);
+    if (field == TraceConfidenceField::Gear) {
+        if (lap.gear.empty()) return std::numeric_limits<double>::quiet_NaN();
+        const size_t index = std::min(
+            size_t(std::llround(fraction * double(lap.gear.size() - 1))),
+            lap.gear.size() - 1);
+        return double(lap.gear[index]);
+    }
+    const std::vector<double>* values = traceConfidenceValues(lap, field);
+    if (!values || values->empty())
+        return std::numeric_limits<double>::quiet_NaN();
+    const double position = fraction * double(values->size() - 1);
+    const size_t low = size_t(std::floor(position));
+    const size_t high = std::min(low + 1, values->size() - 1);
+    return (*values)[low] +
+           ((*values)[high] - (*values)[low]) * (position - double(low));
+}
+
+std::shared_ptr<SessionConfidenceLoadResult> loadSessionConfidence(
+    const QString& path, const QString& key, const QVector<LapEntry>& laps,
+    const QVariantMap& metadata,
+    const std::shared_ptr<const UnifiedLap>& primary) {
+    auto result = std::make_shared<SessionConfidenceLoadResult>();
+    result->key = key;
+    if (!primary || primary->size() < 3 || laps.isEmpty()) return result;
+
+    std::string error;
+    const std::unique_ptr<TelemetrySource> source =
+        TelemetrySource::open(path.toStdString(), &error);
+    if (!source) {
+        result->error = error.empty()
+                            ? QStringLiteral("Unable to open telemetry source")
+                            : QString::fromStdString(error);
+        return result;
+    }
+
+    struct FieldMatrix {
+        TraceConfidenceField field;
+        QString key;
+        std::vector<double> samples;
+        int fieldLaps = 0;
+    };
+    std::vector<FieldMatrix> matrices{
+        {TraceConfidenceField::Speed, QStringLiteral("speed"), {}, 0},
+        {TraceConfidenceField::Throttle, QStringLiteral("throttle"), {}, 0},
+        {TraceConfidenceField::DriverThrottle,
+         QStringLiteral("driverThrottle"),
+         {},
+         0},
+        {TraceConfidenceField::Brake, QStringLiteral("brake"), {}, 0},
+        {TraceConfidenceField::Clutch, QStringLiteral("clutch"), {}, 0},
+        {TraceConfidenceField::Steering, QStringLiteral("steering"), {}, 0},
+        {TraceConfidenceField::Gear, QStringLiteral("gear"), {}, 0},
+        {TraceConfidenceField::DamperFrontLeft,
+         QStringLiteral("damperFL"),
+         {},
+         0},
+        {TraceConfidenceField::LongitudinalG,
+         QStringLiteral("gForceLong"),
+         {},
+         0},
+    };
+    const size_t sampleCount = primary->size();
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    for (FieldMatrix& matrix : matrices)
+        matrix.samples.assign(size_t(laps.size()) * sampleCount, nan);
+
+    const ChannelOverrides overrides = channelOverrides(metadata);
+    for (const LapEntry& lap : laps) {
+        const UnifiedLap unified =
+            source->unifyLap(lap.startTime, lap.endTime, overrides);
+        if (unified.size() < 3) continue;
+        const ComparisonAlignmentResult alignment =
+            computeComparisonAlignment(*primary, unified);
+        if (alignment.fraction.size() != qsizetype(sampleCount)) continue;
+
+        const size_t row = size_t(result->lapCount);
+        for (FieldMatrix& matrix : matrices) {
+            if (!traceConfidenceFieldAvailable(unified, matrix.field)) continue;
+            ++matrix.fieldLaps;
+            const size_t offset = row * sampleCount;
+            for (size_t sample = 0; sample < sampleCount; ++sample)
+                matrix.samples[offset + sample] = sampleTraceConfidence(
+                    unified, matrix.field,
+                    alignment.fraction[qsizetype(sample)]);
+        }
+        ++result->lapCount;
+    }
+
+    const auto quantile = [](const std::vector<double>& sorted, double amount) {
+        const double position = amount * double(sorted.size() - 1);
+        const size_t low = size_t(std::floor(position));
+        const size_t high = std::min(low + 1, sorted.size() - 1);
+        return sorted[low] +
+               (sorted[high] - sorted[low]) * (position - double(low));
+    };
+    std::vector<double> values;
+    values.reserve(size_t(result->lapCount));
+    for (const FieldMatrix& matrix : matrices) {
+        if (matrix.fieldLaps < 2) continue;
+        TraceConfidenceBand band;
+        band.lower.assign(sampleCount, nan);
+        band.median.assign(sampleCount, nan);
+        band.upper.assign(sampleCount, nan);
+        band.lapCount = matrix.fieldLaps;
+        for (size_t sample = 0; sample < sampleCount; ++sample) {
+            values.clear();
+            for (int row = 0; row < result->lapCount; ++row) {
+                const double value =
+                    matrix.samples[size_t(row) * sampleCount + sample];
+                if (std::isfinite(value)) values.push_back(value);
+            }
+            if (values.size() < 2) continue;
+            std::sort(values.begin(), values.end());
+            band.lower[sample] = quantile(values, 0.10);
+            band.median[sample] = quantile(values, 0.50);
+            band.upper[sample] = quantile(values, 0.90);
+        }
+        result->bands.insert(matrix.key, std::move(band));
+    }
+    return result;
+}
 
 /// The label shown when the user has not named a location: a folder's own
 /// directory name, or a server's host.
@@ -1666,11 +1890,17 @@ TelemetryStore::TelemetryStore(QObject* parent) : QObject(parent) {
         if (focusedCorner_ < 0) return;
         if (focusedCorner_ >= corners_.size())
             clearCornerFocus();
-        else
+        else {
             rebuildCornerMarkers();
+            requestCornerConsistency();
+        }
     });
     connect(this, &TelemetryStore::selectionChanged, this, [this]() {
-        if (focusedCorner_ >= 0) rebuildCornerMarkers();
+        invalidateTraceConfidence();
+        if (traceConfidenceMode_) requestTraceConfidence();
+        if (focusedCorner_ < 0) return;
+        rebuildCornerMarkers();
+        requestCornerConsistency();
     });
     loadPreferences();
     loadLocations();
@@ -5145,6 +5375,9 @@ void TelemetryStore::resetView() {
     if (focusedCorner_ >= 0) {
         focusedCorner_ = -1;
         markers_.clear();
+        ++cornerConsistencyGeneration_;
+        cornerConsistency_ = {};
+        emit cornerConsistencyChanged();
         emit cornerFocusChanged();
     }
     focusReturnStart_ = 0.0;
@@ -5182,6 +5415,7 @@ void TelemetryStore::focusCorner(int index) {
     prefetchNeighbourLaps();
 
     rebuildCornerMarkers();
+    requestCornerConsistency();
     for (const CornerMarker& marker : markers_)
         if (marker.key == QLatin1String("apex")) {
             setCursorFrac(marker.fraction);
@@ -5299,6 +5533,9 @@ void TelemetryStore::clearCornerFocus() {
     if (focusedCorner_ < 0) return;
     focusedCorner_ = -1;
     markers_.clear();
+    ++cornerConsistencyGeneration_;
+    cornerConsistency_ = {};
+    emit cornerConsistencyChanged();
     viewStart_ = focusReturnStart_;
     viewEnd_ = focusReturnEnd_;
     emit viewChanged();
@@ -5309,7 +5546,235 @@ QVariantMap TelemetryStore::cornerFocusSummary() const {
     if (focusedCorner_ < 0) return {};
     const QVariantList rows = cornerComparison();
     if (focusedCorner_ >= rows.size()) return {};
-    return rows[focusedCorner_].toMap();
+
+    QVariantMap row = rows[focusedCorner_].toMap();
+    row.insert(QStringLiteral("consistencyLoading"),
+               cornerConsistency_.loading);
+    row.insert(QStringLiteral("consistencyLapCount"),
+               cornerConsistency_.lapCount);
+    row.insert(QStringLiteral("consistencyValidLapCount"),
+               cornerConsistency_.validLapCount);
+    row.insert(QStringLiteral("consistencyBrakeLapCount"),
+               cornerConsistency_.brakingLapCount);
+    const bool available = cornerConsistency_.brakingLapCount >= 2 &&
+                           std::isfinite(cornerConsistency_.medianBrakePoint) &&
+                           std::isfinite(cornerConsistency_.brakePointStdDev) &&
+                           std::isfinite(cornerConsistency_.brakePointRange);
+    row.insert(QStringLiteral("brakeConsistencyAvailable"), available);
+    if (available) {
+        row.insert(QStringLiteral("brakePointMedian"),
+                   cornerConsistency_.medianBrakePoint);
+        row.insert(QStringLiteral("brakePointStdDev"),
+                   cornerConsistency_.brakePointStdDev);
+        row.insert(QStringLiteral("brakePointRange"),
+                   cornerConsistency_.brakePointRange);
+        if (row.value(QStringLiteral("maxBrake")).toDouble() > 2.0)
+            row.insert(QStringLiteral("brakePointVsMedian"),
+                       row.value(QStringLiteral("brakePoint")).toDouble() -
+                           cornerConsistency_.medianBrakePoint);
+    }
+    return row;
+}
+
+void TelemetryStore::setTraceConfidenceMode(bool enabled) {
+    if (traceConfidenceMode_ == enabled) return;
+    traceConfidenceMode_ = enabled;
+    emit traceConfidenceChanged();
+    if (enabled) requestTraceConfidence();
+}
+
+const TraceConfidenceBand* TelemetryStore::traceConfidenceBand(
+    const QString& field) const {
+    const auto band = traceConfidenceBands_.constFind(field);
+    return band == traceConfidenceBands_.cend() ? nullptr : &band.value();
+}
+
+void TelemetryStore::invalidateTraceConfidence() {
+    const QString key = primarySession_ && primaryLap_ >= 0
+                            ? primarySession_->sessionKey() + QLatin1Char('#') +
+                                  QString::number(primaryLap_)
+                            : QString();
+    if (traceConfidenceKey_ == key) return;
+    ++traceConfidenceGeneration_;
+    traceConfidenceKey_ = key;
+    traceConfidenceBands_.clear();
+    traceConfidenceLapCount_ = 0;
+    traceConfidenceLoading_ = false;
+    traceConfidenceReady_ = false;
+    emit traceConfidenceChanged();
+}
+
+void TelemetryStore::requestTraceConfidence() {
+    const std::shared_ptr<const UnifiedLap> primary =
+        primarySession_ && primaryLap_ >= 0
+            ? primarySession_->unifiedLap(primaryLap_)
+            : nullptr;
+    if (!primarySession_ || !primary || primary->size() < 3) return;
+
+    const QString key = primarySession_->sessionKey() + QLatin1Char('#') +
+                        QString::number(primaryLap_);
+    if (traceConfidenceKey_ != key) invalidateTraceConfidence();
+    if (traceConfidenceLoading_ || traceConfidenceReady_) return;
+
+    QVector<LapEntry> ranked;
+    for (const LapEntry& lap : primarySession_->laps())
+        if (lap.countsForBest() && std::isfinite(lap.timeMs) &&
+            lap.timeMs > 0.0)
+            ranked.append(lap);
+    std::sort(ranked.begin(), ranked.end(),
+              [](const LapEntry& left, const LapEntry& right) {
+                  return left.timeMs < right.timeMs;
+              });
+    if (!ranked.isEmpty()) ranked.resize((ranked.size() + 1) / 2);
+    ranked.erase(std::remove_if(ranked.begin(), ranked.end(),
+                                [this](const LapEntry& lap) {
+                                    return lap.lapId == primaryLap_;
+                                }),
+                 ranked.end());
+
+    traceConfidenceLapCount_ = ranked.size();
+    if (ranked.size() < 2) {
+        traceConfidenceReady_ = true;
+        emit traceConfidenceChanged();
+        return;
+    }
+
+    const quint64 generation = ++traceConfidenceGeneration_;
+    traceConfidenceLoading_ = true;
+    emit traceConfidenceChanged();
+    const QString path = primarySession_->path();
+    const QVariantMap metadata =
+        recordingMetadataForPath(path, recordingMetadata_);
+    auto* watcher =
+        new QFutureWatcher<std::shared_ptr<SessionConfidenceLoadResult>>(this);
+    connect(
+        watcher,
+        &QFutureWatcher<std::shared_ptr<SessionConfidenceLoadResult>>::finished,
+        this, [this, watcher, generation, key]() {
+            const std::shared_ptr<SessionConfidenceLoadResult> result =
+                watcher->result();
+            watcher->deleteLater();
+            if (generation != traceConfidenceGeneration_ ||
+                traceConfidenceKey_ != key || !result)
+                return;
+
+            traceConfidenceLoading_ = false;
+            traceConfidenceReady_ = true;
+            traceConfidenceLapCount_ = result->lapCount;
+            traceConfidenceBands_ = std::move(result->bands);
+            if (!result->error.isEmpty())
+                qWarning() << "Unable to build session trace confidence"
+                           << result->error;
+            emit traceConfidenceChanged();
+        });
+    watcher->setFuture(
+        QtConcurrent::run([path, key, ranked, metadata, primary]() {
+            return loadSessionConfidence(path, key, ranked, metadata, primary);
+        }));
+}
+
+void TelemetryStore::requestCornerConsistency() {
+    const UnifiedLap* primary = primaryUnified();
+    if (focusedCorner_ < 0 || focusedCorner_ >= corners_.size() ||
+        !primarySession_ || !primary || primary->distance.size() < 2) {
+        ++cornerConsistencyGeneration_;
+        cornerConsistency_ = {};
+        emit cornerConsistencyChanged();
+        return;
+    }
+
+    const CornerZone& corner = corners_[focusedCorner_];
+    const auto sampleDistance = [primary](double fraction) {
+        const std::vector<double>& distance = primary->distance;
+        const double position =
+            qBound(0.0, fraction, 1.0) * double(distance.size() - 1);
+        const int lo =
+            std::clamp(int(std::floor(position)), 0, int(distance.size()) - 1);
+        const int hi = std::min(lo + 1, int(distance.size()) - 1);
+        return distance[size_t(lo)] +
+               (distance[size_t(hi)] - distance[size_t(lo)]) * (position - lo);
+    };
+    const double startDistance = sampleDistance(corner.start);
+    const double endDistance = sampleDistance(corner.end);
+    const QString sessionKey = primarySession_->sessionKey();
+    const QString key = sessionKey + QLatin1Char('#') +
+                        QString::number(startDistance, 'f', 3) +
+                        QLatin1Char(':') + QString::number(endDistance, 'f', 3);
+    if (cornerConsistency_.key == key) return;
+
+    QVector<LapEntry> ranked;
+    for (const LapEntry& lap : primarySession_->laps())
+        if (lap.countsForBest() && std::isfinite(lap.timeMs) &&
+            lap.timeMs > 0.0)
+            ranked.append(lap);
+    std::sort(ranked.begin(), ranked.end(),
+              [](const LapEntry& left, const LapEntry& right) {
+                  return left.timeMs < right.timeMs;
+              });
+    if (!ranked.isEmpty()) ranked.resize((ranked.size() + 3) / 4);
+
+    const quint64 generation = ++cornerConsistencyGeneration_;
+    cornerConsistency_ = {};
+    cornerConsistency_.key = key;
+    cornerConsistency_.loading = !ranked.isEmpty();
+    cornerConsistency_.lapCount = ranked.size();
+    emit cornerConsistencyChanged();
+    if (ranked.isEmpty()) return;
+
+    const QString path = primarySession_->path();
+    const QVariantMap metadata =
+        recordingMetadataForPath(path, recordingMetadata_);
+    auto* watcher =
+        new QFutureWatcher<std::shared_ptr<CornerConsistencyLoadResult>>(this);
+    connect(
+        watcher,
+        &QFutureWatcher<std::shared_ptr<CornerConsistencyLoadResult>>::finished,
+        this, [this, watcher, generation, key]() {
+            const std::shared_ptr<CornerConsistencyLoadResult> result =
+                watcher->result();
+            watcher->deleteLater();
+            if (generation != cornerConsistencyGeneration_ ||
+                cornerConsistency_.key != key || !result)
+                return;
+
+            cornerConsistency_.loading = false;
+            cornerConsistency_.lapCount = result->lapCount;
+            cornerConsistency_.validLapCount = result->validLapCount;
+            cornerConsistency_.brakingLapCount =
+                int(result->brakePoints.size());
+            if (!result->error.isEmpty())
+                qWarning() << "Unable to measure corner consistency"
+                           << result->sessionKey << result->error;
+
+            std::vector<double> points = result->brakePoints;
+            if (!points.empty()) {
+                std::sort(points.begin(), points.end());
+                const size_t middle = points.size() / 2;
+                cornerConsistency_.medianBrakePoint =
+                    points.size() % 2 == 0
+                        ? (points[middle - 1] + points[middle]) * 0.5
+                        : points[middle];
+                const double mean =
+                    std::accumulate(points.begin(), points.end(), 0.0) /
+                    double(points.size());
+                double squaredDeviation = 0.0;
+                for (const double point : points) {
+                    const double deviation = point - mean;
+                    squaredDeviation += deviation * deviation;
+                }
+                cornerConsistency_.brakePointStdDev =
+                    std::sqrt(squaredDeviation / double(points.size()));
+                cornerConsistency_.brakePointRange =
+                    points.back() - points.front();
+            }
+            emit cornerConsistencyChanged();
+        });
+    watcher->setFuture(
+        QtConcurrent::run([path, sessionKey, key, ranked, metadata,
+                           startDistance, endDistance]() {
+            return loadCornerConsistency(path, sessionKey, key, ranked,
+                                         metadata, startDistance, endDistance);
+        }));
 }
 
 // Brake, turn-in, apex and throttle pickup for the focused corner. Both laps

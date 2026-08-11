@@ -143,6 +143,7 @@ private:
     void buildScene(TraceSceneBuilder& builder);
     void buildCursorScene(TraceSceneBuilder& builder);
     void buildSelection(TraceSceneBuilder& builder);
+    void buildCornerMarkerGuides(TraceSceneBuilder& builder);
     void buildCornerMarkers(TraceSceneBuilder& builder);
     void invalidateScene();
     void invalidateRanges();
@@ -152,6 +153,9 @@ private:
     void buildChannel(TraceSceneBuilder& builder, const ChannelSpec& spec,
                       const QRectF& rect, const omatrack::UnifiedLap* primary,
                       const omatrack::UnifiedLap* compare);
+    void buildConfidenceBand(TraceSceneBuilder& builder,
+                             const TraceConfidenceBand* band,
+                             const QRectF& rect, const ChannelRange& range);
     /// Emits one lap's trace for `values` into `rect`. Each pixel column
     /// contributes the min/max of the samples it covers, joined to the
     /// previous column, so the same code draws a whole lap and a 20 m zoom.

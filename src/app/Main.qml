@@ -315,8 +315,7 @@ ApplicationWindow {
         referenceSyncError = error;
         if (force) {
             ref.playbackRate = Store.comparisonVideoRate;
-            if (Math.abs(error) > 0.025)
-                ref.seek(target);
+            ref.seek(target);
             referenceSyncError = 0;
             referenceSyncBaseRate = Store.comparisonVideoRate;
             referenceSyncLastPrimary = videoPlayer.position;
@@ -1560,19 +1559,45 @@ ApplicationWindow {
                     TraceView {
                         id: trace
 
+                        property bool confidenceBeforeHold: false
+                        property bool confidenceHeld: false
+
                         anchors.fill: parent
+                        anchors.topMargin: 24
                         backgroundColor: Style.traceBackgroundColor
                         focus: true
                         objectName: "traceView"
                         store: Store
 
                         Keys.onPressed: event => {
-                            if (event.key === Qt.Key_C) {
+                            if (event.key === Qt.Key_Period) {
+                                if (!event.isAutoRepeat && !trace.confidenceHeld) {
+                                    trace.confidenceBeforeHold = Store.traceConfidenceMode;
+                                    trace.confidenceHeld = true;
+                                    Store.traceConfidenceMode = true;
+                                }
+                                event.accepted = true;
+                            } else if (event.key === Qt.Key_C) {
                                 Store.clearCompare();
                                 event.accepted = true;
                             } else if (event.key === Qt.Key_A) {
                                 Store.setEditingCorners(!Store.editingCorners);
                                 event.accepted = true;
+                            }
+                        }
+                        Keys.onReleased: event => {
+                            if (event.key === Qt.Key_Period) {
+                                if (!event.isAutoRepeat && trace.confidenceHeld) {
+                                    Store.traceConfidenceMode = trace.confidenceBeforeHold;
+                                    trace.confidenceHeld = false;
+                                }
+                                event.accepted = true;
+                            }
+                        }
+                        onActiveFocusChanged: {
+                            if (!trace.activeFocus && trace.confidenceHeld) {
+                                Store.traceConfidenceMode = trace.confidenceBeforeHold;
+                                trace.confidenceHeld = false;
                             }
                         }
                         onChannelMenuRequested: (key, title, weight, x, y) => {
@@ -1687,7 +1712,7 @@ ApplicationWindow {
                         }
                     }
                     TraceCursorOverlay {
-                        anchors.fill: parent
+                        anchors.fill: trace
                         objectName: "traceOverlay"
                         trace: trace
                         z: 1
@@ -1708,8 +1733,7 @@ ApplicationWindow {
                         onClicked: Store.setChannelVisible("delta", !root.deltaTraceVisible)
                     }
                     Row {
-                        // Left of the pane: the corner focus overlay owns the
-                        // right side while a corner is focused.
+                        // Dedicated trace toolbar; corner labels begin below it.
                         anchors.left: parent.left
                         anchors.leftMargin: 60
                         anchors.top: parent.top
@@ -1745,6 +1769,23 @@ ApplicationWindow {
                             width: 30
 
                             onClicked: Store.resetView()
+                        }
+                        ToolButton {
+                            id: confidenceButton
+
+                            ToolTip.text: "Show fastest-half session confidence bands (hold .)"
+                            ToolTip.visible: hovered
+                            checkable: true
+                            checked: Store.traceConfidenceMode
+                            height: 22
+                            objectName: "confidenceButton"
+                            text: "Confidence"
+                            width: 86
+
+                            onClicked: {
+                                Store.traceConfidenceMode = confidenceButton.checked;
+                                trace.forceActiveFocus();
+                            }
                         }
                     }
                     Rectangle {
@@ -1804,7 +1845,7 @@ ApplicationWindow {
                         anchors.bottomMargin: 8
                         anchors.right: tracePane.right
                         anchors.rightMargin: 8
-                        anchors.top: tracePane.top
+                        anchors.top: trace.top
                         anchors.topMargin: 8
                         width: Math.min(360, Math.max(240, tracePane.width * 0.34))
                         z: 4

@@ -157,42 +157,52 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
             return pts;
         };
 
-        // Emulate the painter's 4/4 dash pattern along a device-space polyline:
-        // walk segments accumulating length, flush "on" runs as polylines.
+        // Emulate the painter's dash pattern along a device-space polyline.
+        // Carry pattern state between segments instead of repeatedly using
+        // fmod(cumulativeLength, period): a rounded phase at the pattern
+        // boundary can produce a sub-ULP step and hang the render thread.
         const auto dashedPolyline = [&](const QVector<QPointF>& pts,
                                         qreal width, const QColor& color,
                                         qreal dashOn, qreal dashOff) {
-            const qreal period = dashOn + dashOff;
-            if (period <= 0.0) {
+            if (pts.size() < 2 || dashOn <= 0.0) return;
+            if (dashOff <= 0.0) {
                 builder_.polyline(pts.constData(), pts.size(), width, color);
                 return;
             }
-            qreal cum = 0.0;
+
+            bool drawing = true;
+            qreal patternRemaining = dashOn;
             QVector<QPointF> run;
             for (int i = 1; i < pts.size(); ++i) {
                 const QPointF a = pts[i - 1];
                 const QPointF b = pts[i];
                 const qreal segLen = std::hypot(b.x() - a.x(), b.y() - a.y());
                 if (segLen < 1.0e-9) continue;
+
+                const qreal tolerance =
+                    std::numeric_limits<qreal>::epsilon() *
+                    std::max({1.0, segLen, dashOn, dashOff}) * 16.0;
                 qreal t = 0.0;
-                while (t < segLen - 1.0e-9) {
-                    const qreal phase = std::fmod(cum + t, period);
-                    if (phase < dashOn) {
-                        const qreal step = std::min(dashOn - phase, segLen - t);
+                while (segLen - t > tolerance) {
+                    const qreal step = std::min(patternRemaining, segLen - t);
+                    if (drawing) {
                         if (run.isEmpty())
                             run.append(a + (b - a) * (t / segLen));
                         run.append(a + (b - a) * ((t + step) / segLen));
-                        t += step;
-                    } else {
-                        if (!run.isEmpty()) {
+                    }
+                    t += step;
+                    patternRemaining -= step;
+
+                    if (patternRemaining <= tolerance) {
+                        if (drawing && !run.isEmpty()) {
                             builder_.polyline(run.constData(), run.size(),
                                               width, color);
                             run.clear();
                         }
-                        t += std::min(period - phase, segLen - t);
+                        drawing = !drawing;
+                        patternRemaining = drawing ? dashOn : dashOff;
                     }
                 }
-                cum += segLen;
             }
             if (!run.isEmpty())
                 builder_.polyline(run.constData(), run.size(), width, color);

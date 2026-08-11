@@ -48,6 +48,7 @@ struct SessionScanResult;
 struct SessionLapLoadResult;
 struct FileOpenResult;
 struct FolderChannelSample;
+struct SessionConfidenceLoadResult;
 struct SidebarMetadataResult;
 
 // ── damper alignment ────────────────────────────────────────────────
@@ -66,6 +67,21 @@ struct DamperAlignment {
     double span() const { return std::max(1e-6, maximum - minimum); }
 };
 
+// Central trace envelope for the fastest half of the other representative
+// laps in the active session. Samples are already mapped onto the primary
+// lap's track-station grid, so the renderer only performs pixel decimation.
+struct TraceConfidenceBand {
+    std::vector<double> lower;
+    std::vector<double> median;
+    std::vector<double> upper;
+    int lapCount = 0;
+
+    bool valid() const {
+        return lapCount >= 2 && lower.size() > 1 &&
+               lower.size() == median.size() && lower.size() == upper.size();
+    }
+};
+
 // ── corner focus ────────────────────────────────────────────────────
 
 // One driver-facing event inside a focused corner, placed on the primary
@@ -78,6 +94,16 @@ struct CornerMarker {
     QString label;
     double fraction = 0.0;
     double referenceFraction = -1.0;
+};
+struct CornerConsistencyState {
+    QString key;
+    bool loading = false;
+    int lapCount = 0;
+    int validLapCount = 0;
+    int brakingLapCount = 0;
+    double medianBrakePoint = std::numeric_limits<double>::quiet_NaN();
+    double brakePointStdDev = std::numeric_limits<double>::quiet_NaN();
+    double brakePointRange = std::numeric_limits<double>::quiet_NaN();
 };
 
 // ── corner zone ─────────────────────────────────────────────────────
@@ -216,6 +242,12 @@ class TelemetryStore : public QObject {
     Q_PROPERTY(bool ready READ ready NOTIFY readyChanged)
     Q_PROPERTY(bool loading READ loading NOTIFY loadingChanged)
     Q_PROPERTY(bool lapLoading READ lapLoading NOTIFY lapLoadingChanged)
+    Q_PROPERTY(bool traceConfidenceMode READ traceConfidenceMode WRITE
+                   setTraceConfidenceMode NOTIFY traceConfidenceChanged)
+    Q_PROPERTY(bool traceConfidenceLoading READ traceConfidenceLoading NOTIFY
+                   traceConfidenceChanged)
+    Q_PROPERTY(int traceConfidenceLapCount READ traceConfidenceLapCount NOTIFY
+                   traceConfidenceChanged)
     Q_PROPERTY(bool comparing READ comparing NOTIFY selectionChanged)
     Q_PROPERTY(bool editingCorners READ editingCorners WRITE setEditingCorners
                    NOTIFY editingCornersChanged)
@@ -438,6 +470,7 @@ public:
     const QVector<double>& deltaTrace() const;
     const std::vector<double>* extraChannelData(const QString& key,
                                                 bool reference) const;
+    const TraceConfidenceBand* traceConfidenceBand(const QString& field) const;
     bool trackAtlasReady() const { return !atlasTracks_.isEmpty(); }
     QString trackAtlasStatus() const { return trackAtlasStatus_; }
 
@@ -447,6 +480,10 @@ public:
         return primaryLapLoading_ || compareLapLoading_ || fileOpenLoading_;
     }
     bool comparing() const { return compareSession_ != nullptr; }
+    bool traceConfidenceMode() const { return traceConfidenceMode_; }
+    void setTraceConfidenceMode(bool enabled);
+    bool traceConfidenceLoading() const { return traceConfidenceLoading_; }
+    int traceConfidenceLapCount() const { return traceConfidenceLapCount_; }
     bool editingCorners() const { return editingCorners_; }
     double cursorFrac() const { return cursorFrac_; }
     void setCursorFrac(double v);
@@ -495,6 +532,8 @@ signals:
     void sessionsChanged();
     void cornersChanged();
     void cornerFocusChanged();
+    void cornerConsistencyChanged();
+    void traceConfidenceChanged();
     void driverMappingsChanged();
     void locationsChanged();
     void channelConfigChanged();
@@ -555,7 +594,10 @@ private:
 
     void loadCornersForPrimary();
     void rebuildCornerMarkers();
+    void requestCornerConsistency();
     void prefetchNeighbourLaps();
+    void invalidateTraceConfidence();
+    void requestTraceConfidence();
     int neighbourLapId(int offset) const;
     QVector<CornerZone> atlasCornersForPrimary();
     bool parseTrackAtlas(const QByteArray& payload);
@@ -637,6 +679,15 @@ private:
     QTimer* atlasTimer_ = nullptr;
     QVector<CornerZone> corners_;
     QVector<CornerMarker> markers_;
+    CornerConsistencyState cornerConsistency_;
+    quint64 cornerConsistencyGeneration_ = 0;
+    QHash<QString, TraceConfidenceBand> traceConfidenceBands_;
+    QString traceConfidenceKey_;
+    quint64 traceConfidenceGeneration_ = 0;
+    int traceConfidenceLapCount_ = 0;
+    bool traceConfidenceMode_ = false;
+    bool traceConfidenceLoading_ = false;
+    bool traceConfidenceReady_ = false;
     int focusedCorner_ = -1;
     double focusReturnStart_ = 0.0;
     double focusReturnEnd_ = 1.0;

@@ -17,6 +17,15 @@ Rectangle {
 
     property var summary: ({})
 
+    function brakePointDeltaText(value): string {
+        if (value === undefined || value === null || !isFinite(Number(value)))
+            return "—";
+        const metres = Number(value);
+        if (Math.abs(metres) < 0.5)
+            return "matched";
+        return Math.abs(metres).toFixed(0) + "m " + (metres > 0 ? "later" : "earlier");
+    }
+
     // Plain (unsigned) number with `decimals` and a trailing `suffix`. Returns
     // "—" for missing/non-finite values so every cell degrades gracefully.
     function fmtPlain(value, decimals, suffix): string {
@@ -80,6 +89,9 @@ Rectangle {
     Component.onCompleted: overlay.refresh()
 
     Connections {
+        function onCornerConsistencyChanged(): void {
+            overlay.refresh();
+        }
         function onCornerFocusChanged(): void {
             overlay.refresh();
         }
@@ -477,6 +489,111 @@ Rectangle {
                     horizontalAlignment: Text.AlignRight
                     text: overlay.fmtPlain(overlay.summary.maxSteering, 0, "°")
                 }
+            }
+
+            // ── consistency ──────────────────────────────────────────────
+            Label {
+                color: Style.dimTextColor
+                font.bold: true
+                font.pixelSize: Style.smallFontSize
+                text: "CONSISTENCY · FASTEST 25%"
+            }
+            Label {
+                Layout.fillWidth: true
+                color: Style.mutedTextColor
+                font.family: Style.monoFontFamily
+                font.pixelSize: Style.smallFontSize
+                text: "Reading " + overlay.summary.consistencyLapCount + (overlay.summary.consistencyLapCount === 1 ? " lap…" : " laps…")
+                visible: overlay.summary.consistencyLoading === true
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 6
+                visible: overlay.summary.consistencyLoading !== true && overlay.summary.consistencyLapCount > 0
+
+                Label {
+                    Layout.fillWidth: true
+                    color: Style.mutedTextColor
+                    font.pixelSize: Style.smallFontSize
+                    text: "Braking laps"
+                }
+                Label {
+                    Layout.preferredWidth: 80
+                    color: Style.foregroundColor
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: Style.smallFontSize
+                    horizontalAlignment: Text.AlignRight
+                    text: overlay.summary.consistencyBrakeLapCount + " / " + overlay.summary.consistencyLapCount
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 6
+                visible: overlay.summary.brakeConsistencyAvailable === true
+
+                Label {
+                    Layout.fillWidth: true
+                    color: Style.mutedTextColor
+                    font.pixelSize: Style.smallFontSize
+                    text: "Brake point σ"
+                }
+                Label {
+                    Layout.preferredWidth: 80
+                    color: Style.foregroundColor
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: Style.smallFontSize
+                    horizontalAlignment: Text.AlignRight
+                    text: overlay.fmtPlain(overlay.summary.brakePointStdDev, 1, "m")
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 6
+                visible: overlay.summary.brakeConsistencyAvailable === true
+
+                Label {
+                    Layout.fillWidth: true
+                    color: Style.mutedTextColor
+                    font.pixelSize: Style.smallFontSize
+                    text: "Brake range"
+                }
+                Label {
+                    Layout.preferredWidth: 80
+                    color: Style.foregroundColor
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: Style.smallFontSize
+                    horizontalAlignment: Text.AlignRight
+                    text: overlay.fmtPlain(overlay.summary.brakePointRange, 0, "m")
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 6
+                visible: overlay.summary.brakeConsistencyAvailable === true && isFinite(Number(overlay.summary.brakePointVsMedian))
+
+                Label {
+                    Layout.fillWidth: true
+                    color: Style.mutedTextColor
+                    font.pixelSize: Style.smallFontSize
+                    text: "Active vs median"
+                }
+                Label {
+                    Layout.preferredWidth: 80
+                    color: Style.foregroundColor
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: Style.smallFontSize
+                    horizontalAlignment: Text.AlignRight
+                    text: overlay.brakePointDeltaText(overlay.summary.brakePointVsMedian)
+                }
+            }
+            Label {
+                Layout.fillWidth: true
+                color: Style.mutedTextColor
+                font.family: Style.monoFontFamily
+                font.pixelSize: Style.smallFontSize
+                text: overlay.summary.consistencyLapCount > 0 ? "Need at least two top-quartile braking laps" : "No representative timed laps"
+                visible: overlay.summary.consistencyLoading !== true && overlay.summary.brakeConsistencyAvailable !== true
+                wrapMode: Text.Wrap
             }
 
             // ── checks ───────────────────────────────────────────────────
