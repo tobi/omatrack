@@ -382,6 +382,8 @@ public:
     Q_INVOKABLE void clearCompare();
     Q_INVOKABLE void clearPrimary();
     Q_INVOKABLE QVariantList lapsForSession(const QString& sessionKey) const;
+    Q_INVOKABLE bool traceConfidenceIncludesLap(const QString& sessionKey,
+                                                int lapId) const;
 
     // ── navigation ─────────────────────────────────────────────────
     Q_INVOKABLE void zoomAt(double anchorFrac, double factor);
@@ -682,6 +684,7 @@ private:
     CornerConsistencyState cornerConsistency_;
     quint64 cornerConsistencyGeneration_ = 0;
     QHash<QString, TraceConfidenceBand> traceConfidenceBands_;
+    QSet<int> traceConfidenceLapIds_;
     QString traceConfidenceKey_;
     quint64 traceConfidenceGeneration_ = 0;
     int traceConfidenceLapCount_ = 0;

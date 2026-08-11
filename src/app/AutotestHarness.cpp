@@ -1900,6 +1900,39 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                                        QStringLiteral(
                                                            "traceView"))
                                                  : nullptr;
+                                        int highlightedFilmstripLaps = 0;
+                                        int fixedEdgeLaps = 0;
+                                        bool fixedEdgeLapWidths = true;
+                                        auto* window =
+                                            qobject_cast<QQuickWindow*>(root);
+                                        QQuickItem* visualRoot =
+                                            window ? window->contentItem()
+                                                   : nullptr;
+                                        const QVariantList activeLaps =
+                                            store.lapsForSession(
+                                                store.primarySessionKey());
+                                        for (const QVariant& value :
+                                             activeLaps) {
+                                            const QVariantMap lap =
+                                                value.toMap();
+                                            QQuickItem* item = autotestFindItem(
+                                                visualRoot,
+                                                QStringLiteral(
+                                                    "activeFilmstripLap-%1")
+                                                    .arg(lap.value("lapId")
+                                                             .toInt()));
+                                            if (!item) continue;
+                                            if (item->property("confidenceLap")
+                                                    .toBool())
+                                                ++highlightedFilmstripLaps;
+                                            if (item->property("fixedWidthLap")
+                                                    .toBool()) {
+                                                ++fixedEdgeLaps;
+                                                fixedEdgeLapWidths &=
+                                                    std::abs(item->width() -
+                                                             30.0) < 0.1;
+                                            }
+                                        }
                                         const TraceConfidenceBand* speedBand =
                                             store.traceConfidenceBand(
                                                 QStringLiteral("speed"));
@@ -1926,13 +1959,21 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                             store.traceConfidenceLapCount() >=
                                                 2 &&
                                             speedBand && speedBand->valid() &&
+                                            highlightedFilmstripLaps ==
+                                                store
+                                                    .traceConfidenceLapCount() &&
+                                            fixedEdgeLaps >= 2 &&
+                                            fixedEdgeLapWidths &&
                                             averageMs < 8.33;
                                         qWarning()
                                             << "AUTOTEST confidence overlay:"
                                             << confidenceReady << "laps"
                                             << store.traceConfidenceLapCount()
-                                            << "average_ms" << averageMs
-                                            << "quads"
+                                            << "filmstrip highlighted"
+                                            << highlightedFilmstripLaps
+                                            << "fixed edge laps"
+                                            << fixedEdgeLaps << "average_ms"
+                                            << averageMs << "quads"
                                             << benchmark.value("quads").toInt();
                                     }
                                     const QFileInfo requested(shotPath);

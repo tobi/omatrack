@@ -110,16 +110,22 @@ ApplicationWindow {
     }
     function lapStripEntry(key, reference) {
         const laps = Store.lapsForSession(key);
-        let total = 0;
-        for (let i = 0; i < laps.length; ++i)
-            total += Math.max(1, laps[i].timeMs);
+        let fixedLapCount = 0;
+        let flexibleTimeMs = 0;
+        for (let i = 0; i < laps.length; ++i) {
+            if (!laps[i].countsForBest)
+                ++fixedLapCount;
+            else
+                flexibleTimeMs += Math.max(1, laps[i].timeMs);
+        }
         return {
             sessionKey: key,
             driverName: Store.driverDisplayName(key),
             bestTime: sessionInfoForKey(key)?.bestTime || "",
             reference: reference,
             laps: laps,
-            totalTimeMs: Math.max(1, total)
+            fixedLapCount: fixedLapCount,
+            flexibleTimeMs: Math.max(1, flexibleTimeMs)
         };
     }
     function movePointerTooltip(owner: string, x: real, y: real): void {
@@ -1342,6 +1348,9 @@ ApplicationWindow {
                                         delegate: Rectangle {
                                             id: proportionalLap
 
+                                            readonly property bool confidenceLap: !sessionStrip.strip.reference && Store.traceConfidenceMode && Store.traceConfidenceIncludesLap(sessionStrip.strip.sessionKey, proportionalLap.modelData.lapId)
+                                            readonly property bool fixedWidthLap: !proportionalLap.modelData.countsForBest
+                                            readonly property real flexibleLaneWidth: Math.max(0, proportionalLapLane.width - Math.max(0, sessionStrip.strip.laps.length - 1) * proportionalLapRow.spacing - sessionStrip.strip.fixedLapCount * 30)
                                             required property var modelData
                                             property bool selectedLap: sessionStrip.strip.reference ? sessionStrip.strip.sessionKey === Store.compareSessionKey && proportionalLap.modelData.lapId === Store.compareLapIndex : sessionStrip.strip.sessionKey === Store.primarySessionKey && proportionalLap.modelData.lapId === Store.primaryLapIndex
                                             readonly property string tooltipOwner: "lap:" + sessionStrip.strip.sessionKey + ":" + proportionalLap.modelData.lapId + ":" + sessionStrip.strip.reference
@@ -1352,11 +1361,12 @@ ApplicationWindow {
                                             // so `parent` is null on creation.
                                             anchors.verticalCenter: proportionalLapRow.verticalCenter
                                             border.color: sessionStrip.strip.reference ? Style.orangeColor : Style.accentColor
-                                            border.width: proportionalLap.selectedLap ? 1 : 0
-                                            color: proportionalLap.selectedLap ? Style.selectionColor : proportionalLapMouse.containsMouse ? Style.backgroundColor : Style.traceBackgroundColor
+                                            border.width: proportionalLap.selectedLap || proportionalLap.confidenceLap ? 1 : 0
+                                            color: proportionalLap.selectedLap ? Style.selectionColor : proportionalLap.confidenceLap ? Qt.tint(Style.traceBackgroundColor, Qt.rgba(Style.accentColor.r, Style.accentColor.g, Style.accentColor.b, 0.2)) : proportionalLapMouse.containsMouse ? Style.backgroundColor : Style.traceBackgroundColor
                                             height: proportionalLapRow.height - 8
+                                            objectName: (sessionStrip.strip.reference ? "referenceFilmstripLap-" : "activeFilmstripLap-") + proportionalLap.modelData.lapId
                                             radius: 3
-                                            width: Math.max(1, (proportionalLapLane.width - Math.max(0, sessionStrip.strip.laps.length - 1) * 3) * proportionalLap.modelData.timeMs / sessionStrip.strip.totalTimeMs)
+                                            width: proportionalLap.fixedWidthLap ? 30 : Math.max(1, proportionalLap.flexibleLaneWidth * Math.max(1, proportionalLap.modelData.timeMs) / sessionStrip.strip.flexibleTimeMs)
 
                                             Rectangle {
                                                 anchors.bottom: parent.bottom
@@ -1373,10 +1383,10 @@ ApplicationWindow {
                                                 anchors.rightMargin: 5
                                                 color: proportionalLap.selectedLap ? (sessionStrip.strip.reference ? Style.orangeColor : Style.accentColor) : proportionalLap.modelData.isFastest ? Style.greenColor : Style.foregroundColor
                                                 elide: Text.ElideRight
-                                                font.bold: proportionalLap.selectedLap
+                                                font.bold: proportionalLap.selectedLap || proportionalLap.confidenceLap
                                                 font.family: Style.monoFontFamily
                                                 font.pixelSize: 9
-                                                text: proportionalLap.modelData.timeText
+                                                text: proportionalLap.fixedWidthLap ? proportionalLap.modelData.label : proportionalLap.modelData.timeText
                                                 verticalAlignment: Text.AlignVCenter
                                             }
                                             MouseArea {
@@ -1401,7 +1411,7 @@ ApplicationWindow {
                                                 }
                                                 onEntered: {
                                                     const point = proportionalLapMouse.mapToItem(Overlay.overlay, proportionalLapMouse.mouseX, proportionalLapMouse.mouseY);
-                                                    root.showPointerTooltip(proportionalLap.tooltipOwner, proportionalLap.modelData.timeText + " · " + proportionalLap.modelData.label, point.x, point.y);
+                                                    root.showPointerTooltip(proportionalLap.tooltipOwner, proportionalLap.modelData.timeText + " · " + proportionalLap.modelData.label + (proportionalLap.confidenceLap ? " · Consistency cohort" : ""), point.x, point.y);
                                                 }
                                                 onExited: root.dismissPointerTooltip(proportionalLap.tooltipOwner)
                                                 onPositionChanged: mouse => {
@@ -1773,13 +1783,13 @@ ApplicationWindow {
                         ToolButton {
                             id: confidenceButton
 
-                            ToolTip.text: "Show fastest-half session confidence bands (hold .)"
+                            ToolTip.text: "Show fastest-half session consistency heatmap (hold .)"
                             ToolTip.visible: hovered
                             checkable: true
                             checked: Store.traceConfidenceMode
                             height: 22
                             objectName: "confidenceButton"
-                            text: "Confidence"
+                            text: "Consistency"
                             width: 86
 
                             onClicked: {

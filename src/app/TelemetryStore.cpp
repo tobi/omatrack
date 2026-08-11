@@ -4673,6 +4673,11 @@ QVariantList TelemetryStore::lapsForSession(const QString& sessionKey) const {
     }
     return out;
 }
+bool TelemetryStore::traceConfidenceIncludesLap(const QString& sessionKey,
+                                                int lapId) const {
+    return primarySession_ && sessionKey == primarySession_->sessionKey() &&
+           traceConfidenceLapIds_.contains(lapId);
+}
 
 // ── navigation ──────────────────────────────────────────────────────
 
@@ -5598,6 +5603,7 @@ void TelemetryStore::invalidateTraceConfidence() {
     ++traceConfidenceGeneration_;
     traceConfidenceKey_ = key;
     traceConfidenceBands_.clear();
+    traceConfidenceLapIds_.clear();
     traceConfidenceLapCount_ = 0;
     traceConfidenceLoading_ = false;
     traceConfidenceReady_ = false;
@@ -5631,6 +5637,8 @@ void TelemetryStore::requestTraceConfidence() {
                                     return lap.lapId == primaryLap_;
                                 }),
                  ranked.end());
+    traceConfidenceLapIds_.clear();
+    for (const LapEntry& lap : ranked) traceConfidenceLapIds_.insert(lap.lapId);
 
     traceConfidenceLapCount_ = ranked.size();
     if (ranked.size() < 2) {
