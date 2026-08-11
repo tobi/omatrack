@@ -21,6 +21,7 @@ enum class LocationType {
     Folder,  // a directory on this machine, scanned where it sits
     WebDav,  // an authenticated http(s) WebDAV collection
     S3,      // an Amazon S3 bucket, or anything that speaks its API
+    Gcs,     // a Google Cloud Storage bucket, through its S3-compatible API
 };
 
 struct LibraryLocation {

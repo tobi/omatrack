@@ -281,7 +281,8 @@ QString cacheDirectory(const RemoteConnection& connection) {
 QString validateTarget(LocationType type, const QString& target) {
     switch (type) {
         case LocationType::WebDav: return webDavTargetError(target);
-        case LocationType::S3: return s3TargetError(type, target);
+        case LocationType::S3:
+        case LocationType::Gcs: return s3TargetError(type, target);
         case LocationType::Folder: break;
     }
     return QStringLiteral("Unsupported connection type.");
@@ -293,7 +294,8 @@ QString normalizeTarget(LocationType type, const QString& target) {
             // Unchanged from when WebDAV stood alone, so no configured server
             // gets a new id and loses the cache it already downloaded.
             return QUrl(target.trimmed()).toString(QUrl::FullyEncoded);
-        case LocationType::S3: return s3NormalizedTarget(type, target);
+        case LocationType::S3:
+        case LocationType::Gcs: return s3NormalizedTarget(type, target);
         case LocationType::Folder: break;
     }
     return target.trimmed();
@@ -330,7 +332,12 @@ RemoteSyncResult syncConnection(const RemoteConnection& connection) {
         case LocationType::WebDav:
             backend = makeWebDavBackend(connection);
             break;
-        case LocationType::S3: backend = makeS3Backend(connection); break;
+        case LocationType::S3:
+        case LocationType::Gcs:
+            // Google Cloud Storage speaks the S3 API — SigV4 with an HMAC
+            // interoperability key, and ListObjectsV2 paging. One backend.
+            backend = makeS3Backend(connection);
+            break;
         case LocationType::Folder: break;
     }
 

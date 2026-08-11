@@ -175,6 +175,53 @@ private slots:
         QVERIFY(!result.error.contains(QStringLiteral("<")));
     }
 
+    /// GCS reaches the same backend, so what is worth proving is that the
+    /// type carries the two things that differ: the `gs://` scheme, and a
+    /// signature scoped to the literal region "auto" with nothing discovered.
+    void readsAGoogleCloudStorageBucket() {
+        gets_ = 0;
+        listings_ = 0;
+        lastAuthorization_.clear();
+        scenario_ = QStringLiteral("plain");
+
+        RemoteConnection connection = s3Connection(
+            QStringLiteral("gs://team-telemetry/season-2026/"),
+            QStringLiteral("gcs"));
+        connection.type = LocationType::Gcs;
+        connection.options.remove(QStringLiteral("region"));
+
+        const RemoteSyncResult result = syncConnection(connection);
+        QVERIFY2(result.success, qPrintable(result.error));
+        QCOMPARE(result.files, (QStringList{QStringLiteral("brands-hatch.vbo"),
+                                            QStringLiteral("spa/lap 2.vbo")}));
+        QVERIFY2(lastAuthorization_.contains("/auto/s3/aws4_request"),
+                 lastAuthorization_.constData());
+        // Google strips headers in transit, so signing any more than these
+        // makes a perfectly good bucket answer SignatureDoesNotMatch.
+        QVERIFY(lastAuthorization_.contains(
+            "SignedHeaders=host;x-amz-content-sha256;x-amz-date,"));
+
+        // The cache is keyed by type, so one bucket reached two ways stays
+        // two libraries rather than one that fights with itself.
+        QVERIFY(result.cachePath.contains(QStringLiteral("/gcs/")));
+    }
+
+    void rejectsATargetThatDisagreesWithItsType() {
+        QVERIFY(validateTarget(LocationType::Gcs,
+                               QStringLiteral("gs://bucket/prefix"))
+                    .isEmpty());
+        // Picking Google in the dialog and pasting an S3 address is a real
+        // slip, and it would otherwise be signed against the wrong host.
+        QVERIFY(!validateTarget(LocationType::Gcs,
+                                QStringLiteral("s3://bucket/prefix"))
+                     .isEmpty());
+        QVERIFY(!validateTarget(LocationType::S3,
+                                QStringLiteral("gs://bucket/prefix"))
+                     .isEmpty());
+        QCOMPARE(normalizeTarget(LocationType::Gcs, QStringLiteral("gs://b/x")),
+                 QStringLiteral("gs://b/x/"));
+    }
+
     void validatesAndNormalizesS3Targets() {
         QVERIFY(validateTarget(LocationType::S3,
                                QStringLiteral("s3://bucket/prefix"))

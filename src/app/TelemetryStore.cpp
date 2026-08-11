@@ -2850,7 +2850,23 @@ QVariantList TelemetryStore::connectionTypes() const {
                      {QStringLiteral("key"), QStringLiteral("endpoint")},
                      {QStringLiteral("label"), QStringLiteral("Endpoint")},
                      {QStringLiteral("placeholder"),
-                      QStringLiteral("For MinIO, R2, or another S3 API")}}}}}};
+                      QStringLiteral("For MinIO, R2, or another S3 API")}}}}},
+        QVariantMap{
+            {QStringLiteral("type"), locationTypeKey(LocationType::Gcs)},
+            {QStringLiteral("label"), QStringLiteral("Google Cloud Storage")},
+            {QStringLiteral("placeholder"),
+             QStringLiteral("gs://bucket/season-2026/")},
+            {QStringLiteral("needsCredentials"), true},
+            {QStringLiteral("usernameLabel"), QStringLiteral("Access key")},
+            {QStringLiteral("passwordLabel"), QStringLiteral("Secret")},
+            // HMAC keys, not a service-account file: they are what the
+            // S3-compatible endpoint takes, and they need no key material on
+            // disk beyond what every other connection here already stores.
+            {QStringLiteral("detail"),
+             QStringLiteral(
+                 "Uses an HMAC interoperability key, which you create under "
+                 "Cloud Storage → Settings → Interoperability. Telemetry is "
+                 "cached locally and stays available offline.")}}};
 }
 
 QVariantList TelemetryStore::libraryLocations() const {

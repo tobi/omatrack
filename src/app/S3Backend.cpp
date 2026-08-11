@@ -43,6 +43,7 @@ struct Endpoint {
 QString schemeFor(LocationType type) {
     switch (type) {
         case LocationType::S3: return QStringLiteral("s3");
+        case LocationType::Gcs: return QStringLiteral("gs");
         case LocationType::WebDav:
         case LocationType::Folder: break;
     }
@@ -91,7 +92,9 @@ bool isUsableBucket(const QString& bucket) {
 }
 
 QString defaultHost(LocationType type, const QString& region) {
-    if (type != LocationType::S3)
+    // Google's S3-compatible XML endpoint. It is one host for every bucket
+    // and every region, which is why GCS needs no region discovery.
+    if (type == LocationType::Gcs)
         return QStringLiteral("storage.googleapis.com");
     return region.isEmpty() ? QStringLiteral("s3.amazonaws.com")
                             : QStringLiteral("s3.%1.amazonaws.com").arg(region);
@@ -117,8 +120,9 @@ Endpoint resolveEndpoint(const RemoteConnection& connection,
     // AWS prefers virtual-host addressing, but a dot in the bucket name makes
     // `bucket.s3.region.amazonaws.com` fail certificate validation: a
     // wildcard certificate only covers a single label.
+    // Google publishes no per-bucket hostnames, so GCS is always path-style.
     return {origin, bucket.contains(QLatin1Char('.')) ||
-                        connection.type != LocationType::S3};
+                        connection.type == LocationType::Gcs};
 }
 
 /// Sets a path or query that is already in SigV4's encoding, without letting
@@ -348,7 +352,9 @@ RemoteBackend makeS3Backend(const RemoteConnection& connection) {
     // is connection state.
     auto region = std::make_shared<QString>(
         connection.options.value(QStringLiteral("region")).trimmed());
-    if (region->isEmpty() && connection.type != LocationType::S3)
+    // GCS accepts SigV4 scoped to the literal region "auto" against any
+    // bucket, so there is nothing to discover and nothing to configure.
+    if (region->isEmpty() && connection.type == LocationType::Gcs)
         *region = QStringLiteral("auto");
 
     backend.sign = [connection, region](QNetworkRequest& request,
