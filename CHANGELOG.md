@@ -18,6 +18,19 @@ All notable user-facing changes are documented here.
   telemetry, and mirroring one filled the disk to hold something the player
   reads perfectly well over the wire. Video that an earlier version already
   downloaded is handed back on the first synchronization after upgrading.
+- Onboard video on a server can be kept for a flight. Right-click a recording
+  and choose "Download for offline use": it is fetched in the background with
+  progress and a cancel, plays from disk afterwards, survives synchronizations
+  and restarts, and is given back from the same menu. Downloaded recordings sit
+  outside the cache limit — they are only there because you asked — and
+  Preferences reports how much they take.
+- A streamed recording no longer dies when the laptop does. Signed addresses
+  last twelve hours, and one that expires while the machine is asleep is
+  replaced automatically: playback resumes where it was instead of showing an
+  error. The same recovery covers a connection that dropped and came back.
+- Streamed video now buffers properly. mpv is given a real streaming cache, so
+  scrubbing back through the corner you just watched no longer re-fetches it
+  over the network.
 - The download cache now has a limit — 20 GB unless `cache: {limit: …}` in
   `omatrack.yml` says otherwise — and drops the files least recently opened
   when it is exceeded. Anything dropped is fetched again when it is next

@@ -44,7 +44,8 @@ through braking, turn-in, apex, and throttle pickup.
 - Connect WebDAV servers, S3 buckets, and Google Cloud Storage buckets from
   Preferences; remote telemetry is streamed into a local ETag-aware cache,
   reused without downloads, and available offline. Onboard video plays over
-  the network rather than being downloaded.
+  the network rather than being downloaded, or is downloaded on request for a
+  flight.
 - Inspect parsing, channel mapping, lap detection, and unification through `omatrack-cli`.
 
 ## Architecture
@@ -188,12 +189,17 @@ equivalent). ETag and Last-Modified metadata avoid unchanged downloads; a
 previous cache is used when the server is unavailable. Omatrack never rewrites
 remote files.
 
-Onboard video is not downloaded. A session's video runs 5–30 GB against
-telemetry's kilobytes, so the player streams it directly over HTTP range
-requests — from a time-limited presigned URL for S3 and GCS. Everything else
-the cache holds stays under `cache: {limit: 20 GB}` in `omatrack.yml`, past
-which the least recently opened files are dropped and re-fetched if they are
-wanted again. Preferences shows what the cache is holding and can empty it.
+Onboard video is not downloaded by default. A session's video runs 5–30 GB
+against telemetry's kilobytes, so the player streams it directly over HTTP
+range requests — from a time-limited presigned URL for S3 and GCS, refreshed
+automatically if it expires while the machine is asleep. Right-click a
+recording and choose "Download for offline use" to keep one on this machine
+for a flight; it downloads in the background, plays from disk afterwards, and
+is given back from the same menu. Everything else the cache holds stays under
+`cache: {limit: 20 GB}` in `omatrack.yml`, past which the least recently opened
+files are dropped and re-fetched if they are wanted again. Recordings kept for
+offline use sit outside that limit, since they are only there because you asked
+for them. Preferences shows both numbers and can empty the cache.
 
 Credentials — a WebDAV password, an S3 or GCS access key and secret — are
 stored in plain text in the user's `omatrack.yml`, which the connection dialog

@@ -142,18 +142,39 @@ wins on load. Caches (Track Atlas snapshot, thumbnails) stay outside the file.
   streamed into an atomic cache under `$XDG_CACHE_HOME/omatrack/<protocol>/`
   (or the platform cache equivalent). ETag/Last-Modified metadata avoids
   unchanged downloads, and an unavailable server falls back to its last cache.
-- Video is never downloaded. One onboard recording runs 5–30 GB against
-  telemetry's kilobytes, so the sync writes a zero-byte stand-in at the cache
-  path — which keeps discovery, pairing, pins and recents keyed on a local
-  path — and the player is handed a streaming URL instead: presigned SigV4 for
-  S3 and GCS, credentials in the URL for WebDAV. Those URLs are secrets. Never
-  log one and never put one on screen; use `QUrl::toDisplayString()` wherever
-  one has to be shown.
+- Video is never downloaded by a sync. One onboard recording runs 5–30 GB
+  against telemetry's kilobytes, so the sync writes a zero-byte stand-in at the
+  cache path — which keeps discovery, pairing, pins and recents keyed on a
+  local path — and the player is handed a streaming URL instead: presigned
+  SigV4 for S3 and GCS, credentials in the URL for WebDAV. Those URLs are
+  secrets. Never log one and never put one on screen; use
+  `QUrl::toDisplayString()` wherever one has to be shown.
+- A streaming URL is signed once per recording and reused until it is close to
+  expiring, because a fresh signature on every read is a different string and
+  everything asking "is the player already showing this?" would answer no.
+  When one stops working anyway — a laptop that slept past the twelve-hour
+  window, a connection that went away — `MpvVideoItem` reports
+  `sourceExpired()`, the store signs a new address for the same file, and
+  playback resumes where it was. Three attempts, then the error stands.
+- mpv is given a real streaming cache (`cache=auto`, `cache-on-disk=yes`, a
+  1 GiB forward and 512 MiB back demuxer window under
+  `$XDG_CACHE_HOME/omatrack/mpv`). That is a playback buffer and nothing more:
+  mpv unlinks the file as it creates it, so it never survives a session and
+  cannot serve offline playback.
+- Offline playback is an explicit per-recording choice, made from the file's
+  context menu. The wish is a name in the `offline` array of the connection's
+  `index.json`, which survives restarts and re-syncs; the transfer is a
+  background job with progress and a cancel, never part of a library scan. A
+  downloaded recording plays from disk, is neither counted against the cache
+  limit nor evictable by it, and is handed back by unpinning it — or by a
+  sync finding that the server replaced it, which restores the stub rather
+  than keeping a file that is now the wrong one.
 - The cache stays under `cache: {limit: 20 GB}`, evicting the least recently
   opened files first. Age is the local file's modification time, refreshed
   only on a deliberate open; recording it in `index.json` instead would lose
   the race with a sync, which reads that file once and writes it back minutes
-  later. Stubs, `index.json`, and the file being played are never evicted, and
+  later. Stubs, `index.json`, downloaded recordings, and the file being played
+  are never evicted, and
   the index deliberately keeps listing what was evicted so the next sync
   re-fetches it rather than reading the gap as a server-side delete.
 
@@ -300,7 +321,7 @@ CornerContext{primary, reference metrics, delta-trace time deltas}
 WebDAV / S3 / GCS server ------------> src/app/RemoteCache
                                            + WebDavBackend, S3Backend, SigV4
                                            bounded local cache
-                                           (video stays remote)
+                                           (video streams unless pinned)
                                            |
                                            v
                                       TelemetryStore scan
@@ -358,7 +379,7 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
 | Core | `src/core/TelemetryEngine.*` | Channel mapping, units, lap detection, resampling, `UnifiedLap` | Qt types, QML, settings, network access |
 | Corner analysis | `src/core/CornerAnalysis.*` | Per-corner metrics and the pluggable checks that produce driver-facing notes | Qt types, UI text layout, Track Atlas fetching |
 | Session/store | `src/app/TelemetryStore.*` | Lazy session handles, selection, cached GPS/speed track-station alignment, comparison, viewport, preferences, Track Atlas, corner analysis | Pixel-level paint loops or vendor byte parsing |
-| Remote cache | `src/app/RemoteCache.*` | Sync engine: cache layout, ETag/Last-Modified reuse, stale prune, offline fallback, the LRU budget, video stubs and stream URLs | Protocol details, telemetry normalization, UI state, source-file mutation |
+| Remote cache | `src/app/RemoteCache.*` | Sync engine: cache layout, ETag/Last-Modified reuse, stale prune, offline fallback, the LRU budget, video stubs, stream URLs, and pinned offline downloads | Protocol details, telemetry normalization, UI state, source-file mutation |
 | Remote protocols | `src/app/WebDavBackend.cpp`, `src/app/S3Backend.cpp`, `src/app/SigV4.*` | Listing a server and signing a request — PROPFIND/XML, ListObjectsV2, AWS Signature Version 4 | Cache layout, eviction policy, anything that outlives one request |
 | Renderer | `src/app/TraceView.*`, `src/app/TraceSceneBuilder.*`, `src/app/TraceTextCache.*` | Scene-graph geometry generation for the trace surfaces and direct trace interaction | Parsing, network access, persistent product state |
 | Video renderer | `src/app/MpvVideoItem.*` | libmpv lifecycle, OpenGL FBO rendering, playback state, and exact seek | Telemetry extraction, session association, or QML layout policy |
