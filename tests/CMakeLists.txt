@@ -59,6 +59,20 @@ target_link_libraries(apptypes-test PRIVATE
 add_test(NAME apptypes-test COMMAND apptypes-test)
 set_tests_properties(apptypes-test PROPERTIES LABELS unit)
 
+# ── sigv4-test ──────────────────────────────────────────────────────
+# Pins the signer to published AWS vectors. A wrong signature is
+# undebuggable against a live bucket — S3 only ever answers
+# SignatureDoesNotMatch — so it has to be caught here.
+qt_add_executable(sigv4-test SigV4Test.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/SigV4.cpp)
+target_include_directories(sigv4-test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(sigv4-test PRIVATE
+  Qt6::Test
+  Qt6::Core
+  omatrack_warnings)
+add_test(NAME sigv4-test COMMAND sigv4-test)
+set_tests_properties(sigv4-test PROPERTIES LABELS unit)
+
 # ── Remote cache integration ───────────────────────────────────────
 # Uses local HTTP responders speaking each protocol to verify streamed
 # downloads, ETag reuse, and offline operation from the on-disk cache.
