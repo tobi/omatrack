@@ -188,6 +188,18 @@ QString localPathError(const QString& relative) {
     return {};
 }
 
+/// Creates or empties the placeholder standing in for a streamed video.
+///
+/// Truncating rather than only creating matters on upgrade: a cache filled by
+/// a build that downloaded video still holds those gigabytes, and this is
+/// where they are handed back.
+bool ensureStub(const QString& localPath) {
+    const QFileInfo info(localPath);
+    if (info.exists() && info.size() == 0) return true;
+    QFile stub(localPath);
+    return stub.open(QIODevice::WriteOnly | QIODevice::Truncate);
+}
+
 RemoteSyncResult offlineResult(RemoteSyncResult result,
                                const QVector<RemoteObject>& cached,
                                const QString& reason) {
@@ -306,6 +318,13 @@ qint64 clearCache() {
     return freed;
 }
 
+bool isVideoFile(const QString& path) {
+    static const QSet<QString> extensions{
+        QStringLiteral("mp4"), QStringLiteral("mov"), QStringLiteral("mkv"),
+        QStringLiteral("avi"), QStringLiteral("m4v"), QStringLiteral("webm")};
+    return extensions.contains(QFileInfo(path).suffix().toLower());
+}
+
 QString cacheDirectory(const RemoteConnection& connection) {
     if (connection.type == LocationType::Folder) return {};
     const QString id = connection.id.isEmpty()
@@ -313,6 +332,45 @@ QString cacheDirectory(const RemoteConnection& connection) {
                            : connection.id;
     return cacheRoot() + QLatin1Char('/') + locationTypeKey(connection.type) +
            QLatin1Char('/') + id;
+}
+
+QUrl streamSource(const RemoteConnection& connection,
+                  const QString& localPath) {
+    const QString cachePath = cacheDirectory(connection);
+    if (cachePath.isEmpty()) return {};
+    const QString relative = QDir(cachePath).relativeFilePath(localPath);
+    if (relative.isEmpty() || relative.startsWith(QStringLiteral("..")))
+        return {};
+
+    const QJsonObject index = readIndex(QDir(cachePath).filePath("index.json"));
+    const QJsonObject entry = index.value(QStringLiteral("entries"))
+                                  .toObject()
+                                  .value(relative)
+                                  .toObject();
+    if (!entry.value(QStringLiteral("stream")).toBool()) return {};
+    const QUrl url(entry.value(QStringLiteral("url")).toString(),
+                   QUrl::StrictMode);
+    if (!url.isValid()) return {};
+
+    switch (connection.type) {
+        case LocationType::WebDav: {
+            // ffmpeg reads the credential straight out of the URL, so the
+            // player needs to know nothing about how this server authenticates.
+            QUrl authenticated = url;
+            if (!connection.username.isEmpty()) {
+                authenticated.setUserName(connection.username);
+                authenticated.setPassword(connection.password);
+            }
+            return authenticated;
+        }
+        case LocationType::S3:
+        case LocationType::Gcs:
+            return s3PresignedUrl(
+                connection, index.value(QStringLiteral("scope")).toString(),
+                url, kStreamExpirySeconds);
+        case LocationType::Folder: break;
+    }
+    return {};
 }
 
 QString validateTarget(LocationType type, const QString& target) {
@@ -407,17 +465,42 @@ RemoteSyncResult syncConnection(const RemoteConnection& connection) {
             oldEntries.value(object.relativePath).toObject();
         const QString localPath =
             QDir(result.cachePath).filePath(object.relativePath);
+        if (!QDir().mkpath(QFileInfo(localPath).absolutePath())) {
+            result.error = QStringLiteral("Unable to create a cache folder");
+            result.status = result.error;
+            return result;
+        }
+
+        // Video streams instead of being downloaded. One onboard recording
+        // runs 5–30 GB against telemetry's kilobytes, so mirroring it would
+        // fill the disk to hold something mpv reads perfectly well over HTTP
+        // range requests. What lands on disk is a zero-byte stand-in, which
+        // keeps discovery, pairing, pins and recents working off a local path
+        // exactly as they do for a file that really is here.
+        if (isVideoFile(object.relativePath)) {
+            if (!ensureStub(localPath)) {
+                result.error =
+                    QStringLiteral("Unable to write the cache placeholder");
+                result.status = result.error;
+                return result;
+            }
+            newEntries.insert(
+                object.relativePath,
+                QJsonObject{{QStringLiteral("etag"), object.etag},
+                            {QStringLiteral("modified"), object.modified},
+                            {QStringLiteral("size"), object.size},
+                            {QStringLiteral("stream"), true},
+                            {QStringLiteral("url"),
+                             object.url.toString(QUrl::FullyEncoded)}});
+            result.files.append(object.relativePath);
+            continue;
+        }
+
         const bool unchanged =
             QFileInfo::exists(localPath) && !object.etag.isEmpty() &&
             object.etag == old.value(QStringLiteral("etag")).toString() &&
             object.modified == old.value(QStringLiteral("modified")).toString();
         if (!unchanged) {
-            if (!QDir().mkpath(QFileInfo(localPath).absolutePath())) {
-                result.error =
-                    QStringLiteral("Unable to create a cache folder");
-                result.status = result.error;
-                return result;
-            }
             const RequestFactory build = [&backend](const QUrl& url) {
                 QNetworkRequest request = makeRequest(url);
                 backend.sign(request, "GET");
@@ -455,6 +538,9 @@ RemoteSyncResult syncConnection(const RemoteConnection& connection) {
     const QJsonObject index{
         {QStringLiteral("version"), 1},
         {QStringLiteral("url"), connection.target},
+        // Recorded rather than rediscovered so that presigning a stream URL
+        // is arithmetic on the UI thread and not a network round trip.
+        {QStringLiteral("scope"), backend.scope ? backend.scope() : QString()},
         {QStringLiteral("entries"), newEntries},
         {QStringLiteral("syncedAt"),
          QDateTime::currentDateTimeUtc().toString(Qt::ISODate)}};

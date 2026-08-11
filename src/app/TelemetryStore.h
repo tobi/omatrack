@@ -568,6 +568,12 @@ private:
     };
 
     SessionHandle* findSession(const QString& key) const;
+    /// What to hand the player for a discovered file. Usually the local file
+    /// itself; for a video inside a connection's cache, a streaming URL,
+    /// because those are never downloaded. The URL carries the credential, so
+    /// it goes to the player and nowhere else — see RemoteCache's
+    /// streamSource().
+    QUrl videoSourceFor(const QString& path) const;
     void setPrimary(SessionHandle* session, int lapId);
     void setCompare(SessionHandle* session, int lapId);
     void requestLapLoad(SessionHandle* session, int lapId, bool compare);

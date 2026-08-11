@@ -76,6 +76,11 @@ struct RemoteBackend {
                        QString*)>
         list;
     std::function<void(QNetworkRequest&, const QByteArray& method)> sign;
+    /// Whatever signing this protocol's requests obliged the backend to work
+    /// out — for S3, the bucket's region. Meaningful only once list() has run.
+    /// The sync records it so that presigning a stream URL later reproduces
+    /// the same scope without another round trip.
+    std::function<QString()> scope;
 };
 
 /// A blocking HTTP round trip. Backends share this with the engine so that
@@ -129,6 +134,28 @@ qint64 cacheUsageBytes();
 /// Nothing here cannot be fetched again.
 qint64 clearCache();
 
+/// True when `path` names a video container this application plays.
+///
+/// The sync needs to agree with the library about this, because video is the
+/// one thing a connection streams instead of downloading — two lists that
+/// drifted apart would mean either a 30 GB download or a session that no
+/// player will open.
+bool isVideoFile(const QString& path);
+
+/// How long a streaming URL stays valid. Long enough that a seek an hour into
+/// a session, or a reconnect after a laptop wakes up, never lands on an
+/// expired signature; far inside SigV4's seven-day ceiling.
+constexpr int kStreamExpirySeconds = 12 * 60 * 60;
+
+/// What a media player should open for a file inside a connection's cache, or
+/// an invalid URL when `localPath` is an ordinary file the caller should open
+/// directly.
+///
+/// The result carries the credential — a presigned signature for S3 and GCS,
+/// `user:pass` for WebDAV — so it is safe to hand to a player and to nothing
+/// else. Never log one, and use QUrl::toDisplayString() anywhere one is shown.
+QUrl streamSource(const RemoteConnection& connection, const QString& localPath);
+
 /// Empty when `target` is usable for `type`, else the reason it is not.
 QString validateTarget(LocationType type, const QString& target);
 
@@ -146,5 +173,12 @@ QString webDavTargetError(const QString& target);
 RemoteBackend makeS3Backend(const RemoteConnection& connection);
 QString s3TargetError(LocationType type, const QString& target);
 QString s3NormalizedTarget(LocationType type, const QString& target);
+/// `objectUrl` with SigV4 query-string authentication attached, so that a
+/// player with no notion of AWS credentials can fetch it. `region` is the
+/// scope the sync signed against; empty falls back to the connection's own
+/// setting. Returns the URL unchanged when the connection has no key, which
+/// is what a public bucket wants.
+QUrl s3PresignedUrl(const RemoteConnection& connection, const QString& region,
+                    const QUrl& objectUrl, int expirySeconds);
 
 }  // namespace omatrack

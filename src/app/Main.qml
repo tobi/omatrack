@@ -426,7 +426,11 @@ ApplicationWindow {
         const text = source.toString();
         if (text === "")
             return "";
-        return decodeURIComponent(text.substring(text.lastIndexOf("/") + 1));
+        // A streamed recording arrives as a signed https URL, and for WebDAV
+        // that URL carries the password. Only the last path segment is ever
+        // put on screen.
+        const path = text.split("?")[0];
+        return decodeURIComponent(path.substring(path.lastIndexOf("/") + 1));
     }
     // ── reference recording ─────────────────────────────────────────
     // The reference video is driven by the telemetry cursor and a cached,

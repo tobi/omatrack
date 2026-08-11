@@ -76,11 +76,18 @@ QString telemetryPathForInput(const QString& path) {
     return {};
 }
 
-bool isVideoPath(const QString& path) {
-    static const QSet<QString> extensions{
-        QStringLiteral("mp4"), QStringLiteral("mov"), QStringLiteral("mkv"),
-        QStringLiteral("avi"), QStringLiteral("m4v"), QStringLiteral("webm")};
-    return extensions.contains(QFileInfo(path).suffix().toLower());
+// One list, shared with the sync engine, which has to agree about what
+// streams rather than downloads.
+bool isVideoPath(const QString& path) { return omatrack::isVideoFile(path); }
+
+/// A zero-byte stand-in for a video a connection streams instead of caching.
+///
+/// Nothing can be read out of it, so nothing should try: the readers below
+/// check this before opening a file rather than reporting a corrupt one.
+bool isStreamStub(const QString& path) {
+    if (!isVideoPath(path)) return false;
+    const QFileInfo info(path);
+    return info.isFile() && info.size() == 0;
 }
 
 QDate sessionDate(const SessionHandle* session) {
@@ -1364,6 +1371,14 @@ struct IndexedSession {
 IndexedSession indexSession(const QString& path, SessionMetadataCache& cache,
                             int* cacheHits = nullptr,
                             int* cacheMisses = nullptr) {
+    // A streamed video holds no bytes locally, so there is no embedded
+    // telemetry to find and no point in a parser saying so. It plays; it just
+    // does not carry laps of its own.
+    if (isStreamStub(path)) {
+        IndexedSession result;
+        result.unsupportedVideo = true;
+        return result;
+    }
     const QString fingerprint = SessionMetadataCache::fingerprint(path);
     const SessionMetadataCache::Lookup cached = cache.lookup(fingerprint);
     if (cached.found && !cached.supported) {
@@ -1842,7 +1857,8 @@ std::shared_ptr<FileOpenResult> openIndexedFile(const QString& path,
     result->path = path;
     SessionMetadataCache cache(cachePath);
     IndexedSession indexed = indexSession(path, cache);
-    if (!indexed.handle && expectTelemetry && isVideoPath(path)) {
+    if (!indexed.handle && expectTelemetry && isVideoPath(path) &&
+        !isStreamStub(path)) {
         auto handle = std::make_unique<SessionHandle>(path);
         if (!handle->loadSummaryForOpen(&result->error)) {
             cache.save();
@@ -2676,8 +2692,7 @@ void TelemetryStore::startNextFileOpen() {
                 clearPrimary();
                 transientSessionPaths_.remove(result->path);
                 rememberRecentFile(result->path);
-                emit standaloneVideoRequested(
-                    QUrl::fromLocalFile(result->path));
+                emit standaloneVideoRequested(videoSourceFor(result->path));
             } else if (result->handle && result->lap &&
                        result->lap->error.isEmpty() && result->lap->source &&
                        result->lap->unified) {
@@ -6449,9 +6464,23 @@ QString TelemetryStore::compareSessionKey() const {
     return compareSession_ ? compareSession_->sessionKey() : QString();
 }
 
+QUrl TelemetryStore::videoSourceFor(const QString& path) const {
+    for (const LibraryLocation& location : locations_) {
+        if (!location.isConnection()) continue;
+        const QString cache = cachePathFor(location);
+        if (cache.isEmpty() || !path.startsWith(cache + QLatin1Char('/')))
+            continue;
+        const QUrl stream = streamSource(connectionFor(location), path);
+        // A connection also caches real files, and after "Clear cache" it
+        // holds neither — either way the local path is still the answer.
+        return stream.isValid() ? stream : QUrl::fromLocalFile(path);
+    }
+    return QUrl::fromLocalFile(path);
+}
+
 QUrl TelemetryStore::primaryVideoSource() const {
     if (!primarySession_ || !primarySession_->isVideo()) return {};
-    return QUrl::fromLocalFile(primarySession_->path());
+    return videoSourceFor(primarySession_->path());
 }
 
 double TelemetryStore::primaryVideoTime() const {
@@ -6476,7 +6505,7 @@ double TelemetryStore::primaryVideoTime() const {
 
 QUrl TelemetryStore::compareVideoSource() const {
     if (!compareSession_ || !compareSession_->isVideo()) return {};
-    return QUrl::fromLocalFile(compareSession_->path());
+    return videoSourceFor(compareSession_->path());
 }
 
 void TelemetryStore::invalidateComparisonAlignment() {

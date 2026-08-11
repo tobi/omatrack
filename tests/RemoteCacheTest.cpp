@@ -251,6 +251,98 @@ private slots:
                  QStringLiteral("s3://MyBucket/A/"));
     }
 
+    // ── streaming ───────────────────────────────────────────────────
+
+    /// Onboard video is 5–30 GB against telemetry's kilobytes, so it is never
+    /// downloaded. What the cache holds is a zero-byte stand-in, and what the
+    /// player gets is a presigned URL it can fetch with no credentials.
+    void streamsVideoRatherThanDownloadingIt() {
+        gets_ = 0;
+        listings_ = 0;
+        scenario_ = QStringLiteral("video");
+
+        const RemoteConnection connection =
+            s3Connection(QStringLiteral("s3://team-telemetry/"), scenario_);
+        const RemoteSyncResult result = syncConnection(connection);
+
+        QVERIFY2(result.success, qPrintable(result.error));
+        // The video is in the library exactly as a downloaded file would be:
+        // everything downstream is keyed on a local path.
+        QCOMPARE(result.files, (QStringList{QStringLiteral("data.vbo"),
+                                            QStringLiteral("onboard.mp4")}));
+        QCOMPARE(gets_, 1);
+
+        const QString stub = QDir(result.cachePath).filePath("onboard.mp4");
+        QVERIFY(QFileInfo::exists(stub));
+        QCOMPARE(QFileInfo(stub).size(), 0);
+
+        const QUrl source = streamSource(connection, stub);
+        QVERIFY2(source.isValid(), qPrintable(source.toString()));
+        QCOMPARE(source.path(), QStringLiteral("/team-telemetry/onboard.mp4"));
+        QCOMPARE(source.port(), int(server_.serverPort()));
+        const QString query = source.query(QUrl::FullyEncoded);
+        QVERIFY2(query.contains(QStringLiteral("X-Amz-Signature=")),
+                 qPrintable(query));
+        // Query-string auth, so nothing has to teach mpv about AWS.
+        QVERIFY(query.contains(QStringLiteral("X-Amz-Expires=43200")));
+        QVERIFY(query.contains(QStringLiteral("eu-west-2%2Fs3%2Faws4_request")));
+
+        // Telemetry beside it is still a real file.
+        QVERIFY(!streamSource(connection,
+                              QDir(result.cachePath).filePath("data.vbo"))
+                     .isValid());
+    }
+
+    /// A cache filled by a build that downloaded video is still holding those
+    /// gigabytes. The sync is where they are handed back.
+    void reclaimsAVideoAnOlderBuildDownloaded() {
+        gets_ = 0;
+        scenario_ = QStringLiteral("video");
+        // Its own cache, so what it proves is the upgrade and not the ETag
+        // reuse the test above already left behind.
+        const RemoteConnection connection = s3Connection(
+            QStringLiteral("s3://team-telemetry/"), QStringLiteral("reclaim"));
+        const QString stub =
+            QDir(cacheDirectory(connection)).filePath("onboard.mp4");
+        QVERIFY(QDir().mkpath(QFileInfo(stub).absolutePath()));
+        QFile downloaded(stub);
+        QVERIFY(downloaded.open(QIODevice::WriteOnly));
+        QCOMPARE(downloaded.write(QByteArray(64 * 1024, 'v')), 64 * 1024);
+        downloaded.close();
+
+        const RemoteSyncResult result = syncConnection(connection);
+        QVERIFY2(result.success, qPrintable(result.error));
+        QCOMPARE(QFileInfo(stub).size(), 0);
+        QCOMPARE(gets_, 1);
+    }
+
+    /// WebDAV has no presigning, so the credential rides in the URL — which
+    /// ffmpeg reads and the player therefore never has to know about.
+    void putsWebDavCredentialsInTheStreamUrl() {
+        scenario_ = QStringLiteral("video");
+        RemoteConnection connection;
+        connection.target = QStringLiteral("http://127.0.0.1:%1/dav/")
+                                .arg(server_.serverPort());
+        connection.username = QStringLiteral("driver");
+        connection.password = QStringLiteral("p@ss/word");
+        connection.id = locationId(connection.target + scenario_, {});
+
+        const RemoteSyncResult result = syncConnection(connection);
+        QVERIFY2(result.success, qPrintable(result.error));
+        const QString stub = QDir(result.cachePath).filePath("onboard.mp4");
+        QCOMPARE(QFileInfo(stub).size(), 0);
+
+        const QUrl source = streamSource(connection, stub);
+        QCOMPARE(source.userName(), QStringLiteral("driver"));
+        QCOMPARE(source.password(), QStringLiteral("p@ss/word"));
+        // Encoded on the way out, so a password full of URL punctuation
+        // survives the trip to the player intact.
+        QVERIFY(source.toString(QUrl::FullyEncoded)
+                    .contains(QStringLiteral("driver:p%40ss%2Fword@")));
+        // And absent from anything that might be shown or logged.
+        QVERIFY(!source.toDisplayString().contains(QStringLiteral("word")));
+    }
+
     /// Declared last on purpose: it deletes what every test above downloaded.
     void measuresAndClearsTheWholeCache() {
         // Accounting has to come off the filesystem. An orphan like this one —
@@ -326,6 +418,11 @@ private:
             body += contents(second ? QStringLiteral("page-two.vbo")
                                     : QStringLiteral("page-one.vbo"),
                              QStringLiteral("e1"));
+        } else if (scenario_ == QStringLiteral("video")) {
+            body += "<IsTruncated>false</IsTruncated>";
+            body += contents(QStringLiteral("data.vbo"), QStringLiteral("e1"));
+            body +=
+                contents(QStringLiteral("onboard.mp4"), QStringLiteral("e2"));
         } else if (scenario_ == QStringLiteral("awkward")) {
             body += "<IsTruncated>false</IsTruncated>";
             body += contents(QStringLiteral("clean.vbo"), QStringLiteral("e1"));
@@ -360,18 +457,25 @@ private:
             ++propfinds_;
             const QString root = QStringLiteral("http://127.0.0.1:%1/dav/")
                                      .arg(server_.serverPort());
-            payload = QStringLiteral(
-                          "<?xml version=\"1.0\"?><multistatus "
-                          "xmlns=\"DAV:\"><response><href>%1</href>"
-                          "<propstat><prop><resourcetype><collection/>"
-                          "</resourcetype></prop></propstat></response>"
-                          "<response><href>%1session.vbo</href>"
-                          "<propstat><prop><getetag>\"one\"</getetag>"
-                          "<getlastmodified>now</getlastmodified>"
-                          "<getcontentlength>9</getcontentlength>"
-                          "</prop></propstat></response></multistatus>")
-                          .arg(root)
-                          .toUtf8();
+            const QString member = QStringLiteral(
+                "<response><href>%1%2</href>"
+                "<propstat><prop><getetag>\"%3\"</getetag>"
+                "<getlastmodified>now</getlastmodified>"
+                "<getcontentlength>9</getcontentlength>"
+                "</prop></propstat></response>");
+            QString body =
+                QStringLiteral(
+                    "<?xml version=\"1.0\"?><multistatus "
+                    "xmlns=\"DAV:\"><response><href>%1</href>"
+                    "<propstat><prop><resourcetype><collection/>"
+                    "</resourcetype></prop></propstat></response>")
+                    .arg(root) +
+                member.arg(root, QStringLiteral("session.vbo"),
+                           QStringLiteral("one"));
+            if (scenario_ == QStringLiteral("video"))
+                body += member.arg(root, QStringLiteral("onboard.mp4"),
+                                   QStringLiteral("two"));
+            payload = (body + QStringLiteral("</multistatus>")).toUtf8();
             status = "207 Multi-Status";
         } else if (request.startsWith("GET /dav/session.vbo")) {
             ++gets_;

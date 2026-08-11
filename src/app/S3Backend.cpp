@@ -342,6 +342,22 @@ QString s3NormalizedTarget(LocationType type, const QString& target) {
            QLatin1Char('/') + parsed.prefix;
 }
 
+QUrl s3PresignedUrl(const RemoteConnection& connection, const QString& region,
+                    const QUrl& objectUrl, int expirySeconds) {
+    const sigv4::Credentials credentials = credentialsOf(connection);
+    if (credentials.isEmpty()) return objectUrl;
+
+    QString scope = region.trimmed();
+    if (scope.isEmpty())
+        scope = connection.options.value(QStringLiteral("region")).trimmed();
+    if (scope.isEmpty())
+        scope = connection.type == LocationType::Gcs
+                    ? QStringLiteral("auto")
+                    : QStringLiteral("us-east-1");
+    return sigv4::presign(credentials, {scope}, "GET", objectUrl, expirySeconds,
+                          QDateTime::currentDateTimeUtc());
+}
+
 RemoteBackend makeS3Backend(const RemoteConnection& connection) {
     RemoteBackend backend;
     const BucketPath parsed = parseTarget(connection.target);
@@ -361,6 +377,8 @@ RemoteBackend makeS3Backend(const RemoteConnection& connection) {
                                         const QByteArray& method) {
         signRequest(request, method, connection, *region);
     };
+
+    backend.scope = [region]() { return *region; };
 
     backend.list = [connection, parsed, region](QNetworkAccessManager& manager,
                                                 QVector<RemoteObject>* objects,
