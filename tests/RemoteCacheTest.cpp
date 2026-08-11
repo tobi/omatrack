@@ -9,7 +9,9 @@
 
 #include <QtTest>
 
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QTemporaryDir>
 #include <QTcpServer>
 #include <QTcpSocket>
@@ -247,6 +249,27 @@ private slots:
         // routing this through QUrl would do — names a bucket that is not there.
         QCOMPARE(normalizeTarget(LocationType::S3, QStringLiteral("s3://MyBucket/A/")),
                  QStringLiteral("s3://MyBucket/A/"));
+    }
+
+    /// Declared last on purpose: it deletes what every test above downloaded.
+    void measuresAndClearsTheWholeCache() {
+        // Accounting has to come off the filesystem. An orphan like this one —
+        // a cache whose location was removed, or a download that died
+        // mid-write — is invisible to any index and still occupies the disk.
+        const QString orphan =
+            cacheRoot() + QStringLiteral("/s3/gone-with-a-location");
+        QVERIFY(QDir().mkpath(orphan));
+        QFile stray(QDir(orphan).filePath("leftover.vbo.tmp"));
+        QVERIFY(stray.open(QIODevice::WriteOnly));
+        QCOMPARE(stray.write(QByteArray(4096, 'x')), 4096);
+        stray.close();
+
+        const qint64 before = cacheUsageBytes();
+        QVERIFY2(before > 4096, qPrintable(QString::number(before)));
+
+        QCOMPARE(clearCache(), before);
+        QCOMPARE(cacheUsageBytes(), 0);
+        QVERIFY(!QFileInfo::exists(orphan));
     }
 
 private:

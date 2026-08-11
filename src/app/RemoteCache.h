@@ -113,9 +113,21 @@ QString locationId(const QString& target, const QString& username);
 /// Where a connection's downloads live. Empty for a plain folder.
 QString cacheDirectory(const RemoteConnection& connection);
 
-/// The root under which every protocol's caches sit, used for whole-cache
-/// accounting and clearing.
+/// The root under which every protocol's caches sit.
 QString cacheRoot();
+
+/// Bytes currently held in every protocol's cache.
+///
+/// Measured from the filesystem rather than summed from index entries, which
+/// is the only way it can be honest: it also counts the caches of locations
+/// that have since been removed and the temporary files a download that died
+/// mid-write left behind. Both are exactly what someone checking this number
+/// wants to know about.
+qint64 cacheUsageBytes();
+
+/// Deletes every downloaded file, and returns how many bytes that freed.
+/// Nothing here cannot be fetched again.
+qint64 clearCache();
 
 /// Empty when `target` is usable for `type`, else the reason it is not.
 QString validateTarget(LocationType type, const QString& target);

@@ -16,6 +16,8 @@ import QtQuick.Layouts
 Item {
     id: libraryPage
 
+    property real cacheBytes: 0
+    property string cacheText: ""
     property var locationRows: []
 
     function addDirectory(path): bool {
@@ -31,6 +33,11 @@ Item {
     }
     function refresh(): void {
         libraryPage.locationRows = Store.libraryLocations();
+        // Measured by walking the cache, so this is only read when the page
+        // is on screen or something changed — never on a timer.
+        const usage = Store.cacheUsage();
+        libraryPage.cacheBytes = usage.bytes;
+        libraryPage.cacheText = usage.text;
     }
     function toLocalPath(value): string {
         const text = value.toString();
@@ -314,6 +321,25 @@ Item {
                 }
             }
         }
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+            // Only connections download anything, so with none configured
+            // this row would report zero for something that cannot happen.
+            visible: libraryPage.cacheBytes > 0
+
+            Label {
+                Layout.fillWidth: true
+                color: Style.mutedTextColor
+                font.pixelSize: Style.smallFontSize
+                text: "Downloaded from servers: " + libraryPage.cacheText
+            }
+            CompactButton {
+                text: "Clear cache"
+
+                onClicked: clearCacheDialog.open()
+            }
+        }
         Label {
             Layout.fillWidth: true
             color: Style.dimTextColor
@@ -321,6 +347,29 @@ Item {
             font.family: Style.monoFontFamily
             font.pixelSize: Style.smallFontSize
             text: "Configuration: " + Store.configFilePath()
+        }
+    }
+    Dialog {
+        id: clearCacheDialog
+
+        anchors.centerIn: Overlay.overlay
+        closePolicy: Popup.CloseOnEscape
+        modal: true
+        standardButtons: Dialog.Cancel | Dialog.Ok
+        title: "Clear downloaded files"
+        width: 420
+
+        onAccepted: {
+            Store.clearCache();
+            libraryPage.refresh();
+        }
+
+        Label {
+            anchors.fill: parent
+            // Worth saying plainly: this costs time and bandwidth, and on a
+            // metered connection it costs money.
+            text: "Delete " + libraryPage.cacheText + " downloaded from connected servers. Every enabled connection will download its files again on the next scan."
+            wrapMode: Text.WordWrap
         }
     }
     Dialog {

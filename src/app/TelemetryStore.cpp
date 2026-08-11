@@ -24,6 +24,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
+#include <QLocale>
 #include <QJSEngine>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -2867,6 +2868,24 @@ QVariantList TelemetryStore::connectionTypes() const {
                  "Uses an HMAC interoperability key, which you create under "
                  "Cloud Storage → Settings → Interoperability. Telemetry is "
                  "cached locally and stays available offline.")}}};
+}
+
+QVariantMap TelemetryStore::cacheUsage() const {
+    const qint64 bytes = cacheUsageBytes();
+    return QVariantMap{
+        {QStringLiteral("bytes"), bytes},
+        {QStringLiteral("text"), QLocale().formattedDataSize(bytes)}};
+}
+
+void TelemetryStore::clearCache() {
+    omatrack::clearCache();
+    // The library was scanning those files a moment ago, so re-scan rather
+    // than leave rows pointing at paths that no longer exist. Every enabled
+    // connection downloads again as part of it.
+    locationStatuses_.clear();
+    locationFileCounts_.clear();
+    emit locationsChanged();
+    scan();
 }
 
 QVariantList TelemetryStore::libraryLocations() const {

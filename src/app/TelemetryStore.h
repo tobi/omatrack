@@ -338,9 +338,18 @@ public:
     // `type`, `name`, `target`, `enabled`, plus the live `status`/`detail`
     // and `fileCount` from the last scan.
     Q_INVOKABLE QVariantList libraryLocations() const;
-    /// The connection kinds offered by the "Connect" menu, as
-    /// {type, label, placeholder, needsCredentials} rows.
+    /// The connection kinds offered by the "Connect" menu. Each row carries
+    /// {type, label, placeholder, needsCredentials, detail}, and optionally
+    /// the credential-field labels and an `extraFields` list of protocol
+    /// settings — which is what keeps ConnectionDialog free of protocols.
     Q_INVOKABLE QVariantList connectionTypes() const;
+    /// What every connection has downloaded, as {bytes, text}. Measured by
+    /// walking the cache, not by adding up index entries, so it also counts
+    /// what a removed location or an interrupted download left behind.
+    Q_INVOKABLE QVariantMap cacheUsage() const;
+    /// Deletes every downloaded file. Nothing is lost that the servers cannot
+    /// send again, but everything still configured has to be fetched afresh.
+    Q_INVOKABLE void clearCache();
     /// Saves a new connection or updates an existing one when `id` is set.
     /// Returns an empty string on success, otherwise the reason it failed.
     Q_INVOKABLE QString saveConnection(const QVariantMap& fields);

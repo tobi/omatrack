@@ -3,6 +3,7 @@
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
+#include <QDirIterator>
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
@@ -267,6 +268,42 @@ QString cacheRoot() {
     return QStandardPaths::writableLocation(
                QStandardPaths::GenericCacheLocation) +
            QStringLiteral("/omatrack");
+}
+
+/// Every directory a protocol keeps caches in.
+///
+/// Enumerated from the protocols rather than from the configured locations,
+/// so a cache belonging to a location that was removed while this build was
+/// not running is still found, counted, and cleared.
+QStringList cacheDirectories() {
+    QStringList directories;
+    for (const LocationType type :
+         {LocationType::WebDav, LocationType::S3, LocationType::Gcs}) {
+        const QString path =
+            cacheRoot() + QLatin1Char('/') + locationTypeKey(type);
+        if (QFileInfo::exists(path)) directories.append(path);
+    }
+    return directories;
+}
+
+qint64 cacheUsageBytes() {
+    qint64 total = 0;
+    for (const QString& directory : cacheDirectories()) {
+        QDirIterator files(directory, QDir::Files | QDir::Hidden,
+                           QDirIterator::Subdirectories);
+        while (files.hasNext()) {
+            files.next();
+            total += files.fileInfo().size();
+        }
+    }
+    return total;
+}
+
+qint64 clearCache() {
+    const qint64 freed = cacheUsageBytes();
+    for (const QString& directory : cacheDirectories())
+        QDir(directory).removeRecursively();
+    return freed;
 }
 
 QString cacheDirectory(const RemoteConnection& connection) {
