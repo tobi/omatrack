@@ -7,7 +7,7 @@
 #include "core/CornerAnalysis.h"
 #include "core/TelemetryEngine.h"
 #include "YamlConfig.h"
-#include "WebDavCache.h"
+#include "RemoteCache.h"
 
 #include <QCoreApplication>
 #include <QClipboard>
@@ -1681,20 +1681,26 @@ QString defaultLocationName(const LibraryLocation& location) {
     return url.host().isEmpty() ? location.target : url.host();
 }
 
+RemoteConnection connectionFor(const LibraryLocation& location) {
+    RemoteConnection connection;
+    connection.id = location.id;
+    connection.type = location.type;
+    connection.name = location.name;
+    connection.target = location.target;
+    connection.username = location.username;
+    connection.password = location.password;
+    return connection;
+}
+
 /// The cache directory a connection synchronizes into.
 ///
-/// Every caller must go through here. WebDavCache::cachePath() recomputes the
-/// id from the URL and username when it is not given one, so a location whose
+/// Every caller must go through here. cacheDirectory() recomputes the id from
+/// the target and username when it is not given one, so a location whose
 /// stored id came from somewhere else — legacy `webdav.connections` rows kept
 /// their own — would otherwise have the sync writing to one directory while
 /// the scan roots and the "Open cache folder" action pointed at another.
 QString cachePathFor(const LibraryLocation& location) {
-    if (location.type == LocationType::Folder) return {};
-    WebDavConnection connection;
-    connection.id = location.id;
-    connection.url = location.target;
-    connection.username = location.username;
-    return WebDavCache::cachePath(connection);
+    return cacheDirectory(connectionFor(location));
 }
 
 /// Resolves one location to the local directory that should be scanned for
@@ -1721,14 +1727,7 @@ QString resolveLocationDirectory(const LibraryLocation& location,
         return location.target;
     }
 
-    WebDavConnection connection;
-    connection.id = location.id;
-    connection.name = location.name;
-    connection.url = location.target;
-    connection.username = location.username;
-    connection.password = location.password;
-    connection.enabled = true;
-    const WebDavSyncResult synced = WebDavCache::sync(connection);
+    const RemoteSyncResult synced = syncConnection(connectionFor(location));
     *status = synced.status;
     if (!synced.success || synced.cachePath.isEmpty()) return {};
     return synced.cachePath;
@@ -2113,8 +2112,7 @@ void TelemetryStore::loadLocations() {
                 yamlBool(row.value(QStringLiteral("enabled")), true);
             location.id = row.value(QStringLiteral("id")).toString().trimmed();
             if (location.id.isEmpty())
-                location.id = WebDavCache::connectionId(location.target,
-                                                        location.username);
+                location.id = locationId(location.target, location.username);
             if (locationIndex(location.id) < 0)
                 locations_.append(std::move(location));
         }
@@ -2146,11 +2144,9 @@ void TelemetryStore::loadLocations() {
         location.enabled = yamlBool(row.value(QStringLiteral("enabled")), true);
         location.id = row.value(QStringLiteral("id")).toString().trimmed();
         if (location.id.isEmpty())
-            location.id =
-                location.type == LocationType::Folder
-                    ? WebDavCache::connectionId(location.target, QString())
-                    : WebDavCache::connectionId(location.target,
-                                                location.username);
+            location.id = location.type == LocationType::Folder
+                              ? locationId(location.target, QString())
+                              : locationId(location.target, location.username);
         if (locationIndex(location.id) < 0)
             locations_.append(std::move(location));
     }
@@ -2173,7 +2169,7 @@ bool TelemetryStore::appendFolderLocation(const QString& dirPath,
     LibraryLocation location;
     location.type = LocationType::Folder;
     location.target = absolute;
-    location.id = WebDavCache::connectionId(absolute, QString());
+    location.id = locationId(absolute, QString());
     for (const LibraryLocation& existing : std::as_const(locations_))
         if (existing.type == LocationType::Folder &&
             existing.target == absolute)
@@ -2864,13 +2860,13 @@ QString TelemetryStore::saveConnection(const QVariantMap& fields) {
     if (!knownType || type == LocationType::Folder)
         return QStringLiteral("Unsupported connection type.");
 
-    const QUrl parsed(
-        fields.value(QStringLiteral("target")).toString().trimmed());
-    if (!parsed.isValid() ||
-        (parsed.scheme() != QStringLiteral("http") &&
-         parsed.scheme() != QStringLiteral("https")) ||
-        parsed.host().isEmpty())
-        return QStringLiteral("Enter a valid http(s) URL.");
+    // The protocol owns what a usable address looks like, so that the dialog
+    // and the sync can never disagree about whether one is acceptable.
+    const QString target =
+        fields.value(QStringLiteral("target")).toString().trimmed();
+    const QString invalid = validateTarget(type, target);
+    if (!invalid.isEmpty()) return invalid;
+    const QUrl parsed(target);
 
     LibraryLocation location;
     location.type = type;
@@ -2881,7 +2877,7 @@ QString TelemetryStore::saveConnection(const QVariantMap& fields) {
     location.enabled = fields.value(QStringLiteral("enabled"), true).toBool();
     const QString password =
         fields.value(QStringLiteral("password")).toString();
-    location.id = WebDavCache::connectionId(location.target, location.username);
+    location.id = locationId(location.target, location.username);
 
     // Editing keeps the stored password when the field was left blank, so the
     // dialog never has to round-trip a secret it does not display.

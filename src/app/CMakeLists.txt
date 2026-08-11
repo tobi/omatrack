@@ -75,7 +75,8 @@ qt_add_qml_module(omatrack
     TrackMetadata.h TrackMetadata.cpp
     TelemetryStore.h TelemetryStore.cpp
     LibraryLocation.h LibraryLocation.cpp
-    WebDavCache.h WebDavCache.cpp
+    RemoteCache.h RemoteCache.cpp
+    WebDavBackend.cpp
     TrackAtlasSpatial.h TrackAtlasSpatial.cpp
     TraceSceneBuilder.h TraceSceneBuilder.cpp
     TraceTextCache.h TraceTextCache.cpp

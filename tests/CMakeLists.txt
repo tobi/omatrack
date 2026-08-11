@@ -59,20 +59,22 @@ target_link_libraries(apptypes-test PRIVATE
 add_test(NAME apptypes-test COMMAND apptypes-test)
 set_tests_properties(apptypes-test PROPERTIES LABELS unit)
 
-# ── WebDAV cache integration ───────────────────────────────────────
-# Uses a local HTTP/WebDAV responder to verify streamed downloads, ETag reuse,
-# and offline operation from the on-disk cache.
-qt_add_executable(webdav-cache-test WebDavCacheTest.cpp
-  ${CMAKE_SOURCE_DIR}/src/app/WebDavCache.cpp)
-target_include_directories(webdav-cache-test PRIVATE
+# ── Remote cache integration ───────────────────────────────────────
+# Uses local HTTP responders speaking each protocol to verify streamed
+# downloads, ETag reuse, and offline operation from the on-disk cache.
+qt_add_executable(remote-cache-test RemoteCacheTest.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/RemoteCache.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/WebDavBackend.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/LibraryLocation.cpp)
+target_include_directories(remote-cache-test PRIVATE
   ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(webdav-cache-test PRIVATE
+target_link_libraries(remote-cache-test PRIVATE
   Qt6::Test
   Qt6::Core
   Qt6::Network
   omatrack_warnings)
-add_test(NAME webdav-cache-test COMMAND webdav-cache-test)
-set_tests_properties(webdav-cache-test PROPERTIES LABELS unit)
+add_test(NAME remote-cache-test COMMAND remote-cache-test)
+set_tests_properties(remote-cache-test PROPERTIES LABELS unit)
 
 # ── session-metadata-cache-test ─────────────────────────────────────
 # Verifies the bounded fingerprint contract and atomic JSON cache round-trip.

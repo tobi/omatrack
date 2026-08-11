@@ -1,4 +1,4 @@
-#include "app/WebDavCache.h"
+#include "app/RemoteCache.h"
 
 #include <QtTest>
 
@@ -11,7 +11,7 @@
 
 using namespace omatrack;
 
-class WebDavCacheTest : public QObject {
+class RemoteCacheTest : public QObject {
     Q_OBJECT
 
 private slots:
@@ -21,7 +21,7 @@ private slots:
         qputenv("XDG_CACHE_HOME", cacheDir_->path().toUtf8());
         QVERIFY(server_.listen(QHostAddress::LocalHost));
         connect(&server_, &QTcpServer::newConnection, this,
-                &WebDavCacheTest::acceptConnection);
+                &RemoteCacheTest::acceptConnection);
     }
 
     void cleanupTestCase() {
@@ -33,13 +33,13 @@ private slots:
         requests_ = 0;
         propfinds_ = 0;
         gets_ = 0;
-        WebDavConnection connection;
+        RemoteConnection connection;
         connection.name = QStringLiteral("Test server");
-        connection.url = QStringLiteral("http://127.0.0.1:%1/dav/")
+        connection.target = QStringLiteral("http://127.0.0.1:%1/dav/")
                              .arg(server_.serverPort());
-        connection.id = WebDavCache::connectionId(connection.url, {});
+        connection.id = locationId(connection.target, {});
 
-        const WebDavSyncResult first = WebDavCache::sync(connection);
+        const RemoteSyncResult first = syncConnection(connection);
         QVERIFY2(first.success, qPrintable(first.error));
         QCOMPARE(first.files, QStringList{QStringLiteral("session.vbo")});
         QCOMPARE(propfinds_, 1);
@@ -48,7 +48,7 @@ private slots:
         QVERIFY(cached.open(QIODevice::ReadOnly));
         QCOMPARE(cached.readAll(), QByteArrayLiteral("telemetry"));
 
-        const WebDavSyncResult second = WebDavCache::sync(connection);
+        const RemoteSyncResult second = syncConnection(connection);
         QVERIFY2(second.success, qPrintable(second.error));
         QVERIFY(!second.fromCache);
         QCOMPARE(propfinds_, 2);
@@ -56,15 +56,15 @@ private slots:
     }
 
     void servesCacheWhenServerIsOffline() {
-        WebDavConnection connection;
-        connection.url = QStringLiteral("http://127.0.0.1:%1/dav/")
+        RemoteConnection connection;
+        connection.target = QStringLiteral("http://127.0.0.1:%1/dav/")
                              .arg(server_.serverPort());
-        connection.id = WebDavCache::connectionId(connection.url, {});
-        const WebDavSyncResult online = WebDavCache::sync(connection);
+        connection.id = locationId(connection.target, {});
+        const RemoteSyncResult online = syncConnection(connection);
         QVERIFY2(online.success, qPrintable(online.error));
 
         server_.close();
-        const WebDavSyncResult offline = WebDavCache::sync(connection);
+        const RemoteSyncResult offline = syncConnection(connection);
         QVERIFY(offline.success);
         QVERIFY(offline.fromCache);
         QCOMPARE(offline.files, QStringList{QStringLiteral("session.vbo")});
@@ -131,5 +131,5 @@ private:
     int gets_ = 0;
 };
 
-QTEST_MAIN(WebDavCacheTest)
-#include "WebDavCacheTest.moc"
+QTEST_MAIN(RemoteCacheTest)
+#include "RemoteCacheTest.moc"

@@ -8,7 +8,6 @@
 #pragma once
 
 #include "LibraryLocation.h"
-#include "WebDavCache.h"
 
 #include <QByteArray>
 #include <QColor>
