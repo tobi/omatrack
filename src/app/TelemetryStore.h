@@ -568,6 +568,9 @@ private:
     };
 
     SessionHandle* findSession(const QString& key) const;
+    /// Records that a cached file was opened, which is what keeps it from
+    /// being the next one evicted when the cache runs over its limit.
+    void markRecentlyUsed(const QString& path) const;
     /// What to hand the player for a discovered file. Usually the local file
     /// itself; for a video inside a connection's cache, a streaming URL,
     /// because those are never downloaded. The URL carries the credential, so
@@ -682,6 +685,11 @@ private:
     bool fileOpenLoading_ = false;
     bool sidebarMetadataQueuePaused_ = false;
     bool videoMuted_ = false;
+    /// `cache: {limit: 20 GB}` in omatrack.yml, defaulted in
+    /// loadPreferences() so that this header needs nothing from the sync
+    /// engine. Read once at startup; a ceiling nobody normally meets is not
+    /// worth watching the file for.
+    qint64 cacheLimitBytes_ = 0;
     double referenceAlignment_ = 0.0;
     QSet<QString> closedTracks_;
 

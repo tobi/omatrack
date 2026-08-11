@@ -343,6 +343,85 @@ private slots:
         QVERIFY(!source.toDisplayString().contains(QStringLiteral("word")));
     }
 
+    // ── the budget ──────────────────────────────────────────────────
+
+    void readsASizeTheWayItIsWritten() {
+        QCOMPARE(parseByteSize(QStringLiteral("20 GB"), 0), 20LL << 30);
+        QCOMPARE(parseByteSize(QStringLiteral("20GiB"), 0), 20LL << 30);
+        QCOMPARE(parseByteSize(QStringLiteral("  500 mb "), 0), 500LL << 20);
+        QCOMPARE(parseByteSize(QStringLiteral("1.5g"), 0), 1610612736LL);
+        QCOMPARE(parseByteSize(QStringLiteral("4096"), 0), 4096LL);
+        // A typo turns the cache off if it is taken at face value, so it is
+        // not: the default stands and the library keeps working.
+        QCOMPARE(parseByteSize(QStringLiteral("plenty"), 99), 99LL);
+        QCOMPARE(parseByteSize(QStringLiteral("20 parsecs"), 99), 99LL);
+        QCOMPARE(parseByteSize(QString(), 99), 99LL);
+        QCOMPARE(parseByteSize(QStringLiteral("0"), 99), 99LL);
+    }
+
+    /// Oldest out first, with the exceptions that would each be a bug: the
+    /// file being played, the stub a session is discovered by, and the index
+    /// that makes everything beside it reusable.
+    void evictsTheLeastRecentlyOpenedFirst() {
+        const QString directory =
+            cacheRoot() + QStringLiteral("/s3/budget-fixture");
+        QVERIFY(QDir().mkpath(directory));
+        const QDateTime now = QDateTime::currentDateTime();
+        const QString oldest = write(directory, "oldest.vbo", 40'000,
+                                     now.addSecs(-3000));
+        const QString older =
+            write(directory, "older.vbo", 40'000, now.addSecs(-2000));
+        const QString openNow =
+            write(directory, "playing.vbo", 40'000, now.addSecs(-4000));
+        const QString newest =
+            write(directory, "newest.vbo", 40'000, now.addSecs(-10));
+        const QString stub = write(directory, "onboard.mp4", 0, now.addSecs(-5000));
+        const QString index = write(directory, "index.json", 40'000,
+                                    now.addSecs(-6000));
+
+        const qint64 before = cacheUsageBytes();
+        const qint64 freed =
+            enforceCacheBudget(before - 50'000, QSet<QString>{openNow});
+
+        QCOMPARE(freed, 80'000);
+        QVERIFY(!QFileInfo::exists(oldest));
+        QVERIFY(!QFileInfo::exists(older));
+        QVERIFY(QFileInfo::exists(newest));
+        // Older than everything deleted, and kept anyway.
+        QVERIFY(QFileInfo::exists(openNow));
+        QVERIFY(QFileInfo::exists(stub));
+        QVERIFY(QFileInfo::exists(index));
+
+        // Under the limit is a no-op, not a trim to some watermark.
+        QCOMPARE(enforceCacheBudget(cacheUsageBytes() + 1, {}), 0);
+        // And a limit of zero means "unset", not "keep nothing".
+        QCOMPARE(enforceCacheBudget(0, {}), 0);
+
+        QVERIFY(QDir(directory).removeRecursively());
+    }
+
+    /// The index still lists what eviction took, which is what makes the next
+    /// sync fetch it again instead of reading the gap as a server-side delete.
+    void refetchesWhatTheBudgetEvicted() {
+        gets_ = 0;
+        scenario_ = QStringLiteral("plain");
+        const RemoteConnection connection =
+            s3Connection(QStringLiteral("s3://team-telemetry/season-2026/"),
+                         QStringLiteral("budget"));
+
+        QVERIFY(syncConnection(connection).success);
+        QCOMPARE(gets_, 2);
+        const QString cache = cacheDirectory(connection);
+        QVERIFY(QFile::remove(QDir(cache).filePath("brands-hatch.vbo")));
+
+        const RemoteSyncResult again = syncConnection(connection);
+        QVERIFY2(again.success, qPrintable(again.error));
+        QCOMPARE(gets_, 3);
+        QVERIFY(QFileInfo::exists(QDir(cache).filePath("brands-hatch.vbo")));
+        // The file that survived was not fetched a second time.
+        QCOMPARE(again.files.size(), 2);
+    }
+
     /// Declared last on purpose: it deletes what every test above downloaded.
     void measuresAndClearsTheWholeCache() {
         // Accounting has to come off the filesystem. An orphan like this one —
@@ -365,6 +444,17 @@ private slots:
     }
 
 private:
+    /// A cached file of a given size, last opened at a given moment.
+    QString write(const QString& directory, const QString& name, int size,
+                  const QDateTime& used) {
+        const QString path = QDir(directory).filePath(name);
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly)) return {};
+        if (size > 0 && file.write(QByteArray(size, 'x')) != size) return {};
+        file.setFileTime(used, QFileDevice::FileModificationTime);
+        return path;
+    }
+
     RemoteConnection s3Connection(const QString& target,
                                   const QString& scenario) const {
         RemoteConnection connection;

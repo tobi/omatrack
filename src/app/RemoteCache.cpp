@@ -12,6 +12,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
 #include <QStandardPaths>
@@ -315,6 +316,85 @@ qint64 clearCache() {
     const qint64 freed = cacheUsageBytes();
     for (const QString& directory : cacheDirectories())
         QDir(directory).removeRecursively();
+    return freed;
+}
+
+qint64 parseByteSize(const QString& text, qint64 fallback) {
+    static const QRegularExpression pattern(
+        QStringLiteral("^\\s*([0-9]+(?:[.,][0-9]+)?)\\s*([a-zA-Z]*)\\s*$"));
+    const QRegularExpressionMatch match = pattern.match(text);
+    if (!match.hasMatch()) return fallback;
+    bool ok = false;
+    const double amount = QString(match.captured(1))
+                              .replace(QLatin1Char(','), QLatin1Char('.'))
+                              .toDouble(&ok);
+    if (!ok || amount <= 0) return fallback;
+
+    // GB and GiB both mean 2^30 here. Nobody writing a cache limit means the
+    // decimal one, and reading it that way would make the number on screen —
+    // which Qt formats in binary units — disagree with the number typed.
+    static const QMap<QString, qint64> units{
+        {QStringLiteral(""), 1},
+        {QStringLiteral("b"), 1},
+        {QStringLiteral("k"), 1LL << 10},
+        {QStringLiteral("kb"), 1LL << 10},
+        {QStringLiteral("kib"), 1LL << 10},
+        {QStringLiteral("m"), 1LL << 20},
+        {QStringLiteral("mb"), 1LL << 20},
+        {QStringLiteral("mib"), 1LL << 20},
+        {QStringLiteral("g"), 1LL << 30},
+        {QStringLiteral("gb"), 1LL << 30},
+        {QStringLiteral("gib"), 1LL << 30},
+        {QStringLiteral("t"), 1LL << 40},
+        {QStringLiteral("tb"), 1LL << 40},
+        {QStringLiteral("tib"), 1LL << 40}};
+    const auto unit = units.constFind(match.captured(2).toLower());
+    if (unit == units.cend()) return fallback;
+    return qint64(amount * double(unit.value()));
+}
+
+qint64 enforceCacheBudget(qint64 limitBytes, const QSet<QString>& keepPaths) {
+    if (limitBytes <= 0) return 0;
+
+    struct Candidate {
+        QString path;
+        qint64 size = 0;
+        QDateTime used;
+    };
+    QVector<Candidate> candidates;
+    qint64 total = 0;
+    for (const QString& directory : cacheDirectories()) {
+        QDirIterator files(directory, QDir::Files | QDir::Hidden,
+                           QDirIterator::Subdirectories);
+        while (files.hasNext()) {
+            files.next();
+            const QFileInfo info = files.fileInfo();
+            total += info.size();
+            // A stub costs nothing and stands for a session that is still
+            // there, and index.json is the bookkeeping that makes everything
+            // beside it reusable rather than a pile of orphans.
+            if (info.size() == 0 ||
+                info.fileName() == QStringLiteral("index.json"))
+                continue;
+            if (keepPaths.contains(info.absoluteFilePath())) continue;
+            candidates.append(
+                {info.absoluteFilePath(), info.size(), info.lastModified()});
+        }
+    }
+    if (total <= limitBytes) return 0;
+
+    std::sort(candidates.begin(), candidates.end(),
+              [](const Candidate& left, const Candidate& right) {
+                  return left.used < right.used;
+              });
+    qint64 freed = 0;
+    for (const Candidate& candidate : candidates) {
+        if (total - freed <= limitBytes) break;
+        // The index still lists what was just deleted, which is what makes
+        // this safe: the next sync finds the file missing and fetches it
+        // again, rather than treating the gap as something the server dropped.
+        if (QFile::remove(candidate.path)) freed += candidate.size;
+    }
     return freed;
 }
 

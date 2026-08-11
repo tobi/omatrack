@@ -1752,7 +1752,7 @@ QString resolveLocationDirectory(const LibraryLocation& location,
 
 std::shared_ptr<SessionScanResult> scanLibraryLocations(
     const QVector<LibraryLocation>& locations, const QSet<QString>& extraPaths,
-    const QString&) {
+    const QString&, const QSet<QString>& openPaths, qint64 cacheLimitBytes) {
     QElapsedTimer timer;
     timer.start();
     auto result = std::make_shared<SessionScanResult>();
@@ -1763,10 +1763,21 @@ std::shared_ptr<SessionScanResult> scanLibraryLocations(
         "*.VBO", "*.mp4", "*.MP4", "*.mov", "*.MOV",  "*.mkv",  "*.MKV",
         "*.avi", "*.AVI", "*.m4v", "*.M4V", "*.webm", "*.WEBM", "TRACK.yml"};
 
+    // Every connection syncs before anything is enumerated, so the budget is
+    // applied once against the finished cache and the file list that follows
+    // cannot name something eviction has already taken away.
+    QVector<QString> directories;
+    directories.reserve(locations.size());
     for (const LibraryLocation& location : locations) {
         QString status;
-        const QString directory = resolveLocationDirectory(location, &status);
+        directories.append(resolveLocationDirectory(location, &status));
         result->locationStatuses.insert(location.id, status);
+    }
+    enforceCacheBudget(cacheLimitBytes, openPaths);
+
+    for (int index = 0; index < locations.size(); ++index) {
+        const LibraryLocation& location = locations[index];
+        const QString& directory = directories[index];
         if (directory.isEmpty()) {
             result->locationFileCounts.insert(location.id, 0);
             continue;
@@ -2054,6 +2065,13 @@ void TelemetryStore::loadPreferences() {
         if (recentFiles_.size() == kMaximumRecentFiles) break;
     }
     videoMuted_ = yamlBool(config.value(QStringLiteral("video/muted")), false);
+    // Written by hand, never by the app, so it is parsed the way it would be
+    // typed and a value that makes no sense falls back rather than turning
+    // the cache off.
+    cacheLimitBytes_ = parseByteSize(
+        config.value({QStringLiteral("cache"), QStringLiteral("limit")})
+            .toString(),
+        kDefaultCacheLimitBytes);
     const QVariantMap selection = config.map({QStringLiteral("selection")});
     lastPrimaryKey_ = selection.value(QStringLiteral("primary_key")).toString();
     lastPrimaryLap_ =
@@ -2565,9 +2583,16 @@ void TelemetryStore::startSessionScan() {
     const QVector<LibraryLocation> locations = locations_;
     const QSet<QString> extraPaths = transientSessionPaths_;
     const QString cachePath = sessionIndexCachePath();
-    scanWatcher_->setFuture(
-        QtConcurrent::run([locations, extraPaths, cachePath]() {
-            return scanLibraryLocations(locations, extraPaths, cachePath);
+    // Evicting what is on screen would leave the reader holding a file that
+    // no longer exists, so the current selection is named as off limits.
+    QSet<QString> openPaths;
+    for (const SessionHandle* session : {primarySession_, compareSession_})
+        if (session) openPaths.insert(session->path());
+    const qint64 limit = cacheLimitBytes_;
+    scanWatcher_->setFuture(QtConcurrent::run(
+        [locations, extraPaths, cachePath, openPaths, limit]() {
+            return scanLibraryLocations(locations, extraPaths, cachePath,
+                                        openPaths, limit);
         }));
 }
 
@@ -2675,6 +2700,7 @@ void TelemetryStore::startNextFileOpen() {
 
     const PendingFileOpen request = pendingFileOpens_.takeFirst();
     const QString path = request.path;
+    markRecentlyUsed(path);
     const QString cachePath = sessionIndexCachePath();
     const QVariantMap metadata =
         recordingMetadataForPath(path, recordingMetadata_);
@@ -2889,7 +2915,9 @@ QVariantMap TelemetryStore::cacheUsage() const {
     const qint64 bytes = cacheUsageBytes();
     return QVariantMap{
         {QStringLiteral("bytes"), bytes},
-        {QStringLiteral("text"), QLocale().formattedDataSize(bytes)}};
+        {QStringLiteral("text"), QLocale().formattedDataSize(bytes)},
+        {QStringLiteral("limitText"),
+         QLocale().formattedDataSize(cacheLimitBytes_)}};
 }
 
 void TelemetryStore::clearCache() {
@@ -4562,6 +4590,7 @@ void TelemetryStore::requestLapLoad(SessionHandle* session, int lapId,
                             QStringLiteral("The selected lap is invalid."));
         return;
     }
+    markRecentlyUsed(session->path());
     pauseSidebarMetadataQueue();
     const std::shared_ptr<const UnifiedLap> cached = session->unifiedLap(lapId);
     if (cached) {
@@ -6462,6 +6491,21 @@ QString TelemetryStore::primarySessionKey() const {
 
 QString TelemetryStore::compareSessionKey() const {
     return compareSession_ ? compareSession_->sessionKey() : QString();
+}
+
+void TelemetryStore::markRecentlyUsed(const QString& path) const {
+    // The cache budget evicts by modification time, and this is the only
+    // thing that ever refreshes it. Only deliberate opens count: the sidebar
+    // metadata queue touches every visible file, which would flatten the
+    // signal into noise. A local file is left alone — nothing evicts those,
+    // and rewriting a timestamp in the driver's own folder is not this
+    // application's business.
+    if (path.isEmpty() || !path.startsWith(cacheRoot() + QLatin1Char('/')))
+        return;
+    QFile file(path);
+    if (!file.exists() || file.size() == 0) return;
+    file.setFileTime(QDateTime::currentDateTime(),
+                     QFileDevice::FileModificationTime);
 }
 
 QUrl TelemetryStore::videoSourceFor(const QString& path) const {

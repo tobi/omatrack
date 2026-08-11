@@ -14,6 +14,7 @@
 
 #include <QByteArray>
 #include <QMap>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QUrl>
@@ -133,6 +134,30 @@ qint64 cacheUsageBytes();
 /// Deletes every downloaded file, and returns how many bytes that freed.
 /// Nothing here cannot be fetched again.
 qint64 clearCache();
+
+/// What the cache may hold before the least recently opened files are dropped.
+/// Video streams rather than being cached, so this is a guardrail against a
+/// bucket of half a million laps rather than a limit anyone normally meets.
+constexpr qint64 kDefaultCacheLimitBytes = 20LL * 1024 * 1024 * 1024;
+
+/// Reads a size written the way a person writes one — `20 GB`, `500MiB`, a
+/// bare byte count. Returns `fallback` for anything it cannot make sense of,
+/// because a typo in a config file should not silently disable the cache.
+qint64 parseByteSize(const QString& text, qint64 fallback);
+
+/// Deletes least-recently-opened cached files until the total fits inside
+/// `limitBytes`, and returns how many bytes that freed.
+///
+/// Age comes from the local file's modification time, which downloading sets
+/// and opening a lap refreshes. Recording it in index.json instead would lose
+/// the race with a sync, which reads that file once and writes it back minutes
+/// later.
+///
+/// `keepPaths` names files that survive whatever their age — the recordings
+/// open right now. Unlinking one of those succeeds on Linux and leaves the
+/// next read failing; on Windows the delete fails and the index quietly stops
+/// describing the disk.
+qint64 enforceCacheBudget(qint64 limitBytes, const QSet<QString>& keepPaths);
 
 /// True when `path` names a video container this application plays.
 ///

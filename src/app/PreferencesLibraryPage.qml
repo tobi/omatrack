@@ -17,6 +17,7 @@ Item {
     id: libraryPage
 
     property real cacheBytes: 0
+    property string cacheLimitText: ""
     property string cacheText: ""
     property var locationRows: []
 
@@ -38,6 +39,7 @@ Item {
         const usage = Store.cacheUsage();
         libraryPage.cacheBytes = usage.bytes;
         libraryPage.cacheText = usage.text;
+        libraryPage.cacheLimitText = usage.limitText;
     }
     function toLocalPath(value): string {
         const text = value.toString();
@@ -332,7 +334,10 @@ Item {
                 Layout.fillWidth: true
                 color: Style.mutedTextColor
                 font.pixelSize: Style.smallFontSize
-                text: "Downloaded from servers: " + libraryPage.cacheText
+                // Naming the limit is what makes the number mean something:
+                // past it, the least recently opened files are dropped. It is
+                // set with `cache: {limit: 20 GB}` in the configuration file.
+                text: "Downloaded from servers: " + libraryPage.cacheText + " of " + libraryPage.cacheLimitText
             }
             CompactButton {
                 text: "Clear cache"
