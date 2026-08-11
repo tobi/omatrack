@@ -1681,6 +1681,22 @@ QString defaultLocationName(const LibraryLocation& location) {
     return url.host().isEmpty() ? location.target : url.host();
 }
 
+/// The cache directory a connection synchronizes into.
+///
+/// Every caller must go through here. WebDavCache::cachePath() recomputes the
+/// id from the URL and username when it is not given one, so a location whose
+/// stored id came from somewhere else — legacy `webdav.connections` rows kept
+/// their own — would otherwise have the sync writing to one directory while
+/// the scan roots and the "Open cache folder" action pointed at another.
+QString cachePathFor(const LibraryLocation& location) {
+    if (location.type == LocationType::Folder) return {};
+    WebDavConnection connection;
+    connection.id = location.id;
+    connection.url = location.target;
+    connection.username = location.username;
+    return WebDavCache::cachePath(connection);
+}
+
 /// Resolves one location to the local directory that should be scanned for
 /// it, synchronizing connections into their cache first. Returns an empty
 /// path when the location cannot contribute to this scan, and always reports
@@ -2782,10 +2798,7 @@ QStringList TelemetryStore::sessionDirectories() const {
             directories.append(location.target);
             continue;
         }
-        WebDavConnection connection;
-        connection.url = location.target;
-        connection.username = location.username;
-        const QString cache = WebDavCache::cachePath(connection);
+        const QString cache = cachePathFor(location);
         if (!cache.isEmpty() && QFileInfo::exists(cache))
             directories.append(cache);
     }
@@ -2809,13 +2822,7 @@ QVariantList TelemetryStore::libraryLocations() const {
     rows.reserve(locations_.size());
     for (const LibraryLocation& location : std::as_const(locations_)) {
         const bool folder = location.type == LocationType::Folder;
-        QString cachePath;
-        if (!folder) {
-            WebDavConnection connection;
-            connection.url = location.target;
-            connection.username = location.username;
-            cachePath = WebDavCache::cachePath(connection);
-        }
+        const QString cachePath = cachePathFor(location);
         // A folder reports liveness directly; a connection only knows what
         // the last sync said, so it falls back to "Not connected yet".
         const QString fallback =
@@ -2904,6 +2911,10 @@ QString TelemetryStore::saveConnection(const QVariantMap& fields) {
 void TelemetryStore::removeLocation(const QString& id) {
     const int index = locationIndex(id);
     if (index < 0) return;
+    // Disconnecting a server should not leave its downloads on the disk
+    // forever: nothing can reach them again once the location is gone.
+    const QString cache = cachePathFor(locations_[index]);
+    if (!cache.isEmpty()) QDir(cache).removeRecursively();
     locations_.remove(index);
     locationStatuses_.remove(id);
     locationFileCounts_.remove(id);
