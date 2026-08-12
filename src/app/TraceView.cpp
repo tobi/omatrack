@@ -25,6 +25,7 @@ constexpr double kBottomPad = 18.0;
 constexpr double kLabelW = 62.0;
 // Height of the corner-marker strip along the bottom of the trace area.
 constexpr double kMarkerBand = 26.0;
+constexpr double kConsistencyStripHeight = 14.0;
 constexpr int kCursorSamplesPerStep = 1;
 constexpr qint64 kHoverFrameMs = 16;
 
@@ -262,8 +263,11 @@ QVector<TraceView::Lane> TraceView::layoutLanes() const {
     }
     if (lanes.isEmpty() || totalWeight <= 0.0) return lanes;
 
-    const double available = std::max(0.0, height() - kTopPad - kBottomPad);
-    double y = kTopPad;
+    const double consistencyHeight =
+        store_->traceConfidenceMode() ? kConsistencyStripHeight : 0.0;
+    const double available =
+        std::max(0.0, height() - kTopPad - kBottomPad - consistencyHeight);
+    double y = kTopPad + consistencyHeight;
     for (Lane& lane : lanes) {
         lane.y = y;
         lane.height = available * lane.height / totalWeight;
@@ -364,6 +368,10 @@ void TraceView::buildScene(TraceSceneBuilder& builder) {
     const QVector<Lane> lanes = layoutLanes();
     if (lanes.isEmpty()) return;
     buildCornerMarkerGuides(builder);
+    if (store_->traceConfidenceMode())
+        buildConsistencyStrip(builder,
+                              QRectF(kLabelW, kTopPad, width() - kLabelW,
+                                     kConsistencyStripHeight));
 
     for (const Lane& lane : lanes) {
         const ChannelSpec& spec = channelSpecs_[lane.spec];
@@ -709,6 +717,56 @@ void TraceView::buildConfidenceBand(TraceSceneBuilder& builder,
         previousBottom = bottomLine;
         previousMedian = medianLine;
         hasPrevious = true;
+    }
+}
+void TraceView::buildConsistencyStrip(TraceSceneBuilder& builder,
+                                      const QRectF& rect) {
+    builder.vLine(rect.left() - 1, rect.top(), rect.bottom(), 1.0,
+                  alpha(kGridStrong, 110));
+    builder.text(QStringLiteral("Heat"), labelFont_, kMuted,
+                 QRectF(0, rect.top(), kLabelW - 6, rect.height()),
+                 Qt::AlignRight | Qt::AlignVCenter);
+
+    const QRectF dataRect = rect.adjusted(1, 1, -1, -1);
+    builder.rect(dataRect, alpha(kDim, 55));
+    const std::vector<double>& values = store_->traceConsistency();
+    if (values.size() < 2 || dataRect.width() < 2.0) return;
+
+    const int valueLast = int(values.size()) - 1;
+    const int columns = std::max(2, int(dataRect.width()));
+    const double columnWidth = dataRect.width() / double(columns);
+    const double viewStart = store_->viewStart();
+    const double viewSpan = store_->viewSpan();
+    builder.reserveQuads(columns);
+    for (int column = 0; column < columns; ++column) {
+        const double startFraction =
+            viewStart + viewSpan * double(column) / double(columns);
+        const double endFraction =
+            viewStart + viewSpan * double(column + 1) / double(columns);
+        const double centre = (startFraction + endFraction) * 0.5;
+        if (centre < 0.0 || centre > 1.0) continue;
+
+        double from = std::clamp(startFraction, 0.0, 1.0) * valueLast;
+        double to = std::clamp(endFraction, 0.0, 1.0) * valueLast;
+        if (to < from) std::swap(from, to);
+        const int firstIndex = std::clamp(int(std::floor(from)), 0, valueLast);
+        const int lastIndex = std::clamp(int(std::ceil(to)), 0, valueLast);
+        double heat = 0.0;
+        bool valid = false;
+        for (int index = firstIndex; index <= lastIndex; ++index) {
+            const double value = values[size_t(index)];
+            if (!std::isfinite(value)) continue;
+            heat = std::max(heat, value);
+            valid = true;
+        }
+        if (!valid) continue;
+
+        const QColor color = heat < 0.5
+                                 ? mixColors(kGreen, kOrange, heat * 2.0)
+                                 : mixColors(kOrange, kRed, (heat - 0.5) * 2.0);
+        const double x = dataRect.left() + columnWidth * column;
+        builder.rect(QRectF(x, dataRect.top(), columnWidth, dataRect.height()),
+                     alpha(color, 220));
     }
 }
 

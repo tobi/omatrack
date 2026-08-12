@@ -1936,6 +1936,21 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                         const TraceConfidenceBand* speedBand =
                                             store.traceConfidenceBand(
                                                 QStringLiteral("speed"));
+                                        const std::vector<double>& consistency =
+                                            store.traceConsistency();
+                                        double maximumConsistency = 0.0;
+                                        for (const double value : consistency)
+                                            if (std::isfinite(value))
+                                                maximumConsistency = std::max(
+                                                    maximumConsistency, value);
+                                        const UnifiedLap* primary =
+                                            store.primaryUnified();
+                                        const bool consistencyReady =
+                                            primary &&
+                                            consistency.size() ==
+                                                primary->size() &&
+                                            maximumConsistency > 0.05 &&
+                                            maximumConsistency <= 1.0;
                                         const QVariantMap benchmark =
                                             confidenceTrace
                                                 ? confidenceTrace
@@ -1959,6 +1974,7 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                             store.traceConfidenceLapCount() >=
                                                 2 &&
                                             speedBand && speedBand->valid() &&
+                                            consistencyReady &&
                                             highlightedFilmstripLaps ==
                                                 store
                                                     .traceConfidenceLapCount() &&
@@ -1972,8 +1988,11 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                             << "filmstrip highlighted"
                                             << highlightedFilmstripLaps
                                             << "fixed edge laps"
-                                            << fixedEdgeLaps << "average_ms"
-                                            << averageMs << "quads"
+                                            << fixedEdgeLaps
+                                            << "max consistency"
+                                            << maximumConsistency
+                                            << "average_ms" << averageMs
+                                            << "quads"
                                             << benchmark.value("quads").toInt();
                                     }
                                     const QFileInfo requested(shotPath);
