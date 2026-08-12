@@ -226,6 +226,35 @@ using DownloadProgress = std::function<bool(qint64 received, qint64 total)>;
 QString fetchObject(const RemoteConnection& connection,
                     const QString& localPath, const DownloadProgress& progress);
 
+/// One pasted address, split into the fields a connection stores.
+struct ConnectionAddress {
+    /// The address with everything else taken out of it.
+    QString target;
+    QString username;
+    QString password;
+    /// See LibraryLocation::options — `region`, `endpoint`, `scheme`.
+    QMap<QString, QString> options;
+    /// Empty when the address parsed, else why it did not.
+    QString error;
+};
+
+/// Takes an address in the full form a console hands out —
+/// `s3://KEY:SECRET@bucket/prefix?region=eu-west-2&endpoint_override=host` —
+/// and separates the parts that are credentials or settings from the part
+/// that names the data.
+///
+/// Splitting at the point of entry rather than storing the string whole is
+/// what keeps the rest of the application honest: locationId() hashes the
+/// target, so a secret left in there would name the cache directory on disk,
+/// appear in the library row on screen, and orphan every downloaded byte the
+/// day the key is rotated. Credentials belong in the same two fields WebDAV
+/// has always used, and tuning knobs in `options`.
+///
+/// A plain `s3://bucket/prefix`, or a WebDAV URL with no `user:pass@`, comes
+/// back unchanged apart from normalization, so this is safe to run over every
+/// address including ones already stored.
+ConnectionAddress splitAddress(LocationType type, const QString& address);
+
 /// Empty when `target` is usable for `type`, else the reason it is not.
 QString validateTarget(LocationType type, const QString& target);
 
@@ -242,6 +271,7 @@ QString webDavTargetError(const QString& target);
 
 RemoteBackend makeS3Backend(const RemoteConnection& connection);
 QString s3TargetError(LocationType type, const QString& target);
+ConnectionAddress s3SplitAddress(LocationType type, const QString& address);
 QString s3NormalizedTarget(LocationType type, const QString& target);
 /// `objectUrl` with SigV4 query-string authentication attached, so that a
 /// player with no notion of AWS credentials can fetch it. `region` is the

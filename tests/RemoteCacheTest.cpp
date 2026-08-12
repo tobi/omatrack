@@ -251,6 +251,95 @@ private slots:
                  QStringLiteral("s3://MyBucket/A/"));
     }
 
+    /// One pasteable string carries the key, the secret, the region and a
+    /// non-Amazon endpoint — and none of them stay in the target, because the
+    /// connection id is a hash of it.
+    void splitsAWholeAddressIntoItsParts() {
+        const ConnectionAddress split = splitAddress(
+            LocationType::S3,
+            QStringLiteral("s3://AKIAIOSFODNN7EXAMPLE:wJalrXUtnFEMI%2FK7MDENG"
+                           "%2FbPxRfiCY@MyBucket/season-2026"
+                           "?region=eu-west-2&scheme=http"
+                           "&endpoint_override=minio.example:9000"));
+        QVERIFY2(split.error.isEmpty(), qPrintable(split.error));
+        QCOMPARE(split.target, QStringLiteral("s3://MyBucket/season-2026/"));
+        QCOMPARE(split.username, QStringLiteral("AKIAIOSFODNN7EXAMPLE"));
+        // A secret access key routinely contains a slash, which only survives
+        // the authority as %2F.
+        QCOMPARE(split.password,
+                 QStringLiteral("wJalrXUtnFEMI/K7MDENG/bPxRfiCY"));
+        QCOMPARE(split.options.value(QStringLiteral("region")),
+                 QStringLiteral("eu-west-2"));
+        QCOMPARE(split.options.value(QStringLiteral("endpoint")),
+                 QStringLiteral("http://minio.example:9000"));
+
+        // gs:// says the same things, and the address the target keeps is the
+        // one a bare bucket would have produced.
+        const ConnectionAddress google = splitAddress(
+            LocationType::Gcs,
+            QStringLiteral("gs://GOOG1EKEY:s3cret@lap_data/2026/"));
+        QVERIFY(google.error.isEmpty());
+        QCOMPARE(google.target, QStringLiteral("gs://lap_data/2026/"));
+        QCOMPARE(google.username, QStringLiteral("GOOG1EKEY"));
+        QCOMPARE(google.password, QStringLiteral("s3cret"));
+        QVERIFY(google.options.isEmpty());
+
+        // An address with nothing extra in it is left alone, so nothing
+        // already configured changes identity and loses its cache.
+        const ConnectionAddress plain = splitAddress(
+            LocationType::S3, QStringLiteral("s3://team-telemetry/season/"));
+        QCOMPARE(plain.target, QStringLiteral("s3://team-telemetry/season/"));
+        QVERIFY(plain.username.isEmpty());
+        QVERIFY(plain.password.isEmpty());
+
+        // WebDAV carries a credential the same way, and QUrl parses that
+        // authority correctly because a host really is a host.
+        const ConnectionAddress dav = splitAddress(
+            LocationType::WebDav,
+            QStringLiteral("https://ayrton:m0naco@server.example/dav/"));
+        QCOMPARE(dav.target, QStringLiteral("https://server.example/dav/"));
+        QCOMPARE(dav.username, QStringLiteral("ayrton"));
+        QCOMPARE(dav.password, QStringLiteral("m0naco"));
+
+        // A mistyped parameter is reported rather than ignored: silently
+        // dropping `reigon` means signing against the wrong region and an
+        // error nobody can trace back to the typo.
+        const ConnectionAddress typo = splitAddress(
+            LocationType::S3, QStringLiteral("s3://bucket/x?reigon=eu-west-2"));
+        QVERIFY(typo.error.contains(QStringLiteral("reigon")));
+        QVERIFY(!validateTarget(LocationType::S3,
+                                QStringLiteral("s3://bucket/x?reigon=eu"))
+                     .isEmpty());
+        QVERIFY(!splitAddress(LocationType::S3,
+                              QStringLiteral("s3://bucket/x?scheme=ftp"))
+                     .error.isEmpty());
+    }
+
+    /// The whole point of the syntax: paste one string and the sync works.
+    void syncsFromAWholeAddress() {
+        scenario_ = QStringLiteral("plain");
+        const ConnectionAddress split = splitAddress(
+            LocationType::S3,
+            QStringLiteral("s3://AKIAIOSFODNN7EXAMPLE:secret@team-telemetry/"
+                           "?region=eu-west-2&scheme=http&endpoint_override="
+                           "127.0.0.1:%1")
+                .arg(server_.serverPort()));
+        QVERIFY2(split.error.isEmpty(), qPrintable(split.error));
+
+        RemoteConnection connection;
+        connection.type = LocationType::S3;
+        connection.target = split.target;
+        connection.username = split.username;
+        connection.password = split.password;
+        connection.options = split.options;
+        connection.id = locationId(split.target + QStringLiteral("address"), {});
+
+        const RemoteSyncResult result = syncConnection(connection);
+        QVERIFY2(result.success, qPrintable(result.error));
+        QVERIFY(result.files.contains(
+            QStringLiteral("season-2026/brands-hatch.vbo")));
+    }
+
     // ── streaming ───────────────────────────────────────────────────
 
     /// Onboard video is 5–30 GB against telemetry's kilobytes, so it is never

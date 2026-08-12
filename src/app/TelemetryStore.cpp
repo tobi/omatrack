@@ -2196,6 +2196,7 @@ void TelemetryStore::loadLocations() {
         return;
     }
 
+    bool rewrite = false;
     for (const QVariant& value : configured.toList()) {
         const QVariantMap row = value.toMap();
         bool knownType = false;
@@ -2219,6 +2220,26 @@ void TelemetryStore::loadLocations() {
             row.value(QStringLiteral("options")).toMap();
         for (auto it = options.cbegin(); it != options.cend(); ++it)
             location.options.insert(it.key(), it.value().toString().trimmed());
+
+        // A hand-edited file may hold the same all-in-one address the dialog
+        // accepts. Split it the same way, and write the file back in the split
+        // form, so the config and the dialog never describe one connection
+        // two different ways. An unparseable address is left exactly as
+        // written — the sync will say what is wrong with it, which is more
+        // use than dropping the row on the floor at startup.
+        const ConnectionAddress address =
+            splitAddress(location.type, location.target);
+        if (address.error.isEmpty() && address.target != location.target) {
+            location.target = address.target;
+            if (!address.username.isEmpty())
+                location.username = address.username;
+            if (!address.password.isEmpty())
+                location.password = address.password;
+            for (auto it = address.options.cbegin();
+                 it != address.options.cend(); ++it)
+                location.options.insert(it.key(), it.value());
+            rewrite = true;
+        }
         location.enabled = yamlBool(row.value(QStringLiteral("enabled")), true);
         location.id = row.value(QStringLiteral("id")).toString().trimmed();
         if (location.id.isEmpty())
@@ -2228,6 +2249,7 @@ void TelemetryStore::loadLocations() {
         if (locationIndex(location.id) < 0)
             locations_.append(std::move(location));
     }
+    if (rewrite) savePreferences();
 }
 
 int TelemetryStore::locationIndex(const QString& id) const {
@@ -2918,7 +2940,9 @@ QVariantList TelemetryStore::connectionTypes() const {
              QStringLiteral(
                  "Telemetry is synchronized into a local cache and stays "
                  "available offline. Leave the keys empty for a public "
-                 "bucket.")},
+                 "bucket, or paste a whole address — "
+                 "s3://KEY:SECRET@bucket/prefix?region=eu-west-2 — and the "
+                 "fields below fill themselves in.")},
             {QStringLiteral("extraFields"),
              QVariantList{
                  QVariantMap{
@@ -2946,7 +2970,8 @@ QVariantList TelemetryStore::connectionTypes() const {
              QStringLiteral(
                  "Uses an HMAC interoperability key, which you create under "
                  "Cloud Storage → Settings → Interoperability. Telemetry is "
-                 "cached locally and stays available offline.")}}};
+                 "cached locally and stays available offline. A whole address "
+                 "— gs://KEY:SECRET@bucket/prefix — works too.")}}};
 }
 
 QVariantMap TelemetryStore::cacheUsage() const {
@@ -3164,11 +3189,18 @@ QString TelemetryStore::saveConnection(const QVariantMap& fields) {
     if (!knownType || type == LocationType::Folder)
         return QStringLiteral("Unsupported connection type.");
 
+    // An address may arrive with everything in it —
+    // `s3://KEY:SECRET@bucket/prefix?region=…&endpoint_override=…` is one
+    // pasteable string, and pasting one is the whole point. Whatever it
+    // carries is lifted out into the fields that hold such things, so the
+    // stored target stays the plain bucket address that names the data.
+    const ConnectionAddress address =
+        splitAddress(type, fields.value(QStringLiteral("target")).toString());
+    if (!address.error.isEmpty()) return address.error;
+
     // The protocol owns what a usable address looks like, so that the dialog
     // and the sync can never disagree about whether one is acceptable.
-    const QString target =
-        fields.value(QStringLiteral("target")).toString().trimmed();
-    const QString invalid = validateTarget(type, target);
+    const QString invalid = validateTarget(type, address.target);
     if (!invalid.isEmpty()) return invalid;
 
     LibraryLocation location;
@@ -3176,7 +3208,7 @@ QString TelemetryStore::saveConnection(const QVariantMap& fields) {
     // Normalization is the protocol's, not QUrl's: QUrl lowercases an
     // authority, and an S3 bucket is not a hostname — a capital letter in one
     // would be silently rewritten into a bucket that does not exist.
-    location.target = normalizeTarget(type, target);
+    location.target = normalizeTarget(type, address.target);
     location.username =
         fields.value(QStringLiteral("username")).toString().trimmed();
     location.name = fields.value(QStringLiteral("name")).toString().trimmed();
@@ -3186,8 +3218,15 @@ QString TelemetryStore::saveConnection(const QVariantMap& fields) {
         const QString value = it.value().toString().trimmed();
         if (!value.isEmpty()) location.options.insert(it.key(), value);
     }
-    const QString password =
-        fields.value(QStringLiteral("password")).toString();
+    QString password = fields.value(QStringLiteral("password")).toString();
+
+    // What the address spells out wins over the separate fields: it is the
+    // more recently typed of the two, and a pasted key that lost to a stale
+    // one left in the dialog would be a baffling way to fail.
+    if (!address.username.isEmpty()) location.username = address.username;
+    if (!address.password.isEmpty()) password = address.password;
+    for (auto it = address.options.cbegin(); it != address.options.cend(); ++it)
+        location.options.insert(it.key(), it.value());
     location.id = locationId(location.target, location.username);
 
     // Editing keeps the stored password when the field was left blank, so the

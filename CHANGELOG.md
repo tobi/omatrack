@@ -13,6 +13,14 @@ All notable user-facing changes are documented here.
   interoperability key rather than a service-account file. A `region` and an
   `endpoint` can be set per connection, which is also what makes MinIO,
   Cloudflare R2, and Backblaze work.
+- A bucket can be connected by pasting one address. The full form —
+  `s3://ACCESS_KEY:SECRET_KEY@bucket/prefix?region=eu-west-2&scheme=https&endpoint_override=host`,
+  and the same for `gs://` — is understood wherever an address is accepted,
+  including a hand-edited `omatrack.yml`, and a WebDAV URL may carry
+  `user:pass@` the same way. The keys and settings are lifted straight out
+  into the connection's own fields, so what is stored and shown as the address
+  stays the plain bucket and prefix. A misspelled parameter is reported rather
+  than quietly ignored.
 - Onboard video from a server now plays over the network instead of being
   downloaded first. A session's video is thousands of times larger than its
   telemetry, and mirroring one filled the disk to hold something the player

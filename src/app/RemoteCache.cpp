@@ -621,6 +621,29 @@ QString fetchObject(const RemoteConnection& connection,
     return {};
 }
 
+ConnectionAddress splitAddress(LocationType type, const QString& address) {
+    switch (type) {
+        case LocationType::S3:
+        case LocationType::Gcs: return s3SplitAddress(type, address);
+        case LocationType::WebDav: {
+            // `https://user:pass@server/dav/` is how a WebDAV URL carries a
+            // credential, and QUrl parses that authority correctly — unlike an
+            // S3 one, where the bucket is not a host.
+            ConnectionAddress split;
+            QUrl url(address.trimmed());
+            split.username = url.userName();
+            split.password = url.password();
+            url.setUserInfo(QString());
+            split.target = url.toString(QUrl::FullyEncoded);
+            return split;
+        }
+        case LocationType::Folder: break;
+    }
+    ConnectionAddress split;
+    split.target = address.trimmed();
+    return split;
+}
+
 QString validateTarget(LocationType type, const QString& target) {
     switch (type) {
         case LocationType::WebDav: return webDavTargetError(target);

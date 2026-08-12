@@ -129,7 +129,13 @@ wins on load. Caches (Track Atlas snapshot, thumbnails) stay outside the file.
   `options` map for protocol tuning such as an S3 `region` or a non-AWS
   `endpoint`. Keep tuning out of `target`: the connection id is a hash of it,
   so a knob added there orphans the whole downloaded cache the first time it
-  is adjusted. Disabled locations stay configured
+  is adjusted. An address may nonetheless be *typed* whole —
+  `s3://KEY:SECRET@bucket/prefix?region=…&scheme=…&endpoint_override=…`, the
+  form an S3 console and Arrow both hand out — because `splitAddress()` takes
+  it apart at both entry points (the dialog and the config loader) before
+  anything is stored. Nothing reaches `target` but the bucket and the prefix,
+  which is also what keeps a secret key out of the cache directory name and
+  out of the library row on screen. Disabled locations stay configured
   and are skipped by every scan. Keep this list heterogeneous: a new remote
   source is a new `LocationType` plus a `connectionTypes()` entry, never a
   second parallel list. `~/Documents/Telemetry` (resolved through the platform

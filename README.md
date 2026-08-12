@@ -183,7 +183,11 @@ Server connections are opt-in and configured in Preferences. WebDAV uses
 authenticated `PROPFIND` discovery; `s3://` and `gs://` buckets use
 ListObjectsV2 with AWS Signature Version 4 — Google Cloud Storage through its
 S3-compatible XML endpoint, which means an HMAC interoperability key rather
-than a service-account file. Each enabled connection streams changed telemetry
+than a service-account file. An address can be pasted whole —
+`s3://ACCESS_KEY:SECRET_KEY@bucket/prefix?region=eu-west-2&endpoint_override=host`,
+`gs://…`, or a WebDAV URL with `user:pass@` — and the keys and settings are
+split out into the connection's own fields rather than kept in the address.
+Each enabled connection streams changed telemetry
 into `$XDG_CACHE_HOME/omatrack/<protocol>/` (or the platform cache
 equivalent). ETag and Last-Modified metadata avoid unchanged downloads; a
 previous cache is used when the server is unavailable. Omatrack never rewrites

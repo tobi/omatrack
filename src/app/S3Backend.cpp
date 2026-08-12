@@ -50,25 +50,131 @@ QString schemeFor(LocationType type) {
     return {};
 }
 
-BucketPath parseTarget(const QString& target) {
+/// Everything one pasted address can say.
+struct Address {
+    BucketPath path;
+    QString username;
+    QString password;
+    QMap<QString, QString> options;
+    /// Empty when the address parsed, else why it did not.
+    QString error;
+};
+
+/// Splits the full address form — the one an S3 console or an Arrow
+/// connection string hands out:
+///
+///     s3://ACCESS_KEY:SECRET@bucket/prefix?region=eu-west-2
+///         &scheme=https&endpoint_override=minio.example:9000
+///
+/// Every part after the bucket and prefix is optional, so a bare
+/// `s3://bucket/prefix` goes through this unchanged.
+///
+/// Not QUrl: it lowercases an authority, which silently renames a mixed-case
+/// bucket into one that does not exist, and it rejects the underscores GCS
+/// bucket names may contain.
+Address parseAddress(const QString& target) {
+    Address parsed;
     QString rest = target.trimmed();
     const int scheme = rest.indexOf(QStringLiteral("://"));
     if (scheme >= 0) rest = rest.mid(scheme + 3);
 
-    BucketPath parsed;
+    QString query;
+    const int question = rest.indexOf(QLatin1Char('?'));
+    if (question >= 0) {
+        query = rest.mid(question + 1);
+        rest.truncate(question);
+    }
+
+    // The authority ends at the first slash, and only what precedes it can be
+    // userinfo — an object key may legally contain an `@`. Splitting on the
+    // last `@` rather than the first means an unencoded `@` inside a secret
+    // still lands in the right half, since a bucket name cannot hold one.
+    const int authorityEnd = rest.indexOf(QLatin1Char('/'));
+    const QString authority = authorityEnd < 0 ? rest : rest.left(authorityEnd);
+    const int at = authority.lastIndexOf(QLatin1Char('@'));
+    if (at >= 0) {
+        // Percent-decoded because a secret access key routinely contains `/`
+        // and `+`, and `/` has to be written `%2F` to survive here at all.
+        const QString userinfo = authority.left(at);
+        const int colon = userinfo.indexOf(QLatin1Char(':'));
+        parsed.username = QUrl::fromPercentEncoding(
+            (colon < 0 ? userinfo : userinfo.left(colon)).toUtf8());
+        if (colon >= 0)
+            parsed.password =
+                QUrl::fromPercentEncoding(userinfo.mid(colon + 1).toUtf8());
+        rest = rest.mid(at + 1);
+    }
+
     const int slash = rest.indexOf(QLatin1Char('/'));
     if (slash < 0) {
-        parsed.bucket = rest;
-        return parsed;
+        parsed.path.bucket = rest;
+    } else {
+        parsed.path.bucket = rest.left(slash);
+        // A run of slashes is a typo, not a key: S3 would treat `a//b` as a
+        // distinct object, but nobody types one meaning that, and leaving them
+        // in would give one folder two spellings and therefore two caches.
+        for (const QString& segment :
+             rest.mid(slash + 1).split(QLatin1Char('/'), Qt::SkipEmptyParts))
+            parsed.path.prefix.append(segment).append(QLatin1Char('/'));
     }
-    parsed.bucket = rest.left(slash);
-    // A run of slashes is a typo, not a key: S3 would treat `a//b` as a
-    // distinct object, but nobody types one meaning that, and leaving them in
-    // would give one folder two spellings and therefore two caches.
-    for (const QString& segment :
-         rest.mid(slash + 1).split(QLatin1Char('/'), Qt::SkipEmptyParts))
-        parsed.prefix.append(segment).append(QLatin1Char('/'));
+
+    QString endpoint;
+    QString urlScheme;
+    for (const QString& item :
+         query.split(QLatin1Char('&'), Qt::SkipEmptyParts)) {
+        const int equals = item.indexOf(QLatin1Char('='));
+        const QString key =
+            (equals < 0 ? item : item.left(equals)).trimmed().toLower();
+        const QString value =
+            QUrl::fromPercentEncoding(
+                (equals < 0 ? QString() : item.mid(equals + 1)).toUtf8())
+                .trimmed();
+        // An empty value is someone deleting half a parameter, not a request
+        // to set the setting to nothing.
+        if (value.isEmpty()) continue;
+        if (key == QStringLiteral("region")) {
+            parsed.options.insert(QStringLiteral("region"), value);
+        } else if (key == QStringLiteral("endpoint_override") ||
+                   key == QStringLiteral("endpoint")) {
+            endpoint = value;
+        } else if (key == QStringLiteral("scheme")) {
+            urlScheme = value.toLower();
+            if (urlScheme != QStringLiteral("http") &&
+                urlScheme != QStringLiteral("https")) {
+                parsed.error =
+                    QStringLiteral("scheme=%1 is not http or https").arg(value);
+                return parsed;
+            }
+        } else {
+            // Rejected rather than ignored: a mistyped `?reigon=` that goes
+            // through quietly costs a sync against the wrong region and a
+            // signature error nobody can trace back to a typo.
+            parsed.error =
+                QStringLiteral(
+                    "%1 is not a setting an address can carry — use region, "
+                    "scheme or endpoint_override")
+                    .arg(key);
+            return parsed;
+        }
+    }
+
+    if (!endpoint.isEmpty()) {
+        if (!endpoint.contains(QStringLiteral("://")))
+            endpoint =
+                (urlScheme.isEmpty() ? QStringLiteral("https") : urlScheme) +
+                QStringLiteral("://") + endpoint;
+        parsed.options.insert(QStringLiteral("endpoint"), endpoint);
+    } else if (!urlScheme.isEmpty()) {
+        // No endpoint to attach it to, so it is the scheme for the service's
+        // own host — plaintext against AWS is a strange thing to ask for, but
+        // it is what was asked for.
+        parsed.options.insert(QStringLiteral("scheme"), urlScheme);
+    }
     return parsed;
+}
+
+BucketPath parseTarget(const QString& target) {
+    return parseAddress(target).path;
 }
 
 /// Deliberately looser than the AWS naming rules: GCS allows underscores and
@@ -100,6 +206,15 @@ QString defaultHost(LocationType type, const QString& region) {
                             : QStringLiteral("s3.%1.amazonaws.com").arg(region);
 }
 
+/// https unless the connection was deliberately told otherwise, which only a
+/// plaintext test server or a MinIO box on a trusted network ever is.
+QString transportScheme(const RemoteConnection& connection) {
+    const QString configured =
+        connection.options.value(QStringLiteral("scheme")).trimmed().toLower();
+    return configured == QStringLiteral("http") ? configured
+                                                : QStringLiteral("https");
+}
+
 Endpoint resolveEndpoint(const RemoteConnection& connection,
                          const QString& bucket, const QString& region) {
     const QString custom =
@@ -107,7 +222,8 @@ Endpoint resolveEndpoint(const RemoteConnection& connection,
     if (!custom.isEmpty()) {
         QUrl origin(custom.contains(QStringLiteral("://"))
                         ? custom
-                        : QStringLiteral("https://") + custom);
+                        : transportScheme(connection) + QStringLiteral("://") +
+                              custom);
         origin.setPath({});
         origin.setQuery(QString());
         // A custom endpoint is a MinIO box, an R2 account, or a test server.
@@ -115,7 +231,7 @@ Endpoint resolveEndpoint(const RemoteConnection& connection,
         // certificate, which such a deployment almost never has.
         return {origin, true};
     }
-    const QUrl origin(QStringLiteral("https://") +
+    const QUrl origin(transportScheme(connection) + QStringLiteral("://") +
                       defaultHost(connection.type, region));
     // AWS prefers virtual-host addressing, but a dot in the bucket name makes
     // `bucket.s3.region.amazonaws.com` fail certificate validation: a
@@ -325,11 +441,24 @@ QString s3TargetError(LocationType type, const QString& target) {
     const QString expected = scheme + QStringLiteral("://");
     if (!trimmed.startsWith(expected, Qt::CaseInsensitive))
         return QStringLiteral("Enter a %1 address").arg(expected);
-    const BucketPath parsed = parseTarget(trimmed);
-    if (!isUsableBucket(parsed.bucket))
+    const Address parsed = parseAddress(trimmed);
+    if (!parsed.error.isEmpty()) return parsed.error;
+    if (!isUsableBucket(parsed.path.bucket))
         return QStringLiteral("%1%2 does not name a bucket")
-            .arg(expected, parsed.bucket);
+            .arg(expected, parsed.path.bucket);
     return {};
+}
+
+ConnectionAddress s3SplitAddress(LocationType type, const QString& address) {
+    const Address parsed = parseAddress(address);
+    ConnectionAddress split;
+    split.error = parsed.error;
+    split.username = parsed.username;
+    split.password = parsed.password;
+    split.options = parsed.options;
+    split.target = schemeFor(type) + QStringLiteral("://") +
+                   parsed.path.bucket + QLatin1Char('/') + parsed.path.prefix;
+    return split;
 }
 
 QString s3NormalizedTarget(LocationType type, const QString& target) {
