@@ -421,7 +421,11 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
 - `RawChannel`: decoded physical samples, unit, sample type, frequency, and duration for one source channel.
 - `Lap`: source-session bounds and lap time.
 - `UnifiedLap`: same-rate, lap-relative arrays plus distance provenance and GPS-quality channels used by every analysis and rendering feature.
-- `SessionHandle`: owns one file, defers parsing until needed, and caches unified laps.
+- `SessionHandle`: owns one library identity (the video or telemetry file
+  shown in the tree), opens a possibly different parser path (sidecar `.ld`
+  or a materialized AiM extract), defers parsing until needed, and caches
+  unified laps. Sidecar media anchors on `LapEntry` map cursor time onto
+  the recording; without them the shared presentation clock is used.
 - `TelemetryStore`: the single Qt-facing source of truth for active/reference selection, the primary→reference track-station map, and UI state.
 - `CornerZone`: the current individual corner range. Do not stretch it to represent every Track Atlas layer; introduce explicit domain types when complexes and geometry enter the model.
 

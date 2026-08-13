@@ -156,6 +156,22 @@ private slots:
         QVERIFY(sidecar->telemetryPath.isEmpty());
     }
 
+    void marksUnsupportedVideo() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString video = directory.filePath(QStringLiteral("run.mp4"));
+        touch(video);
+        writeJson(directory.filePath(QStringLiteral(".run.mp4.json")),
+                  QJsonObject{{QStringLiteral("schema"),
+                               QStringLiteral("omatrack.recording/1")},
+                              {QStringLiteral("supported"), false}});
+
+        const auto sidecar = omatrack::readRecordingSidecar(video);
+        QVERIFY(sidecar.has_value());
+        QVERIFY(!sidecar->supported);
+        QVERIFY(sidecar->telemetryPath.isEmpty());
+    }
+
     void derivesHiddenServerName() {
         QCOMPARE(omatrack::recordingSidecarRelativePath(
                      QStringLiteral("event/run.mp4")),

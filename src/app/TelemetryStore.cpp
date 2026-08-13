@@ -2,6 +2,7 @@
 #include "AimRemoteIndex.h"
 
 #include "ComparisonAlignment.h"
+#include "RecordingSidecar.h"
 #include "SessionMetadataCache.h"
 #include "TrackMetadata.h"
 #include "TrackAtlasSpatial.h"
@@ -790,6 +791,18 @@ void SessionHandle::applyCachedMetadata(const QJsonObject& metadata) {
         lap.isFastest = object.value(QStringLiteral("fastest")).toBool();
         lap.isComplete = object.value(QStringLiteral("complete")).toBool(true);
         lap.isPitLap = object.value(QStringLiteral("pit")).toBool();
+        if (object.contains(QStringLiteral("videoStart")))
+            lap.videoStartTime =
+                object.value(QStringLiteral("videoStart")).toDouble();
+        else if (object.contains(QStringLiteral("videoStartTime")))
+            lap.videoStartTime =
+                object.value(QStringLiteral("videoStartTime")).toDouble();
+        if (object.contains(QStringLiteral("videoEnd")))
+            lap.videoEndTime =
+                object.value(QStringLiteral("videoEnd")).toDouble();
+        else if (object.contains(QStringLiteral("videoEndTime")))
+            lap.videoEndTime =
+                object.value(QStringLiteral("videoEndTime")).toDouble();
         laps_.append(lap);
     }
     summaryLoaded_ = true;
@@ -798,7 +811,7 @@ void SessionHandle::applyCachedMetadata(const QJsonObject& metadata) {
 QJsonObject SessionHandle::metadataForCache() const {
     QJsonArray laps;
     for (const LapEntry& lap : laps_) {
-        laps.append(QJsonObject{
+        QJsonObject object{
             {QStringLiteral("id"), lap.lapId},
             {QStringLiteral("start"), lap.startTime},
             {QStringLiteral("end"), lap.endTime},
@@ -808,7 +821,12 @@ QJsonObject SessionHandle::metadataForCache() const {
             {QStringLiteral("fastest"), lap.isFastest},
             {QStringLiteral("complete"), lap.isComplete},
             {QStringLiteral("pit"), lap.isPitLap},
-        });
+        };
+        if (lap.hasMediaAnchors()) {
+            object.insert(QStringLiteral("videoStart"), lap.videoStartTime);
+            object.insert(QStringLiteral("videoEnd"), lap.videoEndTime);
+        }
+        laps.append(object);
     }
     QJsonArray sourceChannels;
     for (const SourceChannelSummary& summary : sourceChannels_) {
@@ -1372,24 +1390,136 @@ struct IndexedSession {
     bool unsupportedVideo = false;
 };
 
+bool isRemoteConnection(const RemoteConnection& connection) {
+    return connection.type != LocationType::Folder &&
+           !connection.target.isEmpty() &&
+           !cacheDirectory(connection).isEmpty();
+}
+
+QString publishRecordingCompanions(const RemoteConnection& connection,
+                                   const QString& videoPath,
+                                   const QString& telemetryPath, bool supported,
+                                   const QJsonObject& session,
+                                   const IoCancel& cancel = {}) {
+    const QString cachePath = cacheDirectory(connection);
+    if (cachePath.isEmpty())
+        return QStringLiteral("This file is not on a server.");
+    const QString relative = QDir(cachePath).relativeFilePath(videoPath);
+    if (relative.isEmpty() || relative.startsWith(QStringLiteral("..")))
+        return QStringLiteral("Recording is outside this cache");
+
+    if (supported && !telemetryPath.isEmpty() &&
+        QFileInfo(telemetryPath).isFile() && !isStreamStub(telemetryPath)) {
+        QFile file(telemetryPath);
+        if (file.open(QIODevice::ReadOnly)) {
+            const QString error =
+                putObject(connection, recordingTelemetryRelativePath(relative),
+                          file.readAll(), cancel);
+            if (!error.isEmpty()) return error;
+        }
+    }
+
+    QJsonObject body{
+        {QStringLiteral("schema"), QStringLiteral("omatrack.recording/1")},
+        {QStringLiteral("source"),
+         QJsonObject{{QStringLiteral("etag"),
+                      cachedObjectEtag(connection, videoPath)}}},
+        {QStringLiteral("video"),
+         QJsonObject{
+             {QStringLiteral("path"), QFileInfo(videoPath).fileName()}}},
+        {QStringLiteral("supported"), supported},
+    };
+    if (supported && !telemetryPath.isEmpty() &&
+        QFileInfo(telemetryPath).fileName().startsWith(QLatin1Char('.')))
+        body.insert(QStringLiteral("telemetry"),
+                    QJsonObject{{QStringLiteral("path"),
+                                 QFileInfo(telemetryPath).fileName()}});
+    if (!session.isEmpty()) body.insert(QStringLiteral("session"), session);
+    return putObject(connection, recordingSidecarRelativePath(relative),
+                     QJsonDocument(body).toJson(QJsonDocument::Compact),
+                     cancel);
+}
+
+bool materializeStubSession(const RemoteConnection& connection,
+                            SessionHandle* handle, const QString& path,
+                            QString* error) {
+    if (!handle) return false;
+    const QString etag = cachedObjectEtag(connection, path);
+    const QString extractError = materializeAimExtract(connection, path, etag);
+    if (!extractError.isEmpty()) {
+        if (error) *error = extractError;
+        return false;
+    }
+    const QString extract = telemetryOpenPath(&connection, path);
+    if (extract.isEmpty() || isStreamStub(extract)) {
+        if (error) *error = QStringLiteral("Unable to materialize AiM extract");
+        return false;
+    }
+    handle->setTelemetryPath(extract);
+    if (!handle->hasSummary() && !handle->loadSummaryForOpen(error))
+        return false;
+    const QString companion = recordingTelemetryPath(path);
+    std::string motecError;
+    const auto source =
+        TelemetrySource::open(extract.toStdString(), &motecError);
+    if (source && source->writeMotec(companion.toStdString(), &motecError))
+        handle->setTelemetryPath(companion);
+    publishRecordingCompanions(connection, path, handle->telemetryPath(), true,
+                               handle->metadataForCache());
+    return true;
+}
+
 IndexedSession indexSession(const QString& path, SessionMetadataCache& cache,
                             const RemoteConnection* connection = nullptr,
                             int* cacheHits = nullptr,
                             int* cacheMisses = nullptr,
                             const IoCancel& cancel = {}) {
-    Q_UNUSED(connection);
     Q_UNUSED(cancel);
-    // A streamed video holds no bytes locally, so there is no embedded
-    // telemetry to find and no point in a parser saying so. It plays; it just
-    // does not carry laps of its own. Pairing lives in the recording sidecar.
-    if (isStreamStub(path)) {
-        IndexedSession result;
-        result.unsupportedVideo = true;
-        return result;
+    const QString cacheRoot =
+        connection ? cacheDirectory(*connection) : QString();
+    QString parserPath = telemetryPathForInput(path);
+    if (parserPath.isEmpty()) parserPath = path;
+
+    if (isVideoPath(path)) {
+        const auto sidecar = readRecordingSidecar(path, cacheRoot);
+        if (sidecar) {
+            if (!sidecar->supported) {
+                if (cacheHits) ++*cacheHits;
+                IndexedSession result;
+                result.unsupportedVideo = true;
+                return result;
+            }
+            if (!sidecar->telemetryPath.isEmpty())
+                parserPath = sidecar->telemetryPath;
+            else
+                parserPath = telemetryOpenPath(connection, path);
+
+            if (!sidecar->session.isEmpty()) {
+                auto handle = std::make_unique<SessionHandle>(
+                    path, sidecar->session, parserPath);
+                if (handle->hasSummary()) {
+                    if (cacheHits) ++*cacheHits;
+                    IndexedSession result;
+                    result.handle = std::move(handle);
+                    return result;
+                }
+            }
+            if (isStreamStub(parserPath) || !QFileInfo(parserPath).isFile()) {
+                IndexedSession result;
+                result.unsupportedVideo = true;
+                return result;
+            }
+        } else if (isStreamStub(path)) {
+            // A zero-byte stand-in has no embedded telemetry. Opening the
+            // recording materializes an extract and publishes companions;
+            // the scan must not do that for every video in the library.
+            IndexedSession result;
+            result.unsupportedVideo = true;
+            return result;
+        }
     }
-    const QString parserPath = telemetryPathForInput(path);
-    const QString fingerprint = SessionMetadataCache::fingerprint(
-        parserPath.isEmpty() ? path : parserPath);
+
+    const QString fingerprint = SessionMetadataCache::fingerprint(parserPath);
     const SessionMetadataCache::Lookup cached = cache.lookup(fingerprint);
     if (cached.found && !cached.supported) {
         if (cacheHits) ++*cacheHits;
@@ -1412,8 +1542,7 @@ IndexedSession indexSession(const QString& path, SessionMetadataCache& cache,
     auto handle =
         std::make_unique<SessionHandle>(path, QJsonObject{}, parserPath);
     const bool supported = handle->loadSummaryForIndex();
-    cache.store(fingerprint, parserPath.isEmpty() ? path : parserPath,
-                supported,
+    cache.store(fingerprint, parserPath, supported,
                 supported ? handle->metadataForCache() : QJsonObject{});
     IndexedSession result;
     if (!supported) {
@@ -1844,9 +1973,12 @@ std::shared_ptr<SessionScanResult> scanLibraryLocations(
                                                   : location.name.trimmed());
 
         QSet<QString> sourcePaths;
+        QSet<QString> linkedTelemetry;
         QDirIterator it(directory, filters, QDir::Files,
                         QDirIterator::Subdirectories);
         const RemoteConnection remote = connectionFor(location);
+        const QString cacheRoot =
+            location.isConnection() ? directory : QString();
         while (it.hasNext()) {
             it.next();
             if (it.fileName() == QStringLiteral("TRACK.yml")) {
@@ -1861,11 +1993,23 @@ std::shared_ptr<SessionScanResult> scanLibraryLocations(
                                           ? resolved.absoluteFilePath()
                                           : resolved.canonicalFilePath();
             if (ioCancelled(cancel)) break;
+            if (isVideoPath(canonical)) {
+                const auto sidecar = readRecordingSidecar(canonical, cacheRoot);
+                if (sidecar && !sidecar->telemetryPath.isEmpty()) {
+                    const QString linked =
+                        canonicalInputPath(sidecar->telemetryPath);
+                    if (!linked.isEmpty()) linkedTelemetry.insert(linked);
+                }
+            }
             if (location.isConnection())
                 indexSession(canonical, indexCache, &remote, nullptr, nullptr,
                              cancel);
             sourcePaths.insert(canonical);
             uniquePaths.insert(canonical);
+        }
+        for (const QString& linked : linkedTelemetry) {
+            sourcePaths.remove(linked);
+            uniquePaths.remove(linked);
         }
         result->locationFileCounts.insert(location.id, sourcePaths.size());
 
@@ -1928,8 +2072,40 @@ std::shared_ptr<FileOpenResult> openIndexedFile(
     auto result = std::make_shared<FileOpenResult>();
     result->path = path;
     SessionMetadataCache cache(cachePath);
-    IndexedSession indexed = indexSession(
-        path, cache, connection.id.isEmpty() ? nullptr : &connection);
+    const RemoteConnection* remote =
+        isRemoteConnection(connection) ? &connection : nullptr;
+    IndexedSession indexed = indexSession(path, cache, remote);
+
+    const auto telemetryMissing = [](const SessionHandle* handle) {
+        if (!handle) return true;
+        const QString telemetry = handle->telemetryPath();
+        return telemetry.isEmpty() || isStreamStub(telemetry) ||
+               !QFileInfo(telemetry).isFile();
+    };
+
+    if (remote && isStreamStub(path) &&
+        (!indexed.handle || telemetryMissing(indexed.handle.get()))) {
+        if (!indexed.handle)
+            indexed.handle = std::make_unique<SessionHandle>(path);
+        if (materializeStubSession(connection, indexed.handle.get(), path,
+                                   &result->error)) {
+            indexed.unsupportedVideo = false;
+            cache.store(SessionMetadataCache::fingerprint(
+                            indexed.handle->telemetryPath()),
+                        indexed.handle->telemetryPath(), true,
+                        indexed.handle->metadataForCache());
+        } else if (result->error ==
+                   QStringLiteral("MP4 has no AiM aimd track")) {
+            publishRecordingCompanions(connection, path, {}, false, {});
+            indexed.handle.reset();
+            indexed.unsupportedVideo = true;
+            result->error.clear();
+        } else if (telemetryMissing(indexed.handle.get())) {
+            cache.save();
+            return result;
+        }
+    }
+
     if (!indexed.handle && expectTelemetry && isVideoPath(path) &&
         !isStreamStub(path)) {
         auto handle = std::make_unique<SessionHandle>(path);
@@ -1944,19 +2120,8 @@ std::shared_ptr<FileOpenResult> openIndexedFile(
     }
     if (!indexed.handle) {
         cache.save();
-        result->standaloneVideo = indexed.unsupportedVideo;
+        result->standaloneVideo = indexed.unsupportedVideo || isVideoPath(path);
         return result;
-    }
-    if (isStreamStub(path)) {
-        const QString etag = cachedObjectEtag(connection, path);
-        const QString extractError =
-            materializeAimExtract(connection, path, etag);
-        if (!extractError.isEmpty()) {
-            result->error = extractError;
-            cache.save();
-            return result;
-        }
-        indexed.handle->setTelemetryPath(telemetryOpenPath(&connection, path));
     }
     const LapEntry* lap = bestLap(*indexed.handle);
     if (!lap && indexed.handle->isVideo()) {
@@ -1966,7 +2131,7 @@ std::shared_ptr<FileOpenResult> openIndexedFile(
         }
         const QString fingerprint =
             SessionMetadataCache::fingerprint(indexed.handle->telemetryPath());
-        cache.store(fingerprint, path, true,
+        cache.store(fingerprint, indexed.handle->telemetryPath(), true,
                     indexed.handle->metadataForCache());
         lap = bestLap(*indexed.handle);
     }
@@ -5257,7 +5422,7 @@ void TelemetryStore::setCursorFromVideoTime(double mediaTime) {
         const double presentationOffset =
             primarySession_->videoPresentationOffsetSec().value_or(0.0);
         const double relativeTime =
-            mediaTime - presentationOffset - lap.startTime;
+            lap.telemetryTime(mediaTime, presentationOffset);
         double fraction = 0.0;
         if (relativeTime >= unified->time.back()) {
             fraction = 1.0;
@@ -7030,8 +7195,9 @@ double TelemetryStore::primaryVideoTime() const {
         (unified->time[high] - unified->time[low]) * (position - double(low));
     for (const LapEntry& lap : primarySession_->laps()) {
         if (lap.lapId == primaryLap_)
-            return lap.startTime + relativeTime +
-                   primarySession_->videoPresentationOffsetSec().value_or(0.0);
+            return lap.mediaTime(
+                relativeTime,
+                primarySession_->videoPresentationOffsetSec().value_or(0.0));
     }
     return 0.0;
 }
@@ -7121,8 +7287,9 @@ double TelemetryStore::compareVideoTime() const {
     if (relativeTime < 0.0) return 0.0;
     for (const LapEntry& lap : session->laps()) {
         if (lap.lapId == compareLap_)
-            return lap.startTime + relativeTime +
-                   session->videoPresentationOffsetSec().value_or(0.0);
+            return lap.mediaTime(
+                relativeTime,
+                session->videoPresentationOffsetSec().value_or(0.0));
     }
     return 0.0;
 }

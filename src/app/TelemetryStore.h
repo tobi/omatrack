@@ -129,8 +129,32 @@ struct LapEntry {
     bool isComplete = true;
     /// Complete crossing-to-crossing lap whose time is a pit in/out outlier.
     bool isPitLap = false;
+    /// Recording-sidecar media anchors, in seconds on the video timeline.
+    /// Unset when both are zero; then the shared presentation clock is used.
+    double videoStartTime = 0.0;
+    double videoEndTime = 0.0;
     /// Representative timed racing lap: eligible for best-lap statistics.
     bool countsForBest() const { return isComplete && !isPitLap; }
+    bool hasMediaAnchors() const {
+        return videoEndTime > videoStartTime && endTime > startTime;
+    }
+    /// Lap-relative telemetry time → media seconds.
+    double mediaTime(double relativeTime, double presentationOffset) const {
+        if (hasMediaAnchors()) {
+            const double span = endTime - startTime;
+            return videoStartTime +
+                   (relativeTime / span) * (videoEndTime - videoStartTime);
+        }
+        return startTime + relativeTime + presentationOffset;
+    }
+    /// Media seconds → lap-relative telemetry time.
+    double telemetryTime(double media, double presentationOffset) const {
+        if (hasMediaAnchors()) {
+            const double span = videoEndTime - videoStartTime;
+            return (media - videoStartTime) / span * (endTime - startTime);
+        }
+        return media - presentationOffset - startTime;
+    }
 };
 
 struct SidebarPin {
