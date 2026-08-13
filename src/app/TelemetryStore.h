@@ -151,10 +151,13 @@ struct SourceChannelSummary {
 class SessionHandle {
 public:
     explicit SessionHandle(const QString& path,
-                           const QJsonObject& cachedMetadata = {});
+                           const QJsonObject& cachedMetadata = {},
+                           const QString& telemetryPath = {});
     ~SessionHandle();
 
     const QString& path() const { return path_; }
+    const QString& telemetryPath() const { return telemetryPath_; }
+    void setTelemetryPath(const QString& path) { telemetryPath_ = path; }
     QString stem() const;
 
     const omatrack::TelemetrySource* source() const { return src_.get(); }
@@ -212,6 +215,7 @@ private:
     void captureSourceChannels(const omatrack::TelemetrySource& source);
     void populateLaps(const std::vector<omatrack::Lap>& detected);
     QString path_;
+    QString telemetryPath_;
     std::unique_ptr<omatrack::TelemetrySource> src_;
     QVector<LapEntry> laps_;
     QHash<int, std::shared_ptr<const omatrack::UnifiedLap>> unifiedCache_;
@@ -385,6 +389,8 @@ public:
     Q_INVOKABLE void moveLocation(const QString& id, int delta);
     Q_INVOKABLE void requestSidebarMetadata(const QString& path, bool visible);
     Q_INVOKABLE void copyFilePath(const QString& path) const;
+    /// Connection id whose cache contains `path`, or empty for a local file.
+    Q_INVOKABLE QString locationIdForPath(const QString& path) const;
     Q_INVOKABLE void openContainingFolder(const QString& path) const;
     Q_INVOKABLE bool filePinned(const QString& role, const QString& path) const;
     Q_INVOKABLE void setFilePinned(const QString& role, const QString& path,
@@ -548,6 +554,9 @@ public:
     QString primarySessionKey() const;
     QString compareSessionKey() const;
     QUrl primaryVideoSource() const;
+    /// Cache path for a player URL, or empty. Streamed sources are signed
+    /// URLs; the library and metadata dialogs need the local stub path.
+    Q_INVOKABLE QString localPathForVideoSource(const QUrl& source) const;
     double primaryVideoTime() const;
     // Reference-lap recording uses the same GPS/speed track-station alignment
     // as traces and delta, so every comparison view shares one coordinate.
@@ -598,6 +607,7 @@ private:
     struct PendingFileOpen {
         QString path;
         FileOpenRole role = FileOpenRole::Automatic;
+        int lapId = -1;
     };
 
     SessionHandle* findSession(const QString& key) const;
@@ -622,7 +632,9 @@ private:
     void setPrimary(SessionHandle* session, int lapId);
     void setCompare(SessionHandle* session, int lapId);
     void requestLapLoad(SessionHandle* session, int lapId, bool compare);
-    void queueFileOpen(const QString& filePath, FileOpenRole role);
+    void queueFileOpen(const QString& filePath, FileOpenRole role,
+                       int lapId = -1);
+    void restoreLastSelection();
     void startNextFileOpen();
     void pauseSidebarMetadataQueue();
     void startNextSidebarMetadataLoad();
@@ -695,6 +707,7 @@ private:
     QHash<QString, QVariantMap> fileMetadata_;
     QVector<SidebarPin> sidebarPins_;
     QFutureWatcher<std::shared_ptr<SessionScanResult>>* scanWatcher_ = nullptr;
+    std::shared_ptr<std::atomic<bool>> scanCancel_;
     QSet<QString> transientSessionPaths_;
     /// Offline downloads, one at a time: two concurrent transfers of tens of
     /// gigabytes finish no sooner and make the progress meaningless.
@@ -764,7 +777,8 @@ private:
     QHash<QString, QVector<QPointF>> atlasSpatialMappings_;
     QSet<QString> atlasGeometryRequests_;
     QString trackAtlasStatus_;
-    QNetworkAccessManager* atlasNetwork_ = nullptr;
+    std::shared_ptr<std::atomic<bool>> atlasCancel_;
+    quint64 atlasGeneration_ = 0;
     QTimer* atlasTimer_ = nullptr;
     QVector<CornerZone> corners_;
     QVector<CornerMarker> markers_;
@@ -788,6 +802,7 @@ private:
     mutable QHash<QString, double> channelWeights_;
     mutable QHash<QString, std::shared_ptr<std::vector<double>>>
         extraChannelCache_;
+    mutable QSet<QString> extraChannelLoading_;
     QHash<QString, QString> driverAliases_;
     QStringList channelOrder_;
     mutable QVector<double> deltaCache_;

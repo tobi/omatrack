@@ -1,4 +1,5 @@
 #include "TelemetryStore.h"
+#include "AimRemoteIndex.h"
 
 #include "ComparisonAlignment.h"
 #include "SessionMetadataCache.h"
@@ -460,8 +461,10 @@ using namespace omatrack;
 // ── SessionHandle ───────────────────────────────────────────────────
 
 SessionHandle::SessionHandle(const QString& path,
-                             const QJsonObject& cachedMetadata)
-    : path_(path) {
+                             const QJsonObject& cachedMetadata,
+                             const QString& telemetryPath)
+    : path_(path),
+      telemetryPath_(telemetryPath.isEmpty() ? path : telemetryPath) {
     // Resolve track + metadata eagerly from filename only (cheap, no parse).
     const QFileInfo info(path);
     const SessionMeta meta =
@@ -582,7 +585,8 @@ void SessionHandle::applyEventDriverId(double eventDriverId, bool force) {
 void SessionHandle::ensureLapSummary() {
     if (summaryLoaded_) return;
     double eventDriverId = 0.0;
-    populateLaps(detectLapsLightweight(path_.toStdString(), &eventDriverId));
+    populateLaps(
+        detectLapsLightweight(telemetryPath_.toStdString(), &eventDriverId));
     applyEventDriverId(eventDriverId);
 }
 
@@ -593,7 +597,7 @@ bool SessionHandle::loadSummaryForIndex() {
         return true;
     }
     std::unique_ptr<TelemetrySource> source =
-        TelemetrySource::openIndex(path_.toStdString());
+        TelemetrySource::openIndex(telemetryPath_.toStdString());
     if (!source) return false;
     captureSourceChannels(*source);
     populateLaps(source->detectLaps());
@@ -604,7 +608,7 @@ bool SessionHandle::loadSummaryForIndex() {
 
 bool SessionHandle::loadChannelSummaryForIndex() {
     std::unique_ptr<TelemetrySource> source =
-        TelemetrySource::openIndex(path_.toStdString());
+        TelemetrySource::openIndex(telemetryPath_.toStdString());
     if (!source) return false;
     captureSourceChannels(*source);
     return !sourceChannels_.isEmpty();
@@ -614,7 +618,7 @@ bool SessionHandle::loadSummaryForOpen(QString* errorString) {
     if (errorString) errorString->clear();
     std::string error;
     std::unique_ptr<TelemetrySource> source =
-        TelemetrySource::open(path_.toStdString(), &error);
+        TelemetrySource::open(telemetryPath_.toStdString(), &error);
     if (!source) {
         if (errorString)
             *errorString =
@@ -1363,24 +1367,29 @@ struct FileOpenResult {
     QString error;
 };
 
-namespace {
 struct IndexedSession {
     std::unique_ptr<SessionHandle> handle;
     bool unsupportedVideo = false;
 };
 
 IndexedSession indexSession(const QString& path, SessionMetadataCache& cache,
+                            const RemoteConnection* connection = nullptr,
                             int* cacheHits = nullptr,
-                            int* cacheMisses = nullptr) {
+                            int* cacheMisses = nullptr,
+                            const IoCancel& cancel = {}) {
+    Q_UNUSED(connection);
+    Q_UNUSED(cancel);
     // A streamed video holds no bytes locally, so there is no embedded
     // telemetry to find and no point in a parser saying so. It plays; it just
-    // does not carry laps of its own.
+    // does not carry laps of its own. Pairing lives in the recording sidecar.
     if (isStreamStub(path)) {
         IndexedSession result;
         result.unsupportedVideo = true;
         return result;
     }
-    const QString fingerprint = SessionMetadataCache::fingerprint(path);
+    const QString parserPath = telemetryPathForInput(path);
+    const QString fingerprint = SessionMetadataCache::fingerprint(
+        parserPath.isEmpty() ? path : parserPath);
     const SessionMetadataCache::Lookup cached = cache.lookup(fingerprint);
     if (cached.found && !cached.supported) {
         if (cacheHits) ++*cacheHits;
@@ -1389,7 +1398,8 @@ IndexedSession indexSession(const QString& path, SessionMetadataCache& cache,
         return result;
     }
     if (cached.found) {
-        auto handle = std::make_unique<SessionHandle>(path, cached.metadata);
+        auto handle =
+            std::make_unique<SessionHandle>(path, cached.metadata, parserPath);
         if (handle->hasSummary()) {
             if (cacheHits) ++*cacheHits;
             IndexedSession result;
@@ -1399,9 +1409,11 @@ IndexedSession indexSession(const QString& path, SessionMetadataCache& cache,
     }
 
     if (cacheMisses) ++*cacheMisses;
-    auto handle = std::make_unique<SessionHandle>(path);
+    auto handle =
+        std::make_unique<SessionHandle>(path, QJsonObject{}, parserPath);
     const bool supported = handle->loadSummaryForIndex();
-    cache.store(fingerprint, path, supported,
+    cache.store(fingerprint, parserPath.isEmpty() ? path : parserPath,
+                supported,
                 supported ? handle->metadataForCache() : QJsonObject{});
     IndexedSession result;
     if (!supported) {
@@ -1763,7 +1775,7 @@ QString cachePathFor(const LibraryLocation& location) {
 /// path when the location cannot contribute to this scan, and always reports
 /// a status line for the preferences list.
 QString resolveLocationDirectory(const LibraryLocation& location,
-                                 QString* status) {
+                                 QString* status, const IoCancel& cancel = {}) {
     if (!location.enabled) {
         *status = QStringLiteral("Disabled");
         return {};
@@ -1782,7 +1794,8 @@ QString resolveLocationDirectory(const LibraryLocation& location,
         return location.target;
     }
 
-    const RemoteSyncResult synced = syncConnection(connectionFor(location));
+    const RemoteSyncResult synced =
+        syncConnection(connectionFor(location), cancel);
     *status = synced.status;
     if (!synced.success || synced.cachePath.isEmpty()) return {};
     return synced.cachePath;
@@ -1790,7 +1803,8 @@ QString resolveLocationDirectory(const LibraryLocation& location,
 
 std::shared_ptr<SessionScanResult> scanLibraryLocations(
     const QVector<LibraryLocation>& locations, const QSet<QString>& extraPaths,
-    const QString&, const QSet<QString>& openPaths, qint64 cacheLimitBytes) {
+    const QString& sessionIndexPath, const QSet<QString>& openPaths,
+    qint64 cacheLimitBytes, const IoCancel& cancel = {}) {
     QElapsedTimer timer;
     timer.start();
     auto result = std::make_shared<SessionScanResult>();
@@ -1807,11 +1821,14 @@ std::shared_ptr<SessionScanResult> scanLibraryLocations(
     QVector<QString> directories;
     directories.reserve(locations.size());
     for (const LibraryLocation& location : locations) {
+        if (ioCancelled(cancel)) break;
         QString status;
-        directories.append(resolveLocationDirectory(location, &status));
+        directories.append(resolveLocationDirectory(location, &status, cancel));
         result->locationStatuses.insert(location.id, status);
     }
     enforceCacheBudget(cacheLimitBytes, openPaths);
+
+    SessionMetadataCache indexCache(sessionIndexPath);
 
     for (int index = 0; index < locations.size(); ++index) {
         const LibraryLocation& location = locations[index];
@@ -1829,6 +1846,7 @@ std::shared_ptr<SessionScanResult> scanLibraryLocations(
         QSet<QString> sourcePaths;
         QDirIterator it(directory, filters, QDir::Files,
                         QDirIterator::Subdirectories);
+        const RemoteConnection remote = connectionFor(location);
         while (it.hasNext()) {
             it.next();
             if (it.fileName() == QStringLiteral("TRACK.yml")) {
@@ -1842,6 +1860,10 @@ std::shared_ptr<SessionScanResult> scanLibraryLocations(
             const QString canonical = resolved.canonicalFilePath().isEmpty()
                                           ? resolved.absoluteFilePath()
                                           : resolved.canonicalFilePath();
+            if (ioCancelled(cancel)) break;
+            if (location.isConnection())
+                indexSession(canonical, indexCache, &remote, nullptr, nullptr,
+                             cancel);
             sourcePaths.insert(canonical);
             uniquePaths.insert(canonical);
         }
@@ -1858,6 +1880,7 @@ std::shared_ptr<SessionScanResult> scanLibraryLocations(
             source.insert(QStringLiteral("name"), location.name.trimmed());
         result->fileSources.append(source);
     }
+    indexCache.save();
     result->trackMetadataPaths =
         QStringList(metadataPaths.cbegin(), metadataPaths.cend());
     std::sort(result->trackMetadataPaths.begin(),
@@ -1883,29 +1906,30 @@ std::shared_ptr<SessionScanResult> scanLibraryLocations(
     result->elapsedMs = timer.elapsed();
     return result;
 }
-
 std::shared_ptr<SidebarMetadataResult> loadSidebarMetadata(
-    const QString& path, const QString& cachePath) {
+    const QString& path, const QString& cachePath,
+    const RemoteConnection& connection) {
     auto result = std::make_shared<SidebarMetadataResult>();
     result->path = path;
     result->metadata =
         omatrack::track_metadata::readHierarchy(QFileInfo(path).absolutePath());
     SessionMetadataCache cache(cachePath);
-    IndexedSession indexed = indexSession(path, cache);
+    IndexedSession indexed = indexSession(
+        path, cache, connection.id.isEmpty() ? nullptr : &connection);
     cache.save();
     result->handle = std::move(indexed.handle);
     result->unsupportedVideo = indexed.unsupportedVideo;
     return result;
 }
 
-std::shared_ptr<FileOpenResult> openIndexedFile(const QString& path,
-                                                const QString& cachePath,
-                                                const QVariantMap& metadata,
-                                                bool expectTelemetry) {
+std::shared_ptr<FileOpenResult> openIndexedFile(
+    const QString& path, const QString& cachePath, const QVariantMap& metadata,
+    bool expectTelemetry, const RemoteConnection& connection) {
     auto result = std::make_shared<FileOpenResult>();
     result->path = path;
     SessionMetadataCache cache(cachePath);
-    IndexedSession indexed = indexSession(path, cache);
+    IndexedSession indexed = indexSession(
+        path, cache, connection.id.isEmpty() ? nullptr : &connection);
     if (!indexed.handle && expectTelemetry && isVideoPath(path) &&
         !isStreamStub(path)) {
         auto handle = std::make_unique<SessionHandle>(path);
@@ -1923,13 +1947,25 @@ std::shared_ptr<FileOpenResult> openIndexedFile(const QString& path,
         result->standaloneVideo = indexed.unsupportedVideo;
         return result;
     }
+    if (isStreamStub(path)) {
+        const QString etag = cachedObjectEtag(connection, path);
+        const QString extractError =
+            materializeAimExtract(connection, path, etag);
+        if (!extractError.isEmpty()) {
+            result->error = extractError;
+            cache.save();
+            return result;
+        }
+        indexed.handle->setTelemetryPath(telemetryOpenPath(&connection, path));
+    }
     const LapEntry* lap = bestLap(*indexed.handle);
     if (!lap && indexed.handle->isVideo()) {
         if (!indexed.handle->loadSummaryForOpen(&result->error)) {
             cache.save();
             return result;
         }
-        const QString fingerprint = SessionMetadataCache::fingerprint(path);
+        const QString fingerprint =
+            SessionMetadataCache::fingerprint(indexed.handle->telemetryPath());
         cache.store(fingerprint, path, true,
                     indexed.handle->metadataForCache());
         lap = bestLap(*indexed.handle);
@@ -1945,13 +1981,12 @@ std::shared_ptr<FileOpenResult> openIndexedFile(const QString& path,
                       "No usable laps were found in this telemetry file");
         return result;
     }
-    result->lap =
-        loadSessionLap(path, indexed.handle->sessionKey(), *lap, metadata);
+    result->lap = loadSessionLap(indexed.handle->telemetryPath(),
+                                 indexed.handle->sessionKey(), *lap, metadata);
     if (!result->lap->error.isEmpty()) result->error = result->lap->error;
     result->handle = std::move(indexed.handle);
     return result;
 }
-}  // namespace
 
 // ── TelemetryStore ──────────────────────────────────────────────────
 
@@ -1985,18 +2020,16 @@ TelemetryStore::TelemetryStore(QObject* parent) : QObject(parent) {
         requestCornerConsistency();
     });
     loadPreferences();
+    // Keep the documented default usable even when an existing config has no
+    // folder location yet (for example, after locations was hand-edited to
+    // an empty list).
+    defaultTelemetryDirectory();
     loadLocations();
     loadChannelsConfig();
     // A fresh install gets a real omatrack.yml immediately, so the defaults
     // are visible and hand-editable instead of implicit.
     if (YamlConfig::instance().isFresh()) savePreferences();
 
-    atlasNetwork_ = new QNetworkAccessManager(this);
-    connect(atlasNetwork_, &QNetworkAccessManager::sslErrors, this,
-            [](QNetworkReply* reply, const QList<QSslError>& errors) {
-                for (const QSslError& e : errors)
-                    qWarning() << "Track-atlas TLS error:" << e.errorString();
-            });
     atlasTimer_ = new QTimer(this);
     atlasTimer_->setInterval(kTrackAtlasCheckIntervalMs);
     connect(atlasTimer_, &QTimer::timeout, this,
@@ -2009,6 +2042,11 @@ TelemetryStore::TelemetryStore(QObject* parent) : QObject(parent) {
 }
 
 TelemetryStore::~TelemetryStore() {
+    if (scanCancel_) scanCancel_->store(true);
+    if (atlasCancel_) atlasCancel_->store(true);
+    cancelVideoDownloads();
+    if (scanWatcher_ && scanWatcher_->isRunning())
+        scanWatcher_->waitForFinished();
     sidebarMetadataPool_.waitForDone();
     if (s_storeInstance == this) s_storeInstance.clear();
 }
@@ -2479,54 +2517,60 @@ void TelemetryStore::requestAtlasCenterline(const QString& trackSlug,
 
     const QUrl url(kTrackAtlasRawBase + trackSlug + QStringLiteral("/raw/") +
                    relativePath);
-    QNetworkRequest request(url);
-    request.setHeader(
-        QNetworkRequest::UserAgentHeader,
-        QStringLiteral("Omatrack/") + QCoreApplication::applicationVersion());
-    request.setTransferTimeout(15000);
-    QNetworkReply* reply = atlasNetwork_->get(request);
-    connect(
-        reply, &QNetworkReply::finished, this,
-        [this, reply, trackSlug, layoutId, key]() {
-            const auto cleanup =
-                qScopeGuard([reply]() { reply->deleteLater(); });
-            atlasGeometryRequests_.remove(key);
-            if (reply->error() != QNetworkReply::NoError) {
-                if (!atlasCenterlines_.contains(key)) {
-                    trackAtlasStatus_ = QStringLiteral(
-                        "Track-atlas layout geometry unavailable");
-                    emit trackAtlasChanged();
+    const quint64 generation = atlasGeneration_;
+    const IoCancel cancel = atlasCancel_;
+    const QString version = QCoreApplication::applicationVersion();
+    const QString cachePath = trackAtlasGeometryCachePath(trackSlug, layoutId);
+    auto* watcher = new QFutureWatcher<QByteArray>(this);
+    connect(watcher, &QFutureWatcher<QByteArray>::finished, this,
+            [this, watcher, key, generation, cachePath]() {
+                const QByteArray payload = watcher->result();
+                watcher->deleteLater();
+                atlasGeometryRequests_.remove(key);
+                if (generation != atlasGeneration_) return;
+                if (payload.isEmpty()) {
+                    if (!atlasCenterlines_.contains(key)) {
+                        trackAtlasStatus_ = QStringLiteral(
+                            "Track-atlas layout geometry unavailable");
+                        emit trackAtlasChanged();
+                    }
+                    return;
                 }
-                return;
-            }
-
-            const QByteArray payload = reply->readAll();
-            QVector<QPointF> centerline =
-                omatrack::trackatlas::parseCenterline(payload);
-            if (centerline.isEmpty()) {
-                if (!atlasCenterlines_.contains(key)) {
-                    trackAtlasStatus_ =
-                        QStringLiteral("Track-atlas layout geometry invalid");
-                    emit trackAtlasChanged();
+                QVector<QPointF> centerline =
+                    omatrack::trackatlas::parseCenterline(payload);
+                if (centerline.isEmpty()) {
+                    if (!atlasCenterlines_.contains(key)) {
+                        trackAtlasStatus_ = QStringLiteral(
+                            "Track-atlas layout geometry invalid");
+                        emit trackAtlasChanged();
+                    }
+                    return;
                 }
-                return;
-            }
-            atlasCenterlines_.insert(key, std::move(centerline));
-            atlasSpatialMappings_.clear();
-
-            QSaveFile output(trackAtlasGeometryCachePath(trackSlug, layoutId));
-            const bool opened = output.open(QIODevice::WriteOnly);
-            const bool written =
-                opened && output.write(payload) == qsizetype(payload.size());
-            const bool cached = written && output.commit();
-            loadCornersForPrimary();
-            if (!cached) {
-                trackAtlasStatus_ = QStringLiteral(
-                    "Track-atlas geometry ready; cache write failed");
-                emit trackAtlasChanged();
-            }
-            emit cornersChanged();
-        });
+                atlasCenterlines_.insert(key, std::move(centerline));
+                atlasSpatialMappings_.clear();
+                loadCornersForPrimary();
+                emit cornersChanged();
+            });
+    watcher->setFuture(QtConcurrent::run([url, cancel, version, cachePath]() {
+        QNetworkAccessManager unused;
+        const HttpResponse response = sendFollowing(
+            unused, url, "GET",
+            [version](const QUrl& hop) {
+                QNetworkRequest request = makeRequest(hop);
+                request.setHeader(QNetworkRequest::UserAgentHeader,
+                                  QStringLiteral("Omatrack/") + version);
+                return request;
+            },
+            {}, cancel);
+        if (ioCancelled(cancel) || response.status != 200 ||
+            response.body.isEmpty())
+            return QByteArray();
+        QSaveFile output(cachePath);
+        if (output.open(QIODevice::WriteOnly) &&
+            output.write(response.body) == qsizetype(response.body.size()))
+            output.commit();
+        return response.body;
+    }));
 }
 
 bool TelemetryStore::parseTrackAtlas(const QByteArray& payload) {
@@ -2582,40 +2626,52 @@ void TelemetryStore::updateTrackAtlas(bool force) {
         if (ageSeconds >= 0 && ageSeconds < kTrackAtlasMaxAgeSeconds) return;
     }
 
+    if (atlasCancel_) atlasCancel_->store(true);
+    atlasCancel_ = std::make_shared<std::atomic<bool>>(false);
+    const quint64 generation = ++atlasGeneration_;
+    const IoCancel cancel = atlasCancel_;
+    const QString version = QCoreApplication::applicationVersion();
+    const QString cachePath = trackAtlasCachePath();
     trackAtlasStatus_ = QStringLiteral("Updating track-atlas…");
     emit trackAtlasChanged();
-    QNetworkRequest request(kTrackAtlasUrl);
-    request.setHeader(
-        QNetworkRequest::UserAgentHeader,
-        QStringLiteral("Omatrack/") + QCoreApplication::applicationVersion());
-    request.setTransferTimeout(15000);
-    QNetworkReply* reply = atlasNetwork_->get(request);
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
-        const auto cleanup = qScopeGuard([reply]() { reply->deleteLater(); });
-        if (reply->error() != QNetworkReply::NoError) {
-            trackAtlasStatus_ =
-                atlasTracks_.isEmpty()
-                    ? QStringLiteral("Track-atlas unavailable")
-                    : QStringLiteral("Track-atlas cache in use");
-            emit trackAtlasChanged();
-            return;
-        }
-        const QByteArray payload = reply->readAll();
-        if (!parseTrackAtlas(payload)) {
-            trackAtlasStatus_ = QStringLiteral("Track-atlas update invalid");
-            emit trackAtlasChanged();
-            return;
-        }
-        QSaveFile output(trackAtlasCachePath());
-        const bool opened = output.open(QIODevice::WriteOnly);
-        const bool written =
-            opened && output.write(payload) == qsizetype(payload.size());
-        if (!written || !output.commit()) {
-            trackAtlasStatus_ =
-                QStringLiteral("Track-atlas cache write failed");
-            emit trackAtlasChanged();
-        }
-    });
+    auto* watcher = new QFutureWatcher<QByteArray>(this);
+    connect(watcher, &QFutureWatcher<QByteArray>::finished, this,
+            [this, watcher, generation]() {
+                const QByteArray payload = watcher->result();
+                watcher->deleteLater();
+                if (generation != atlasGeneration_) return;
+                if (payload.isEmpty()) {
+                    trackAtlasStatus_ =
+                        atlasTracks_.isEmpty()
+                            ? QStringLiteral("Track-atlas unavailable")
+                            : QStringLiteral("Track-atlas cache in use");
+                    emit trackAtlasChanged();
+                    return;
+                }
+                if (!parseTrackAtlas(payload)) {
+                    trackAtlasStatus_ =
+                        QStringLiteral("Track-atlas update invalid");
+                    emit trackAtlasChanged();
+                }
+            });
+    watcher->setFuture(QtConcurrent::run([cancel, version, cachePath]() {
+        QNetworkAccessManager unused;
+        const HttpResponse response = sendFollowing(
+            unused, kTrackAtlasUrl, "GET",
+            [version](const QUrl& hop) {
+                QNetworkRequest request = makeRequest(hop);
+                request.setHeader(QNetworkRequest::UserAgentHeader,
+                                  QStringLiteral("Omatrack/") + version);
+                return request;
+            },
+            {}, cancel);
+        if (ioCancelled(cancel) || response.status != 200) return QByteArray();
+        QSaveFile output(cachePath);
+        if (output.open(QIODevice::WriteOnly) &&
+            output.write(response.body) == qsizetype(response.body.size()))
+            output.commit();
+        return response.body;
+    }));
 }
 
 // ── scanning / grouping ─────────────────────────────────────────────
@@ -2630,6 +2686,7 @@ void TelemetryStore::scan() {
     closedTracks_.clear();
     if (loading_) {
         rescanPending_ = true;
+        if (scanCancel_) scanCancel_->store(true);
         return;
     }
     startSessionScan();
@@ -2640,6 +2697,7 @@ void TelemetryStore::startSessionScan() {
         loading_ = true;
         emit loadingChanged();
     }
+    scanCancel_ = std::make_shared<std::atomic<bool>>(false);
     const QVector<LibraryLocation> locations = locations_;
     const QSet<QString> extraPaths = transientSessionPaths_;
     const QString cachePath = sessionIndexCachePath();
@@ -2649,10 +2707,11 @@ void TelemetryStore::startSessionScan() {
     for (const SessionHandle* session : {primarySession_, compareSession_})
         if (session) openPaths.insert(session->path());
     const qint64 limit = cacheLimitBytes_;
+    const IoCancel cancel = scanCancel_;
     scanWatcher_->setFuture(QtConcurrent::run(
-        [locations, extraPaths, cachePath, openPaths, limit]() {
+        [locations, extraPaths, cachePath, openPaths, limit, cancel]() {
             return scanLibraryLocations(locations, extraPaths, cachePath,
-                                        openPaths, limit);
+                                        openPaths, limit, cancel);
         }));
 }
 
@@ -2682,6 +2741,7 @@ void TelemetryStore::finishSessionScan() {
     emit loadingChanged();
     emit sessionsChanged();
     emit locationsChanged();
+    restoreLastSelection();
 }
 
 void TelemetryStore::addSessionDirectory(const QString& dirPath) {
@@ -2708,7 +2768,8 @@ void TelemetryStore::openFile(const QString& filePath) {
     queueFileOpen(filePath, FileOpenRole::Automatic);
 }
 
-void TelemetryStore::queueFileOpen(const QString& filePath, FileOpenRole role) {
+void TelemetryStore::queueFileOpen(const QString& filePath, FileOpenRole role,
+                                   int lapId) {
     if (filePath.trimmed().isEmpty()) {
         emit operationError(QStringLiteral("Unable to open file"),
                             QStringLiteral("No file was selected."));
@@ -2743,9 +2804,20 @@ void TelemetryStore::queueFileOpen(const QString& filePath, FileOpenRole role) {
         transientSessionPaths_.insert(telemetryPath);
         rescanPending_ = true;
     }
-    pendingFileOpens_.append(PendingFileOpen{telemetryPath, role});
+    pendingFileOpens_.append(PendingFileOpen{telemetryPath, role, lapId});
     pauseSidebarMetadataQueue();
     startNextFileOpen();
+}
+
+void TelemetryStore::restoreLastSelection() {
+    const QString primary = lastPrimaryKey_;
+    const int primaryLap = lastPrimaryLap_;
+    const QString compare = lastCompareKey_;
+    const int compareLap = lastCompareLap_;
+    if (!primary.isEmpty() && QFileInfo::exists(primary))
+        queueFileOpen(primary, FileOpenRole::Primary, primaryLap);
+    if (!compare.isEmpty() && compare != primary && QFileInfo::exists(compare))
+        queueFileOpen(compare, FileOpenRole::Compare, compareLap);
 }
 
 void TelemetryStore::startNextFileOpen() {
@@ -2767,7 +2839,8 @@ void TelemetryStore::startNextFileOpen() {
     auto* watcher = new QFutureWatcher<std::shared_ptr<FileOpenResult>>(this);
     connect(
         watcher, &QFutureWatcher<std::shared_ptr<FileOpenResult>>::finished,
-        this, [this, watcher, role = request.role]() {
+        this,
+        [this, watcher, role = request.role, wantedLap = request.lapId]() {
             std::shared_ptr<FileOpenResult> result = watcher->result();
             watcher->deleteLater();
             if (result->standaloneVideo) {
@@ -2814,13 +2887,26 @@ void TelemetryStore::startNextFileOpen() {
                     std::move(result->lap->unified), result->lap->driverId,
                     result->lap->forceDriverId);
                 if (added) emit sessionsChanged();
-                if (role == FileOpenRole::Compare ||
-                    (role == FileOpenRole::Automatic && session->isVideo() &&
-                     primarySession_ && primarySession_->isVideo() &&
-                     primarySession_ != session)) {
-                    setCompare(session, result->lap->lapId);
+                int selectedLap = result->lap->lapId;
+                if (wantedLap >= 0 && wantedLap != selectedLap) {
+                    for (const LapEntry& lap : session->laps()) {
+                        if (lap.lapId == wantedLap) {
+                            selectedLap = wantedLap;
+                            break;
+                        }
+                    }
+                }
+                if (selectedLap != result->lap->lapId) {
+                    requestLapLoad(session, selectedLap,
+                                   role == FileOpenRole::Compare);
+                } else if (role == FileOpenRole::Compare ||
+                           (role == FileOpenRole::Automatic &&
+                            session->isVideo() && primarySession_ &&
+                            primarySession_->isVideo() &&
+                            primarySession_ != session)) {
+                    setCompare(session, selectedLap);
                 } else {
-                    setPrimary(session, result->lap->lapId);
+                    setPrimary(session, selectedLap);
                     viewStart_ = 0.0;
                     viewEnd_ = 1.0;
                 }
@@ -2852,9 +2938,13 @@ void TelemetryStore::startNextFileOpen() {
             }
         });
     const bool expectTelemetry = request.role != FileOpenRole::Automatic;
-    watcher->setFuture(
-        QtConcurrent::run([path, cachePath, metadata, expectTelemetry]() {
-            return openIndexedFile(path, cachePath, metadata, expectTelemetry);
+    const LibraryLocation* location = connectionHolding(path);
+    const RemoteConnection remote =
+        location ? connectionFor(*location) : RemoteConnection{};
+    watcher->setFuture(QtConcurrent::run(
+        [path, cachePath, metadata, expectTelemetry, remote]() {
+            return openIndexedFile(path, cachePath, metadata, expectTelemetry,
+                                   remote);
         }));
 }
 
@@ -3119,22 +3209,27 @@ void TelemetryStore::startNextVideoDownload() {
                     received->store(got);
                     total->store(declared);
                     return !cancelled->load();
-                });
+                },
+                cancelled);
         }));
 }
 
 void TelemetryStore::clearCache() {
     cancelVideoDownloads();
-    omatrack::clearCache();
-    streamUrls_.clear();
-    streamedPaths_.clear();
-    // The library was scanning those files a moment ago, so re-scan rather
-    // than leave rows pointing at paths that no longer exist. Every enabled
-    // connection downloads again as part of it.
-    locationStatuses_.clear();
-    locationFileCounts_.clear();
-    emit locationsChanged();
-    scan();
+    if (scanCancel_) scanCancel_->store(true);
+    auto* watcher = new QFutureWatcher<qint64>(this);
+    connect(watcher, &QFutureWatcher<qint64>::finished, this,
+            [this, watcher]() {
+                watcher->deleteLater();
+                streamUrls_.clear();
+                streamedPaths_.clear();
+                locationStatuses_.clear();
+                locationFileCounts_.clear();
+                emit locationsChanged();
+                scan();
+            });
+    watcher->setFuture(
+        QtConcurrent::run([]() { return omatrack::clearCache(); }));
 }
 
 QVariantList TelemetryStore::libraryLocations() const {
@@ -3360,9 +3455,12 @@ void TelemetryStore::startNextSidebarMetadataLoad() {
                                             sidebarFileDetails(result->path));
                 startNextSidebarMetadataLoad();
             });
-        watcher->setFuture(
-            QtConcurrent::run(&sidebarMetadataPool_, [path, cachePath]() {
-                return loadSidebarMetadata(path, cachePath);
+        const LibraryLocation* location = connectionHolding(path);
+        const RemoteConnection remote =
+            location ? connectionFor(*location) : RemoteConnection{};
+        watcher->setFuture(QtConcurrent::run(
+            &sidebarMetadataPool_, [path, cachePath, remote]() {
+                return loadSidebarMetadata(path, cachePath, remote);
             }));
         return;
     }
@@ -3372,6 +3470,11 @@ void TelemetryStore::copyFilePath(const QString& path) const {
     const QString filePath = canonicalInputPath(path);
     if (filePath.isEmpty()) return;
     QGuiApplication::clipboard()->setText(filePath);
+}
+
+QString TelemetryStore::locationIdForPath(const QString& path) const {
+    const LibraryLocation* location = connectionHolding(path);
+    return location ? location->id : QString();
 }
 
 void TelemetryStore::openContainingFolder(const QString& path) const {
@@ -3481,9 +3584,38 @@ QVariantList TelemetryStore::fileSources() const {
     };
 
     QVariantList sources;
-    sources.reserve(fileSources_.size() + 1);
+    sources.reserve(fileSources_.size() + 2);
     for (const QVariant& source : fileSources_)
         sources.append(enrichNode(enrichNode, source.toMap()));
+
+    QVariantList recentChildren;
+    recentChildren.reserve(recentFiles_.size());
+    for (const QString& path : recentFiles_) {
+        const QFileInfo info(path);
+        QVariantMap recentFile{
+            {QStringLiteral("role"), QStringLiteral("file")},
+            {QStringLiteral("name"), info.fileName()},
+            {QStringLiteral("path"), path},
+            {QStringLiteral("available"), info.isFile()},
+            {QStringLiteral("modifiedMs"),
+             info.lastModified().toMSecsSinceEpoch()},
+            {QStringLiteral("modified"),
+             info.lastModified().toString(QStringLiteral("yyyy-MM-dd HH:mm"))},
+            {QStringLiteral("children"), QVariantList{}},
+        };
+        recentChildren.append(enrichNode(enrichNode, recentFile));
+    }
+    if (!recentChildren.isEmpty()) {
+        sources.prepend(QVariantMap{
+            {QStringLiteral("role"), QStringLiteral("recent")},
+            {QStringLiteral("name"), QStringLiteral("Recent")},
+            {QStringLiteral("path"), QStringLiteral("sidebar-recent")},
+            {QStringLiteral("available"), true},
+            {QStringLiteral("fileCount"), recentChildren.size()},
+            {QStringLiteral("pinned"), false},
+            {QStringLiteral("children"), recentChildren},
+        });
+    }
 
     auto findPinnedNode = [](auto&& self, const QVariantMap& node,
                              const SidebarPin& pin) -> QVariantMap {
@@ -4814,6 +4946,7 @@ void TelemetryStore::requestLapLoad(SessionHandle* session, int lapId,
     pauseSidebarMetadataQueue();
     const std::shared_ptr<const UnifiedLap> cached = session->unifiedLap(lapId);
     if (cached) {
+        if (session->isVideo()) rememberRecentFile(session->path());
         if (compare) {
             ++compareLoadGeneration_;
             setCompareLapLoading(false);
@@ -4851,6 +4984,7 @@ void TelemetryStore::requestLapLoad(SessionHandle* session, int lapId,
         setPrimaryLapLoading(true);
     }
     const QString path = session->path();
+    const QString parserPath = session->telemetryPath();
     const QString sessionKey = session->sessionKey();
     const LapEntry lap = *wanted;
     const QVariantMap metadata =
@@ -4891,6 +5025,7 @@ void TelemetryStore::requestLapLoad(SessionHandle* session, int lapId,
             session->adoptLoadedLap(result->lapId, std::move(result->source),
                                     std::move(result->unified),
                                     result->driverId, result->forceDriverId);
+            if (session->isVideo()) rememberRecentFile(session->path());
             if (compare) {
                 setCompare(session, result->lapId);
                 setCompareLapLoading(false);
@@ -4900,9 +5035,10 @@ void TelemetryStore::requestLapLoad(SessionHandle* session, int lapId,
             }
             resumeSidebarMetadataQueue();
         });
-    watcher->setFuture(QtConcurrent::run([path, sessionKey, lap, metadata]() {
-        return loadSessionLap(path, sessionKey, lap, metadata);
-    }));
+    watcher->setFuture(
+        QtConcurrent::run([parserPath, sessionKey, lap, metadata]() {
+            return loadSessionLap(parserPath, sessionKey, lap, metadata);
+        }));
 }
 
 void TelemetryStore::setPrimary(SessionHandle* session, int lapId) {
@@ -5600,10 +5736,10 @@ QVariantList TelemetryStore::cornerComparison() const {
         if (compare) {
             const double startDistance =
                 sample(primary->distance, corner.start);
-            const double endDistance = sample(primary->distance, corner.end);
             CornerZone compareCorner = corner;
-            compareCorner.start = fractionAtDistance(*compare, startDistance);
-            compareCorner.end = fractionAtDistance(*compare, endDistance);
+            compareCorner.start =
+                compareFractionForPrimaryFraction(corner.start);
+            compareCorner.end = compareFractionForPrimaryFraction(corner.end);
             const QVariantMap compareStats = stats(*compare, compareCorner);
             // Map a compare-lap event (metres from that lap's zone start)
             // onto the primary lap's distance axis through the same
@@ -5842,6 +5978,7 @@ void TelemetryStore::prefetchNeighbourLaps() {
     if (!primarySession_) return;
     const QString sessionKey = primarySession_->sessionKey();
     const QString path = primarySession_->path();
+    const QString parserPath = primarySession_->telemetryPath();
     const QVariantMap metadata =
         recordingMetadataForPath(path, recordingMetadata_);
 
@@ -5887,8 +6024,8 @@ void TelemetryStore::prefetchNeighbourLaps() {
                 if (session == primarySession_) emit viewChanged();
             });
         watcher->setFuture(
-            QtConcurrent::run([path, sessionKey, lap, metadata]() {
-                return loadSessionLap(path, sessionKey, lap, metadata);
+            QtConcurrent::run([parserPath, sessionKey, lap, metadata]() {
+                return loadSessionLap(parserPath, sessionKey, lap, metadata);
             }));
     }
 }
@@ -6030,6 +6167,7 @@ void TelemetryStore::requestTraceConfidence() {
     traceConfidenceLoading_ = true;
     emit traceConfidenceChanged();
     const QString path = primarySession_->path();
+    const QString parserPath = primarySession_->telemetryPath();
     const QVariantMap metadata =
         recordingMetadataForPath(path, recordingMetadata_);
     auto* watcher =
@@ -6056,8 +6194,9 @@ void TelemetryStore::requestTraceConfidence() {
             emit traceConfidenceChanged();
         });
     watcher->setFuture(
-        QtConcurrent::run([path, key, ranked, metadata, primary]() {
-            return loadSessionConfidence(path, key, ranked, metadata, primary);
+        QtConcurrent::run([parserPath, key, ranked, metadata, primary]() {
+            return loadSessionConfidence(parserPath, key, ranked, metadata,
+                                         primary);
         }));
 }
 
@@ -6110,6 +6249,7 @@ void TelemetryStore::requestCornerConsistency() {
     if (ranked.isEmpty()) return;
 
     const QString path = primarySession_->path();
+    const QString parserPath = primarySession_->telemetryPath();
     const QVariantMap metadata =
         recordingMetadataForPath(path, recordingMetadata_);
     auto* watcher =
@@ -6158,9 +6298,9 @@ void TelemetryStore::requestCornerConsistency() {
             emit cornerConsistencyChanged();
         });
     watcher->setFuture(
-        QtConcurrent::run([path, sessionKey, key, ranked, metadata,
+        QtConcurrent::run([parserPath, sessionKey, key, ranked, metadata,
                            startDistance, endDistance]() {
-            return loadCornerConsistency(path, sessionKey, key, ranked,
+            return loadCornerConsistency(parserPath, sessionKey, key, ranked,
                                          metadata, startDistance, endDistance);
         }));
 }
@@ -6375,29 +6515,10 @@ const std::vector<double>* TelemetryStore::extraChannelData(
                              QString::number(lapId) + QStringLiteral("|") + key;
     auto cached = extraChannelCache_.constFind(cacheKey);
     if (cached != extraChannelCache_.cend()) return cached.value().get();
+    if (extraChannelLoading_.contains(cacheKey)) return nullptr;
 
     const QString rawName = key.mid(4);
-    // src_ is freed after unification to save ~300 MB per session.
-    // Re-open the file on demand for the opt-in raw-channel feature.
-    const omatrack::TelemetrySource* source = session->source();
-    std::unique_ptr<omatrack::TelemetrySource> reopened;
-    if (!source) {
-        std::string error;
-        reopened = omatrack::TelemetrySource::open(
-            session->path().toStdString(), &error);
-        if (!reopened) return nullptr;
-        source = reopened.get();
-    }
-    int channelIndex = -1;
-    const auto& channels = source->channels();
-    for (int index = 0; index < int(channels.size()); ++index) {
-        if (QString::fromStdString(channels[size_t(index)].name) == rawName) {
-            channelIndex = index;
-            break;
-        }
-    }
-    if (channelIndex < 0) return nullptr;
-
+    const QString parserPath = session->telemetryPath();
     const LapEntry* lap = nullptr;
     for (const LapEntry& candidate : session->laps()) {
         if (candidate.lapId == lapId) {
@@ -6406,20 +6527,52 @@ const std::vector<double>* TelemetryStore::extraChannelData(
         }
     }
     if (!lap || lap->endTime <= lap->startTime) return nullptr;
-    const int sampleCount =
-        int(std::floor((lap->endTime - lap->startTime) * 50.0)) + 1;
-    auto values =
-        std::make_shared<std::vector<double>>(size_t(sampleCount), 0.0);
-    for (int sample = 0; sample < sampleCount; ++sample) {
-        double value = 0.0;
-        const double time = lap->startTime + double(sample) / 50.0;
-        if (source->sampleAt(size_t(channelIndex), time, &value))
-            (*values)[size_t(sample)] = value;
-        else if (sample > 0)
-            (*values)[size_t(sample)] = (*values)[size_t(sample - 1)];
-    }
-    auto inserted = extraChannelCache_.insert(cacheKey, std::move(values));
-    return inserted.value().get();
+    const double startTime = lap->startTime;
+    const double endTime = lap->endTime;
+    extraChannelLoading_.insert(cacheKey);
+    auto* self = const_cast<TelemetryStore*>(this);
+    auto* watcher =
+        new QFutureWatcher<std::shared_ptr<std::vector<double>>>(self);
+    QObject::connect(
+        watcher,
+        &QFutureWatcher<std::shared_ptr<std::vector<double>>>::finished, self,
+        [self, watcher, cacheKey]() {
+            auto values = watcher->result();
+            watcher->deleteLater();
+            self->extraChannelLoading_.remove(cacheKey);
+            if (values) self->extraChannelCache_.insert(cacheKey, values);
+            emit self->channelConfigChanged();
+        });
+    watcher->setFuture(QtConcurrent::run([parserPath, rawName, startTime,
+                                          endTime]() {
+        std::string error;
+        auto source = TelemetrySource::open(parserPath.toStdString(), &error);
+        if (!source) return std::shared_ptr<std::vector<double>>{};
+        int channelIndex = -1;
+        const auto& channels = source->channels();
+        for (int index = 0; index < int(channels.size()); ++index) {
+            if (QString::fromStdString(channels[size_t(index)].name) ==
+                rawName) {
+                channelIndex = index;
+                break;
+            }
+        }
+        if (channelIndex < 0) return std::shared_ptr<std::vector<double>>{};
+        const int sampleCount =
+            int(std::floor((endTime - startTime) * 50.0)) + 1;
+        auto values =
+            std::make_shared<std::vector<double>>(size_t(sampleCount), 0.0);
+        for (int sample = 0; sample < sampleCount; ++sample) {
+            double value = 0.0;
+            const double time = startTime + double(sample) / 50.0;
+            if (source->sampleAt(size_t(channelIndex), time, &value))
+                (*values)[size_t(sample)] = value;
+            else if (sample > 0)
+                (*values)[size_t(sample)] = (*values)[size_t(sample - 1)];
+        }
+        return values;
+    }));
+    return nullptr;
 }
 
 QVariantList TelemetryStore::channelSettings() const {
@@ -6795,10 +6948,14 @@ void TelemetryStore::markRecentlyUsed(const QString& path) const {
 
 const LibraryLocation* TelemetryStore::connectionHolding(
     const QString& path) const {
+    const QString normalized = QFileInfo(path).absoluteFilePath();
     for (const LibraryLocation& location : locations_) {
         if (!location.isConnection()) continue;
-        const QString cache = cachePathFor(location);
-        if (!cache.isEmpty() && path.startsWith(cache + QLatin1Char('/')))
+        const QString cache =
+            QFileInfo(cachePathFor(location)).absoluteFilePath();
+        if (cache.isEmpty()) continue;
+        if (normalized == cache ||
+            normalized.startsWith(cache + QLatin1Char('/')))
             return &location;
     }
     return nullptr;
@@ -6849,6 +7006,14 @@ QUrl TelemetryStore::refreshedVideoSource(const QUrl& source) const {
 QUrl TelemetryStore::primaryVideoSource() const {
     if (!primarySession_ || !primarySession_->isVideo()) return {};
     return videoSourceFor(primarySession_->path());
+}
+
+QString TelemetryStore::localPathForVideoSource(const QUrl& source) const {
+    if (source.isLocalFile()) return source.toLocalFile();
+    const auto known =
+        streamedPaths_.constFind(source.toString(QUrl::RemoveQuery));
+    if (known != streamedPaths_.cend()) return known.value();
+    return {};
 }
 
 double TelemetryStore::primaryVideoTime() const {
