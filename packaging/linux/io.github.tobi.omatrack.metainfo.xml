@@ -24,6 +24,14 @@
   <url type="bugtracker">https://github.com/tobi/omatrack/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.9.11" date="2026-08-12">
+      <description>
+        <p>S3 and Google Cloud Storage library sources, streamed onboard video
+        with offline pin and signed-URL recovery, portable recording sidecars
+        and create-only AiM companions, automatic USB discovery, representative
+        lap selection, and non-blocking library I/O.</p>
+      </description>
+    </release>
     <release version="0.9.10" date="2026-08-10">
       <description>
         <p>Session-confidence trace bands, multi-lap brake-point consistency,

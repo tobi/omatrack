@@ -4,6 +4,8 @@ All notable user-facing changes are documented here.
 
 ## Unreleased
 
+## 0.9.11 — 2026-08-12
+
 - Library sync, Track Atlas refresh, cache clear, and raw-channel reloads
   no longer freeze the window. Network work runs on a dedicated I/O thread;
   a second Rescan cancels the one still in flight.
