@@ -4,6 +4,64 @@ All notable user-facing changes are documented here.
 
 ## Unreleased
 
+- Library sync, Track Atlas refresh, cache clear, and raw-channel reloads
+  no longer freeze the window. Network work runs on a dedicated I/O thread;
+  a second Rescan cancels the one still in flight.
+- A hidden `.<video filename>.json` recording sidecar can now make an external
+  MoTeC file and its video one session. The sidecar is synchronized before the
+  media, supplies the complete lap list and media seek anchors, and avoids both
+  a full video download and a probe of a zero-byte stream stand-in. A lone
+  remote AiM MP4 is extracted once; that client writes a hidden
+  `.<video filename>.ld` companion create-only so later clients skip the
+  video. Lap lists stay in the JSON sidecar. Right-click a connection — in Preferences or on its file-tree
+  root — to rescan the server.
+- Mounted USB telemetry is discovered automatically. A drive appears as a
+  transient `USB — …` sidebar section only when its recursive scan finds a
+  supported telemetry or video file, and disappears again after unmounting;
+  it is never added to `omatrack.yml`.
+
+- Opening a file selects a representative racing lap. Vendor-supplied
+  out, in, and fragment laps are classified the same way as heuristic
+  splits — short crossings and poor lap-distance coverage no longer win
+  as the session best.
+
+- Switching laps after opening a file keeps the traces. A half-finished
+  edit had left the store unable to adopt a loaded lap, so the first
+  selection worked and every later one drew an empty workspace.
+- A rescan no longer blanks the active and reference laps. The last pair
+  is opened again once the library snapshot is in place.
+- Corner comparison uses the same primary→reference track-station map as
+  traces and delta, instead of remapping the reference zone by raw metres.
+- Throttle maps to powertrain TPS when both pedal and TPS exist. Gear is
+  sampled as an integer so a 6→3 skip no longer invents 5 and 4.
+- GPS gaps stay empty instead of repeating the last fix. Speed units
+  accept `kph`/`kmh`. A missing brake or lift point is unset, not zero.
+- `omatrack-cli` picks the fastest complete racing lap, not an out-lap
+  that happens to be shorter than 30 seconds.
+- Right-clicking streamed video opens recording metadata from the cache
+  path, not the signed URL. Re-clicking the active file no longer jumps
+  back to the fastest lap.
+- Left and Right only seek video when the video pane is focused, so they
+  still step the trace cursor. Right seeks 15 seconds. Escape leaves
+  corner focus from anywhere in the window.
+- The header keeps the active driver in the usual muted colour; only the
+  “vs …” suffix is orange. Driver ID fields can be cleared. Removing a
+  library location asks first.
+
+- S3 listings from Cloudflare R2 now populate the library. R2 percent-encodes
+  object keys and only says so after the key list, so the previous parser
+  treated every object as outside the prefix and stored an empty cache.
+- Server listings now keep portable recording companions
+  (`.<video>.json`, `.<video>.ld`) next to the media. A miss on a lone AiM
+  MP4 extracts the `aimd` track and publishes those companions create-only so
+  other clients skip the parse. Right-click a connection — in
+  Preferences or on its file-tree root — to rescan the server.
+- Preferences library status now sits in a fixed column so the dots, messages
+  and file counts line up, and connection errors wrap instead of eliding.
+- The in-place corner panel is a three-column report card: label, bar or
+  gauge, signed value. The old Prim / Ref / Δ table is gone; speed uses
+  magnitude bars, brake / turn-in / throttle use a centre-zero gauge, and
+  gear is a pair of role-coloured tiles.
 - S3 and Google Cloud Storage buckets can now be telemetry sources, alongside
   WebDAV. Pick "S3 bucket" or "Google Cloud Storage" from "Connect…", give it
   an `s3://bucket/prefix` or `gs://bucket/prefix` address and an access key,

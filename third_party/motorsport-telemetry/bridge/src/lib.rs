@@ -783,6 +783,53 @@ pub unsafe extern "C" fn omatrack_sample_time_ns(
     )
 }
 
+/// Serialise an open handle to a MoTeC LD file. Lap markers stay in the
+/// recording JSON; no LDX companion is written.
+/// Returns 1 on success, 0 on error (`omatrack_last_error`).
+///
+/// # Safety
+/// `handle` must be NULL or a live `omatrack_open` handle. `ld_path` must be
+/// NULL or a valid NUL-terminated UTF-8 path.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_write_motec(
+    handle: *mut c_void,
+    ld_path: *const c_char,
+) -> c_int {
+    ffi_guard(stringify!(omatrack_write_motec), 0, || {
+        let Some(file) = as_file(handle) else {
+            set_error("omatrack_write_motec: null handle");
+            return 0;
+        };
+        if ld_path.is_null() {
+            set_error("omatrack_write_motec: null path");
+            return 0;
+        }
+        let path_str = match unsafe { CStr::from_ptr(ld_path) }.to_str() {
+            Ok(path) => path,
+            Err(_) => {
+                set_error("omatrack_write_motec: path is not valid UTF-8");
+                return 0;
+            }
+        };
+        match motec_telemetry::write_motec_bytes(
+            file.src.as_ref(),
+            &motec_telemetry::MotecMetadata::default(),
+        ) {
+            Ok(bytes) => match std::fs::write(path_str, bytes) {
+                Ok(()) => 1,
+                Err(error) => {
+                    set_error(format!("omatrack_write_motec: {error}"));
+                    0
+                }
+            },
+            Err(error) => {
+                set_error(format!("omatrack_write_motec: {error}"));
+                0
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

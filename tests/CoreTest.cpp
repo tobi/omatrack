@@ -9,7 +9,13 @@
 
 #include <QtTest>
 
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QTemporaryDir>
+
 #include <cmath>
+#include <limits>
 #include <numeric>
 
 using namespace omatrack;
@@ -62,6 +68,10 @@ private slots:
         // 1:23.551 — printf %.3f rounds 23.5510 to 3 decimals
         QCOMPARE(formatLapTime(83551), QString("1:23.551"));
     }
+    void tenMinutes() { QCOMPARE(formatLapTime(600000), QString("10:00.000")); }
+    void justUnderAMinute() {
+        QCOMPARE(formatLapTime(59999), QString("0:59.999"));
+    }
 };
 
 // ────────────────────────────────────────────────────────────────────
@@ -90,6 +100,15 @@ private slots:
     void eventNameIsFullStem() {
         auto m = sessionMetaFromFilename("260101120000_Race");
         QCOMPARE(m.eventName, "260101120000_Race");
+    }
+    void emptyStemHasNoDate() {
+        auto m = sessionMetaFromFilename("");
+        QVERIFY(m.date.empty());
+        QVERIFY(m.eventName.empty());
+    }
+    void mixedPrefixDoesNotCountAsTimestamp() {
+        auto m = sessionMetaFromFilename("Q260805143022");
+        QVERIFY(m.date.empty());
     }
 };
 
@@ -259,8 +278,9 @@ private slots:
 
         const std::vector<double> selected =
             selectLapSplits({}, {105.2}, true, {2.3, 13.5, 25.4}, {});
-        QCOMPARE(selected.size(), size_t(1));
-        QCOMPARE(selected.front(), 105.2);
+        QCOMPARE(selected.size(), size_t(3));
+        QCOMPARE(selected.front(), 2.3);
+        QCOMPARE(selected.back(), 25.4);
     }
     void zeroCounterAllowsTimerFallback() {
         const std::vector<double> counterValues(20, 0.0);
@@ -285,6 +305,13 @@ private slots:
         QCOMPARE(selected.size(), size_t(2));
         QCOMPARE(selected.front(), 100.0);
         QCOMPARE(selected.back(), 200.0);
+    }
+    void activeCounterWithoutCrossingsFallsThroughToBeacon() {
+        const std::vector<double> selected =
+            selectLapSplits({90.0, 180.0}, {}, true, {12.0}, {});
+        QCOMPARE(selected.size(), size_t(2));
+        QCOMPARE(selected.front(), 90.0);
+        QCOMPARE(selected.back(), 180.0);
     }
 };
 
@@ -345,6 +372,16 @@ private slots:
         QVERIFY(laps[0].complete);
         QVERIFY(laps[1].complete);
     }
+    void markShortCrossingsRejectsAuthoritativeOutLaps() {
+        std::vector<Lap> laps{Lap{1, 0.0, 18.0, 18000.0, true},
+                              Lap{2, 18.0, 118.0, 100000.0, true},
+                              Lap{3, 118.0, 218.0, 100000.0, true}};
+        markShortCrossingsIncomplete(laps);
+        QVERIFY(!laps[0].complete);
+        QVERIFY(laps[1].complete);
+        QVERIFY(laps[2].complete);
+    }
+
     void shortLapMarkedIncomplete() {
         // buildLapsFromSplits only creates laps where b - a > 10, so a 15 s
         // lap is the shortest that can be created. With a 90 s median, the
@@ -480,6 +517,14 @@ private slots:
         // "groundspeed" (alias) contains "speed" (channel, len >= 6) → 6000
         int score = scoreChannelMatch("speed", "ground speed", 0);
         QCOMPARE(score, 6000);
+    }
+    void shortAliasDoesNotSubstringMatch() {
+        QCOMPARE(scoreChannelMatch("tpsreal", "tps", 0),
+                 std::numeric_limits<int>::min());
+    }
+    void emptyAliasReturnsMin() {
+        QCOMPARE(scoreChannelMatch("speed", "", 0),
+                 std::numeric_limits<int>::min());
     }
 };
 
@@ -711,6 +756,118 @@ private slots:
         QVERIFY(!src.sampleAt(0, 1.5, &value));
     }
 
+    void sampleAtNearestDoesNotBlendOrdinals() {
+        TelemetrySource src;
+        RawChannel channel;
+        channel.samples = {6.0, 3.0};
+        channel.frequencyHz = 2.0;
+        channel.durationSec = 1.0;
+        src.channels() = {channel};
+
+        double linear = 0.0;
+        double early = 0.0;
+        double late = 0.0;
+        QVERIFY(src.sampleAt(0, 0.25, &linear, true));
+        QVERIFY(src.sampleAt(0, 0.1, &early, false));
+        QVERIFY(src.sampleAt(0, 0.4, &late, false));
+        QCOMPARE(linear, 4.5);
+        QCOMPARE(early, 6.0);
+        QCOMPARE(late, 3.0);
+    }
+
+    void throttlePrefersPowertrainOverPedal() {
+        TelemetrySource src;
+        RawChannel pedal;
+        pedal.name = "Driver Throttle Pos";
+        pedal.samples = {1, 2};
+        RawChannel tps;
+        tps.name = "TPS";
+        tps.samples = {3, 4};
+        src.channels() = {pedal, tps};
+
+        const auto mapping = src.mapChannels();
+        QCOMPARE(mapping.at("throttle"), 1);
+        QCOMPARE(mapping.at("driver_throttle"), 0);
+    }
+
+    void unifyLapDoesNotInventGears() {
+        TelemetrySource src;
+        RawChannel gear;
+        gear.name = "Gear";
+        gear.samples = {6.0, 1.0};
+        gear.frequencyHz = 2.0;
+        gear.durationSec = 1.0;
+        src.channels() = {gear};
+
+        const UnifiedLap lap = src.unifyLap(0.0, 1.0);
+        QVERIFY(lap.gear.size() > 2);
+        for (int value : lap.gear)
+            QVERIFY2(value == 6 || value == 1,
+                     "interpolated gear is not a real ratio");
+    }
+
+    void unifyLapTreatsKphAsKilometersPerHour() {
+        TelemetrySource src;
+        RawChannel speed;
+        speed.name = "Speed";
+        speed.unit = "kph";
+        speed.samples = {100.0, 100.0};
+        speed.frequencyHz = 2.0;
+        speed.durationSec = 1.0;
+        src.channels() = {speed};
+
+        const UnifiedLap lap = src.unifyLap(0.0, 1.0);
+        QCOMPARE(lap.speed[25], 100.0);
+    }
+
+    void unifyLapConvertsMegapascalBrake() {
+        TelemetrySource src;
+        RawChannel brake;
+        brake.name = "Brake Pressure F";
+        brake.unit = "MPa";
+        brake.samples = {1.0, 1.0};
+        brake.frequencyHz = 2.0;
+        brake.durationSec = 1.0;
+        src.channels() = {brake};
+
+        const UnifiedLap lap = src.unifyLap(0.0, 1.0);
+        QCOMPARE(lap.brake[25], 10.0);
+    }
+
+    void unifyLapLeavesMissingGpsAsNan() {
+        TelemetrySource src;
+        RawChannel speed;
+        speed.name = "Speed";
+        speed.unit = "km/h";
+        speed.samples = {10.0, 10.0};
+        speed.frequencyHz = 2.0;
+        speed.durationSec = 1.0;
+        src.channels() = {speed};
+
+        const UnifiedLap lap = src.unifyLap(0.0, 1.0);
+        QVERIFY(!std::isfinite(lap.gpsLat[0]));
+        QVERIFY(!std::isfinite(lap.gpsLon[0]));
+    }
+
+    void unifyLapDoesNotHoldLastGpsAcrossAGap() {
+        TelemetrySource src;
+        RawChannel latitude;
+        latitude.name = "GPS Latitude";
+        latitude.unit = "deg";
+        latitude.samples = {10.0, 11.0};
+        latitude.frequencyHz = 2.0;
+        latitude.durationSec = 0.5;
+        RawChannel longitude = latitude;
+        longitude.name = "GPS Longitude";
+        longitude.samples = {20.0, 21.0};
+        src.channels() = {latitude, longitude};
+
+        const UnifiedLap lap = src.unifyLap(0.0, 1.0);
+        QVERIFY(std::isfinite(lap.gpsLat[0]));
+        QVERIFY(!std::isfinite(lap.gpsLat[lap.gpsLat.size() - 1]));
+        QVERIFY(!std::isfinite(lap.gpsLon[lap.gpsLon.size() - 1]));
+    }
+
     void detectLapsUsesSyntheticCounter() {
         TelemetrySource src;
         RawChannel counter;
@@ -725,6 +882,19 @@ private slots:
         const std::vector<Lap> laps = src.detectLaps();
         QVERIFY(std::any_of(laps.begin(), laps.end(),
                             [](const Lap& lap) { return lap.complete; }));
+    }
+
+    void detectLapsMarksAuthoritativeShortLapsIncomplete() {
+        TelemetrySource src;
+        src.sourceLaps() = {Lap{1, 0.0, 20.0, 20000.0, true},
+                            Lap{2, 20.0, 120.0, 100000.0, true},
+                            Lap{3, 120.0, 220.0, 100000.0, true}};
+
+        const std::vector<Lap> laps = src.detectLaps();
+        QCOMPARE(laps.size(), size_t(3));
+        QVERIFY(!laps[0].complete);
+        QVERIFY(laps[1].complete);
+        QVERIFY(laps[2].complete);
     }
 
     void detectLapsPrefersAuthoritativeSourceMetadata() {
@@ -796,6 +966,209 @@ private slots:
         QCOMPARE(src.detectDriverId(), 0.0);
         double out = 0;
         QVERIFY(!src.sampleAt(0, 0.0, &out));
+        std::string error;
+        QVERIFY(!src.writeMotec("/tmp/unused.ld", &error));
+        QVERIFY(!error.empty());
+    }
+
+    void unifyLapConvertsMilesPerHour() {
+        TelemetrySource src;
+        RawChannel speed;
+        speed.name = "Speed";
+        speed.unit = "mph";
+        speed.samples = {100.0, 100.0};
+        speed.frequencyHz = 2.0;
+        speed.durationSec = 1.0;
+        src.channels() = {speed};
+        const UnifiedLap lap = src.unifyLap(0.0, 1.0);
+        QVERIFY(std::fabs(lap.speed[25] - 160.934) < 0.01);
+    }
+
+    void unifyLapConvertsMetresPerSecond() {
+        TelemetrySource src;
+        RawChannel speed;
+        speed.name = "Speed";
+        speed.unit = "m/s";
+        speed.samples = {10.0, 10.0};
+        speed.frequencyHz = 2.0;
+        speed.durationSec = 1.0;
+        src.channels() = {speed};
+        QCOMPARE(src.unifyLap(0.0, 1.0).speed[25], 36.0);
+    }
+
+    void unifyLapConvertsPsiBrake() {
+        TelemetrySource src;
+        RawChannel brake;
+        brake.name = "Brake Pressure F";
+        brake.unit = "psi";
+        brake.samples = {100.0, 100.0};
+        brake.frequencyHz = 2.0;
+        brake.durationSec = 1.0;
+        src.channels() = {brake};
+        QVERIFY(std::fabs(src.unifyLap(0.0, 1.0).brake[25] - 6.89476) < 1e-4);
+    }
+
+    void unifyLapConvertsKilopascalBrake() {
+        TelemetrySource src;
+        RawChannel brake;
+        brake.name = "Brake Pressure F";
+        brake.unit = "kPa";
+        brake.samples = {100.0, 100.0};
+        brake.frequencyHz = 2.0;
+        brake.durationSec = 1.0;
+        src.channels() = {brake};
+        QCOMPARE(src.unifyLap(0.0, 1.0).brake[25], 1.0);
+    }
+
+    void unifyLapFallsBackToBrakePosition() {
+        TelemetrySource src;
+        RawChannel pedal;
+        pedal.name = "Brake Pos";
+        pedal.samples = {0.5, 0.5};
+        pedal.frequencyHz = 2.0;
+        pedal.durationSec = 1.0;
+        src.channels() = {pedal};
+        QCOMPARE(src.unifyLap(0.0, 1.0).brake[25], 50.0);
+    }
+
+    void unifyLapScalesPercentThrottleAndClutch() {
+        TelemetrySource src;
+        RawChannel throttle;
+        throttle.name = "Throttle Pos";
+        throttle.unit = "%";
+        throttle.samples = {75.0, 75.0};
+        throttle.frequencyHz = 2.0;
+        throttle.durationSec = 1.0;
+        RawChannel clutch = throttle;
+        clutch.name = "Clutch Pos";
+        clutch.samples = {25.0, 25.0};
+        src.channels() = {throttle, clutch};
+        const UnifiedLap lap = src.unifyLap(0.0, 1.0);
+        QCOMPARE(lap.throttle[25], 0.75);
+        QCOMPARE(lap.clutch[25], 0.25);
+    }
+
+    void unifyLapConvertsSteeringRadians() {
+        TelemetrySource src;
+        RawChannel steering;
+        steering.name = "Steering Angle";
+        steering.unit = "rad";
+        steering.samples = {1.5707963267948966, 1.5707963267948966};
+        steering.frequencyHz = 2.0;
+        steering.durationSec = 1.0;
+        src.channels() = {steering};
+        QVERIFY(std::fabs(src.unifyLap(0.0, 1.0).steering[25] - 90.0) < 1e-6);
+    }
+
+    void unifyLapShiftsOneBasedGearWhenMinimumIsTwo() {
+        TelemetrySource src;
+        RawChannel gear;
+        gear.name = "Gear";
+        gear.samples = {2.0, 3.0};
+        gear.frequencyHz = 2.0;
+        gear.durationSec = 1.0;
+        src.channels() = {gear};
+        const UnifiedLap lap = src.unifyLap(0.0, 1.0);
+        QVERIFY(lap.gear.front() == 1);
+        QVERIFY(lap.gear.back() == 2);
+    }
+
+    void unifyLapConvertsGpsAccuracyUnits() {
+        TelemetrySource src;
+        RawChannel accuracy;
+        accuracy.name = "GPS Position Accuracy";
+        accuracy.unit = "cm";
+        accuracy.samples = {250.0, 250.0};
+        accuracy.frequencyHz = 2.0;
+        accuracy.durationSec = 1.0;
+        src.channels() = {accuracy};
+        QCOMPARE(src.unifyLap(0.0, 1.0).gpsPositionAccuracy[25], 2.5);
+    }
+
+    void unifyLapMapsDampersAndLateralG() {
+        TelemetrySource src;
+        RawChannel fl;
+        fl.name = "Damper Travel FL";
+        fl.samples = {12.0, 12.0};
+        fl.frequencyHz = 2.0;
+        fl.durationSec = 1.0;
+        RawChannel lat;
+        lat.name = "G Force Lat";
+        lat.samples = {1.2, 1.2};
+        lat.frequencyHz = 2.0;
+        lat.durationSec = 1.0;
+        src.channels() = {fl, lat};
+        const auto mapping = src.mapChannels();
+        QCOMPARE(mapping.at("damper_fl"), 0);
+        QCOMPARE(mapping.at("g_lat"), 1);
+        const UnifiedLap lap = src.unifyLap(0.0, 1.0);
+        QCOMPARE(lap.damperFL[25], 12.0);
+        QCOMPARE(lap.gForceLat[25], 1.2);
+    }
+
+    void unifyLapDistanceIsMonotonicAndStartsAtZero() {
+        TelemetrySource src;
+        RawChannel speed;
+        speed.name = "Speed";
+        speed.unit = "km/h";
+        speed.samples = {72.0, 72.0};
+        speed.frequencyHz = 2.0;
+        speed.durationSec = 1.0;
+        src.channels() = {speed};
+        const UnifiedLap lap = src.unifyLap(0.0, 1.0);
+        QCOMPARE(lap.distance.front(), 0.0);
+        for (size_t i = 1; i < lap.distance.size(); ++i)
+            QVERIFY(lap.distance[i] >= lap.distance[i - 1]);
+        QVERIFY(std::fabs(lap.time[1] - 0.02) < 1e-9);
+        QCOMPARE(lap.sampleRate, 50);
+    }
+
+    void sampleAtRejectsNegativeTime() {
+        TelemetrySource src;
+        RawChannel channel;
+        channel.samples = {1.0, 2.0};
+        channel.frequencyHz = 2.0;
+        src.channels() = {channel};
+        double value = 0.0;
+        QVERIFY(!src.sampleAt(0, -0.1, &value));
+        QVERIFY(!src.sampleAt(3, 0.0, &value));
+    }
+};
+
+class MotecExportTest : public QObject {
+    Q_OBJECT
+private slots:
+    void writesLdThatReopens() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString vbo = directory.filePath(QStringLiteral("run.vbo"));
+        QFile input(vbo);
+        QVERIFY(input.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QVERIFY(input.write("[header]\n"
+                            "time\n"
+                            "velocity kmh\n"
+                            "[column names]\n"
+                            "time velocity\n"
+                            "[data]\n"
+                            "120000.0 10\n"
+                            "120000.5 20\n"
+                            "120001.0 30\n") > 0);
+        input.close();
+
+        std::string error;
+        const auto source = TelemetrySource::open(vbo.toStdString(), &error);
+        QVERIFY2(source, error.c_str());
+        const QString ld = directory.filePath(QStringLiteral(".run.vbo.ld"));
+        QVERIFY2(source->writeMotec(ld.toStdString(), &error), error.c_str());
+        QVERIFY(QFileInfo::exists(ld));
+        QVERIFY(!QFileInfo::exists(
+            directory.filePath(QStringLiteral(".run.vbo.ldx"))));
+
+        error.clear();
+        const auto reopened = TelemetrySource::open(ld.toStdString(), &error);
+        QVERIFY2(reopened, error.c_str());
+        QCOMPARE(reopened->formatName(), std::string("ld"));
+        QVERIFY(!reopened->channels().empty());
     }
 };
 
@@ -849,6 +1222,10 @@ int main(int argc, char* argv[]) {
     }
     {
         SyntheticSourceTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        MotecExportTest t;
         status |= QTest::qExec(&t, argc, argv);
     }
     return status;

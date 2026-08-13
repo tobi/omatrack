@@ -79,6 +79,7 @@ protected:
     void wheelEvent(QWheelEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
     void hoverMoveEvent(QHoverEvent* event) override;
+    void hoverLeaveEvent(QHoverEvent* event) override;
 
 signals:
     void storeChanged();
@@ -173,7 +174,11 @@ private:
     double xForFrac(double frac) const;
     int cornerIndexAt(const QPointF& position) const;
     int markerIndexAt(const QPointF& position) const;
+    int focusedMarkerIndex() const;
+    // 0 = none, 1 = start edge, 2 = end edge, 3 = label-band body.
+    int focusedZoneHandleAt(const QPointF& position) const;
     void updateHoveredMarker(const QPointF& position);
+    void updateZoneHoverCursor(const QPointF& position);
     double fracForX(double x) const;
     int channelIndexAt(const QPointF& position) const;
     void showChannelMenu(const QPointF& position);

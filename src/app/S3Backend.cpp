@@ -284,14 +284,15 @@ sigv4::Credentials credentialsOf(const RemoteConnection& connection) {
 /// Signs in place. An empty key pair means a public bucket, which is read
 /// with no Authorization header at all rather than a broken one.
 void signRequest(QNetworkRequest& request, const QByteArray& method,
-                 const RemoteConnection& connection, const QString& region) {
+                 const RemoteConnection& connection, const QString& region,
+                 const QByteArray& payload = {}) {
     request.setRawHeader("User-Agent", "Omatrack-S3/1");
     const sigv4::Credentials credentials = credentialsOf(connection);
     if (credentials.isEmpty()) return;
 
     const sigv4::HeaderMap headers = sigv4::signedHeaders(
-        credentials, {region}, method, request.url(), sigv4::kEmptyPayload,
-        QDateTime::currentDateTimeUtc());
+        credentials, {region}, method, request.url(),
+        sigv4::payloadHash(payload), QDateTime::currentDateTimeUtc());
     for (auto it = headers.cbegin(); it != headers.cend(); ++it) {
         // Qt derives Host from the URL. Setting it again would send it twice,
         // and the signature already commits to the same value.
@@ -372,10 +373,14 @@ bool parsePage(const QByteArray& body, const QString& prefix,
     bool encoded = false;
     bool truncated = false;
     QString token;
-    QString key;
-    QString etag;
-    QString modified;
-    qint64 size = -1;
+    struct Row {
+        QString key;
+        QString etag;
+        QString modified;
+        qint64 size = -1;
+    };
+    QVector<Row> rows;
+    Row current;
     bool inContents = false;
 
     while (!xml.atEnd()) {
@@ -384,10 +389,7 @@ bool parsePage(const QByteArray& body, const QString& prefix,
             const QStringView name = xml.name();
             if (name == QStringLiteral("Contents")) {
                 inContents = true;
-                key.clear();
-                etag.clear();
-                modified.clear();
-                size = -1;
+                current = Row{};
             } else if (name == QStringLiteral("EncodingType")) {
                 encoded = xml.readElementText() == QStringLiteral("url");
             } else if (name == QStringLiteral("IsTruncated")) {
@@ -395,38 +397,43 @@ bool parsePage(const QByteArray& body, const QString& prefix,
             } else if (name == QStringLiteral("NextContinuationToken")) {
                 token = xml.readElementText();
             } else if (inContents && name == QStringLiteral("Key")) {
-                key = xml.readElementText();
+                current.key = xml.readElementText();
             } else if (inContents && name == QStringLiteral("ETag")) {
-                etag = xml.readElementText();
+                current.etag = xml.readElementText();
             } else if (inContents && name == QStringLiteral("LastModified")) {
-                modified = xml.readElementText();
+                current.modified = xml.readElementText();
             } else if (inContents && name == QStringLiteral("Size")) {
-                size = xml.readElementText().toLongLong();
+                current.size = xml.readElementText().toLongLong();
             }
         } else if (xml.isEndElement() &&
                    xml.name() == QStringLiteral("Contents")) {
             inContents = false;
-            const QString decoded = percentDecoded(key, encoded);
-            // A key ending in `/` is the placeholder the AWS console writes
-            // to make a bucket look like it has folders. There is no file.
-            if (decoded.isEmpty() || decoded.endsWith(QLatin1Char('/')))
-                continue;
-            if (!decoded.startsWith(prefix)) continue;
-
-            RemoteObject object;
-            object.relativePath = decoded.mid(prefix.size());
-            if (object.relativePath.isEmpty()) continue;
-            object.url = objectUrl(endpoint, bucket, decoded);
-            object.etag = etag;
-            object.modified = modified;
-            object.size = size;
-            objects->append(object);
+            rows.append(current);
         }
     }
 
     if (xml.hasError()) {
         if (error) *error = xml.errorString();
         return false;
+    }
+
+    // R2 (and some other S3 clones) emit EncodingType after Contents. Decode
+    // only once the page is complete so a late flag still applies.
+    for (const Row& row : rows) {
+        const QString decoded = percentDecoded(row.key, encoded);
+        // A key ending in `/` is the placeholder the AWS console writes
+        // to make a bucket look like it has folders. There is no file.
+        if (decoded.isEmpty() || decoded.endsWith(QLatin1Char('/'))) continue;
+        if (!decoded.startsWith(prefix)) continue;
+
+        RemoteObject object;
+        object.relativePath = decoded.mid(prefix.size());
+        if (object.relativePath.isEmpty()) continue;
+        object.url = objectUrl(endpoint, bucket, decoded);
+        object.etag = row.etag;
+        object.modified = row.modified;
+        object.size = row.size;
+        objects->append(object);
     }
     // The token is encoded under the same rule as the keys.
     *nextToken = truncated ? percentDecoded(token, encoded) : QString();
@@ -503,8 +510,21 @@ RemoteBackend makeS3Backend(const RemoteConnection& connection) {
         *region = QStringLiteral("auto");
 
     backend.sign = [connection, region](QNetworkRequest& request,
-                                        const QByteArray& method) {
-        signRequest(request, method, connection, *region);
+                                        const QByteArray& method,
+                                        const QByteArray& payload) {
+        signRequest(request, method, connection, *region, payload);
+    };
+
+    backend.urlFor = [connection, parsed, region](const QString& relative) {
+        if (region->isEmpty())
+            *region = connection.options.value(QStringLiteral("region"))
+                          .trimmed();
+        if (region->isEmpty() && connection.type == LocationType::Gcs)
+            *region = QStringLiteral("auto");
+        if (region->isEmpty()) *region = QStringLiteral("us-east-1");
+        const Endpoint endpoint =
+            resolveEndpoint(connection, parsed.bucket, *region);
+        return objectUrl(endpoint, parsed.bucket, parsed.prefix + relative);
     };
 
     backend.scope = [region]() { return *region; };

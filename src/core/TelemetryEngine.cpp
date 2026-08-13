@@ -32,8 +32,8 @@ const AliasTable& channelMappings() {
          {"corr speed", "ground speed", "wheel speed avg", "aero speed",
           "speed_ref", "vehrefspeed", "speed_wspd_app", "uspeed", "speed"}},
         {"throttle",
-         {"driver throttle pos", "accel pedal pos", "acc pedal pos",
-          "fbwdrivertps", "pps", "tpsreal", "tps", "aps", "throttle pos"}},
+         {"tpsreal", "tps", "throttle pos", "aps", "driver throttle pos",
+          "accel pedal pos", "acc pedal pos", "fbwdrivertps", "pps"}},
         {"brake",
          {"brake pressure f", "brake pressure fr", "p_f_brake",
           "p_brake_front"}},
@@ -66,13 +66,17 @@ const AliasTable& channelMappings() {
 
 const std::map<std::string, double>& speedUnits() {
     static const std::map<std::string, double> m = {
-        {"m/s", 3.6}, {"km/h", 1.0}, {"mph", 1.60934}};
+        {"m/s", 3.6}, {"km/h", 1.0}, {"kph", 1.0},
+        {"kmh", 1.0}, {"kmph", 1.0}, {"mph", 1.60934}};
     return m;
 }
 
 const std::map<std::string, double>& brakeUnits() {
-    static const std::map<std::string, double> m = {
-        {"bar", 1.0}, {"psi", 0.0689476}, {"kpa", 0.01}, {"pa", 0.00001}};
+    static const std::map<std::string, double> m = {{"bar", 1.0},
+                                                    {"psi", 0.0689476},
+                                                    {"kpa", 0.01},
+                                                    {"mpa", 10.0},
+                                                    {"pa", 0.00001}};
     return m;
 }
 
@@ -150,7 +154,7 @@ std::vector<double> selectLapSplits(const std::vector<double>& beaconSplits,
                                     bool lapNumberActive,
                                     const std::vector<double>& lapTimeSplits,
                                     const std::vector<double>& distanceSplits) {
-    if (lapNumberActive) return lapNumberSplits;
+    if (lapNumberActive && lapNumberSplits.size() >= 2) return lapNumberSplits;
     if (beaconSplits.size() >= 2) return beaconSplits;
     if (lapTimeSplits.size() >= 2) return lapTimeSplits;
     if (distanceSplits.size() >= 2) return distanceSplits;
@@ -213,22 +217,35 @@ std::vector<Lap> buildLapsFromSplits(const std::vector<double>& splitTimesIn,
     double head = splits.front();
     if (head > std::max(10.0, median * 0.5) && head < median * 1.8)
         lapBounds.insert(lapBounds.begin(), {0.0, head, false});
-    // A crossing pair much shorter than the session median is a double
-    // trigger, not a lap. With too few bounds to trust a median, fall back
-    // to a conservative floor: no circuit lap is under half a minute.
-    const bool medianIsEvidence = lapBounds.size() >= 3;
-    const double minLapSeconds =
-        medianIsEvidence ? median * 0.5 : std::max(median * 0.5, 30.0);
-    for (Bound& bound : lapBounds)
-        if (rejectShortCrossings && bound.complete &&
-            bound.end - bound.start < minLapSeconds)
-            bound.complete = false;
     for (size_t i = 0; i < lapBounds.size(); ++i) {
         result.push_back(Lap{int(i), lapBounds[i].start, lapBounds[i].end,
                              (lapBounds[i].end - lapBounds[i].start) * 1000.0,
                              lapBounds[i].complete});
     }
+    if (rejectShortCrossings) markShortCrossingsIncomplete(result);
     return result;
+}
+
+void markShortCrossingsIncomplete(std::vector<Lap>& laps) {
+    std::vector<double> seconds;
+    for (const Lap& lap : laps) {
+        if (!lap.complete || !std::isfinite(lap.timeMs) || !(lap.timeMs > 0.0))
+            continue;
+        seconds.push_back(lap.timeMs / 1000.0);
+    }
+    if (seconds.size() < 2) return;
+    std::sort(seconds.begin(), seconds.end());
+    const double median = seconds[seconds.size() / 2];
+    // A crossing pair much shorter than the session median is a double
+    // trigger or a recording fragment, not a racing lap. With only two
+    // timed laps, fall back to a conservative floor: no circuit lap is
+    // under half a minute.
+    const double minSeconds =
+        seconds.size() >= 3 ? median * 0.5 : std::max(median * 0.5, 30.0);
+    for (Lap& lap : laps) {
+        if (lap.complete && lap.timeMs / 1000.0 < minSeconds)
+            lap.complete = false;
+    }
 }
 
 std::vector<Lap> pdsApplyPreviousLapTimes(
@@ -542,14 +559,34 @@ TelemetrySource::~TelemetrySource() {
     if (handle_) omatrack_close(handle_);
 }
 
-bool TelemetrySource::sampleAt(size_t channelIdx, double timeSec,
-                               double* out) const {
+bool TelemetrySource::writeMotec(const std::string& ldPath,
+                                 std::string* error) const {
+    if (error) error->clear();
+    if (!handle_) {
+        if (error) *error = "MoTeC export requires an opened telemetry source";
+        return false;
+    }
+    if (ldPath.empty()) {
+        if (error) *error = "MoTeC export path is empty";
+        return false;
+    }
+    if (omatrack_write_motec(handle_, ldPath.c_str()) != 0) return true;
+    if (error) {
+        const char* message = omatrack_last_error();
+        *error =
+            message && message[0] ? message : "Unable to write MoTeC telemetry";
+    }
+    return false;
+}
+
+bool TelemetrySource::sampleAt(size_t channelIdx, double timeSec, double* out,
+                               bool linear) const {
     if (channelIdx >= channels_.size() || !out || !std::isfinite(timeSec) ||
         timeSec < 0.0)
         return false;
     if (handle_) {
         const uint64_t timeNs = uint64_t(std::llround(timeSec * 1e9));
-        return omatrack_sample_at(handle_, channelIdx, timeNs, /*linear=*/1,
+        return omatrack_sample_at(handle_, channelIdx, timeNs, linear ? 1 : 0,
                                   out) != 0;
     }
 
@@ -560,6 +597,11 @@ bool TelemetrySource::sampleAt(size_t channelIdx, double timeSec,
         return false;
     const size_t low = size_t(std::floor(position));
     const size_t high = std::min(low + 1, channel.samples.size() - 1);
+    if (!linear) {
+        *out = (position - double(low) < 0.5) ? channel.samples[low]
+                                              : channel.samples[high];
+        return true;
+    }
     const double fraction = position - double(low);
     *out = channel.samples[low] +
            (channel.samples[high] - channel.samples[low]) * fraction;
@@ -632,8 +674,6 @@ double TelemetrySource::detectDriverId(
 }
 
 std::vector<Lap> TelemetrySource::detectLaps() const {
-    if (!sourceLaps_.empty()) return sourceLaps_;
-
     // Exact normalized match first, then contains fallback for longer aliases.
     auto firstId = [&](const std::vector<std::string>& aliases) -> int {
         for (auto& alias : aliases) {
@@ -698,6 +738,15 @@ std::vector<Lap> TelemetrySource::detectLaps() const {
     auto [lapDistance, distanceFreq] = series(lapDistanceId);
     auto [lapTime, timeFreq] = series(lapTimeId);
     auto [prevLapTime, prevFreq] = series(previousLapTimeId);
+
+    if (!sourceLaps_.empty()) {
+        std::vector<Lap> laps = sourceLaps_;
+        markShortCrossingsIncomplete(laps);
+        if (!lapDistance.empty())
+            laps = pdsApplyLapDistanceCoverage(laps, lapDistance,
+                                               std::max(1, distanceFreq));
+        return laps;
+    }
 
     double maxDuration = 0.0;
     for (const RawChannel& channel : channels_)
@@ -826,13 +875,20 @@ std::vector<Lap> detectLapsLightweight(const std::string& path,
         const double detected = dominantDriverId(driverValues, sampleTypeCode);
         if (detected > 0.0) *driverId = detected;
     }
-    if (!sourceLaps.empty()) return sourceLaps;
-
     auto [beacon, beaconFreq] = sampleRegular(beaconId);
     auto [lapNumber, numberFreq] = sampleRegular(lapNumberId);
     auto [lapDistance, distanceFreq] = sampleRegular(lapDistanceId);
     auto [lapTime, timeFreq] = sampleRegular(lapTimeId);
     auto [previousLapTime, previousFreq] = sampleRegular(previousLapTimeId);
+
+    if (!sourceLaps.empty()) {
+        std::vector<Lap> laps = sourceLaps;
+        markShortCrossingsIncomplete(laps);
+        if (!lapDistance.empty())
+            laps = pdsApplyLapDistanceCoverage(laps, lapDistance,
+                                               std::max(1, distanceFreq));
+        return laps;
+    }
 
     double maxDuration = 0.0;
     for (size_t i = 0; i < channelCount; ++i)
@@ -877,19 +933,22 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime,
     // arrays by index silently shifts every event after a gap.
     std::map<std::string, std::vector<double>> resampled;
     std::map<std::string, std::string> channelUnits;
+    const double nan = std::numeric_limits<double>::quiet_NaN();
     for (auto& [field, idx] : mapping) {
         const RawChannel& channel = channels_[idx];
         if (channel.samples.empty()) continue;
-        std::vector<double> values(size_t(nSamples), 0.0);
+        const bool gpsPosition = field == "gps_lat" || field == "gps_lon";
+        const bool nearest = field == "gear";
+        std::vector<double> values(size_t(nSamples), gpsPosition ? nan : 0.0);
         bool sampled = false;
         for (int sample = 0; sample < nSamples; ++sample) {
             double value = 0.0;
             const double time =
                 startTime + double(sample) / double(kDefaultSampleRate);
-            if (sampleAt(size_t(idx), time, &value)) {
+            if (sampleAt(size_t(idx), time, &value, !nearest)) {
                 values[size_t(sample)] = value;
                 sampled = true;
-            } else if (sample > 0) {
+            } else if (sample > 0 && !gpsPosition) {
                 values[size_t(sample)] = values[size_t(sample - 1)];
             }
         }
@@ -900,7 +959,8 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime,
 
     auto get = [&](const std::string& f, int i) -> double {
         auto it = resampled.find(f);
-        if (it == resampled.end() || i >= (int)it->second.size()) return 0;
+        if (it == resampled.end() || i >= (int)it->second.size())
+            return (f == "gps_lat" || f == "gps_lon") ? nan : 0;
         return it->second[i];
     };
     const std::string emptyUnit;

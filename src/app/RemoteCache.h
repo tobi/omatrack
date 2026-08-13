@@ -20,7 +20,9 @@
 #include <QUrl>
 #include <QVector>
 
+#include <atomic>
 #include <functional>
+#include <memory>
 
 class QNetworkAccessManager;
 class QNetworkRequest;
@@ -76,12 +78,17 @@ struct RemoteBackend {
     std::function<bool(QNetworkAccessManager&, QVector<RemoteObject>*,
                        QString*)>
         list;
-    std::function<void(QNetworkRequest&, const QByteArray& method)> sign;
+    std::function<void(QNetworkRequest&, const QByteArray& method,
+                       const QByteArray& payload)>
+        sign;
     /// Whatever signing this protocol's requests obliged the backend to work
     /// out — for S3, the bucket's region. Meaningful only once list() has run.
     /// The sync records it so that presigning a stream URL later reproduces
     /// the same scope without another round trip.
     std::function<QString()> scope;
+    /// Absolute URL of one object under this connection, or invalid when the
+    /// backend cannot name objects itself (tests that only list).
+    std::function<QUrl(const QString& relativePath)> urlFor;
 };
 
 /// A blocking HTTP round trip. Backends share this with the engine so that
@@ -100,16 +107,27 @@ struct HttpResponse {
 /// finished request: a request signature covers the URL it was made for.
 using RequestFactory = std::function<QNetworkRequest(const QUrl&)>;
 
+/// Cooperative cancel for a network or scan job. Empty means "run to finish".
+using IoCancel = std::shared_ptr<std::atomic<bool>>;
+
+inline bool ioCancelled(const IoCancel& cancel) {
+    return cancel && cancel->load(std::memory_order_relaxed);
+}
+
 /// Base request carrying the policies every Omatrack request needs. Qt is told
 /// not to follow redirects on its own — it would reuse headers signed for the
 /// original URL, which both breaks the signature and can hand credentials to a
 /// host that never earned them. sendFollowing() follows them deliberately,
 /// rebuilding and re-signing each hop.
+///
+/// HTTP runs on a dedicated I/O thread. The caller blocks on a QFuture, never
+/// on a nested QEventLoop, so the GUI loop only ever sees the result.
 QNetworkRequest makeRequest(const QUrl& url);
 HttpResponse sendFollowing(QNetworkAccessManager& manager, const QUrl& url,
                            const QByteArray& method,
                            const RequestFactory& build,
-                           const QByteArray& body = {});
+                           const QByteArray& body = {},
+                           const IoCancel& cancel = {});
 
 /// Stable identity for a library entry, connection or folder alike. The input
 /// is unchanged from when WebDAV was the only protocol, so no configured
@@ -121,6 +139,29 @@ QString cacheDirectory(const RemoteConnection& connection);
 
 /// The root under which every protocol's caches sit.
 QString cacheRoot();
+/// Sanitise an object ETag into a cache-private file stem. Used to name the
+/// one-time AiM extract at `.omatrack/aim-{etag}.mp4`.
+QString etagFileKey(const QString& etag);
+/// True for cache-private `.omatrack/` artifacts and hidden recording
+/// companions (`.<video>.json`, `.<video>.ld`). Companions download before
+/// the media they describe and are not library sources.
+bool isSidecarPath(const QString& relativePath);
+
+/// The ETag the last sync recorded for `localPath`, or empty.
+QString cachedObjectEtag(const RemoteConnection& connection,
+                         const QString& localPath);
+
+/// Byte length the last sync recorded for `localPath`, or -1.
+qint64 cachedObjectSize(const RemoteConnection& connection,
+                        const QString& localPath);
+
+/// Publishes `body` only if the server does not already have that name
+/// (`If-None-Match: *`). An empty return is success. A 412 fetches the
+/// existing object instead of overwriting it. Local bytes already present
+/// are left untouched.
+QString putObject(const RemoteConnection& connection,
+                  const QString& relativePath, const QByteArray& body,
+                  const IoCancel& cancel = {});
 
 /// What the cache holds, split by who decided to put it there.
 struct CacheUsage {
@@ -207,6 +248,28 @@ QUrl streamSource(const RemoteConnection& connection, const QString& localPath);
 bool offlineVideoPinned(const RemoteConnection& connection,
                         const QString& localPath);
 
+/// The listed object URL for a cache path, or invalid when the last sync
+/// did not record one. Used for range reads of streamed video.
+QUrl objectUrlForPath(const RemoteConnection& connection,
+                      const QString& localPath);
+
+struct ObjectRange {
+    qint64 offset = 0;
+    qint64 length = 0;
+};
+
+/// Signed range GETs with bounded concurrency and connection reuse.
+bool getObjectRanges(const RemoteConnection& connection, const QUrl& url,
+                     const QVector<ObjectRange>& ranges,
+                     QVector<QByteArray>* bodies, QString* error = nullptr,
+                     const IoCancel& cancel = {});
+
+/// One signed GET of `length` bytes at `offset`. Empty on failure.
+QByteArray getObjectRange(const RemoteConnection& connection, const QUrl& url,
+                          qint64 offset, qint64 length,
+                          QString* error = nullptr,
+                          const IoCancel& cancel = {});
+
 /// Records — or withdraws — the wish to hold `localPath` locally, and returns
 /// the reason it could not be. Withdrawing also hands the bytes back
 /// immediately; a pin on its own downloads nothing, because a recording takes
@@ -224,7 +287,8 @@ using DownloadProgress = std::function<bool(qint64 received, qint64 total)>;
 /// string. Meant for the one file a person asked for by name — a whole
 /// connection goes through syncConnection().
 QString fetchObject(const RemoteConnection& connection,
-                    const QString& localPath, const DownloadProgress& progress);
+                    const QString& localPath, const DownloadProgress& progress,
+                    const IoCancel& cancel = {});
 
 /// One pasted address, split into the fields a connection stores.
 struct ConnectionAddress {
@@ -263,7 +327,8 @@ QString validateTarget(LocationType type, const QString& target);
 /// settle on the same string or they become two caches of the same files.
 QString normalizeTarget(LocationType type, const QString& target);
 
-RemoteSyncResult syncConnection(const RemoteConnection& connection);
+RemoteSyncResult syncConnection(const RemoteConnection& connection,
+                                const IoCancel& cancel = {});
 
 // ── Protocols ───────────────────────────────────────────────────────
 RemoteBackend makeWebDavBackend(const RemoteConnection& connection);

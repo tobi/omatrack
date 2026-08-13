@@ -46,6 +46,7 @@ ApplicationWindow {
     readonly property bool standaloneVideoActive: root.videoVisible && !root.telemetryVideoActive
     required property url startupVideo
     property bool telemetryVideoActive: false
+    property bool videoControlsRequested: true
     property bool videoFullscreen: false
     // 0 = both, 1 = active/left, 2 = reference/right. The docked workspace
     // always shows both recordings; this selector is a fullscreen aid.
@@ -221,11 +222,18 @@ ApplicationWindow {
         if (fresh.toString() !== "")
             player.reopenMedia(fresh);
     }
+    function revealVideoControls(): void {
+        if (!root.videoVisible)
+            return;
+        root.videoControlsRequested = true;
+        videoControlsHideTimer.restart();
+    }
     function seekVideoRelative(seconds) {
         if (telemetryVideoActive)
             Store.seekCursorSeconds(seconds);
         else
             videoPlayer.seekRelative(seconds);
+        root.revealVideoControls();
     }
     function seekVideoToTelemetry() {
         if (!telemetryVideoActive || !videoPlayer.loaded)
@@ -259,6 +267,8 @@ ApplicationWindow {
         return session ? (session.driver || session.stem || "") : "";
     }
     function setSessionActive(key) {
+        if (key !== "" && key === Store.primarySessionKey)
+            return;
         const lap = bestLapForSession(key);
         if (!lap) {
             Store.clearCompare();
@@ -296,6 +306,7 @@ ApplicationWindow {
     function showVideo(source, telemetryLinked) {
         telemetryVideoActive = telemetryLinked === true;
         videoVisible = true;
+        root.revealVideoControls();
         if (root.width < 1000)
             sidebarVisible = false;
         pendingVideoSource = source;
@@ -498,7 +509,11 @@ ApplicationWindow {
         sidebarVisible: root.sidebarVisible
         visible: !root.videoFullscreen
 
-        onAddTelemetryDirectoryRequested: drawer.open()
+        onAddTelemetryDirectoryRequested: {
+            settingsWindow.refresh();
+            settingsWindow.show();
+            settingsWindow.raise();
+        }
         onChannelsRequested: {
             channelsWindow.refresh();
             channelsWindow.show();
@@ -538,6 +553,17 @@ ApplicationWindow {
             root.sidebarVisible = false;
     }
 
+    Shortcut {
+        enabled: root.videoFullscreen || Store.focusedCorner >= 0
+        sequence: "Escape"
+
+        onActivated: {
+            if (root.videoFullscreen)
+                root.videoSetFullscreen(false);
+            else
+                Store.clearCornerFocus();
+        }
+    }
     DropArea {
         id: fileDropArea
 
@@ -587,8 +613,12 @@ ApplicationWindow {
         objectName: "videoStage"
         parent: root.videoFullscreen ? videoFullscreenSlot : videoStageSlot
 
-        HoverHandler {
-            id: videoStageHover
+        Timer {
+            id: videoControlsHideTimer
+
+            interval: 1800
+
+            onTriggered: root.videoControlsRequested = false
         }
         Timer {
             interval: 100
@@ -626,6 +656,7 @@ ApplicationWindow {
                                 videoPlayer.paused = true;
                                 root.seekVideoToTelemetry();
                             });
+                            root.revealVideoControls();
                         }
                     }
                     onPositionChanged: {
@@ -761,7 +792,7 @@ ApplicationWindow {
                     anchors.margins: 6
                     anchors.right: parent.right
                     anchors.top: parent.top
-                    anchors.topMargin: 22
+                    anchors.topMargin: 36
                     bottomPadding: 2
                     color: root.referenceSyncState === "LOCKED" && Store.comparisonAlignmentConfidence !== "LOW" ? Style.greenColor : Style.yellowColor
                     font.family: Style.monoFontFamily
@@ -793,6 +824,7 @@ ApplicationWindow {
             anchors.fill: parent
             cursorShape: Qt.PointingHandCursor
             enabled: videoPlayer.loaded
+            hoverEnabled: true
 
             onClicked: mouse => {
                 if (mouse.button === Qt.RightButton) {
@@ -802,7 +834,7 @@ ApplicationWindow {
                     if (referenceVisible && (!activeVisible || mouse.x > videoStageMouse.width / 2))
                         source = Store.compareVideoSource;
                     const point = videoStageMouse.mapToItem(Overlay.overlay, mouse.x, mouse.y);
-                    videoMetadataMenu.videoPath = root.toLocalPath(source);
+                    videoMetadataMenu.videoPath = Store.localPathForVideoSource(source);
                     videoMetadataMenu.x = point.x;
                     videoMetadataMenu.y = point.y;
                     videoMetadataMenu.open();
@@ -810,7 +842,10 @@ ApplicationWindow {
                 }
                 videoPane.forceActiveFocus();
                 root.videoTogglePaused();
+                root.revealVideoControls();
             }
+            onEntered: root.revealVideoControls()
+            onPositionChanged: root.revealVideoControls()
         }
         Menu {
             id: videoMetadataMenu
@@ -835,11 +870,22 @@ ApplicationWindow {
             enabled: videoPlayer.loaded
             height: 28
             objectName: "videoMuteButton"
+            opacity: videoPlayer.loaded ? (root.videoControlsRequested || hovered ? 1 : 0) : 1
             text: videoPlayer.muted ? "🔇" : "🔊"
+            visible: opacity > 0.01
             width: 32
             z: 2
 
-            onClicked: root.videoToggleMuted()
+            Behavior on opacity {
+                NumberAnimation {
+                    duration: 110
+                }
+            }
+
+            onClicked: {
+                root.videoToggleMuted();
+                root.revealVideoControls();
+            }
         }
         ToolButton {
             ToolTip.text: "Close video"
@@ -849,9 +895,17 @@ ApplicationWindow {
             anchors.top: parent.top
             height: 28
             objectName: "videoCloseButton"
+            opacity: videoPlayer.loaded ? (root.videoControlsRequested || hovered ? 1 : 0) : 1
             text: "×"
+            visible: opacity > 0.01
             width: 32
             z: 3
+
+            Behavior on opacity {
+                NumberAnimation {
+                    duration: 110
+                }
+            }
 
             onClicked: root.hideVideo()
         }
@@ -861,10 +915,12 @@ ApplicationWindow {
             anchors.bottom: parent.bottom
             anchors.left: parent.left
             anchors.right: parent.right
-            color: Qt.rgba(0, 0, 0, 0.78)
-            height: 40
+            border.color: Style.borderColor
+            border.width: 1
+            color: Style.videoControlBackgroundColor
+            height: root.standaloneVideoActive ? 58 : 38
             objectName: "videoControls"
-            opacity: videoPlayer.loaded && (videoStageHover.hovered || videoControlsHover.hovered) ? 1 : 0
+            opacity: videoPlayer.loaded && (root.videoControlsRequested || videoControlsHover.hovered) ? 1 : 0
             visible: opacity > 0.01
 
             Behavior on opacity {
@@ -879,100 +935,188 @@ ApplicationWindow {
             MouseArea {
                 anchors.fill: parent
             }
-            RowLayout {
+            ColumnLayout {
                 anchors.fill: parent
                 anchors.leftMargin: 8
                 anchors.rightMargin: 8
-                spacing: 4
+                spacing: 0
 
-                ToolButton {
-                    Layout.preferredWidth: 54
-                    ToolTip.text: root.dualVideo ? "Play/pause both recordings (Space)" : "Play/pause (Space)"
-                    ToolTip.visible: hovered
-                    implicitWidth: 54
-                    leftPadding: 2
-                    objectName: "videoPlayPauseButton"
-                    rightPadding: 2
-                    text: videoPlayer.paused ? "Play" : "Pause"
+                Slider {
+                    id: videoSeekSlider
 
-                    onClicked: root.videoTogglePaused()
-                }
-                Row {
-                    Layout.preferredHeight: 30
-                    spacing: 2
-                    visible: root.videoFullscreen && root.dualVideo
-
-                    ToolButton {
-                        ToolTip.text: "Show active video"
-                        ToolTip.visible: hovered
-                        checkable: true
-                        checked: root.videoFullscreenLayout === 1
-                        height: 30
-                        text: "Left"
-                        width: 48
-
-                        onClicked: root.videoFullscreenLayout = 1
-                    }
-                    ToolButton {
-                        ToolTip.text: "Show both videos"
-                        ToolTip.visible: hovered
-                        checkable: true
-                        checked: root.videoFullscreenLayout === 0
-                        height: 30
-                        text: "Both"
-                        width: 48
-
-                        onClicked: root.videoFullscreenLayout = 0
-                    }
-                    ToolButton {
-                        ToolTip.text: "Show reference video"
-                        ToolTip.visible: hovered
-                        checkable: true
-                        checked: root.videoFullscreenLayout === 2
-                        height: 30
-                        text: "Right"
-                        width: 48
-
-                        onClicked: root.videoFullscreenLayout = 2
-                    }
-                }
-                ToolButton {
-                    Layout.preferredWidth: 48
-                    ToolTip.text: root.videoOverlayVisible ? "Hide telemetry overlay (O)" : "Show telemetry overlay (O)"
-                    ToolTip.visible: hovered
-                    checkable: true
-                    checked: root.videoOverlayVisible
-                    implicitWidth: 48
-                    leftPadding: 2
-                    rightPadding: 2
-                    text: "HUD"
-                    visible: root.videoFullscreen && root.telemetryVideoActive
-
-                    onClicked: root.videoOverlayVisible = !root.videoOverlayVisible
-                }
-                Item {
                     Layout.fillWidth: true
-                }
-                Label {
-                    color: Style.mutedTextColor
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: 9
-                    text: root.formatMediaTime(videoPlayer.position) + " / " + root.formatMediaTime(videoPlayer.duration)
-                }
-                Item {
-                    Layout.fillWidth: true
-                }
-                ToolButton {
-                    Layout.preferredWidth: 48
-                    ToolTip.text: root.videoFullscreen ? "Leave fullscreen (Esc)" : "Fullscreen (F)"
-                    ToolTip.visible: hovered
-                    implicitWidth: 48
-                    leftPadding: 2
-                    objectName: "videoFullscreenButton"
-                    rightPadding: 2
-                    text: root.videoFullscreen ? "Exit" : "Full"
+                    Layout.preferredHeight: 20
+                    enabled: videoPlayer.duration > 0
+                    from: 0
+                    objectName: "videoSeekSlider"
+                    stepSize: 0.1
+                    to: Math.max(0.1, videoPlayer.duration)
+                    value: videoPlayer.position
+                    visible: root.standaloneVideoActive
 
-                    onClicked: root.videoSetFullscreen(!root.videoFullscreen)
+                    background: Rectangle {
+                        color: Style.videoControlTrackColor
+                        height: 3
+                        radius: 1.5
+                        width: videoSeekSlider.availableWidth
+                        x: videoSeekSlider.leftPadding
+                        y: videoSeekSlider.topPadding + videoSeekSlider.availableHeight / 2 - height / 2
+
+                        Rectangle {
+                            color: Style.accentColor
+                            height: parent.height
+                            radius: parent.radius
+                            width: videoSeekSlider.visualPosition * parent.width
+                        }
+                    }
+                    handle: Rectangle {
+                        color: videoSeekSlider.pressed ? Style.foregroundColor : Style.accentColor
+                        height: 10
+                        radius: 5
+                        width: 10
+                        x: videoSeekSlider.leftPadding + videoSeekSlider.visualPosition * (videoSeekSlider.availableWidth - width)
+                        y: videoSeekSlider.topPadding + videoSeekSlider.availableHeight / 2 - height / 2
+                    }
+
+                    onMoved: {
+                        videoPlayer.seek(value);
+                        root.revealVideoControls();
+                    }
+                }
+                RowLayout {
+                    Layout.fillHeight: true
+                    Layout.fillWidth: true
+                    spacing: 3
+
+                    ToolButton {
+                        Layout.preferredWidth: 42
+                        ToolTip.text: "Back 5 seconds (Left)"
+                        ToolTip.visible: hovered
+                        font.capitalization: Font.MixedCase
+                        font.pixelSize: Style.smallFontSize
+                        objectName: "videoSeekBackButton"
+                        text: "−5s"
+                        visible: root.standaloneVideoActive
+
+                        onClicked: root.seekVideoRelative(-5)
+                    }
+                    ToolButton {
+                        Layout.preferredWidth: 54
+                        ToolTip.text: root.dualVideo ? "Play/pause both recordings (Space)" : "Play/pause (Space)"
+                        ToolTip.visible: hovered
+                        font.capitalization: Font.MixedCase
+                        font.pixelSize: Style.smallFontSize
+                        objectName: "videoPlayPauseButton"
+                        text: videoPlayer.paused ? "Play" : "Pause"
+
+                        onClicked: {
+                            root.videoTogglePaused();
+                            root.revealVideoControls();
+                        }
+                    }
+                    ToolButton {
+                        Layout.preferredWidth: 42
+                        ToolTip.text: "Forward 15 seconds (Right)"
+                        ToolTip.visible: hovered
+                        font.capitalization: Font.MixedCase
+                        font.pixelSize: Style.smallFontSize
+                        objectName: "videoSeekForwardButton"
+                        text: "+15s"
+                        visible: root.standaloneVideoActive
+
+                        onClicked: root.seekVideoRelative(15)
+                    }
+                    Row {
+                        Layout.preferredHeight: 28
+                        spacing: 2
+                        visible: root.videoFullscreen && root.dualVideo
+
+                        ToolButton {
+                            ToolTip.text: "Show active video"
+                            ToolTip.visible: hovered
+                            checkable: true
+                            checked: root.videoFullscreenLayout === 1
+                            font.capitalization: Font.MixedCase
+                            font.pixelSize: Style.smallFontSize
+                            height: 28
+                            text: "Left"
+                            width: 42
+
+                            onClicked: root.videoFullscreenLayout = 1
+                        }
+                        ToolButton {
+                            ToolTip.text: "Show both videos"
+                            ToolTip.visible: hovered
+                            checkable: true
+                            checked: root.videoFullscreenLayout === 0
+                            font.capitalization: Font.MixedCase
+                            font.pixelSize: Style.smallFontSize
+                            height: 28
+                            text: "Both"
+                            width: 42
+
+                            onClicked: root.videoFullscreenLayout = 0
+                        }
+                        ToolButton {
+                            ToolTip.text: "Show reference video"
+                            ToolTip.visible: hovered
+                            checkable: true
+                            checked: root.videoFullscreenLayout === 2
+                            font.capitalization: Font.MixedCase
+                            font.pixelSize: Style.smallFontSize
+                            height: 28
+                            text: "Right"
+                            width: 42
+
+                            onClicked: root.videoFullscreenLayout = 2
+                        }
+                    }
+                    ToolButton {
+                        Layout.preferredWidth: 42
+                        ToolTip.text: root.videoOverlayVisible ? "Hide telemetry overlay (O)" : "Show telemetry overlay (O)"
+                        ToolTip.visible: hovered
+                        checkable: true
+                        checked: root.videoOverlayVisible
+                        font.capitalization: Font.MixedCase
+                        font.pixelSize: Style.smallFontSize
+                        text: "HUD"
+                        visible: root.videoFullscreen && root.telemetryVideoActive
+
+                        onClicked: root.videoOverlayVisible = !root.videoOverlayVisible
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 20
+                        color: Style.mutedTextColor
+                        elide: Text.ElideMiddle
+                        font.family: Style.uiFontFamily
+                        font.pixelSize: Style.smallFontSize
+                        text: root.videoFileName(videoPlayer.source)
+                        visible: root.standaloneVideoActive
+                    }
+                    Label {
+                        color: Style.foregroundColor
+                        font.family: Style.monoFontFamily
+                        font.pixelSize: Style.smallFontSize
+                        text: root.formatMediaTime(videoPlayer.position) + " / " + root.formatMediaTime(videoPlayer.duration)
+                    }
+                    Item {
+                        Layout.fillWidth: !root.standaloneVideoActive
+                    }
+                    ToolButton {
+                        Layout.preferredWidth: 42
+                        ToolTip.text: root.videoFullscreen ? "Leave fullscreen (Esc)" : "Fullscreen (F)"
+                        ToolTip.visible: hovered
+                        font.capitalization: Font.MixedCase
+                        font.pixelSize: Style.smallFontSize
+                        objectName: "videoFullscreenButton"
+                        text: root.videoFullscreen ? "Exit" : "Full"
+
+                        onClicked: {
+                            root.videoSetFullscreen(!root.videoFullscreen);
+                            root.revealVideoControls();
+                        }
+                    }
                 }
             }
         }
@@ -1528,16 +1672,18 @@ ApplicationWindow {
                         onActivated: root.videoTogglePaused()
                     }
                     Shortcut {
-                        enabled: videoPane.visible && videoPlayer.loaded
+                        context: Qt.WidgetShortcut
+                        enabled: videoPane.visible && videoPlayer.loaded && videoPane.activeFocus
                         sequence: "Left"
 
                         onActivated: root.seekVideoRelative(-5)
                     }
                     Shortcut {
-                        enabled: videoPane.visible && videoPlayer.loaded
+                        context: Qt.WidgetShortcut
+                        enabled: videoPane.visible && videoPlayer.loaded && videoPane.activeFocus
                         sequence: "Right"
 
-                        onActivated: root.seekVideoRelative(5)
+                        onActivated: root.seekVideoRelative(15)
                     }
                     Shortcut {
                         enabled: root.videoFullscreen && root.telemetryVideoActive
@@ -1556,12 +1702,6 @@ ApplicationWindow {
                         sequence: "F"
 
                         onActivated: root.videoSetFullscreen(!root.videoFullscreen)
-                    }
-                    Shortcut {
-                        enabled: root.videoFullscreen
-                        sequence: "Escape"
-
-                        onActivated: root.videoSetFullscreen(false)
                     }
                     // Docked home of videoStage; the stage itself is at
                     // window scope so it can move fullscreen without
@@ -1870,13 +2010,12 @@ ApplicationWindow {
                         }
                     }
                     CornerFocusOverlay {
-                        anchors.bottom: tracePane.bottom
-                        anchors.bottomMargin: 8
                         anchors.right: tracePane.right
                         anchors.rightMargin: 8
                         anchors.top: trace.top
                         anchors.topMargin: 8
-                        width: Math.min(360, Math.max(240, tracePane.width * 0.34))
+                        height: Math.min(implicitHeight, tracePane.height - 16)
+                        width: Math.min(260, Math.max(220, tracePane.width * 0.28))
                         z: 4
                     }
                 }

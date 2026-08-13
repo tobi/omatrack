@@ -67,11 +67,13 @@ qt_add_qml_module(omatrack
     VideoMetadataDialog.qml
     VideoTelemetryOverlay.qml
   SOURCES
+    AimRemoteIndex.h AimRemoteIndex.cpp
     DamperStripView.h DamperStripView.cpp
     MpvVideoItem.h MpvVideoItem.cpp
     OmarchyTheme.h OmarchyTheme.cpp
     ComparisonAlignment.h ComparisonAlignment.cpp
     SessionMetadataCache.h SessionMetadataCache.cpp
+    RecordingSidecar.h RecordingSidecar.cpp
     TrackMetadata.h TrackMetadata.cpp
     TelemetryStore.h TelemetryStore.cpp
     LibraryLocation.h LibraryLocation.cpp
@@ -82,6 +84,7 @@ qt_add_qml_module(omatrack
     TrackAtlasSpatial.h TrackAtlasSpatial.cpp
     TraceSceneBuilder.h TraceSceneBuilder.cpp
     TraceTextCache.h TraceTextCache.cpp
+    UsbMedia.h UsbMedia.cpp
     TraceView.h TraceView.cpp
     VideoTelemetryHud.h VideoTelemetryHud.cpp
     YamlConfig.h YamlConfig.cpp

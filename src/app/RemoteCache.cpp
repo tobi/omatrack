@@ -1,25 +1,32 @@
 #include "RemoteCache.h"
 
+#include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDateTime>
+#include <QEventLoop>
 #include <QDir>
 #include <QDirIterator>
-#include <QEventLoop>
 #include <QFile>
+#include <QFuture>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMetaObject>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QPromise>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
 #include <QStandardPaths>
+#include <QThread>
 #include <QTimer>
 
 #include <algorithm>
+#include <mutex>
 
 namespace omatrack {
 namespace {
@@ -48,107 +55,510 @@ QUrl redirectTarget(QNetworkReply* reply, const QUrl& from) {
     return target.isValid() ? target : QUrl();
 }
 
-DownloadResult downloadToFile(QNetworkAccessManager& manager, const QUrl& url,
-                              const RequestFactory& build, const QString& path,
-                              const DownloadProgress& progress = {}) {
-    QSaveFile output(path);
-    if (!output.open(QIODevice::WriteOnly | QIODevice::Truncate))
-        return {0, QStringLiteral("Unable to open cache file"), 0};
+QString safeReplyError(const QNetworkReply* reply) {
+    const int status =
+        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if (status > 0) return QStringLiteral("HTTP %1").arg(status);
+    return QStringLiteral("Network request failed (%1)")
+        .arg(int(reply->error()));
+}
 
-    DownloadResult result;
-    QUrl target = url;
-    for (int hop = 0; hop <= kMaximumRedirects; ++hop) {
-        // Each hop restarts the file: a redirect may arrive after the server
-        // has already written a short error body.
-        output.seek(0);
-        result = DownloadResult{};
+thread_local IoCancel t_ioCancel;
 
-        QNetworkReply* reply = manager.get(build(target));
-        QEventLoop loop;
-        QTimer timeout;
-        timeout.setSingleShot(true);
-        bool timedOut = false;
-        bool writeFailed = false;
-        bool abandoned = false;
-        qint64 bytes = 0;
-        QObject::connect(reply, &QNetworkReply::readyRead, &loop, [&]() {
-            const QByteArray chunk = reply->readAll();
-            if (output.write(chunk) != chunk.size()) {
-                writeFailed = true;
-                reply->abort();
-                return;
-            }
-            bytes += chunk.size();
-            // The timeout measures silence, not duration. An onboard recording
-            // is tens of gigabytes and would otherwise be aborted for the
-            // crime of being large.
-            timeout.start(kRequestTimeoutMs);
-            const QVariant declared =
-                reply->header(QNetworkRequest::ContentLengthHeader);
-            if (progress &&
-                !progress(bytes, declared.isValid() ? declared.toLongLong()
-                                                    : qint64(-1))) {
-                abandoned = true;
-                reply->abort();
-            }
-        });
-        QObject::connect(reply, &QNetworkReply::finished, &loop,
-                         &QEventLoop::quit);
-        QObject::connect(&timeout, &QTimer::timeout, &loop, [&]() {
-            timedOut = true;
-            if (reply->isRunning()) reply->abort();
-            loop.quit();
-        });
-        timeout.start(kRequestTimeoutMs);
-        loop.exec();
-        const QByteArray finalChunk = reply->readAll();
-        if (!finalChunk.isEmpty() && !writeFailed) {
-            if (output.write(finalChunk) != finalChunk.size())
-                writeFailed = true;
-            bytes += finalChunk.size();
-        }
-
-        const QUrl next =
-            timedOut || abandoned ? QUrl() : redirectTarget(reply, target);
-        result.status =
-            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        result.bytes = bytes;
-        if (abandoned)
-            result.error = QStringLiteral("Download cancelled");
-        else if (timedOut)
-            result.error = QStringLiteral("Download timed out");
-        else if (writeFailed)
-            result.error = QStringLiteral("Unable to write cache file");
-        else if (next.isValid())
-            result.error.clear();
-        else if (reply->error() != QNetworkReply::NoError)
-            result.error = reply->errorString();
-        // The tail of a body can arrive with the finish rather than through a
-        // read, so a small file would otherwise report no progress at all.
-        if (progress && !next.isValid() && result.error.isEmpty()) {
-            const QVariant declared =
-                reply->header(QNetworkRequest::ContentLengthHeader);
-            progress(bytes,
-                     declared.isValid() ? declared.toLongLong() : qint64(-1));
-        }
-        reply->deleteLater();
-
-        if (!next.isValid()) break;
-        if (hop == kMaximumRedirects) {
-            result.error = QStringLiteral("Too many redirects");
-            break;
-        }
-        target = next;
+struct IoCancelScope {
+    IoCancel previous;
+    explicit IoCancelScope(IoCancel cancel) : previous(t_ioCancel) {
+        t_ioCancel = std::move(cancel);
     }
+    ~IoCancelScope() { t_ioCancel = previous; }
+};
 
-    if (result.status != 200 || !result.error.isEmpty() || !output.commit()) {
-        output.cancelWriting();
-        if (result.error.isEmpty())
-            result.error = QStringLiteral("Unable to commit cache file");
-        return result;
-    }
+IoCancel effectiveCancel(const IoCancel& cancel) {
+    return cancel ? cancel : t_ioCancel;
+}
+
+HttpResponse cancelledResponse() {
+    HttpResponse result;
+    result.error = QStringLiteral("Cancelled");
     return result;
 }
+
+/// One process-lifetime thread that owns QNetworkAccessManager. QNAM needs an
+/// event loop on its thread; that loop is QThread::exec(), not a nested
+/// QEventLoop on the GUI or a QtConcurrent worker. Callers wait on a QFuture.
+class NetworkIo : public QObject {
+public:
+    static NetworkIo& instance() {
+        // Leaked: a QObject that has lived on a worker thread cannot be
+        // destroyed safely after that thread has stopped.
+        static NetworkIo* io = []() {
+            auto* instance = new NetworkIo;
+            instance->ensureStarted();
+            return instance;
+        }();
+        return *io;
+    }
+
+    HttpResponse send(const QUrl& url, const QByteArray& method,
+                      const RequestFactory& build, const QByteArray& body,
+                      const IoCancel& cancel) {
+        auto promise = std::make_shared<QPromise<HttpResponse>>();
+        QFuture<HttpResponse> future = promise->future();
+        promise->start();
+        QMetaObject::invokeMethod(
+            this,
+            [this, url, method, build, body, cancel, promise]() {
+                startSend(url, method, build, body, cancel, 0, promise);
+            },
+            Qt::QueuedConnection);
+        return waitFor(std::move(future));
+    }
+
+    DownloadResult download(const QUrl& url, const RequestFactory& build,
+                            const QString& path,
+                            const DownloadProgress& progress,
+                            const IoCancel& cancel) {
+        auto promise = std::make_shared<QPromise<DownloadResult>>();
+        QFuture<DownloadResult> future = promise->future();
+        promise->start();
+        QMetaObject::invokeMethod(
+            this,
+            [this, url, build, path, progress, cancel, promise]() {
+                auto output = std::make_shared<QSaveFile>(path);
+                startDownload(url, build, path, progress, cancel, 0, output,
+                              promise);
+            },
+            Qt::QueuedConnection);
+        return waitFor(std::move(future));
+    }
+
+    using RangeFactory =
+        std::function<QNetworkRequest(const QUrl&, const ObjectRange&)>;
+
+    bool ranges(const RangeFactory& rangeBuild, const QUrl& target,
+                const QVector<ObjectRange>& ranges, QVector<QByteArray>* bodies,
+                QString* error, const IoCancel& cancel) {
+        auto promise = std::make_shared<QPromise<RangeResult>>();
+        QFuture<RangeResult> future = promise->future();
+        promise->start();
+        QMetaObject::invokeMethod(
+            this,
+            [this, rangeBuild, target, ranges, cancel, promise]() {
+                startRanges(rangeBuild, target, ranges, cancel, promise);
+            },
+            Qt::QueuedConnection);
+        const RangeResult result = waitFor(std::move(future));
+        if (error) *error = result.error;
+        if (!result.ok) {
+            if (bodies) bodies->clear();
+            return false;
+        }
+        if (bodies) *bodies = result.bodies;
+        return true;
+    }
+
+private:
+    NetworkIo() = default;
+
+    template <typename T>
+    static T waitFor(QFuture<T> future) {
+        // A worker can block. The GUI/test thread must keep pumping: the
+        // mock HTTP server (and any UX) lives there. This is not a nested
+        // I/O loop — QNAM runs on the I/O thread.
+        QCoreApplication* app = QCoreApplication::instance();
+        if (app && QThread::currentThread() == app->thread()) {
+            while (!future.isFinished())
+                app->processEvents(QEventLoop::AllEvents, 20);
+        } else {
+            future.waitForFinished();
+        }
+        return future.result();
+    }
+
+    void ensureStarted() {
+        std::call_once(started_, [this]() {
+            thread_.setObjectName(QStringLiteral("omatrack-io"));
+            moveToThread(&thread_);
+            QObject::connect(&thread_, &QThread::started, this, [this]() {
+                manager_ = new QNetworkAccessManager(this);
+                ready_.store(true, std::memory_order_release);
+            });
+            thread_.start();
+            while (!ready_.load(std::memory_order_acquire))
+                QThread::yieldCurrentThread();
+            if (QCoreApplication::instance()) {
+                QObject::connect(
+                    QCoreApplication::instance(),
+                    &QCoreApplication::aboutToQuit, this,
+                    [this]() {
+                        thread_.quit();
+                        thread_.wait(3000);
+                    },
+                    Qt::DirectConnection);
+            }
+        });
+    }
+
+    void watchCancel(QNetworkReply* reply, const IoCancel& cancel) {
+        if (!cancel || !reply) return;
+        auto* poll = new QTimer(reply);
+        poll->setInterval(100);
+        QObject::connect(poll, &QTimer::timeout, reply, [reply, cancel]() {
+            if (ioCancelled(cancel) && reply->isRunning()) reply->abort();
+        });
+        poll->start();
+    }
+
+    void startSend(const QUrl& url, const QByteArray& method,
+                   const RequestFactory& build, const QByteArray& body,
+                   const IoCancel& cancel, int hop,
+                   const std::shared_ptr<QPromise<HttpResponse>>& promise) {
+        if (ioCancelled(cancel)) {
+            promise->addResult(cancelledResponse());
+            promise->finish();
+            return;
+        }
+        if (hop > kMaximumRedirects) {
+            HttpResponse result;
+            result.error = QStringLiteral("Too many redirects");
+            promise->addResult(result);
+            promise->finish();
+            return;
+        }
+        QNetworkReply* reply =
+            manager_->sendCustomRequest(build(url), method, body);
+        watchCancel(reply, cancel);
+        auto* timeout = new QTimer(reply);
+        timeout->setSingleShot(true);
+        QObject::connect(timeout, &QTimer::timeout, reply, [reply]() {
+            if (reply->isRunning()) reply->abort();
+        });
+        timeout->start(kRequestTimeoutMs);
+        QObject::connect(
+            reply, &QNetworkReply::finished, this,
+            [this, reply, url, method, build, body, cancel, hop, promise,
+             timeout]() {
+                const bool timedOut = !timeout->isActive();
+                timeout->stop();
+                HttpResponse result;
+                result.status =
+                    reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                        .toInt();
+                result.body = reply->readAll();
+                for (const auto& [name, value] : reply->rawHeaderPairs())
+                    result.headers.insert(name.toLower(), value);
+                const QUrl next = timedOut || ioCancelled(cancel)
+                                      ? QUrl()
+                                      : redirectTarget(reply, url);
+                if (timedOut)
+                    result.error = QStringLiteral("Request timed out");
+                else if (ioCancelled(cancel))
+                    result.error = QStringLiteral("Cancelled");
+                else if (!next.isValid() &&
+                         reply->error() != QNetworkReply::NoError)
+                    result.error = safeReplyError(reply);
+                reply->deleteLater();
+                if (next.isValid()) {
+                    startSend(next, method, build, body, cancel, hop + 1,
+                              promise);
+                    return;
+                }
+                promise->addResult(result);
+                promise->finish();
+            });
+    }
+
+    void startDownload(
+        const QUrl& url, const RequestFactory& build, const QString& path,
+        const DownloadProgress& progress, const IoCancel& cancel, int hop,
+        const std::shared_ptr<QSaveFile>& output,
+        const std::shared_ptr<QPromise<DownloadResult>>& promise) {
+        if (ioCancelled(cancel)) {
+            promise->addResult({0, QStringLiteral("Download cancelled"), 0});
+            promise->finish();
+            return;
+        }
+        if (hop > kMaximumRedirects) {
+            promise->addResult({0, QStringLiteral("Too many redirects"), 0});
+            promise->finish();
+            return;
+        }
+        if (hop == 0) {
+            if (!output->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                promise->addResult(
+                    {0, QStringLiteral("Unable to open cache file"), 0});
+                promise->finish();
+                return;
+            }
+        } else {
+            output->seek(0);
+            output->resize(0);
+        }
+
+        QNetworkReply* reply = manager_->get(build(url));
+        watchCancel(reply, cancel);
+        auto* timeout = new QTimer(reply);
+        timeout->setSingleShot(true);
+        QObject::connect(timeout, &QTimer::timeout, reply, [reply]() {
+            if (reply->isRunning()) reply->abort();
+        });
+        timeout->start(kRequestTimeoutMs);
+
+        struct DownloadState {
+            qint64 bytes = 0;
+            bool writeFailed = false;
+            bool abandoned = false;
+        };
+        auto state = std::make_shared<DownloadState>();
+        QObject::connect(
+            reply, &QNetworkReply::readyRead, this,
+            [reply, timeout, progress, cancel, state, output]() {
+                const QByteArray chunk = reply->readAll();
+                if (output->write(chunk) != chunk.size()) {
+                    state->writeFailed = true;
+                    reply->abort();
+                    return;
+                }
+                state->bytes += chunk.size();
+                timeout->start(kRequestTimeoutMs);
+                const QVariant declared =
+                    reply->header(QNetworkRequest::ContentLengthHeader);
+                if ((progress &&
+                     !progress(state->bytes, declared.isValid()
+                                                 ? declared.toLongLong()
+                                                 : qint64(-1))) ||
+                    ioCancelled(cancel)) {
+                    state->abandoned = true;
+                    reply->abort();
+                }
+            });
+        QObject::connect(
+            reply, &QNetworkReply::finished, this,
+            [this, reply, url, build, path, progress, cancel, hop, promise,
+             timeout, state, output]() {
+                const bool timedOut = !timeout->isActive();
+                timeout->stop();
+                const QByteArray finalChunk = reply->readAll();
+                if (!finalChunk.isEmpty() && !state->writeFailed) {
+                    if (output->write(finalChunk) != finalChunk.size())
+                        state->writeFailed = true;
+                    else
+                        state->bytes += finalChunk.size();
+                }
+                DownloadResult result;
+                result.status =
+                    reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                        .toInt();
+                result.bytes = state->bytes;
+                const QUrl next =
+                    timedOut || state->abandoned || ioCancelled(cancel)
+                        ? QUrl()
+                        : redirectTarget(reply, url);
+                if (state->abandoned || ioCancelled(cancel))
+                    result.error = QStringLiteral("Download cancelled");
+                else if (timedOut)
+                    result.error = QStringLiteral("Download timed out");
+                else if (state->writeFailed)
+                    result.error = QStringLiteral("Unable to write cache file");
+                else if (next.isValid())
+                    result.error.clear();
+                else if (reply->error() != QNetworkReply::NoError)
+                    result.error = safeReplyError(reply);
+                if (progress && !next.isValid() && result.error.isEmpty()) {
+                    const QVariant declared =
+                        reply->header(QNetworkRequest::ContentLengthHeader);
+                    progress(state->bytes, declared.isValid()
+                                               ? declared.toLongLong()
+                                               : qint64(-1));
+                }
+                reply->deleteLater();
+                if (next.isValid()) {
+                    startDownload(next, build, path, progress, cancel, hop + 1,
+                                  output, promise);
+                    return;
+                }
+                if (result.status != 200 || !result.error.isEmpty() ||
+                    !output->commit()) {
+                    output->cancelWriting();
+                    if (result.error.isEmpty())
+                        result.error =
+                            QStringLiteral("Unable to commit cache file");
+                    promise->addResult(result);
+                    promise->finish();
+                    return;
+                }
+                promise->addResult(result);
+                promise->finish();
+            });
+    }
+
+    struct RangeResult {
+        bool ok = false;
+        QString error;
+        QVector<QByteArray> bodies;
+    };
+
+    struct RangeJob {
+        RangeFactory build;
+        QUrl target;
+        QVector<ObjectRange> ranges;
+        IoCancel cancel;
+        std::shared_ptr<QPromise<RangeResult>> promise;
+        QVector<QByteArray> bodies;
+        QHash<QNetworkReply*, int> active;
+        QHash<QNetworkReply*, int> redirects;
+        QHash<QNetworkReply*, QUrl> urls;
+        int next = 0;
+        int completed = 0;
+        bool failed = false;
+        QString error;
+        QTimer* timeout = nullptr;
+    };
+
+    void startRanges(const RangeFactory& build, const QUrl& target,
+                     const QVector<ObjectRange>& ranges, const IoCancel& cancel,
+                     const std::shared_ptr<QPromise<RangeResult>>& promise) {
+        auto job = std::make_shared<RangeJob>();
+        job->build = build;
+        job->target = target;
+        job->ranges = ranges;
+        job->cancel = cancel;
+        job->promise = promise;
+        job->bodies.resize(ranges.size());
+        job->timeout = new QTimer(this);
+        job->timeout->setSingleShot(true);
+        QObject::connect(job->timeout, &QTimer::timeout, this, [this, job]() {
+            failRanges(job, QStringLiteral("Range GET timed out"));
+        });
+        constexpr int kConcurrentRanges = 24;
+        while (job->next < job->ranges.size() &&
+               job->active.size() < kConcurrentRanges)
+            launchRange(job, job->next++, job->target, 0);
+        job->timeout->start(kRequestTimeoutMs);
+    }
+
+    void launchRange(const std::shared_ptr<RangeJob>& job, int index,
+                     const QUrl& url, int redirects) {
+        if (job->failed) return;
+        if (ioCancelled(job->cancel)) {
+            failRanges(job, QStringLiteral("Cancelled"));
+            return;
+        }
+        QNetworkRequest request = job->build(url, job->ranges[index]);
+        QNetworkReply* reply = manager_->get(request);
+        job->active.insert(reply, index);
+        job->redirects.insert(reply, redirects);
+        job->urls.insert(reply, url);
+        watchCancel(reply, job->cancel);
+        QObject::connect(reply, &QNetworkReply::finished, this,
+                         [this, job, reply]() { finishRange(job, reply); });
+    }
+
+    void finishRange(const std::shared_ptr<RangeJob>& job,
+                     QNetworkReply* reply) {
+        if (!job->active.contains(reply)) {
+            reply->deleteLater();
+            return;
+        }
+        const int index = job->active.take(reply);
+        const int redirects = job->redirects.take(reply);
+        const QUrl from = job->urls.take(reply);
+        job->timeout->start(kRequestTimeoutMs);
+        const QUrl redirect = redirectTarget(reply, from);
+        const int status =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QByteArray body = reply->readAll();
+        const QString replyError = reply->error() == QNetworkReply::NoError
+                                       ? QString()
+                                       : safeReplyError(reply);
+        reply->deleteLater();
+        if (job->failed) return;
+        if (ioCancelled(job->cancel)) {
+            failRanges(job, QStringLiteral("Cancelled"));
+            return;
+        }
+        if (redirect.isValid()) {
+            if (redirects >= kMaximumRedirects) {
+                failRanges(job, QStringLiteral("Too many redirects"));
+                return;
+            }
+            launchRange(job, index, redirect, redirects + 1);
+            return;
+        }
+        const qint64 expected = job->ranges[index].length;
+        if (status != 206 || body.size() != expected) {
+            failRanges(job, !replyError.isEmpty()
+                                ? replyError
+                                : QStringLiteral("Range GET returned HTTP %1 "
+                                                 "with %2 of %3 bytes")
+                                      .arg(status)
+                                      .arg(body.size())
+                                      .arg(expected));
+            return;
+        }
+        job->bodies[index] = body;
+        ++job->completed;
+        constexpr int kConcurrentRanges = 24;
+        while (!job->failed && job->active.size() < kConcurrentRanges &&
+               job->next < job->ranges.size())
+            launchRange(job, job->next++, job->target, 0);
+        if (job->completed == job->ranges.size()) {
+            job->timeout->stop();
+            job->timeout->deleteLater();
+            RangeResult result;
+            result.ok = true;
+            result.bodies = job->bodies;
+            job->promise->addResult(result);
+            job->promise->finish();
+        }
+    }
+
+    void failRanges(const std::shared_ptr<RangeJob>& job,
+                    const QString& error) {
+        if (job->failed) return;
+        job->failed = true;
+        job->error = error;
+        job->timeout->stop();
+        job->timeout->deleteLater();
+        for (QNetworkReply* reply : job->active.keys()) reply->abort();
+        RangeResult result;
+        result.error = error;
+        job->promise->addResult(result);
+        job->promise->finish();
+    }
+
+    QThread thread_;
+    QNetworkAccessManager* manager_ = nullptr;
+    std::once_flag started_;
+    std::atomic<bool> ready_{false};
+};
+
+DownloadResult downloadToFile(const QUrl& url, const RequestFactory& build,
+                              const QString& path,
+                              const DownloadProgress& progress = {},
+                              const IoCancel& cancel = {}) {
+    return NetworkIo::instance().download(url, build, path, progress,
+                                          effectiveCancel(cancel));
+}
+
+}  // namespace
+
+QNetworkRequest makeRequest(const QUrl& url) {
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                         QNetworkRequest::ManualRedirectPolicy);
+    return request;
+}
+
+HttpResponse sendFollowing(QNetworkAccessManager&, const QUrl& url,
+                           const QByteArray& method,
+                           const RequestFactory& build, const QByteArray& body,
+                           const IoCancel& cancel) {
+    return NetworkIo::instance().send(url, method, build, body,
+                                      effectiveCancel(cancel));
+}
+
+namespace {
 
 QJsonObject readIndex(const QString& path) {
     QFile file(path);
@@ -270,59 +680,6 @@ RemoteSyncResult offlineResult(RemoteSyncResult result,
 }
 
 }  // namespace
-
-QNetworkRequest makeRequest(const QUrl& url) {
-    QNetworkRequest request(url);
-    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                         QNetworkRequest::ManualRedirectPolicy);
-    return request;
-}
-
-HttpResponse sendFollowing(QNetworkAccessManager& manager, const QUrl& url,
-                           const QByteArray& method,
-                           const RequestFactory& build,
-                           const QByteArray& body) {
-    HttpResponse result;
-    QUrl target = url;
-    for (int hop = 0; hop <= kMaximumRedirects; ++hop) {
-        QNetworkReply* reply =
-            manager.sendCustomRequest(build(target), method, body);
-        QEventLoop loop;
-        QTimer timeout;
-        timeout.setSingleShot(true);
-        bool timedOut = false;
-        QObject::connect(reply, &QNetworkReply::finished, &loop,
-                         &QEventLoop::quit);
-        QObject::connect(&timeout, &QTimer::timeout, &loop, [&]() {
-            timedOut = true;
-            if (reply->isRunning()) reply->abort();
-            loop.quit();
-        });
-        timeout.start(kRequestTimeoutMs);
-        loop.exec();
-
-        const QUrl next = timedOut ? QUrl() : redirectTarget(reply, target);
-        result = HttpResponse{};
-        result.status =
-            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        result.body = reply->readAll();
-        for (const auto& [name, value] : reply->rawHeaderPairs())
-            result.headers.insert(name.toLower(), value);
-        if (timedOut)
-            result.error = QStringLiteral("Request timed out");
-        else if (!next.isValid() && reply->error() != QNetworkReply::NoError)
-            result.error = reply->errorString();
-        reply->deleteLater();
-
-        if (!next.isValid()) return result;
-        if (hop == kMaximumRedirects) {
-            result.error = QStringLiteral("Too many redirects");
-            return result;
-        }
-        target = next;
-    }
-    return result;
-}
 
 QString locationId(const QString& target, const QString& username) {
     const QByteArray key =
@@ -477,6 +834,156 @@ QString cacheDirectory(const RemoteConnection& connection) {
            QLatin1Char('/') + id;
 }
 
+QString etagFileKey(const QString& etag) {
+    QString key = etag.trimmed();
+    if (key.size() >= 2 && key.front() == QLatin1Char('"') &&
+        key.back() == QLatin1Char('"'))
+        key = key.mid(1, key.size() - 2);
+    key.replace(QLatin1Char('/'), QLatin1Char('_'));
+    key.replace(QLatin1Char('\\'), QLatin1Char('_'));
+    key.remove(QLatin1Char('"'));
+    if (key.isEmpty() || !localPathError(key).isEmpty()) return {};
+    return key;
+}
+
+bool isSidecarPath(const QString& relativePath) {
+    if (relativePath.startsWith(QStringLiteral(".omatrack/"))) return true;
+    const QFileInfo info(relativePath);
+    if (!info.fileName().startsWith(QLatin1Char('.'))) return false;
+    const QString suffix = info.suffix().toLower();
+    return suffix == QStringLiteral("json") || suffix == QStringLiteral("ld") ||
+           suffix == QStringLiteral("ldx");
+}
+
+QString cachedObjectEtag(const RemoteConnection& connection,
+                         const QString& localPath) {
+    const QString cachePath = cacheDirectory(connection);
+    if (cachePath.isEmpty()) return {};
+    const QString relative = relativeInCache(cachePath, localPath);
+    if (relative.isEmpty() || isSidecarPath(relative)) return {};
+    return readIndex(QDir(cachePath).filePath(QStringLiteral("index.json")))
+        .value(QStringLiteral("entries"))
+        .toObject()
+        .value(relative)
+        .toObject()
+        .value(QStringLiteral("etag"))
+        .toString();
+}
+
+qint64 cachedObjectSize(const RemoteConnection& connection,
+                        const QString& localPath) {
+    const QString cachePath = cacheDirectory(connection);
+    if (cachePath.isEmpty()) return -1;
+    const QString relative = relativeInCache(cachePath, localPath);
+    if (relative.isEmpty() || isSidecarPath(relative)) return -1;
+    return readIndex(QDir(cachePath).filePath(QStringLiteral("index.json")))
+        .value(QStringLiteral("entries"))
+        .toObject()
+        .value(relative)
+        .toObject()
+        .value(QStringLiteral("size"))
+        .toVariant()
+        .toLongLong();
+}
+
+namespace {
+RemoteBackend backendFor(const RemoteConnection& connection) {
+    switch (connection.type) {
+        case LocationType::WebDav: return makeWebDavBackend(connection);
+        case LocationType::S3:
+        case LocationType::Gcs: return makeS3Backend(connection);
+        case LocationType::Folder: break;
+    }
+    return {};
+}
+}  // namespace
+
+QString putObject(const RemoteConnection& connection,
+                  const QString& relativePath, const QByteArray& body,
+                  const IoCancel& cancel) {
+    const QString cachePath = cacheDirectory(connection);
+    if (cachePath.isEmpty() || relativePath.isEmpty())
+        return QStringLiteral("This file is not on a server.");
+    if (!localPathError(relativePath).isEmpty())
+        return QStringLiteral("Cannot store that name as a file.");
+
+    const QString localPath = QDir(cachePath).filePath(relativePath);
+    if (!QDir().mkpath(QFileInfo(localPath).absolutePath()))
+        return QStringLiteral("Unable to create a cache folder");
+
+    RemoteConnection signedConnection = connection;
+    const QString scope =
+        readIndex(QDir(cachePath).filePath(QStringLiteral("index.json")))
+            .value(QStringLiteral("scope"))
+            .toString();
+    if (signedConnection.options.value(QStringLiteral("region")).isEmpty() &&
+        !scope.isEmpty())
+        signedConnection.options.insert(QStringLiteral("region"), scope);
+
+    const RemoteBackend backend = backendFor(signedConnection);
+    if (!backend.urlFor || !backend.sign) {
+        if (QFileInfo(localPath).size() > 0) return {};
+        QSaveFile local(localPath);
+        if (!local.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
+            local.write(body) != body.size() || !local.commit())
+            return QStringLiteral("Unable to write the metadata cache");
+        return {};
+    }
+    const QUrl url = backend.urlFor(relativePath);
+    if (!url.isValid()) return {};
+
+    const QString contentType =
+        QFileInfo(relativePath)
+                    .suffix()
+                    .compare(QStringLiteral("json"), Qt::CaseInsensitive) == 0
+            ? QStringLiteral("application/json")
+            : QStringLiteral("application/octet-stream");
+
+    QNetworkAccessManager unused;
+    const RequestFactory put = [backend, body, contentType](const QUrl& hop) {
+        QNetworkRequest request = makeRequest(hop);
+        request.setHeader(QNetworkRequest::ContentTypeHeader, contentType);
+        request.setRawHeader("If-None-Match", "*");
+        backend.sign(request, "PUT", body);
+        return request;
+    };
+    const HttpResponse response =
+        sendFollowing(unused, url, "PUT", put, body, cancel);
+    if (response.status == 200 || response.status == 201 ||
+        response.status == 204) {
+        if (QFileInfo(localPath).size() > 0) return {};
+        QSaveFile local(localPath);
+        if (!local.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
+            local.write(body) != body.size() || !local.commit())
+            return QStringLiteral("Unable to write the metadata cache");
+        return {};
+    }
+    if (response.status == 412) {
+        if (QFileInfo(localPath).size() > 0) return {};
+        const RequestFactory get = [backend](const QUrl& hop) {
+            QNetworkRequest request = makeRequest(hop);
+            backend.sign(request, "GET", {});
+            return request;
+        };
+        const HttpResponse existing =
+            sendFollowing(unused, url, "GET", get, {}, cancel);
+        if (existing.status != 200)
+            return existing.error.isEmpty()
+                       ? QStringLiteral("Download returned HTTP %1")
+                             .arg(existing.status)
+                       : existing.error;
+        QSaveFile local(localPath);
+        if (!local.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
+            local.write(existing.body) != existing.body.size() ||
+            !local.commit())
+            return QStringLiteral("Unable to write the metadata cache");
+        return {};
+    }
+    return response.error.isEmpty()
+               ? QStringLiteral("Upload returned HTTP %1").arg(response.status)
+               : response.error;
+}
+
 QUrl streamSource(const RemoteConnection& connection,
                   const QString& localPath) {
     // Downloaded for a flight: the file is the source, and no signature it
@@ -517,6 +1024,112 @@ QUrl streamSource(const RemoteConnection& connection,
         case LocationType::Folder: break;
     }
     return {};
+}
+
+QUrl objectUrlForPath(const RemoteConnection& connection,
+                      const QString& localPath) {
+    const QString cachePath = cacheDirectory(connection);
+    if (cachePath.isEmpty()) return {};
+    const QString relative = relativeInCache(cachePath, localPath);
+    if (relative.isEmpty()) return {};
+    const QUrl url(
+        readIndex(QDir(cachePath).filePath(QStringLiteral("index.json")))
+            .value(QStringLiteral("entries"))
+            .toObject()
+            .value(relative)
+            .toObject()
+            .value(QStringLiteral("url"))
+            .toString(),
+        QUrl::StrictMode);
+    return url.isValid() ? url : QUrl();
+}
+
+bool getObjectRanges(const RemoteConnection& connection, const QUrl& url,
+                     const QVector<ObjectRange>& ranges,
+                     QVector<QByteArray>* bodies, QString* error,
+                     const IoCancel& cancel) {
+    if (error) error->clear();
+    if (!bodies || !url.isValid()) {
+        if (error) *error = QStringLiteral("Invalid range request");
+        return false;
+    }
+    bodies->clear();
+    bodies->resize(ranges.size());
+    if (ranges.isEmpty()) return true;
+    for (const ObjectRange& range : ranges) {
+        if (range.offset < 0 || range.length <= 0) {
+            if (error) *error = QStringLiteral("Invalid range request");
+            return false;
+        }
+    }
+
+    RemoteConnection signedConnection = connection;
+    const QString cachePath = cacheDirectory(connection);
+    const QJsonObject index =
+        readIndex(QDir(cachePath).filePath(QStringLiteral("index.json")));
+    const QString scope = index.value(QStringLiteral("scope")).toString();
+    if (signedConnection.options.value(QStringLiteral("region")).isEmpty() &&
+        !scope.isEmpty())
+        signedConnection.options.insert(QStringLiteral("region"), scope);
+
+    const RemoteBackend backend = backendFor(signedConnection);
+    if (!backend.sign) {
+        if (error) *error = QStringLiteral("No protocol backend");
+        return false;
+    }
+
+    QUrl target = url;
+    std::function<QNetworkRequest(const QUrl&, const ObjectRange&)> build;
+    switch (signedConnection.type) {
+        case LocationType::WebDav:
+            build = [&backend](const QUrl& hop, const ObjectRange& range) {
+                QNetworkRequest request = makeRequest(hop);
+                request.setRawHeader(
+                    "Range",
+                    QByteArray("bytes=") + QByteArray::number(range.offset) +
+                        '-' +
+                        QByteArray::number(range.offset + range.length - 1));
+                backend.sign(request, "GET", {});
+                return request;
+            };
+            break;
+        case LocationType::S3:
+        case LocationType::Gcs:
+            // Range is deliberately not among the signed headers, so one
+            // presigned object URL can multiplex every sample request.
+            target = s3PresignedUrl(signedConnection, scope, url,
+                                    kStreamExpirySeconds);
+            build = [](const QUrl& hop, const ObjectRange& range) {
+                QNetworkRequest request = makeRequest(hop);
+                request.setRawHeader(
+                    "Range",
+                    QByteArray("bytes=") + QByteArray::number(range.offset) +
+                        '-' +
+                        QByteArray::number(range.offset + range.length - 1));
+                return request;
+            };
+            break;
+        case LocationType::Folder:
+            if (error) *error = QStringLiteral("Not a remote object");
+            return false;
+    }
+    if (!target.isValid()) {
+        if (error) *error = QStringLiteral("Unable to sign object URL");
+        return false;
+    }
+
+    return NetworkIo::instance().ranges(build, target, ranges, bodies, error,
+                                        effectiveCancel(cancel));
+}
+
+QByteArray getObjectRange(const RemoteConnection& connection, const QUrl& url,
+                          qint64 offset, qint64 length, QString* error,
+                          const IoCancel& cancel) {
+    QVector<QByteArray> bodies;
+    if (!getObjectRanges(connection, url, {{offset, length}}, &bodies, error,
+                         cancel))
+        return {};
+    return bodies.front();
 }
 
 bool offlineVideoPinned(const RemoteConnection& connection,
@@ -560,8 +1173,8 @@ QString pinOfflineVideo(const RemoteConnection& connection,
 }
 
 QString fetchObject(const RemoteConnection& connection,
-                    const QString& localPath,
-                    const DownloadProgress& progress) {
+                    const QString& localPath, const DownloadProgress& progress,
+                    const IoCancel& cancel) {
     const QString cachePath = cacheDirectory(connection);
     if (cachePath.isEmpty())
         return QStringLiteral("This recording is not on a server.");
@@ -586,7 +1199,7 @@ QString fetchObject(const RemoteConnection& connection,
             const RemoteBackend backend = makeWebDavBackend(connection);
             build = [backend](const QUrl& hop) {
                 QNetworkRequest request = makeRequest(hop);
-                backend.sign(request, "GET");
+                backend.sign(request, "GET", {});
                 return request;
             };
             break;
@@ -606,9 +1219,8 @@ QString fetchObject(const RemoteConnection& connection,
             return QStringLiteral("This recording is not on a server.");
     }
 
-    QNetworkAccessManager manager;
     const DownloadResult download =
-        downloadToFile(manager, target, build, localPath, progress);
+        downloadToFile(target, build, localPath, progress, cancel);
     if (download.status != 200 || !download.error.isEmpty()) {
         // Whatever partial state a failure left, the recording still has to be
         // playable, and a stub is what the rest of the app expects to find.
@@ -667,7 +1279,15 @@ QString normalizeTarget(LocationType type, const QString& target) {
     return target.trimmed();
 }
 
-RemoteSyncResult syncConnection(const RemoteConnection& connection) {
+RemoteSyncResult syncConnection(const RemoteConnection& connection,
+                                const IoCancel& cancel) {
+    const IoCancelScope cancelScope(cancel);
+    if (ioCancelled(cancel)) {
+        RemoteSyncResult result;
+        result.error = QStringLiteral("Cancelled");
+        result.status = result.error;
+        return result;
+    }
     RemoteSyncResult result;
     result.id = connection.id.isEmpty()
                     ? locationId(connection.target, connection.username)
@@ -725,8 +1345,16 @@ RemoteSyncResult syncConnection(const RemoteConnection& connection) {
     QJsonObject newEntries;
     QSet<QString> seen;
     for (const RemoteObject& object : objects) {
+        if (ioCancelled(cancel)) {
+            result.error = QStringLiteral("Cancelled");
+            result.status = result.error;
+            return result;
+        }
         if (seen.contains(object.relativePath)) continue;
         seen.insert(object.relativePath);
+        // Local extract leftovers. Never a share-root metadata store.
+        if (object.relativePath.startsWith(QStringLiteral(".omatrack/")))
+            continue;
         // Left out of newEntries as well as of the download, so the prune
         // below cannot mistake a name this machine never stored for a file
         // the server deleted.
@@ -750,6 +1378,38 @@ RemoteSyncResult syncConnection(const RemoteConnection& connection) {
         // range requests. What lands on disk is a zero-byte stand-in, which
         // keeps discovery, pairing, pins and recents working off a local path
         // exactly as they do for a file that really is here.
+        if (isSidecarPath(object.relativePath)) {
+            const bool unchanged =
+                QFileInfo::exists(localPath) && !object.etag.isEmpty() &&
+                object.etag == old.value(QStringLiteral("etag")).toString();
+            if (!unchanged) {
+                const RequestFactory build = [&backend](const QUrl& url) {
+                    QNetworkRequest request = makeRequest(url);
+                    backend.sign(request, "GET", {});
+                    return request;
+                };
+                const DownloadResult download =
+                    downloadToFile(object.url, build, localPath, {}, cancel);
+                if (download.status != 200 || !download.error.isEmpty()) {
+                    result.error =
+                        download.error.isEmpty()
+                            ? QStringLiteral("Download returned HTTP %1")
+                                  .arg(download.status)
+                            : download.error;
+                    result.status = result.error;
+                    return result;
+                }
+                result.downloadedBytes += download.bytes;
+            }
+            newEntries.insert(
+                object.relativePath,
+                QJsonObject{{QStringLiteral("etag"), object.etag},
+                            {QStringLiteral("modified"), object.modified},
+                            {QStringLiteral("size"), object.size},
+                            {QStringLiteral("url"),
+                             object.url.toString(QUrl::FullyEncoded)}});
+            continue;
+        }
         if (isVideoFile(object.relativePath)) {
             // A recording pinned for offline use is kept exactly as it is,
             // provided the server still offers the same one. The sync never
@@ -786,11 +1446,11 @@ RemoteSyncResult syncConnection(const RemoteConnection& connection) {
         if (!unchanged) {
             const RequestFactory build = [&backend](const QUrl& url) {
                 QNetworkRequest request = makeRequest(url);
-                backend.sign(request, "GET");
+                backend.sign(request, "GET", {});
                 return request;
             };
             const DownloadResult download =
-                downloadToFile(manager, object.url, build, localPath);
+                downloadToFile(object.url, build, localPath, {}, cancel);
             if (download.status != 200 || !download.error.isEmpty()) {
                 result.error = download.error.isEmpty()
                                    ? QStringLiteral("Download returned HTTP %1")

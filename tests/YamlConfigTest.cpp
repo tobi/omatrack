@@ -444,6 +444,66 @@ private slots:
         QVERIFY(QFile::exists(YamlConfig::filePath()));
         QVERIFY(QFile::exists(legacyFile.fileName()));
     }
+    void trackMetadataMergeOverlaysNestedMaps() {
+        QVariantMap base{{QStringLiteral("car"),
+                          QVariantMap{{QStringLiteral("number"),
+                                       QStringLiteral("7")},
+                                      {QStringLiteral("class"),
+                                       QStringLiteral("LMP2")}}},
+                         {QStringLiteral("keep"), QStringLiteral("yes")}};
+        omatrack::track_metadata::merge(
+            &base, {{QStringLiteral("car"),
+                     QVariantMap{{QStringLiteral("number"),
+                                  QStringLiteral("8")}}},
+                    {QStringLiteral("driver"), QStringLiteral("A")}});
+        QCOMPARE(base.value(QStringLiteral("car"))
+                     .toMap()
+                     .value(QStringLiteral("number"))
+                     .toString(),
+                 QStringLiteral("8"));
+        QCOMPARE(base.value(QStringLiteral("car"))
+                     .toMap()
+                     .value(QStringLiteral("class"))
+                     .toString(),
+                 QStringLiteral("LMP2"));
+        QCOMPARE(base.value(QStringLiteral("driver")).toString(),
+                 QStringLiteral("A"));
+        QCOMPARE(base.value(QStringLiteral("keep")).toString(),
+                 QStringLiteral("yes"));
+    }
+
+    void trackMetadataFilePathRequiresARealDirectory() {
+        QVERIFY(omatrack::track_metadata::filePath(QStringLiteral("/no/such"))
+                    .isEmpty());
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        QCOMPARE(omatrack::track_metadata::filePath(directory.path()),
+                 QDir(directory.path()).filePath(QStringLiteral("TRACK.yml")));
+    }
+
+    void hierarchyCanOmitTheTargetFolder() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString parent = directory.filePath(QStringLiteral("event"));
+        const QString child = QDir(parent).filePath(QStringLiteral("run"));
+        QVERIFY(QDir().mkpath(child));
+        QVERIFY(YamlConfig::writeDocument(
+            QDir(parent).filePath(QStringLiteral("TRACK.yml")),
+            QVariantMap{{QStringLiteral("series"), QStringLiteral("IMSA")}}));
+        QVERIFY(YamlConfig::writeDocument(
+            QDir(child).filePath(QStringLiteral("TRACK.yml")),
+            QVariantMap{{QStringLiteral("series"), QStringLiteral("WEC")}}));
+        const QStringList parents =
+            omatrack::track_metadata::hierarchyPaths(child, false);
+        QVERIFY(!parents.isEmpty());
+        QVERIFY(!parents.contains(
+            QDir(child).filePath(QStringLiteral("TRACK.yml"))));
+        QCOMPARE(omatrack::track_metadata::readHierarchy(child, false)
+                     .value(QStringLiteral("series"))
+                     .toString(),
+                 QStringLiteral("IMSA"));
+    }
+
     void currentYamlWinsOverPreRenameYaml() {
         const QString legacyDir = tempDir_ + QStringLiteral("/racecraft");
         QVERIFY(QDir().mkpath(legacyDir));

@@ -14,8 +14,43 @@
 #include <cmath>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 using namespace omatrack;
+
+// Representative racing lap: complete, not a pit outlier, same rule the GUI
+// uses for fastest-lap marks and default selection.
+static int fastestLapIndex(const std::vector<Lap>& laps) {
+    std::vector<double> timed;
+    for (const Lap& lap : laps)
+        if (lap.complete && std::isfinite(lap.timeMs) && lap.timeMs > 0.0)
+            timed.push_back(lap.timeMs);
+    double pitLimit = 1e18;
+    if (timed.size() >= 3) {
+        std::sort(timed.begin(), timed.end());
+        pitLimit = timed[timed.size() / 2] * 1.35;
+    }
+    int best = -1;
+    double bestMs = 1e18;
+    for (size_t i = 0; i < laps.size(); ++i) {
+        if (!laps[i].complete || !(laps[i].timeMs > 0.0) ||
+            laps[i].timeMs > pitLimit)
+            continue;
+        if (laps[i].timeMs < bestMs) {
+            bestMs = laps[i].timeMs;
+            best = int(i);
+        }
+    }
+    if (best >= 0) return best;
+    for (size_t i = 0; i < laps.size(); ++i) {
+        if (!laps[i].complete || !(laps[i].timeMs > 0.0)) continue;
+        if (laps[i].timeMs < bestMs) {
+            bestMs = laps[i].timeMs;
+            best = int(i);
+        }
+    }
+    return best >= 0 ? best : 0;
+}
 
 static int cmdParse(const std::string& path) {
     std::string error;
@@ -86,16 +121,8 @@ static int cmdUnify(const std::string& path, const std::string& outputPath) {
         printf("FAIL: no laps to unify\n");
         return 1;
     }
-    // pick the fastest complete-ish lap (id != 0 preferred)
-    int best = 0;
-    double bestMs = 1e18;
-    for (size_t i = 0; i < laps.size(); ++i) {
-        if (laps[i].timeMs < bestMs && laps[i].timeMs > 30000) {
-            bestMs = laps[i].timeMs;
-            best = int(i);
-        }
-    }
-    const Lap& lap = laps[best];
+    const int best = fastestLapIndex(laps);
+    const Lap& lap = laps[size_t(best)];
     printf("unify: lap %d  %s  [%.3f, %.3f]\n", lap.id,
            formatLapTime(lap.timeMs).c_str(), lap.startTime, lap.endTime);
 
@@ -179,20 +206,6 @@ static int cmdUnify(const std::string& path, const std::string& outputPath) {
     return 0;
 }
 
-// Fastest lap that is long enough to be a real timed lap, mirroring how the
-// GUI picks a default.
-static int fastestLapIndex(const std::vector<Lap>& laps) {
-    int best = 0;
-    double bestMs = 1e18;
-    for (size_t i = 0; i < laps.size(); ++i) {
-        if (laps[i].timeMs < bestMs && laps[i].timeMs > 30000) {
-            bestMs = laps[i].timeMs;
-            best = int(i);
-        }
-    }
-    return best;
-}
-
 // Runs the same corner analyzers the GUI runs, on the same unified laps, so a
 // check can be developed and regression-tested without a display.
 static int cmdCorners(const std::string& path, const std::string& referencePath,
@@ -237,25 +250,12 @@ static int cmdCorners(const std::string& path, const std::string& referencePath,
         context.primaryMetrics =
             measureCorner(primary, zone.first, zone.second);
         if (!reference.time.empty()) {
-            // Map the zone onto the reference lap by distance, the way the
-            // store does, so both metrics describe the same piece of track.
-            const auto fractionAtDistance = [](const UnifiedLap& target,
-                                               double metres) {
-                if (target.distance.size() < 2) return 0.0;
-                const auto it = std::lower_bound(target.distance.begin(),
-                                                 target.distance.end(), metres);
-                if (it == target.distance.end()) return 1.0;
-                return double(it - target.distance.begin()) /
-                       double(target.distance.size() - 1);
-            };
-            const double startMetres =
-                primary.distance[size_t(context.primaryMetrics.firstIndex)];
-            const double endMetres =
-                primary.distance[size_t(context.primaryMetrics.lastIndex)];
+            // Same 0–1 zone on both laps. The GUI remaps through the cached
+            // track-station map; the CLI stays Qt-free, so it does not build
+            // that map and must not invent a second metre-to-fraction one.
             context.reference = &reference;
-            context.referenceMetrics = measureCorner(
-                reference, fractionAtDistance(reference, startMetres),
-                fractionAtDistance(reference, endMetres));
+            context.referenceMetrics =
+                measureCorner(reference, zone.first, zone.second);
         }
 
         const CornerMetrics& metrics = context.primaryMetrics;

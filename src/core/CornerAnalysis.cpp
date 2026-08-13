@@ -222,9 +222,9 @@ CornerMetrics measureCorner(const UnifiedLap& lap, double startFraction,
             metrics.liftIndex = i;
     }
     metrics.brakePoint =
-        metrics.brakeIndex >= 0 ? distanceFrom(metrics.brakeIndex) : 0.0;
+        metrics.brakeIndex >= 0 ? distanceFrom(metrics.brakeIndex) : nan();
     metrics.liftPoint =
-        metrics.liftIndex >= 0 ? distanceFrom(metrics.liftIndex) : 0.0;
+        metrics.liftIndex >= 0 ? distanceFrom(metrics.liftIndex) : nan();
     metrics.coastMeters =
         (metrics.brakeIndex >= 0 && metrics.liftIndex >= 0)
             ? std::max(0.0, metrics.brakePoint - metrics.liftPoint)

@@ -178,7 +178,7 @@ Item {
                 anchors.fill: parent
                 anchors.margins: 1
                 clip: true
-                model: libraryPage.locationRows
+                model: libraryPage.locationRows.length
                 visible: libraryPage.locationRows.length > 0
 
                 ScrollBar.vertical: ThinScrollBar {
@@ -187,19 +187,32 @@ Item {
                     id: locationRow
 
                     required property int index
-                    required property var modelData
+                    readonly property var modelData: libraryPage.locationRows[locationRow.index]
 
                     color: locationRow.index % 2 === 0 ? "transparent" : Qt.rgba(1, 1, 1, 0.025)
-                    height: 54
+                    height: locationBody.implicitHeight + 16
                     width: ListView.view.width
 
-                    RowLayout {
+                    MouseArea {
+                        acceptedButtons: Qt.RightButton
                         anchors.fill: parent
+                        z: 1
+
+                        onClicked: rowMenu.popup()
+                    }
+                    RowLayout {
+                        id: locationBody
+
+                        anchors.left: parent.left
                         anchors.leftMargin: 10
+                        anchors.right: parent.right
                         anchors.rightMargin: 8
+                        anchors.top: parent.top
+                        anchors.topMargin: 8
                         spacing: 8
 
                         Switch {
+                            Layout.alignment: Qt.AlignVCenter
                             Layout.preferredWidth: 42
                             checked: locationRow.modelData.enabled
                             scale: 0.7
@@ -207,6 +220,7 @@ Item {
                             onToggled: Store.setLocationEnabled(locationRow.modelData.id, checked)
                         }
                         Rectangle {
+                            Layout.alignment: Qt.AlignVCenter
                             Layout.preferredHeight: 16
                             Layout.preferredWidth: 46
                             border.color: Style.borderColor
@@ -223,7 +237,9 @@ Item {
                             }
                         }
                         ColumnLayout {
+                            Layout.alignment: Qt.AlignVCenter
                             Layout.fillWidth: true
+                            Layout.minimumWidth: 120
                             spacing: 0
 
                             Label {
@@ -242,27 +258,36 @@ Item {
                             }
                         }
                         ColumnLayout {
-                            Layout.preferredWidth: 130
-                            spacing: 0
+                            Layout.alignment: Qt.AlignTop
+                            Layout.fillWidth: false
+                            Layout.maximumWidth: 248
+                            Layout.minimumWidth: 248
+                            Layout.preferredWidth: 248
+                            spacing: 1
 
                             RowLayout {
+                                Layout.fillWidth: true
                                 spacing: 5
 
                                 Rectangle {
+                                    Layout.alignment: Qt.AlignTop
                                     Layout.preferredHeight: 7
                                     Layout.preferredWidth: 7
+                                    Layout.topMargin: 4
                                     color: !locationRow.modelData.enabled ? Style.dimTextColor : locationRow.modelData.available ? Style.greenColor : Style.redColor
                                     radius: 4
                                 }
                                 Label {
                                     Layout.fillWidth: true
-                                    color: Style.mutedTextColor
-                                    elide: Text.ElideRight
+                                    color: locationRow.modelData.enabled && !locationRow.modelData.available ? Style.redColor : Style.mutedTextColor
                                     font.pixelSize: Style.smallFontSize
                                     text: locationRow.modelData.status
+                                    wrapMode: Text.Wrap
                                 }
                             }
                             Label {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 12
                                 color: Style.dimTextColor
                                 font.family: Style.monoFontFamily
                                 font.pixelSize: Style.smallFontSize
@@ -271,6 +296,7 @@ Item {
                             }
                         }
                         CompactButton {
+                            Layout.alignment: Qt.AlignVCenter
                             text: "⋯"
 
                             onClicked: rowMenu.popup(this, 0, height)
@@ -283,6 +309,13 @@ Item {
                                     visible: locationRow.modelData.isConnection
 
                                     onTriggered: connectionDialog.openForEdit(locationRow.modelData)
+                                }
+                                MenuItem {
+                                    enabled: !Store.loading && locationRow.modelData.enabled
+                                    text: "Rescan server"
+                                    visible: locationRow.modelData.isConnection
+
+                                    onTriggered: Store.scan()
                                 }
                                 MenuItem {
                                     text: "Rename…"
@@ -319,7 +352,7 @@ Item {
                                 MenuItem {
                                     text: "Remove"
 
-                                    onTriggered: Store.removeLocation(locationRow.modelData.id)
+                                    onTriggered: removeDialog.openForLocation(locationRow.modelData)
                                 }
                             }
                         }
@@ -389,6 +422,33 @@ Item {
             // Worth saying plainly: this costs time and bandwidth, and on a
             // metered connection it costs money.
             text: "Delete " + libraryPage.cacheText + " downloaded from connected servers, and any recordings kept for offline use. Every enabled connection will download its files again on the next scan."
+            wrapMode: Text.WordWrap
+        }
+    }
+    Dialog {
+        id: removeDialog
+
+        property string locationId: ""
+        property string locationName: ""
+
+        function openForLocation(row): void {
+            removeDialog.locationId = row.id;
+            removeDialog.locationName = row.name;
+            removeDialog.open();
+        }
+
+        anchors.centerIn: Overlay.overlay
+        closePolicy: Popup.CloseOnEscape
+        modal: true
+        standardButtons: Dialog.Cancel | Dialog.Ok
+        title: "Remove location"
+        width: 360
+
+        onAccepted: Store.removeLocation(removeDialog.locationId)
+
+        Label {
+            anchors.fill: parent
+            text: "Remove “" + removeDialog.locationName + "” from the library? The files themselves are not deleted."
             wrapMode: Text.WordWrap
         }
     }

@@ -7,6 +7,7 @@
 #include <QElapsedTimer>
 #include <QFont>
 #include <QFontMetricsF>
+#include <QHoverEvent>
 #include <QMouseEvent>
 #include <QQuickWindow>
 #include <QSGNode>
@@ -147,6 +148,8 @@ void TraceView::setStore(TelemetryStore* store) {
             hoveredMarker_ = -1;
             invalidateScene();
         });
+        connect(store_, &TelemetryStore::highlightedCornerMarkerChanged, this,
+                [this]() { emit overlayChanged(); });
         connect(store_, &TelemetryStore::channelConfigChanged, this, [this]() {
             rebuildChannelSpecs();
             invalidateRanges();
@@ -408,7 +411,8 @@ void TraceView::buildScene(TraceSceneBuilder& builder) {
     if (!primary->distance.empty()) {
         const int n = int(primary->size());
         const int divisions = std::max(2, int((width() - kLabelW) / 120.0));
-        const double totalDistance = primary->distance.back();
+        const double origin = primary->distance.front();
+        const double totalDistance = primary->distance.back() - origin;
         double step = totalDistance / divisions;
         if (step < 50)
             step = 50;
@@ -422,13 +426,14 @@ void TraceView::buildScene(TraceSceneBuilder& builder) {
             step = 1000;
 
         for (double distance = 0; distance <= totalDistance; distance += step) {
+            const double absolute = origin + distance;
             const auto it = std::lower_bound(primary->distance.begin(),
-                                             primary->distance.end(), distance);
+                                             primary->distance.end(), absolute);
             int sample =
                 std::clamp(int(it - primary->distance.begin()), 0, n - 1);
             if (sample > 0 &&
-                std::fabs(primary->distance[sample - 1] - distance) <
-                    std::fabs(primary->distance[sample] - distance))
+                std::fabs(primary->distance[sample - 1] - absolute) <
+                    std::fabs(primary->distance[sample] - absolute))
                 --sample;
             const double fraction = double(sample) / double(n - 1);
             if (fraction < store_->viewStart() || fraction > store_->viewEnd())
@@ -833,8 +838,10 @@ void TraceView::buildChannel(TraceSceneBuilder& builder,
     if (store_->traceConfidenceMode())
         buildConfidenceBand(builder, store_->traceConfidenceBand(spec.field),
                             dataRect, range);
-    buildSeries(builder, compareData, dataRect, range, alpha(kMuted, 175),
-                false, true, store_->referenceAlignment(), 1.5);
+    // Keep the reference trace visually distinct from the active trace. It
+    // is drawn first, so the active line still wins at exact overlap points.
+    buildSeries(builder, compareData, dataRect, range, alpha(kOrange, 230),
+                false, true, store_->referenceAlignment(), 2.2);
     buildSeries(builder, primaryData, dataRect, range, traceColor, spec.filled,
                 false, 0.0, 1.8);
 
@@ -983,6 +990,9 @@ void TraceView::buildCornerFocus(TraceSceneBuilder& builder,
                   alpha(kMagenta, 150));
     builder.vLine(x2, totalRect.top(), totalRect.bottom(), 1.0,
                   alpha(kMagenta, 150));
+    // Edge grips: the focused window can be slid or stretched from here.
+    builder.rect(QRectF(x1 - 2, 2.0, 4, 17), alpha(kMagenta, 200));
+    builder.rect(QRectF(x2 - 2, 2.0, 4, 17), alpha(kMagenta, 200));
 }
 
 // A corner near start/finish keeps its place in the left half, so the
@@ -1172,20 +1182,32 @@ void TraceView::buildSelection(TraceSceneBuilder& builder) {
 // Hover keeps the event name available without redrawing the guide over the
 // channel geometry. The guide itself lives in the static scene behind traces.
 void TraceView::buildCornerMarkers(TraceSceneBuilder& builder) {
-    if (!store_ || store_->focusedCorner() < 0 || hoveredMarker_ < 0) return;
+    if (!store_ || store_->focusedCorner() < 0) return;
+    const int highlighted = focusedMarkerIndex();
+    if (highlighted < 0) return;
     const QVector<CornerMarker>& markers = store_->cornerMarkers();
-    if (hoveredMarker_ >= markers.size()) return;
+    if (highlighted >= markers.size()) return;
 
-    const CornerMarker& marker = markers[hoveredMarker_];
+    const CornerMarker& marker = markers[highlighted];
+    const QColor color = cornerMarkerColor(marker.key);
+    const double top = 2.0;
+    const double bottom = height() - kBottomPad;
+    auto paintMarker = [&](double fraction, int fade) {
+        const double x = xForFrac(fraction);
+        if (x < kLabelW || x > width()) return;
+        dashedVLine(builder, x, top, bottom, 6.0, 4.0, 1.5, alpha(color, fade));
+        builder.vLine(x, bottom - 10.0, bottom, 2.0, alpha(color, fade));
+    };
+    paintMarker(marker.fraction, 220);
+    if (marker.referenceFraction >= 0.0 &&
+        std::fabs(marker.referenceFraction - marker.fraction) >= 0.0005)
+        paintMarker(marker.referenceFraction, 150);
+
     const double x = xForFrac(marker.fraction);
     if (x < kLabelW || x > width()) return;
-    const QColor color = cornerMarkerColor(marker.key);
-    builder.vLine(x, cursorBottom_ - 10.0, cursorBottom_, 2.0,
-                  alpha(color, 220));
-
     const QFontMetricsF metrics(markerFont_);
     const QSizeF size = metrics.size(Qt::TextSingleLine, marker.label);
-    QRectF pill(x + 4, cursorBottom_ - size.height() - 20, size.width() + 10,
+    QRectF pill(x + 4, bottom - size.height() - 20, size.width() + 10,
                 size.height() + 4);
     if (pill.right() > width()) pill.moveRight(x - 4);
     builder.rect(pill, alpha(backgroundColor_, 235));
@@ -1253,6 +1275,43 @@ int TraceView::markerIndexAt(const QPointF& position) const {
         }
     }
     return best;
+}
+
+int TraceView::focusedMarkerIndex() const {
+    if (!store_ || store_->focusedCorner() < 0) return -1;
+    if (hoveredMarker_ >= 0) return hoveredMarker_;
+    const QString key = store_->highlightedCornerMarker();
+    if (key.isEmpty()) return -1;
+    const QVector<CornerMarker>& markers = store_->cornerMarkers();
+    for (int i = 0; i < markers.size(); ++i)
+        if (markers[i].key == key) return i;
+    return -1;
+}
+
+int TraceView::focusedZoneHandleAt(const QPointF& position) const {
+    if (!store_ || store_->focusedCorner() < 0) return 0;
+    const int focused = store_->focusedCorner();
+    if (focused >= store_->corners().size()) return 0;
+    const CornerZone& corner = store_->corners()[focused];
+    const double x = position.x();
+    const double x1 = xForFrac(corner.start);
+    const double x2 = xForFrac(corner.end);
+    constexpr double kEdge = 8.0;
+    if (std::fabs(x - x1) <= kEdge) return 1;
+    if (std::fabs(x - x2) <= kEdge) return 2;
+    if (position.y() <= kTopPad && x >= x1 && x <= x2) return 3;
+    return 0;
+}
+
+void TraceView::updateZoneHoverCursor(const QPointF& position) {
+    if (dragging_ || panning_ || selecting_) return;
+    switch (focusedZoneHandleAt(position)) {
+        case 1:
+        case 2: setCursor(Qt::SizeHorCursor); return;
+        case 3: setCursor(Qt::OpenHandCursor); return;
+        default: break;
+    }
+    unsetCursor();
 }
 
 // Shared by the hover and the button-held move paths so a marker opens up
@@ -1349,6 +1408,21 @@ void TraceView::mousePressEvent(QMouseEvent* event) {
     }
 
     if (event->button() != Qt::LeftButton) return;
+
+    // A focused corner window can be slid or resized without entering
+    // the global corner-edit mode: edges stretch it, the label band moves it.
+    const int focusHandle = focusedZoneHandleAt(event->position());
+    if (focusHandle > 0) {
+        dragCorner_ = store_->focusedCorner();
+        dragCornerMove_ = focusHandle == 3;
+        dragStartFrac_ = dragCornerMove_
+                             ? fraction - store_->corners()[dragCorner_].start
+                             : 0.0;
+        dragging_ = true;
+        setCursor(dragCornerMove_ ? Qt::ClosedHandCursor : Qt::SizeHorCursor);
+        event->accept();
+        return;
+    }
 
     // Clicking a corner in the ruler zooms the workspace onto it.
     const int cornerIndex = cornerIndexAt(event->position());
@@ -1497,6 +1571,7 @@ void TraceView::keyPressEvent(QKeyEvent* event) {
 
 void TraceView::hoverMoveEvent(QHoverEvent* event) {
     if (!store_ || !store_->primaryUnified()) return;
+    updateZoneHoverCursor(event->position());
     if (cursorTimer_.isValid() && cursorTimer_.elapsed() < kHoverFrameMs) {
         event->accept();
         return;
@@ -1508,6 +1583,15 @@ void TraceView::hoverMoveEvent(QHoverEvent* event) {
         emit overlayChanged();
     }
     event->accept();
+}
+
+void TraceView::hoverLeaveEvent(QHoverEvent* event) {
+    if (hoveredMarker_ >= 0) {
+        hoveredMarker_ = -1;
+        emit overlayChanged();
+    }
+    if (!dragging_ && !panning_ && !selecting_) unsetCursor();
+    QQuickItem::hoverLeaveEvent(event);
 }
 
 // ── cursor overlay item ─────────────────────────────────────────────

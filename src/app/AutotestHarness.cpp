@@ -500,14 +500,33 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                     root ? root->findChild<QObject*>(
                                                QStringLiteral("videoPane"))
                                          : nullptr;
+                                QObject* seekSlider =
+                                    root
+                                        ? root->findChild<QObject*>(
+                                              QStringLiteral("videoSeekSlider"))
+                                        : nullptr;
+                                QObject* seekBack =
+                                    root ? root->findChild<QObject*>(
+                                               QStringLiteral(
+                                                   "videoSeekBackButton"))
+                                         : nullptr;
+                                QObject* seekForward =
+                                    root ? root->findChild<QObject*>(
+                                               QStringLiteral(
+                                                   "videoSeekForwardButton"))
+                                         : nullptr;
                                 const bool standaloneReady =
                                     root && tracePane && videoPane &&
+                                    seekSlider && seekBack && seekForward &&
                                     store.primarySessionKey().isEmpty() &&
                                     store.compareSessionKey().isEmpty() &&
                                     root->property("standaloneVideoActive")
                                         .toBool() &&
                                     !tracePane->property("visible").toBool() &&
-                                    videoPane->property("visible").toBool();
+                                    videoPane->property("visible").toBool() &&
+                                    seekSlider->property("visible").toBool() &&
+                                    seekBack->property("visible").toBool() &&
+                                    seekForward->property("visible").toBool();
                                 if (root)
                                     root->setProperty(
                                         "standaloneVideoAutotestReady",

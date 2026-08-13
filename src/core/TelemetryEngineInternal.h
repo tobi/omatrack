@@ -32,9 +32,9 @@ std::vector<double> pdsLapNumberSplits(const std::vector<double>& values,
 /// Whether a lap-number signal carries authoritative non-zero state.
 bool lapNumberCarriesState(const std::vector<double>& values);
 
-/// Select the most authoritative boundary source. An active lap-number signal
-/// wins over beacon/timer/distance heuristics; with fewer than two crossings,
-/// no completed lap is fabricated from a weaker signal.
+/// Select the most authoritative boundary source. An active lap-number
+/// signal with at least two crossings wins over beacon/timer/distance.
+/// A counter that never increments is not authoritative.
 std::vector<double> selectLapSplits(const std::vector<double>& beaconSplits,
                                     const std::vector<double>& lapNumberSplits,
                                     bool lapNumberActive,
@@ -52,6 +52,11 @@ std::vector<double> pdsDistanceSplits(const std::vector<double>& values,
 std::vector<Lap> buildLapsFromSplits(const std::vector<double>& splitTimes,
                                      double duration,
                                      bool rejectShortCrossings = true);
+
+/// Mark complete crossings much shorter than the session median incomplete.
+/// Used for both heuristic splits and vendor-supplied lap lists so an out-lap
+/// cannot win fastest-lap selection.
+void markShortCrossingsIncomplete(std::vector<Lap>& laps);
 
 /// Override lap times from a "previous lap time" channel when it agrees with
 /// the crossing-derived estimate; heuristic contradictory crossings can be

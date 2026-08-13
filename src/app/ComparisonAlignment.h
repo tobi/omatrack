@@ -42,3 +42,13 @@ ComparisonAlignmentResult computeComparisonAlignment(
 // (speed landmarks or validated lap distance), or "LOW" (everything else).
 QString comparisonAlignmentConfidenceLabel(const QString& basis,
                                            int gpsAnchors);
+
+// Look up the compare-lap fraction for a primary-lap fraction. An empty or
+// degenerate map is identity: the caller must not treat "not yet aligned"
+// as "the reference is at the start of the lap".
+double interpolateAlignmentFraction(const QVector<double>& map,
+                                    double primaryFraction);
+
+// Inverse of interpolateAlignmentFraction. Same identity fallback.
+double invertAlignmentFraction(const QVector<double>& map,
+                               double compareFraction);

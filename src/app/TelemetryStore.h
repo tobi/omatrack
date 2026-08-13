@@ -252,6 +252,9 @@ class TelemetryStore : public QObject {
     Q_PROPERTY(bool editingCorners READ editingCorners WRITE setEditingCorners
                    NOTIFY editingCornersChanged)
     Q_PROPERTY(int focusedCorner READ focusedCorner NOTIFY cornerFocusChanged)
+    Q_PROPERTY(
+        QString highlightedCornerMarker READ highlightedCornerMarker WRITE
+            setHighlightedCornerMarker NOTIFY highlightedCornerMarkerChanged)
     Q_PROPERTY(double cursorFrac READ cursorFrac WRITE setCursorFrac NOTIFY
                    cursorFracChanged)
     Q_PROPERTY(bool hasGpsData READ hasGpsData NOTIFY selectionChanged)
@@ -448,6 +451,8 @@ public:
     Q_INVOKABLE void clearCornerFocus();
     Q_INVOKABLE QVariantMap cornerFocusSummary() const;
     int focusedCorner() const { return focusedCorner_; }
+    QString highlightedCornerMarker() const { return highlightedCornerMarker_; }
+    Q_INVOKABLE void setHighlightedCornerMarker(const QString& key);
     /// Unified lap immediately before (-1) or after (+1) the active lap in the
     /// same session. Corner focus can frame a corner near start/finish so the
     /// viewport runs past the lap bounds; this is what fills that space.
@@ -568,6 +573,7 @@ signals:
     void sessionsChanged();
     void cornersChanged();
     void cornerFocusChanged();
+    void highlightedCornerMarkerChanged();
     void cornerConsistencyChanged();
     void traceConfidenceChanged();
     void driverMappingsChanged();
@@ -669,6 +675,7 @@ private:
     void rebuildComparisonAlignment();
     double compareTimeForPrimaryFraction(double fraction) const;
     double compareFractionForPrimaryFraction(double fraction) const;
+    double primaryFractionForCompareFraction(double fraction) const;
     QVector<omatrack::LibraryLocation> locations_;
     /// Per-location scan outcome, keyed by location id: the status line shown
     /// in preferences and the number of telemetry files discovered.
@@ -773,6 +780,7 @@ private:
     bool traceConfidenceLoading_ = false;
     bool traceConfidenceReady_ = false;
     int focusedCorner_ = -1;
+    QString highlightedCornerMarker_;
     double focusReturnStart_ = 0.0;
     double focusReturnEnd_ = 1.0;
     mutable QHash<QString, bool> channelVisible_;

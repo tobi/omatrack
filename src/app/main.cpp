@@ -14,6 +14,8 @@
 #include <QStandardPaths>
 #include <QUrl>
 #include <clocale>
+#include <cstdio>
+#include <cstring>
 
 #ifdef OMATRACK_ENABLE_AUTOTEST_HARNESS
 #include "AutotestHarness.h"
@@ -23,7 +25,38 @@
 #include "WindowsIntegration.h"
 #endif
 
+namespace {
+
+bool helpRequested(int argc, char** argv) {
+    return argc > 1 && (std::strcmp(argv[1], "--help") == 0 ||
+                        std::strcmp(argv[1], "-h") == 0);
+}
+
+void printHelp(const char* executable) {
+    std::printf(
+        "Omatrack telemetry workstation\n\n"
+        "Usage:\n"
+        "  %s [telemetry-directory|telemetry-or-video-file]\n"
+        "  %s --help\n\n"
+        "Options:\n"
+        "  -h, --help  Show this help and exit.\n\n"
+        "Headless inspection, CSV export, and corner analysis are currently "
+        "provided by omatrack-cli:\n"
+        "  omatrack-cli parse <file>\n"
+        "  omatrack-cli unify <file> --output <csv>\n"
+        "  omatrack-cli corners <file> [--reference <file>] "
+        "--zone <start:end>\n\n"
+        "Run omatrack-cli without arguments for its complete usage.\n",
+        executable, executable);
+}
+
+}  // namespace
+
 int main(int argc, char** argv) {
+    if (helpRequested(argc, argv)) {
+        printHelp(argc > 0 ? argv[0] : "omatrack");
+        return 0;
+    }
 #ifdef OMATRACK_ENABLE_AUTOTEST_HARNESS
     const bool autotest = !qgetenv("OMATRACK_AUTOTEST").isEmpty();
 #else

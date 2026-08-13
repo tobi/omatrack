@@ -56,6 +56,8 @@ QtObject {
     readonly property color throttleTelemetryColor: "#a7c080"
     readonly property color traceBackgroundColor: Theme.colors.darker_background || style.desktopPalette.base
     readonly property string uiFontFamily: "Geist"
+    readonly property color videoControlBackgroundColor: Qt.rgba(0, 0, 0, 0.86)
+    readonly property color videoControlTrackColor: Qt.rgba(style.foregroundColor.r, style.foregroundColor.g, style.foregroundColor.b, 0.28)
 
     // Letterbox behind onboard video. Deliberately true black in every theme:
     // it must not tint the frame the driver is looking at.

@@ -41,6 +41,9 @@ struct LibraryLocation {
     QMap<QString, QString> options;
     /// Disabled locations stay configured but are skipped by every scan.
     bool enabled = true;
+    /// Runtime-only mount discovered by the USB watcher. Never persisted;
+    /// omitted from the sidebar when its scan finds no supported files.
+    bool transient = false;
 
     bool isConnection() const { return type != LocationType::Folder; }
 };

@@ -39,6 +39,10 @@ Dense does not mean noisy. Default views show the channels that answer common dr
 Interactive rendering targets 60–120 fps. A frame is 16.67 ms at 60 Hz and 8.33 ms at 120 Hz; hot interaction paths should be designed for the 8.33 ms budget.
 
 - Never parse, resample, scan whole channels, perform network I/O, or rebuild static geometry on cursor movement.
+- The main event loop is UX only. Disk, network, parse, and cache work
+  run on a worker (`QtConcurrent` or the dedicated I/O thread). Do not
+  block the GUI thread on I/O, and do not wait for it with a nested
+  `QEventLoop`.
 - Keep static traces separate from the lightweight cursor/selection overlay.
 - Cache normalized laps, raw-channel resamples, delta arrays, geometry, and overview rasters; invalidate them only when their inputs change.
 - Bound draw work to the viewport and pixel budget. Do not submit every source sample when fewer points can produce the same image.
@@ -89,7 +93,7 @@ folder or per-video override wins. Individual video overrides remain under
 Upstream data is not configuration. Track Atlas is used as-is by default; the
 moment a user edits corner zones for a track, the whole resulting zone list is
 copied out to `tracks.<track>.corners` in `omatrack.yml` and that override
-wins on load. Caches (Track Atlas snapshot, thumbnails) stay outside the file.
+wins on load. Caches (Track Atlas snapshot) stay outside the file.
 
 ## Feature model
 
@@ -112,7 +116,7 @@ wins on load. Caches (Track Atlas snapshot, thumbnails) stay outside the file.
 - Infer inexpensive metadata from filenames/folders before parsing samples.
 - Group the library as Track → Date → Session → Laps.
 - Detect lap boundaries from the best available beacon, lap-time, lap-number, or lap-distance signal.
-- Classify every detected lap: leading/trailing recording fragments and crossing pairs implausibly shorter than the session median are incomplete (`Out`/`In`/`Frag`), and complete laps far above the session median are pit in/out laps. Only representative laps (`LapEntry::countsForBest`) feed fastest-lap marks, sidebar best times, and default lap selection.
+- Classify every detected lap, including vendor-supplied lap lists: leading/trailing recording fragments and crossing pairs implausibly shorter than the session median are incomplete (`Out`/`In`/`Frag`), crossings that cover much less lap-distance than the best pair are incomplete, and complete laps far above the session median are pit in/out laps. Only representative laps (`LapEntry::countsForBest`) feed fastest-lap marks, sidebar best times, and default lap selection.
 - Cache parsed/unified laps lazily per session. Opening and normalizing active
   and reference laps runs on the worker pool; `TelemetryStore::lapLoading`
   drives feedback, and per-role generations discard stale rapid selections.
@@ -141,6 +145,11 @@ wins on load. Caches (Track Atlas snapshot, thumbnails) stay outside the file.
   second parallel list. `~/Documents/Telemetry` (resolved through the platform
   Documents location, so Windows OneDrive redirection is honored) is the only
   location on a fresh install and is created if missing.
+- Ready USB-backed volumes are detected automatically and scanned off the UI
+  thread. A mount is a transient `USB — …` library section only when that scan
+  finds a supported telemetry or video file. It is never added to `locations`
+  or otherwise persisted, and detaching it removes the section on the next
+  mount check.
 - Connections are synchronized into a local cache and the cache is scanned, so
   everything downstream of discovery sees plain local paths and never learns
   which kind of location produced them. Credentials are used only for
@@ -148,6 +157,19 @@ wins on load. Caches (Track Atlas snapshot, thumbnails) stay outside the file.
   streamed into an atomic cache under `$XDG_CACHE_HOME/omatrack/<protocol>/`
   (or the platform cache equivalent). ETag/Last-Modified metadata avoids
   unchanged downloads, and an unavailable server falls back to its last cache.
+- A recording may be accompanied by hidden companions in the same folder:
+  `.<video filename>.json` (laps, media anchors, optional telemetry link)
+  and `.<video filename>.ld` (portable MoTeC). Sync those before the
+  media. Discovery keeps the video as the one session identity and
+  opens the linked telemetry only behind that session; never show the
+  linked file as a second library entry. Keep explicit remote links inside
+  that connection's cache. On a remote, a lone MP4 is probed for an AiM
+  `aimd` track; a hit extracts that track, writes the hidden MoTeC
+  companion, and publishes it create-only (`If-None-Match: *`) so the
+  next client never opens the video. Lap lists live in the JSON, not an
+  `.ldx`. A 412 means another client already published — fetch theirs,
+  never overwrite. A miss publishes `supported: false`. Local folders
+  read companions but do not write them.
 - Video is never downloaded by a sync. One onboard recording runs 5–30 GB
   against telemetry's kilobytes, so the sync writes a zero-byte stand-in at the
   cache path — which keeps discovery, pairing, pins and recents keyed on a
@@ -384,8 +406,8 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
 | C ABI | `third_party/motorsport-telemetry/bridge/` | Extension dispatch, opaque handles, format-neutral lap metadata, bulk decode, stable strings, thread-local errors | Vendor decoding, analysis policy, or exceptions/panics crossing FFI |
 | Core | `src/core/TelemetryEngine.*` | Channel mapping, units, lap detection, resampling, `UnifiedLap` | Qt types, QML, settings, network access |
 | Corner analysis | `src/core/CornerAnalysis.*` | Per-corner metrics and the pluggable checks that produce driver-facing notes | Qt types, UI text layout, Track Atlas fetching |
-| Session/store | `src/app/TelemetryStore.*` | Lazy session handles, selection, cached GPS/speed track-station alignment, comparison, viewport, preferences, Track Atlas, corner analysis | Pixel-level paint loops or vendor byte parsing |
-| Remote cache | `src/app/RemoteCache.*` | Sync engine: cache layout, ETag/Last-Modified reuse, stale prune, offline fallback, the LRU budget, video stubs, stream URLs, and pinned offline downloads | Protocol details, telemetry normalization, UI state, source-file mutation |
+| Session/store | `src/app/TelemetryStore.*`, `src/app/RecordingSidecar.*` | Lazy session handles, portable recording/telemetry pairing, selection, cached GPS/speed track-station alignment, comparison, viewport, preferences, Track Atlas, corner analysis | Pixel-level paint loops or vendor byte parsing |
+| Remote cache | `src/app/RemoteCache.*`, `src/app/AimRemoteIndex.*` | Sync engine: cache layout, recording sidecars and hidden MoTeC companions, ETag/Last-Modified reuse, stale prune, offline fallback, bounded sparse AiM extraction, create-only companion publish, the LRU budget, video stubs, stream URLs, and pinned offline downloads | Protocol details, telemetry normalization, UI state, source-file mutation |
 | Remote protocols | `src/app/WebDavBackend.cpp`, `src/app/S3Backend.cpp`, `src/app/SigV4.*` | Listing a server and signing a request — PROPFIND/XML, ListObjectsV2, AWS Signature Version 4 | Cache layout, eviction policy, anything that outlives one request |
 | Renderer | `src/app/TraceView.*`, `src/app/TraceSceneBuilder.*`, `src/app/TraceTextCache.*` | Scene-graph geometry generation for the trace surfaces and direct trace interaction | Parsing, network access, persistent product state |
 | Video renderer | `src/app/MpvVideoItem.*` | libmpv lifecycle, OpenGL FBO rendering, playback state, and exact seek | Telemetry extraction, session association, or QML layout policy |
@@ -439,6 +461,12 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
     destroys the focused item, so typing stops after one character. Bind the
     model to the row *count* and read the row through the index, so an edit
     re-evaluates bindings instead of recreating items.
+17. The GUI event loop does no I/O. File reads and writes, HTTP, directory
+    walks, parse, unify, Track Atlas refresh, and cache clear belong on a
+    worker: HTTP on the dedicated I/O thread via `QPromise`/`QFuture`, the
+    rest on `QtConcurrent`. A nested `QEventLoop` must not drive or wait
+    for that work. Long jobs take an `IoCancel` so a rescan or a window
+    close can abort in-flight requests. The loop applies results and paints.
 
 ## Where changes belong
 
@@ -450,6 +478,8 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
 - New high-frequency visual: `TraceView` or another focused C++ Quick item, with measured frame cost.
 - New track metadata: contribute it to Track Atlas. Omatrack should consume the upstream result.
 - New Track Atlas layer support: parse it into a typed application model, retaining IDs, labels, ranges, members, and landmarks.
+- New blocking I/O: the existing I/O thread or `QtConcurrent`, never the
+  GUI event loop and never a nested `QEventLoop`.
 
 Do not fix parser ambiguity with filename-specific UI conditionals. Do not copy analysis into JavaScript for convenience. Do not move cold UI layout into C++ without a measured reason.
 
@@ -658,9 +688,18 @@ Embedded libmpv playback must be verified on the native Linux/Omarchy OpenGL sce
 - `sessionStartUnixTime()`/`hasGlobalTime()` do not currently provide global session time.
 - The GUI is file-based post-session analysis today. Future live or database-backed work must preserve the same normalized core instead of bypassing it.
 - The app embeds one video. An `aimd` MP4 self-associates playback with its
-  telemetry and exact MP4 presentation offset; persisted associations between
-  separate files and multi-video alignment are not implemented.
+  telemetry and exact MP4 presentation offset. A portable
+  `.<video filename>.json` sidecar may instead associate one external
+  telemetry file (typically a hidden `.<video filename>.ld`) and explicit
+  lap media anchors with the recording. Generated companions do not include
+  an `.ldx`. General user-authored associations
+  between unrelated files and multi-video alignment are not implemented.
+  Cache-private `.omatrack/aim-{etag}.mp4` extracts are a one-time fallback
+  for a lone remote AiM MP4; they are not a share-root metadata store.
 - Configuration migrates from the pre-YAML `QSettings` store, the pre-rename `racecraft.yml`/Track Atlas cache, and per-track corner CSVs on first run; legacy stores are read only and left untouched.
+- HTTP (sync, range GET, Track Atlas, video fetch) runs on a dedicated
+  I/O thread via `QPromise`/`QFuture`; parse, unify, scan walk, and cache
+  clear run on `QtConcurrent`. That split is invariant 17, not optional.
 
 ## Definition of done
 

@@ -136,7 +136,7 @@ ColumnLayout {
                     text: mappingDelegate.row.id || ""
 
                     validator: RegularExpressionValidator {
-                        regularExpression: /(?:\*|(?:0*[1-9][0-9]*(?:\.[0-9]*)?|0*\.(?:[0-9]*[1-9][0-9]*)))/
+                        regularExpression: /(?:|\*|(?:0*[1-9][0-9]*(?:\.[0-9]*)?|0*\.(?:[0-9]*[1-9][0-9]*)))/
                     }
 
                     onTextEdited: driverSection.mappingEdited(mappingDelegate.index, text, driverNameEditor.text)

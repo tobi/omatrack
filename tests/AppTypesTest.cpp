@@ -45,6 +45,22 @@ private slots:
         LapEntry e;
         QVERIFY(e.countsForBest());  // default: complete=true, pitLap=false
     }
+    void mapsTelemetryToAnchoredMediaTime() {
+        LapEntry e;
+        e.startTime = 100.0;
+        e.endTime = 220.0;
+        e.videoStartTime = 10.0;
+        e.videoEndTime = 70.0;
+        QCOMPARE(e.mediaTime(60.0, 7.0), 40.0);
+        QCOMPARE(e.telemetryTime(40.0, 7.0), 60.0);
+    }
+    void fallsBackToSharedRecordingClock() {
+        LapEntry e;
+        e.startTime = 100.0;
+        e.endTime = 220.0;
+        QCOMPARE(e.mediaTime(60.0, 7.0), 167.0);
+        QCOMPARE(e.telemetryTime(167.0, 7.0), 60.0);
+    }
 };
 
 // ────────────────────────────────────────────────────────────────────
@@ -126,6 +142,47 @@ private slots:
     }
 };
 
+class TraceConfidenceBandTest : public QObject {
+    Q_OBJECT
+private slots:
+    void emptyIsInvalid() { QVERIFY(!TraceConfidenceBand{}.valid()); }
+    void oneLapIsInvalid() {
+        TraceConfidenceBand band;
+        band.lapCount = 1;
+        band.lower = {0.0, 1.0};
+        band.median = {0.5, 1.5};
+        band.upper = {1.0, 2.0};
+        QVERIFY(!band.valid());
+    }
+    void mismatchedLengthsAreInvalid() {
+        TraceConfidenceBand band;
+        band.lapCount = 3;
+        band.lower = {0.0, 1.0};
+        band.median = {0.5};
+        band.upper = {1.0, 2.0};
+        QVERIFY(!band.valid());
+    }
+    void twoLapsWithAlignedSeriesAreValid() {
+        TraceConfidenceBand band;
+        band.lapCount = 2;
+        band.lower = {0.0, 1.0};
+        band.median = {0.5, 1.5};
+        band.upper = {1.0, 2.0};
+        QVERIFY(band.valid());
+    }
+};
+
+class CornerMarkerTest : public QObject {
+    Q_OBJECT
+private slots:
+    void defaultHasNoReference() {
+        CornerMarker marker;
+        QCOMPARE(marker.referenceFraction, -1.0);
+        QCOMPARE(marker.fraction, 0.0);
+        QVERIFY(marker.key.isEmpty());
+    }
+};
+
 // Run all test classes in one executable.
 int main(int argc, char* argv[]) {
     int status = 0;
@@ -139,6 +196,14 @@ int main(int argc, char* argv[]) {
     }
     {
         DamperAlignmentTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        TraceConfidenceBandTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        CornerMarkerTest t;
         status |= QTest::qExec(&t, argc, argv);
     }
 

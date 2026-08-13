@@ -16,6 +16,7 @@ Item {
     required property int childCount
     required property string driveTime
     required property string driver
+    readonly property bool expandableRow: row.sectionRow || row.role === "folder"
     required property bool expanded
     required property bool hasSession
     required property int indent
@@ -31,6 +32,7 @@ Item {
     readonly property bool referenceFile: row.hasSession && row.key === row.referenceSessionKey
     required property string referenceSessionKey
     required property string role
+    readonly property bool sectionRow: row.role === "source" || row.role === "pins" || row.role === "recent"
     required property string seriesName
     required property string sessionDate
     readonly property string tooltipOwner: "file:" + row.path
@@ -76,7 +78,7 @@ Item {
             Store.requestSidebarMetadata(row.path, row.metadataInViewport);
     }
 
-    height: row.role === "source" || row.role === "pins" ? 40 : row.role === "file" ? 38 : 28
+    height: row.sectionRow ? 40 : row.role === "file" ? 38 : 28
     width: ListView.view.width
 
     Component.onCompleted: row.requestVisibleMetadata()
@@ -85,7 +87,7 @@ Item {
 
     Rectangle {
         anchors.fill: parent
-        color: row.activeFile ? Style.selectionColor : row.referenceFile ? Style.referenceSelectionColor : row.role === "source" || row.role === "pins" ? Style.surfaceColor : rowMouse.containsMouse ? Style.backgroundColor : "transparent"
+        color: row.activeFile ? Style.selectionColor : row.referenceFile ? Style.referenceSelectionColor : row.sectionRow ? Style.surfaceColor : rowMouse.containsMouse ? Style.backgroundColor : "transparent"
     }
     RowLayout {
         anchors.fill: parent
@@ -99,7 +101,7 @@ Item {
             color: Style.dimTextColor
             font.family: Style.monoFontFamily
             font.pixelSize: 8
-            text: row.role === "source" || row.role === "folder" || row.role === "pins" ? (row.expanded ? "▾" : "▸") : ""
+            text: row.expandableRow ? (row.expanded ? "▾" : "▸") : ""
         }
         Rectangle {
             Layout.preferredHeight: 11
@@ -129,9 +131,9 @@ Item {
                 Layout.fillWidth: true
                 color: !row.available ? Style.redColor : row.activeFile ? Style.accentColor : row.referenceFile ? Style.orangeColor : Style.foregroundColor
                 elide: Text.ElideRight
-                font.bold: row.role === "source" || row.role === "pins" || row.activeFile
+                font.bold: row.sectionRow || row.activeFile
                 font.family: row.role === "file" ? Style.monoFontFamily : Style.uiFontFamily
-                font.pixelSize: row.role === "source" || row.role === "pins" ? 10 : 9
+                font.pixelSize: row.sectionRow ? 10 : 9
                 text: row.name
             }
             Label {
@@ -140,7 +142,7 @@ Item {
                 elide: Text.ElideMiddle
                 font.family: Style.monoFontFamily
                 font.pixelSize: 8
-                text: row.role === "pins" ? row.childCount + (row.childCount === 1 ? " pinned item" : " pinned items") : row.role === "source" ? (!row.available ? "Folder not found" : row.childCount + (row.childCount === 1 ? " file" : " files")) : row.driver !== "" ? row.driver + (row.bestTime !== "" ? " · best " + row.bestTime : "") + (row.modified !== "" ? " · " + row.modified : "") : row.modified
+                text: row.role === "pins" ? row.childCount + (row.childCount === 1 ? " pinned item" : " pinned items") : row.role === "recent" ? row.childCount + (row.childCount === 1 ? " recent item" : " recent items") : row.role === "source" ? (!row.available ? "Folder not found" : row.childCount + (row.childCount === 1 ? " file" : " files")) : row.driver !== "" ? row.driver + (row.bestTime !== "" ? " · best " + row.bestTime : "") + (row.modified !== "" ? " · " + row.modified : "") : row.modified
                 visible: row.role !== "folder"
             }
         }
@@ -183,7 +185,7 @@ Item {
                     row.contextMenuRequested(row.role, row.path, row.key, row.hasSession, row.videoFile, row.mappingKey, row.driver, row.pinned);
                 return;
             }
-            if (row.role === "source" || row.role === "folder" || row.role === "pins")
+            if (row.expandableRow)
                 row.toggleNodeRequested(row.role, row.path);
             else
                 row.fileActivated(row.path, row.key, row.hasSession);

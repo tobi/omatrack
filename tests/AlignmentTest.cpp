@@ -19,6 +19,7 @@
 
 #include <QtTest>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -398,11 +399,68 @@ private slots:
                      QStringLiteral("speed landmarks"), 8),
                  QStringLiteral("HIGH"));
     }
+    void sevenAnchorsDoNotPromote() {
+        QCOMPARE(comparisonAlignmentConfidenceLabel(
+                     QStringLiteral("speed landmarks"), 7),
+                 QStringLiteral("MED"));
+        QCOMPARE(comparisonAlignmentConfidenceLabel(
+                     QStringLiteral("wheel/GPS speed"), 7),
+                 QStringLiteral("LOW"));
+    }
+    void unknownBasisIsLow() {
+        QCOMPARE(comparisonAlignmentConfidenceLabel(
+                     QStringLiteral("something else"), 0),
+                 QStringLiteral("LOW"));
+    }
 };
 
 // ────────────────────────────────────────────────────────────────────
 // Too-short laps produce empty alignment
 // ────────────────────────────────────────────────────────────────────
+
+class AlignmentFractionLookupTest : public QObject {
+    Q_OBJECT
+private slots:
+    void emptyMapIsIdentity() {
+        QVERIFY(approx(interpolateAlignmentFraction({}, 0.3), 0.3));
+        QVERIFY(approx(invertAlignmentFraction({}, 0.3), 0.3));
+        QVERIFY(approx(interpolateAlignmentFraction({0.0}, 0.8), 0.8));
+        QVERIFY(approx(invertAlignmentFraction({0.0}, 0.8), 0.8));
+    }
+    void degenerateMapIsIdentity() {
+        // A collapsed map (every primary station → lap start) used to make
+        // the overlay report the reference corner as 0 m. Treat it as
+        // "not aligned" and keep the caller's fraction.
+        const QVector<double> collapsed{0.0, 0.0, 0.0, 0.0};
+        QVERIFY(approx(interpolateAlignmentFraction(collapsed, 0.42), 0.42));
+        QVERIFY(approx(invertAlignmentFraction(collapsed, 0.42), 0.42));
+    }
+    void identityMapRoundTrips() {
+        QVector<double> map;
+        for (int i = 0; i < 21; ++i) map.append(double(i) / 20.0);
+        QVERIFY(approx(interpolateAlignmentFraction(map, 0.0), 0.0));
+        QVERIFY(approx(interpolateAlignmentFraction(map, 0.35), 0.35, 1e-9));
+        QVERIFY(approx(interpolateAlignmentFraction(map, 1.0), 1.0));
+        QVERIFY(approx(invertAlignmentFraction(map, 0.0), 0.0));
+        QVERIFY(approx(invertAlignmentFraction(map, 0.35), 0.35, 1e-9));
+        QVERIFY(approx(invertAlignmentFraction(map, 1.0), 1.0));
+    }
+    void shiftedMapInverts() {
+        // Compare lap is 10% ahead of primary: primary 0.4 → compare 0.5.
+        QVector<double> map;
+        for (int i = 0; i < 11; ++i)
+            map.append(std::min(1.0, double(i) / 10.0 + 0.1));
+        QVERIFY(approx(interpolateAlignmentFraction(map, 0.4), 0.5, 1e-9));
+        QVERIFY(approx(invertAlignmentFraction(map, 0.5), 0.4, 1e-9));
+    }
+    void clampsOutOfRange() {
+        QVERIFY(approx(interpolateAlignmentFraction({}, -1.0), 0.0));
+        QVERIFY(approx(interpolateAlignmentFraction({}, 2.0), 1.0));
+        const QVector<double> map{0.0, 0.5, 1.0};
+        QVERIFY(approx(invertAlignmentFraction(map, -0.2), 0.0));
+        QVERIFY(approx(invertAlignmentFraction(map, 1.2), 1.0));
+    }
+};
 
 class TinyLapTest : public QObject {
     Q_OBJECT
@@ -459,6 +517,10 @@ int main(int argc, char* argv[]) {
     }
     {
         AlignmentConfidenceLabelTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        AlignmentFractionLookupTest t;
         status |= QTest::qExec(&t, argc, argv);
     }
     {

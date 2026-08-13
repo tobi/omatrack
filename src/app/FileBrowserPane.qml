@@ -66,7 +66,7 @@ Pane {
             let nextAncestors = ancestors;
             if (role === "source" || role === "folder")
                 nextAncestors = ancestors.concat([role + ":" + (node.path || "")]);
-            if (role === "file" && node.key && !browser._ancestorCache[node.key])
+            if (role === "file" && node.key && nextAncestors.length > 0 && !browser._ancestorCache[node.key])
                 browser._ancestorCache[node.key] = nextAncestors;
             const children = node.children || [];
             if (children.length > 0)
@@ -77,7 +77,7 @@ Pane {
         if (fileFilter.text.trim() !== "")
             return true;
         const stored = browser.expandedNodes[role + ":" + path];
-        return stored === undefined ? role === "source" || role === "pins" : stored;
+        return stored === undefined ? role === "source" || role === "pins" || role === "recent" : stored;
     }
     function nodeMatches(node, query: string): bool {
         if (query === "")
@@ -92,8 +92,10 @@ Pane {
         return false;
     }
     function rebuild(): void {
+        const y = tree.contentY;
         treeModel.clear();
         browser.appendNodes(Store.fileSources(), 0, fileFilter.text.trim().toLowerCase());
+        tree.contentY = Math.min(y, Math.max(0, tree.contentHeight - tree.height));
     }
     function rebuildAncestorCache(): void {
         browser._ancestorCache = ({});
@@ -163,6 +165,10 @@ Pane {
             browser.rebuild();
         }
         function onFilePinsChanged(): void {
+            browser.rebuild();
+        }
+        function onRecentFilesChanged(): void {
+            browser.rebuildAncestorCache();
             browser.rebuild();
         }
         function onSelectionChanged(): void {
@@ -304,6 +310,7 @@ Pane {
     Menu {
         id: folderContextMenu
 
+        property string ctxLocationId
         property string ctxPath
         property bool ctxPinned
         property string ctxRole
@@ -312,6 +319,14 @@ Pane {
             text: folderContextMenu.ctxPinned ? "Unpin from top" : "Pin to top"
 
             onTriggered: Store.setFilePinned(folderContextMenu.ctxRole, folderContextMenu.ctxPath, !folderContextMenu.ctxPinned)
+        }
+        MenuItem {
+            enabled: !Store.loading
+            height: visible ? implicitHeight : 0
+            text: "Rescan server"
+            visible: folderContextMenu.ctxLocationId !== ""
+
+            onTriggered: Store.scan()
         }
         MenuSeparator {
         }
@@ -442,6 +457,7 @@ Pane {
                             folderContextMenu.ctxPath = path;
                             folderContextMenu.ctxRole = role;
                             folderContextMenu.ctxPinned = pinned;
+                            folderContextMenu.ctxLocationId = Store.locationIdForPath(path);
                             folderContextMenu.popup();
                         }
                     }

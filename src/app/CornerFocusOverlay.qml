@@ -2,11 +2,12 @@ pragma ComponentBehavior: Bound
 import Omatrack
 
 // Corner focus information overlay, anchored to the right side of the trace
-// pane by its parent (Main.qml). Fades in when Store.focusedCorner >= 0 and
-// shows a dense primary/reference corner summary pulled from
-// Store.cornerFocusSummary(). Owns its own cache: `summary` is refreshed from a
-// Connections { target: Store } block whenever the focus, selection, corners,
-// or reference alignment change.
+// pane by its parent (Main.qml). Fades in when Store.focusedCorner >= 0.
+//
+// Layout is a game-style report card, not a four-column table: a hero time
+// chip, then fixed three-column rows (label · graphic · signed value). Speed
+// uses magnitude bars; brake / turn-in / throttle use a centre-zero gauge.
+// Owns its own cache: `summary` is refreshed from a Connections block.
 
 import QtQuick
 import QtQuick.Controls
@@ -15,6 +16,14 @@ import QtQuick.Layouts
 Rectangle {
     id: overlay
 
+    readonly property bool comparing: overlay.summary.hasCompare === true
+    property real dragOriginX: 0
+    property real dragOriginY: 0
+    property real dragX: 0
+    property real dragY: 0
+    readonly property real pointScale: overlay.maxAbs([overlay.summary.brakePointDelta, overlay.summary.turnInDelta, overlay.summary.throttlePointDelta], 40)
+    readonly property real soloSpeedScale: overlay.maxAbs([overlay.summary.entrySpeed, overlay.summary.apexSpeed, overlay.summary.exitSpeed], 1)
+    readonly property real speedScale: overlay.maxAbs([overlay.summary.entryDelta, overlay.summary.apexDelta, overlay.summary.exitDelta], 12)
     property var summary: ({})
 
     function brakePointDeltaText(value): string {
@@ -25,28 +34,50 @@ Rectangle {
             return "matched";
         return Math.abs(metres).toFixed(0) + "m " + (metres > 0 ? "later" : "earlier");
     }
-
-    // Plain (unsigned) number with `decimals` and a trailing `suffix`. Returns
-    // "—" for missing/non-finite values so every cell degrades gracefully.
+    function clampDragX(value): real {
+        const pane = overlay.parent;
+        if (!pane)
+            return value;
+        const minX = 8 - Math.max(0, pane.width - overlay.width - 8);
+        return Math.max(minX, Math.min(8, value));
+    }
+    function clampDragY(value): real {
+        const pane = overlay.parent;
+        if (!pane)
+            return value;
+        const maxY = Math.max(-8, pane.height - overlay.height - 8);
+        return Math.max(-8, Math.min(maxY, value));
+    }
+    function clearMarkerHighlight(key): void {
+        if (Store.highlightedCornerMarker === key)
+            Store.setHighlightedCornerMarker("");
+    }
     function fmtPlain(value, decimals, suffix): string {
         if (value === undefined || value === null || !isFinite(Number(value)))
             return "—";
         return Number(value).toFixed(decimals) + suffix;
     }
-
-    // Signed number: prepends "+" to positive values so gains/losses read at a
-    // glance. Returns "—" for missing/non-finite values.
     function fmtSigned(value, decimals, suffix): string {
         if (value === undefined || value === null || !isFinite(Number(value)))
             return "—";
         const n = Number(value);
         return (n > 0 ? "+" : "") + n.toFixed(decimals) + suffix;
     }
+    function maxAbs(values, floor): real {
+        let peak = floor;
+        for (let i = 0; i < values.length; ++i) {
+            const n = Number(values[i]);
+            if (isFinite(n))
+                peak = Math.max(peak, Math.abs(n));
+        }
+        return peak;
+    }
     function refresh(): void {
         overlay.summary = Store.cornerFocusSummary();
     }
-
-    // Speed deltas: +ve = primary faster (green), -ve = primary slower (red).
+    function setMarkerHighlight(key): void {
+        Store.setHighlightedCornerMarker(key);
+    }
     function speedDeltaColor(value): color {
         if (value === undefined || value === null || !isFinite(Number(value)))
             return Style.mutedTextColor;
@@ -57,8 +88,6 @@ Rectangle {
             return Style.redColor;
         return Style.mutedTextColor;
     }
-
-    // Time deltas: +ve = primary loses (red), -ve = primary gains (green).
     function timeDeltaColor(value): color {
         if (value === undefined || value === null || !isFinite(Number(value)))
             return Style.mutedTextColor;
@@ -73,7 +102,8 @@ Rectangle {
     border.color: Style.borderColor
     border.width: 1
     clip: true
-    color: Style.darkBackgroundColor
+    color: Style.surfaceColor
+    implicitHeight: overlayBody.implicitHeight + 20
     objectName: "cornerFocusOverlay"
     opacity: Store.focusedCorner >= 0 ? 1 : 0
     radius: 6
@@ -84,6 +114,10 @@ Rectangle {
             duration: 180
             easing.type: Easing.OutCubic
         }
+    }
+    transform: Translate {
+        x: overlay.dragX
+        y: overlay.dragY
     }
 
     Component.onCompleted: overlay.refresh()
@@ -107,9 +141,6 @@ Rectangle {
 
         target: Store
     }
-
-    // The trace pane can be short (a video session halves it), so the panel
-    // scrolls its own content rather than clipping numbers away.
     ScrollView {
         id: overlayScroll
 
@@ -120,10 +151,11 @@ Rectangle {
         contentWidth: overlayScroll.availableWidth
 
         ColumnLayout {
-            spacing: 8
+            id: overlayBody
+
+            spacing: 6
             width: overlayScroll.availableWidth
 
-            // ── header ───────────────────────────────────────────────────
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 4
@@ -135,354 +167,377 @@ Rectangle {
                     font.bold: true
                     font.pixelSize: Style.fontSize
                     text: overlay.summary.name || "Corner"
+
+                    DragHandler {
+                        target: null
+
+                        onActiveChanged: {
+                            if (active) {
+                                overlay.dragOriginX = overlay.dragX;
+                                overlay.dragOriginY = overlay.dragY;
+                            }
+                        }
+                        onTranslationChanged: {
+                            overlay.dragX = overlay.clampDragX(overlay.dragOriginX + translation.x);
+                            overlay.dragY = overlay.clampDragY(overlay.dragOriginY + translation.y);
+                        }
+                    }
+                    HoverHandler {
+                        cursorShape: Qt.SizeAllCursor
+                    }
                 }
-                ToolButton {
+                Label {
+                    Accessible.name: "Close corner"
+                    Accessible.role: Accessible.Button
+                    color: Style.mutedTextColor
+                    font.pixelSize: Style.fontSize + 4
                     objectName: "cornerFocusClose"
                     text: "×"
 
-                    onClicked: Store.clearCornerFocus()
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+
+                        onClicked: Store.clearCornerFocus()
+                    }
                 }
             }
-            Label {
-                Layout.fillWidth: true
-                color: Style.mutedTextColor
-                font.pixelSize: Style.smallFontSize
-                text: "Select a reference lap to compare"
-                visible: overlay.summary.hasCompare !== true
-            }
+            Rectangle {
+                id: hero
 
-            // ── time ─────────────────────────────────────────────────────
-            Label {
-                color: Style.dimTextColor
-                font.bold: true
-                font.pixelSize: Style.smallFontSize
-                text: "TIME"
+                Layout.fillWidth: true
+                border.color: overlay.comparing ? overlay.timeDeltaColor(overlay.summary.delta) : Style.borderColor
+                border.width: 1
+                color: {
+                    if (!overlay.comparing)
+                        return Style.traceBackgroundColor;
+                    const n = Number(overlay.summary.delta);
+                    if (!isFinite(n) || n === 0)
+                        return Style.traceBackgroundColor;
+                    const tint = n < 0 ? Style.greenColor : Style.redColor;
+                    return Qt.rgba(tint.r, tint.g, tint.b, 0.14);
+                }
+                implicitHeight: heroColumn.implicitHeight + 12
+                radius: 4
+
+                ColumnLayout {
+                    id: heroColumn
+
+                    anchors.left: parent.left
+                    anchors.margins: 6
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    spacing: 2
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+
+                        Label {
+                            Layout.fillWidth: true
+                            color: Style.mutedTextColor
+                            font.bold: !overlay.comparing
+                            font.family: Style.monoFontFamily
+                            font.pixelSize: overlay.comparing ? Style.smallFontSize : Style.fontSize + 4
+                            text: overlay.fmtPlain(overlay.summary.time, 3, "s")
+                        }
+                        Label {
+                            color: overlay.timeDeltaColor(overlay.summary.delta)
+                            font.bold: true
+                            font.family: Style.monoFontFamily
+                            font.pixelSize: Style.fontSize + 4
+                            text: overlay.fmtSigned(overlay.summary.delta, 3, "s")
+                            visible: overlay.comparing
+                        }
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        color: Style.mutedTextColor
+                        font.pixelSize: Style.smallFontSize
+                        text: overlay.fmtSigned(overlay.summary.entryTimeDelta, 3, "s") + " entry  ·  " + overlay.fmtSigned(overlay.summary.exitTimeDelta, 3, "s") + " exit"
+                        visible: overlay.comparing
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        color: Style.mutedTextColor
+                        font.pixelSize: Style.smallFontSize
+                        text: "Select a reference lap to compare"
+                        visible: !overlay.comparing
+                    }
+                }
+            }
+            SectionLabel {
+                text: "SPEED"
             }
             RowLayout {
                 Layout.fillWidth: true
-                spacing: 6
+                spacing: 8
 
                 Label {
-                    Layout.preferredWidth: 56
-                    color: Style.mutedTextColor
-                    font.pixelSize: Style.smallFontSize
-                    text: "Corner"
-                }
-                Label {
-                    Layout.preferredWidth: 64
-                    color: Style.foregroundColor
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: Style.smallFontSize
-                    horizontalAlignment: Text.AlignRight
-                    text: overlay.fmtPlain(overlay.summary.time, 3, "s")
-                }
-                Label {
-                    Layout.preferredWidth: 64
-                    color: Style.mutedTextColor
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: Style.smallFontSize
-                    horizontalAlignment: Text.AlignRight
-                    text: overlay.fmtPlain(overlay.summary.compareTime, 3, "s")
-                    visible: overlay.summary.hasCompare === true
-                }
-                Label {
-                    Layout.preferredWidth: 64
-                    color: overlay.timeDeltaColor(overlay.summary.delta)
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: Style.smallFontSize
-                    horizontalAlignment: Text.AlignRight
-                    text: overlay.fmtSigned(overlay.summary.delta, 3, "s")
-                    visible: overlay.summary.hasCompare === true
-                }
-            }
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 6
-                visible: overlay.summary.hasCompare === true
-
-                Label {
-                    Layout.fillWidth: true
-                    color: Style.mutedTextColor
-                    font.pixelSize: Style.smallFontSize
-                    text: "On entry"
-                }
-                Label {
-                    Layout.preferredWidth: 64
-                    color: overlay.timeDeltaColor(overlay.summary.entryTimeDelta)
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: Style.smallFontSize
-                    horizontalAlignment: Text.AlignRight
-                    text: overlay.fmtSigned(overlay.summary.entryTimeDelta, 3, "s")
-                }
-            }
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 6
-                visible: overlay.summary.hasCompare === true
-
-                Label {
-                    Layout.fillWidth: true
-                    color: Style.mutedTextColor
-                    font.pixelSize: Style.smallFontSize
-                    text: "On exit"
-                }
-                Label {
-                    Layout.preferredWidth: 64
-                    color: overlay.timeDeltaColor(overlay.summary.exitTimeDelta)
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: Style.smallFontSize
-                    horizontalAlignment: Text.AlignRight
-                    text: overlay.fmtSigned(overlay.summary.exitTimeDelta, 3, "s")
-                }
-            }
-
-            // ── speed ────────────────────────────────────────────────────
-            Label {
-                color: Style.dimTextColor
-                font.bold: true
-                font.pixelSize: Style.smallFontSize
-                text: "SPEED · km/h"
-            }
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 6
-                visible: overlay.summary.hasCompare === true
-
-                Item {
-                    Layout.preferredWidth: 56
-                }
-                Label {
-                    Layout.preferredWidth: 64
-                    color: Style.mutedTextColor
-                    font.pixelSize: Style.smallFontSize
-                    horizontalAlignment: Text.AlignRight
-                    text: "Prim"
-                }
-                Label {
-                    Layout.preferredWidth: 64
-                    color: Style.mutedTextColor
-                    font.pixelSize: Style.smallFontSize
-                    horizontalAlignment: Text.AlignRight
-                    text: "Ref"
-                }
-                Label {
-                    Layout.preferredWidth: 64
-                    color: Style.mutedTextColor
-                    font.pixelSize: Style.smallFontSize
-                    horizontalAlignment: Text.AlignRight
-                    text: "Δ"
-                }
-            }
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 6
-
-                Label {
-                    Layout.preferredWidth: 56
+                    Layout.preferredWidth: 54
                     color: Style.mutedTextColor
                     font.pixelSize: Style.smallFontSize
                     text: "Entry"
                 }
-                Label {
-                    Layout.preferredWidth: 64
-                    color: Style.foregroundColor
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: Style.smallFontSize
-                    horizontalAlignment: Text.AlignRight
-                    text: overlay.fmtPlain(overlay.summary.entrySpeed, 1, "")
+                MagnitudeBar {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 12
+                    barScale: overlay.comparing ? overlay.speedScale : overlay.soloSpeedScale
+                    signedColors: overlay.comparing
+                    value: overlay.comparing ? Number(overlay.summary.entryDelta) : Number(overlay.summary.entrySpeed)
                 }
                 Label {
-                    Layout.preferredWidth: 64
-                    color: Style.mutedTextColor
+                    Layout.preferredWidth: 48
+                    color: overlay.comparing ? overlay.speedDeltaColor(overlay.summary.entryDelta) : Style.foregroundColor
                     font.family: Style.monoFontFamily
                     font.pixelSize: Style.smallFontSize
                     horizontalAlignment: Text.AlignRight
-                    text: overlay.fmtPlain(overlay.summary.compareEntrySpeed, 1, "")
-                    visible: overlay.summary.hasCompare === true
-                }
-                Label {
-                    Layout.preferredWidth: 64
-                    color: overlay.speedDeltaColor(overlay.summary.entryDelta)
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: Style.smallFontSize
-                    horizontalAlignment: Text.AlignRight
-                    text: overlay.fmtSigned(overlay.summary.entryDelta, 1, "")
-                    visible: overlay.summary.hasCompare === true
+                    text: overlay.comparing ? overlay.fmtSigned(overlay.summary.entryDelta, 1, "") : overlay.fmtPlain(overlay.summary.entrySpeed, 1, "")
                 }
             }
             RowLayout {
                 Layout.fillWidth: true
-                spacing: 6
+                spacing: 8
 
                 Label {
-                    Layout.preferredWidth: 56
+                    Layout.preferredWidth: 54
                     color: Style.mutedTextColor
                     font.pixelSize: Style.smallFontSize
                     text: "Apex"
                 }
-                Label {
-                    Layout.preferredWidth: 64
-                    color: Style.foregroundColor
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: Style.smallFontSize
-                    horizontalAlignment: Text.AlignRight
-                    text: overlay.fmtPlain(overlay.summary.apexSpeed, 1, "")
+                MagnitudeBar {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 12
+                    barScale: overlay.comparing ? overlay.speedScale : overlay.soloSpeedScale
+                    signedColors: overlay.comparing
+                    value: overlay.comparing ? Number(overlay.summary.apexDelta) : Number(overlay.summary.apexSpeed)
                 }
                 Label {
-                    Layout.preferredWidth: 64
-                    color: Style.mutedTextColor
+                    Layout.preferredWidth: 48
+                    color: overlay.comparing ? overlay.speedDeltaColor(overlay.summary.apexDelta) : Style.foregroundColor
                     font.family: Style.monoFontFamily
                     font.pixelSize: Style.smallFontSize
                     horizontalAlignment: Text.AlignRight
-                    text: overlay.fmtPlain(overlay.summary.compareApexSpeed, 1, "")
-                    visible: overlay.summary.hasCompare === true
-                }
-                Label {
-                    Layout.preferredWidth: 64
-                    color: overlay.speedDeltaColor(overlay.summary.apexDelta)
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: Style.smallFontSize
-                    horizontalAlignment: Text.AlignRight
-                    text: overlay.fmtSigned(overlay.summary.apexDelta, 1, "")
-                    visible: overlay.summary.hasCompare === true
+                    text: overlay.comparing ? overlay.fmtSigned(overlay.summary.apexDelta, 1, "") : overlay.fmtPlain(overlay.summary.apexSpeed, 1, "")
                 }
             }
             RowLayout {
                 Layout.fillWidth: true
-                spacing: 6
+                spacing: 8
 
                 Label {
-                    Layout.preferredWidth: 56
+                    Layout.preferredWidth: 54
                     color: Style.mutedTextColor
                     font.pixelSize: Style.smallFontSize
                     text: "Exit"
                 }
-                Label {
-                    Layout.preferredWidth: 64
-                    color: Style.foregroundColor
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: Style.smallFontSize
-                    horizontalAlignment: Text.AlignRight
-                    text: overlay.fmtPlain(overlay.summary.exitSpeed, 1, "")
+                MagnitudeBar {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 12
+                    barScale: overlay.comparing ? overlay.speedScale : overlay.soloSpeedScale
+                    signedColors: overlay.comparing
+                    value: overlay.comparing ? Number(overlay.summary.exitDelta) : Number(overlay.summary.exitSpeed)
                 }
                 Label {
-                    Layout.preferredWidth: 64
-                    color: Style.mutedTextColor
+                    Layout.preferredWidth: 48
+                    color: overlay.comparing ? overlay.speedDeltaColor(overlay.summary.exitDelta) : Style.foregroundColor
                     font.family: Style.monoFontFamily
                     font.pixelSize: Style.smallFontSize
                     horizontalAlignment: Text.AlignRight
-                    text: overlay.fmtPlain(overlay.summary.compareExitSpeed, 1, "")
-                    visible: overlay.summary.hasCompare === true
-                }
-                Label {
-                    Layout.preferredWidth: 64
-                    color: overlay.speedDeltaColor(overlay.summary.exitDelta)
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: Style.smallFontSize
-                    horizontalAlignment: Text.AlignRight
-                    text: overlay.fmtSigned(overlay.summary.exitDelta, 1, "")
-                    visible: overlay.summary.hasCompare === true
+                    text: overlay.comparing ? overlay.fmtSigned(overlay.summary.exitDelta, 1, "") : overlay.fmtPlain(overlay.summary.exitSpeed, 1, "")
                 }
             }
-
-            // ── points ───────────────────────────────────────────────────
-            Label {
-                color: Style.dimTextColor
-                font.bold: true
-                font.pixelSize: Style.smallFontSize
+            SectionLabel {
                 text: "POINTS"
             }
             RowLayout {
                 Layout.fillWidth: true
-                spacing: 6
-                visible: overlay.summary.hasCompare === true
+                spacing: 8
 
-                Label {
-                    Layout.fillWidth: true
-                    color: Style.mutedTextColor
-                    font.pixelSize: Style.smallFontSize
-                    text: "Brake point"
+                HoverHandler {
+                    onHoveredChanged: {
+                        if (hovered)
+                            overlay.setMarkerHighlight("brake");
+                        else
+                            overlay.clearMarkerHighlight("brake");
+                    }
                 }
                 Label {
-                    Layout.preferredWidth: 64
+                    Layout.preferredWidth: 54
+                    color: Style.mutedTextColor
+                    font.pixelSize: Style.smallFontSize
+                    text: "Brake"
+                }
+                OffsetGauge {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 12
+                    barScale: overlay.pointScale
+                    value: overlay.comparing ? Number(overlay.summary.brakePointDelta) : 0
+                    visible: overlay.comparing
+                }
+                Label {
+                    Layout.preferredWidth: 52
                     color: Style.foregroundColor
                     font.family: Style.monoFontFamily
                     font.pixelSize: Style.smallFontSize
                     horizontalAlignment: Text.AlignRight
-                    text: overlay.fmtSigned(overlay.summary.brakePointDelta, 0, "m")
+                    text: overlay.comparing ? overlay.fmtSigned(overlay.summary.brakePointDelta, 0, "m") : overlay.fmtPlain(overlay.summary.brakePoint, 0, "m")
                 }
             }
             RowLayout {
                 Layout.fillWidth: true
-                spacing: 6
-                visible: overlay.summary.hasCompare === true
+                spacing: 8
 
+                HoverHandler {
+                    onHoveredChanged: {
+                        if (hovered)
+                            overlay.setMarkerHighlight("turnin");
+                        else
+                            overlay.clearMarkerHighlight("turnin");
+                    }
+                }
                 Label {
-                    Layout.fillWidth: true
+                    Layout.preferredWidth: 54
                     color: Style.mutedTextColor
                     font.pixelSize: Style.smallFontSize
                     text: "Turn-in"
                 }
+                OffsetGauge {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 12
+                    barScale: overlay.pointScale
+                    value: overlay.comparing ? Number(overlay.summary.turnInDelta) : 0
+                    visible: overlay.comparing
+                }
                 Label {
-                    Layout.preferredWidth: 64
+                    Layout.preferredWidth: 52
                     color: Style.foregroundColor
                     font.family: Style.monoFontFamily
                     font.pixelSize: Style.smallFontSize
                     horizontalAlignment: Text.AlignRight
-                    text: overlay.fmtSigned(overlay.summary.turnInDelta, 0, "m")
+                    text: overlay.comparing ? overlay.fmtSigned(overlay.summary.turnInDelta, 0, "m") : overlay.fmtPlain(overlay.summary.turnInPoint, 0, "m")
                 }
             }
             RowLayout {
                 Layout.fillWidth: true
-                spacing: 6
-                visible: overlay.summary.hasCompare === true
+                spacing: 8
 
+                HoverHandler {
+                    onHoveredChanged: {
+                        if (hovered)
+                            overlay.setMarkerHighlight("pickup");
+                        else
+                            overlay.clearMarkerHighlight("pickup");
+                    }
+                }
                 Label {
-                    Layout.fillWidth: true
+                    Layout.preferredWidth: 54
                     color: Style.mutedTextColor
                     font.pixelSize: Style.smallFontSize
                     text: "Throttle"
                 }
+                OffsetGauge {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 12
+                    barScale: overlay.pointScale
+                    value: overlay.comparing ? Number(overlay.summary.throttlePointDelta) : 0
+                    visible: overlay.comparing
+                }
                 Label {
-                    Layout.preferredWidth: 64
+                    Layout.preferredWidth: 52
                     color: Style.foregroundColor
                     font.family: Style.monoFontFamily
                     font.pixelSize: Style.smallFontSize
                     horizontalAlignment: Text.AlignRight
-                    text: overlay.fmtSigned(overlay.summary.throttlePointDelta, 0, "m")
+                    text: overlay.comparing ? overlay.fmtSigned(overlay.summary.throttlePointDelta, 0, "m") : overlay.fmtPlain(overlay.summary.throttlePoint, 0, "m")
                 }
             }
             RowLayout {
                 Layout.fillWidth: true
-                spacing: 6
+                spacing: 8
 
                 Label {
-                    Layout.fillWidth: true
+                    Layout.preferredWidth: 54
                     color: Style.mutedTextColor
                     font.pixelSize: Style.smallFontSize
-                    text: "Min gear"
+                    text: "Gear"
+                }
+                Row {
+                    Layout.fillWidth: true
+                    spacing: 4
+
+                    Rectangle {
+                        border.color: Style.accentColor
+                        border.width: 1
+                        color: Style.traceBackgroundColor
+                        height: 22
+                        radius: 3
+                        width: 22
+
+                        Label {
+                            anchors.centerIn: parent
+                            color: Style.accentColor
+                            font.bold: true
+                            font.family: Style.monoFontFamily
+                            font.pixelSize: Style.fontSize
+                            text: overlay.fmtPlain(overlay.summary.minGear, 0, "")
+                        }
+                    }
+                    Rectangle {
+                        border.color: Style.orangeColor
+                        border.width: 1
+                        color: Style.traceBackgroundColor
+                        height: 22
+                        radius: 3
+                        visible: overlay.comparing
+                        width: 22
+
+                        Label {
+                            anchors.centerIn: parent
+                            color: Style.orangeColor
+                            font.bold: true
+                            font.family: Style.monoFontFamily
+                            font.pixelSize: Style.fontSize
+                            text: overlay.fmtPlain(overlay.summary.compareMinGear, 0, "")
+                        }
+                    }
                 }
                 Label {
-                    Layout.preferredWidth: 64
+                    Layout.preferredWidth: 52
                     color: Style.foregroundColor
                     font.family: Style.monoFontFamily
                     font.pixelSize: Style.smallFontSize
                     horizontalAlignment: Text.AlignRight
-                    text: overlay.fmtPlain(overlay.summary.minGear, 0, "")
+                    text: overlay.comparing ? overlay.fmtSigned(Number(overlay.summary.minGear) - Number(overlay.summary.compareMinGear), 0, "") : ""
                 }
             }
             RowLayout {
                 Layout.fillWidth: true
-                spacing: 6
+                spacing: 8
 
-                Label {
-                    Layout.fillWidth: true
-                    color: Style.mutedTextColor
-                    font.pixelSize: Style.smallFontSize
-                    text: "Max steering"
+                HoverHandler {
+                    onHoveredChanged: {
+                        if (hovered)
+                            overlay.setMarkerHighlight("turnin");
+                        else
+                            overlay.clearMarkerHighlight("turnin");
+                    }
                 }
                 Label {
-                    Layout.preferredWidth: 64
+                    Layout.preferredWidth: 54
+                    color: Style.mutedTextColor
+                    font.pixelSize: Style.smallFontSize
+                    text: "Steer"
+                }
+                MagnitudeBar {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 12
+                    barScale: 90
+                    signedColors: false
+                    value: Number(overlay.summary.maxSteering)
+                }
+                Label {
+                    Layout.preferredWidth: 48
                     color: Style.foregroundColor
                     font.family: Style.monoFontFamily
                     font.pixelSize: Style.smallFontSize
@@ -490,13 +545,8 @@ Rectangle {
                     text: overlay.fmtPlain(overlay.summary.maxSteering, 0, "°")
                 }
             }
-
-            // ── consistency ──────────────────────────────────────────────
-            Label {
-                color: Style.dimTextColor
-                font.bold: true
-                font.pixelSize: Style.smallFontSize
-                text: "CONSISTENCY · FASTEST 25%"
+            SectionLabel {
+                text: "CONSISTENCY"
             }
             Label {
                 Layout.fillWidth: true
@@ -508,83 +558,45 @@ Rectangle {
             }
             RowLayout {
                 Layout.fillWidth: true
-                spacing: 6
-                visible: overlay.summary.consistencyLoading !== true && overlay.summary.consistencyLapCount > 0
-
-                Label {
-                    Layout.fillWidth: true
-                    color: Style.mutedTextColor
-                    font.pixelSize: Style.smallFontSize
-                    text: "Braking laps"
-                }
-                Label {
-                    Layout.preferredWidth: 80
-                    color: Style.foregroundColor
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: Style.smallFontSize
-                    horizontalAlignment: Text.AlignRight
-                    text: overlay.summary.consistencyBrakeLapCount + " / " + overlay.summary.consistencyLapCount
-                }
-            }
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 6
+                spacing: 8
                 visible: overlay.summary.brakeConsistencyAvailable === true
 
-                Label {
-                    Layout.fillWidth: true
-                    color: Style.mutedTextColor
-                    font.pixelSize: Style.smallFontSize
-                    text: "Brake point σ"
+                HoverHandler {
+                    onHoveredChanged: {
+                        if (hovered)
+                            overlay.setMarkerHighlight("brake");
+                        else
+                            overlay.clearMarkerHighlight("brake");
+                    }
                 }
                 Label {
-                    Layout.preferredWidth: 80
+                    Layout.preferredWidth: 54
+                    color: Style.mutedTextColor
+                    font.pixelSize: Style.smallFontSize
+                    text: "Brake"
+                }
+                OffsetGauge {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 12
+                    barScale: Math.max(Number(overlay.summary.brakePointRange) / 2, Number(overlay.summary.brakePointStdDev) * 2, 5)
+                    value: Number(overlay.summary.brakePointVsMedian)
+                }
+                Label {
+                    Layout.preferredWidth: 48
                     color: Style.foregroundColor
                     font.family: Style.monoFontFamily
                     font.pixelSize: Style.smallFontSize
                     horizontalAlignment: Text.AlignRight
-                    text: overlay.fmtPlain(overlay.summary.brakePointStdDev, 1, "m")
+                    text: overlay.fmtPlain(overlay.summary.brakePointStdDev, 1, "m σ")
                 }
             }
-            RowLayout {
+            Label {
                 Layout.fillWidth: true
-                spacing: 6
-                visible: overlay.summary.brakeConsistencyAvailable === true
-
-                Label {
-                    Layout.fillWidth: true
-                    color: Style.mutedTextColor
-                    font.pixelSize: Style.smallFontSize
-                    text: "Brake range"
-                }
-                Label {
-                    Layout.preferredWidth: 80
-                    color: Style.foregroundColor
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: Style.smallFontSize
-                    horizontalAlignment: Text.AlignRight
-                    text: overlay.fmtPlain(overlay.summary.brakePointRange, 0, "m")
-                }
-            }
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 6
+                color: Style.dimTextColor
+                font.family: Style.monoFontFamily
+                font.pixelSize: Style.smallFontSize
+                text: overlay.brakePointDeltaText(overlay.summary.brakePointVsMedian) + " vs median · " + overlay.fmtPlain(overlay.summary.brakePointRange, 0, "m") + " range"
                 visible: overlay.summary.brakeConsistencyAvailable === true && isFinite(Number(overlay.summary.brakePointVsMedian))
-
-                Label {
-                    Layout.fillWidth: true
-                    color: Style.mutedTextColor
-                    font.pixelSize: Style.smallFontSize
-                    text: "Active vs median"
-                }
-                Label {
-                    Layout.preferredWidth: 80
-                    color: Style.foregroundColor
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: Style.smallFontSize
-                    horizontalAlignment: Text.AlignRight
-                    text: overlay.brakePointDeltaText(overlay.summary.brakePointVsMedian)
-                }
             }
             Label {
                 Layout.fillWidth: true
@@ -595,13 +607,9 @@ Rectangle {
                 visible: overlay.summary.consistencyLoading !== true && overlay.summary.brakeConsistencyAvailable !== true
                 wrapMode: Text.Wrap
             }
-
-            // ── checks ───────────────────────────────────────────────────
-            Label {
-                color: Style.dimTextColor
-                font.bold: true
-                font.pixelSize: Style.smallFontSize
-                text: "CHECKS"
+            SectionLabel {
+                text: "NOTES"
+                visible: (overlay.summary.notes ?? []).length > 0
             }
             Repeater {
                 model: overlay.summary.notes ?? []
@@ -619,13 +627,13 @@ Rectangle {
                         Layout.alignment: Qt.AlignTop
                         Layout.preferredHeight: 5
                         Layout.preferredWidth: 5
-                        color: noteRow.severity === "error" ? Style.redColor : noteRow.severity === "warning" ? Style.orangeColor : Style.mutedTextColor
+                        Layout.topMargin: 4
+                        color: noteRow.severity === "error" ? Style.redColor : noteRow.severity === "warning" ? Style.yellowColor : Style.mutedTextColor
                         radius: 2.5
                     }
                     Label {
                         Layout.fillWidth: true
-                        color: Style.mutedTextColor
-                        font.family: Style.monoFontFamily
+                        color: noteRow.severity === "error" ? Style.redColor : noteRow.severity === "warning" ? Style.yellowColor : Style.mutedTextColor
                         font.pixelSize: Style.smallFontSize
                         text: noteRow.text
                         wrapMode: Text.Wrap
@@ -633,5 +641,88 @@ Rectangle {
                 }
             }
         }
+    }
+
+    component MagnitudeBar: Item {
+        id: bar
+
+        required property real barScale
+        readonly property color fillColor: {
+            const n = Number(bar.value);
+            if (!isFinite(n) || n === 0)
+                return Style.mutedTextColor;
+            if (!bar.signedColors)
+                return Style.foregroundColor;
+            return n > 0 ? bar.positiveColor : bar.negativeColor;
+        }
+        readonly property real magnitude: {
+            const span = Math.max(Number(bar.barScale), 0.001);
+            const n = Number(bar.value);
+            if (!isFinite(n))
+                return 0;
+            return Math.min(1, Math.abs(n) / span);
+        }
+        property color negativeColor: Style.redColor
+        property color positiveColor: Style.greenColor
+        property bool signedColors: true
+        required property real value
+
+        implicitHeight: 12
+        implicitWidth: 80
+
+        Rectangle {
+            anchors.fill: parent
+            color: Style.traceBackgroundColor
+            radius: 2
+        }
+        Rectangle {
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            color: bar.fillColor
+            height: parent.height
+            radius: 2
+            width: Math.max(parent.width * bar.magnitude, bar.magnitude > 0 ? 2 : 0)
+        }
+    }
+    component OffsetGauge: Item {
+        id: gauge
+
+        required property real barScale
+        readonly property real mark: {
+            const span = Math.max(Number(gauge.barScale), 0.001);
+            const n = Number(gauge.value);
+            if (!isFinite(n))
+                return 0.5;
+            return Math.max(0, Math.min(1, 0.5 + 0.5 * n / span));
+        }
+        required property real value
+
+        implicitHeight: 12
+        implicitWidth: 80
+
+        Rectangle {
+            anchors.fill: parent
+            color: Style.traceBackgroundColor
+            radius: 2
+        }
+        Rectangle {
+            anchors.horizontalCenter: parent.horizontalCenter
+            color: Style.borderColor
+            height: parent.height
+            width: 1
+        }
+        Rectangle {
+            color: Style.foregroundColor
+            height: parent.height
+            radius: 1
+            width: 3
+            x: gauge.width * gauge.mark - width / 2
+        }
+    }
+    component SectionLabel: Label {
+        color: Style.dimTextColor
+        font.bold: true
+        font.letterSpacing: 0.6
+        font.pixelSize: Style.smallFontSize
     }
 }

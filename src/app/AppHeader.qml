@@ -132,7 +132,7 @@ ToolBar {
                     id: headerDriverName
 
                     Layout.maximumWidth: Math.min(220, headerDriverName.implicitWidth)
-                    color: Store.comparing ? Style.orangeColor : Style.mutedTextColor
+                    color: Style.mutedTextColor
                     elide: Text.ElideRight
                     font.pixelSize: 10
                     text: Store.primaryDriverName
@@ -142,16 +142,24 @@ ToolBar {
                     id: headerDetail
 
                     Layout.fillWidth: true
-                    color: Store.comparing ? Style.orangeColor : Style.mutedTextColor
+                    color: Style.mutedTextColor
                     elide: Text.ElideRight
                     font.pixelSize: 10
                     text: {
                         const driver = Store.primaryDriverName;
                         const detail = Store.primaryDetail;
-                        const suffix = driver !== "" && detail.indexOf(driver) === 0 ? detail.substring(driver.length) : detail;
-                        return suffix + (Store.comparing ? "  ·  vs " + Store.compareLabel : "");
+                        return driver !== "" && detail.indexOf(driver) === 0 ? detail.substring(driver.length) : detail;
                     }
                     visible: headerDetail.text !== ""
+                }
+                Label {
+                    id: headerCompare
+
+                    color: Style.orangeColor
+                    elide: Text.ElideRight
+                    font.pixelSize: 10
+                    text: Store.comparing ? "  ·  vs " + Store.compareLabel : ""
+                    visible: headerCompare.text !== ""
                 }
             }
         }
@@ -247,14 +255,14 @@ ToolBar {
             }
         }
         MenuItem {
-            text: "Add telemetry folder…"
+            text: "Telemetry library…"
 
-            onTriggered: appBar.addTelemetryDirectoryRequested()
+            onTriggered: appBar.preferencesRequested()
         }
         MenuSeparator {
         }
         MenuItem {
-            text: "Corner inspector"
+            text: "Focus corner at cursor"
 
             onTriggered: appBar.cornersRequested()
         }

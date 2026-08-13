@@ -5605,13 +5605,31 @@ QVariantList TelemetryStore::cornerComparison() const {
             compareCorner.start = fractionAtDistance(*compare, startDistance);
             compareCorner.end = fractionAtDistance(*compare, endDistance);
             const QVariantMap compareStats = stats(*compare, compareCorner);
+            // Map a compare-lap event (metres from that lap's zone start)
+            // onto the primary lap's distance axis through the same
+            // track-station map traces and delta use. Subtracting each
+            // lap's own window metres treats a late event in a short
+            // window as equal to an early event in a long one.
+            auto compareEventPrimaryFraction = [&](const QVariant& point) {
+                const double absMetres =
+                    sample(compare->distance, compareCorner.start) +
+                    point.toDouble();
+                return primaryFractionForCompareFraction(
+                    fractionAtDistance(*compare, absMetres));
+            };
+            auto compareEventPrimaryMetres = [&](const QVariant& point) {
+                return sample(primary->distance,
+                              compareEventPrimaryFraction(point));
+            };
+            auto pointDelta = [&](const QString& key) {
+                return startDistance + primaryStats.value(key).toDouble() -
+                       compareEventPrimaryMetres(compareStats.value(key));
+            };
             // The reference apex, expressed on the primary lap's distance
             // axis, so both markers land on the same zoomed viewport.
-            row.insert(
-                QStringLiteral("compareApexFraction"),
-                fractionAtDistance(
-                    *primary, startDistance +
-                                  compareStats.value("apexPoint").toDouble()));
+            row.insert(QStringLiteral("compareApexFraction"),
+                       compareEventPrimaryFraction(
+                           compareStats.value(QStringLiteral("apexPoint"))));
 
             // Time through the corner comes from the one cached delta trace
             // whenever it exists, so the panel, the Δ lane and the cursor
@@ -5631,20 +5649,15 @@ QVariantList TelemetryStore::cornerComparison() const {
                 primaryStats.value("exitSpeed").toDouble() -
                 compareStats.value("exitSpeed").toDouble();
             const double brakePointDelta =
-                primaryStats.value("brakePoint").toDouble() -
-                compareStats.value("brakePoint").toDouble();
+                pointDelta(QStringLiteral("brakePoint"));
             const double liftPointDelta =
-                primaryStats.value("liftPoint").toDouble() -
-                compareStats.value("liftPoint").toDouble();
+                pointDelta(QStringLiteral("liftPoint"));
             const double turnInDelta =
-                primaryStats.value("turnInPoint").toDouble() -
-                compareStats.value("turnInPoint").toDouble();
+                pointDelta(QStringLiteral("turnInPoint"));
             const double apexPointDelta =
-                primaryStats.value("apexPoint").toDouble() -
-                compareStats.value("apexPoint").toDouble();
+                pointDelta(QStringLiteral("apexPoint"));
             const double throttlePointDelta =
-                primaryStats.value("throttlePoint").toDouble() -
-                compareStats.value("throttlePoint").toDouble();
+                pointDelta(QStringLiteral("throttlePoint"));
             // Entry and exit time come from the one cached delta trace, so
             // the corner overlay can never disagree with the Δ lane.
             const double apexFraction =
@@ -5896,6 +5909,7 @@ void TelemetryStore::clearCornerFocus() {
     if (focusedCorner_ < 0) return;
     focusedCorner_ = -1;
     markers_.clear();
+    setHighlightedCornerMarker(QString());
     ++cornerConsistencyGeneration_;
     cornerConsistency_ = {};
     emit cornerConsistencyChanged();
@@ -5903,6 +5917,12 @@ void TelemetryStore::clearCornerFocus() {
     viewEnd_ = focusReturnEnd_;
     emit viewChanged();
     emit cornerFocusChanged();
+}
+
+void TelemetryStore::setHighlightedCornerMarker(const QString& key) {
+    if (highlightedCornerMarker_ == key) return;
+    highlightedCornerMarker_ = key;
+    emit highlightedCornerMarkerChanged();
 }
 
 QVariantMap TelemetryStore::cornerFocusSummary() const {
@@ -6176,6 +6196,40 @@ void TelemetryStore::rebuildCornerMarkers() {
                             double(distance.size() - 1))),
             0, int(distance.size()) - 1);
         const double startDistance = distance[size_t(startIndex)];
+        const UnifiedLap* compare = compareUnified();
+        auto sampleDistanceOnLap = [](const UnifiedLap& lap, double fraction) {
+            if (lap.distance.empty()) return 0.0;
+            const double position =
+                qBound(0.0, fraction, 1.0) * (lap.distance.size() - 1);
+            const int lo = std::clamp(int(std::floor(position)), 0,
+                                      int(lap.distance.size()) - 1);
+            const int hi = std::min(lo + 1, int(lap.distance.size()) - 1);
+            return lap.distance[size_t(lo)] +
+                   (lap.distance[size_t(hi)] - lap.distance[size_t(lo)]) *
+                       (position - lo);
+        };
+        const double compareStart =
+            hasCompare && compare
+                ? sampleDistanceOnLap(
+                      *compare,
+                      compareFractionForPrimaryFraction(
+                          row.value(QStringLiteral("start")).toDouble()))
+                : 0.0;
+        auto compareFractionAtMetres = [&](double metres) {
+            if (!compare || compare->distance.size() < 2) return 0.0;
+            if (metres <= compare->distance.front()) return 0.0;
+            if (metres >= compare->distance.back()) return 1.0;
+            const auto it = std::lower_bound(compare->distance.begin(),
+                                             compare->distance.end(), metres);
+            const int hi = int(it - compare->distance.begin());
+            const int lo = std::max(0, hi - 1);
+            const double span =
+                compare->distance[size_t(hi)] - compare->distance[size_t(lo)];
+            const double local =
+                span > 0.0 ? (metres - compare->distance[size_t(lo)]) / span
+                           : 0.0;
+            return (lo + local) / double(compare->distance.size() - 1);
+        };
 
         struct MarkerSpec {
             const char* key;
@@ -6195,10 +6249,12 @@ void TelemetryStore::rebuildCornerMarkers() {
             marker.fraction = fractionAt(
                 startDistance +
                 row.value(QLatin1String(spec.primaryField)).toDouble());
-            if (hasCompare)
-                marker.referenceFraction = fractionAt(
-                    startDistance +
-                    row.value(QLatin1String(spec.compareField)).toDouble());
+            if (hasCompare && compare)
+                marker.referenceFraction =
+                    primaryFractionForCompareFraction(compareFractionAtMetres(
+                        compareStart +
+                        row.value(QLatin1String(spec.compareField))
+                            .toDouble()));
             markers_.append(marker);
         }
     }
@@ -6256,9 +6312,15 @@ void TelemetryStore::setCornerName(int index, const QString& name) {
 
 void TelemetryStore::updateCorner(int index, double start, double end) {
     if (index < 0 || index >= corners_.size()) return;
-    corners_[index].start = qBound(0.0, start, 1.0);
-    corners_[index].end = qBound(corners_[index].start, end, 1.0);
+    const double nextStart = qBound(0.0, start, 1.0);
+    const double nextEnd = qBound(nextStart, end, 1.0);
+    if (qFuzzyCompare(corners_[index].start + 1.0, nextStart + 1.0) &&
+        qFuzzyCompare(corners_[index].end + 1.0, nextEnd + 1.0))
+        return;
+    corners_[index].start = nextStart;
+    corners_[index].end = nextEnd;
     emit cornersChanged();
+    if (index == focusedCorner_) rebuildCornerMarkers();
 }
 
 void TelemetryStore::setEditingCorners(bool editing) {
@@ -6559,7 +6621,8 @@ QVariantMap TelemetryStore::cursorReadout() const {
         return arr[lo] + (arr[hi] - arr[lo]) * (pos - lo);
     };
     double frac = cursorFrac_;
-    out["dist"] = sampleAt(u->distance, frac);
+    out["dist"] = sampleAt(u->distance, frac) -
+                  (u->distance.empty() ? 0.0 : u->distance.front());
     out["time"] = sampleAt(u->time, frac);
     out["speed"] = sampleAt(u->speed, frac);
     out["gear"] = u->gear.empty()
@@ -6873,16 +6936,12 @@ double TelemetryStore::compareTimeForPrimaryFraction(double fraction) const {
 
 double TelemetryStore::compareFractionForPrimaryFraction(
     double fraction) const {
-    if (comparisonAlignmentFraction_.size() < 2) return 0.0;
-    const double position = std::clamp(fraction, 0.0, 1.0) *
-                            double(comparisonAlignmentFraction_.size() - 1);
-    const qsizetype low = qsizetype(std::floor(position));
-    const qsizetype high =
-        std::min(low + 1, comparisonAlignmentFraction_.size() - 1);
-    return comparisonAlignmentFraction_[low] +
-           (comparisonAlignmentFraction_[high] -
-            comparisonAlignmentFraction_[low]) *
-               (position - double(low));
+    return interpolateAlignmentFraction(comparisonAlignmentFraction_, fraction);
+}
+
+double TelemetryStore::primaryFractionForCompareFraction(
+    double fraction) const {
+    return invertAlignmentFraction(comparisonAlignmentFraction_, fraction);
 }
 
 double TelemetryStore::compareVideoTime() const {

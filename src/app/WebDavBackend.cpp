@@ -180,8 +180,13 @@ QString webDavTargetError(const QString& target) {
 RemoteBackend makeWebDavBackend(const RemoteConnection& connection) {
     RemoteBackend backend;
 
-    backend.sign = [connection](QNetworkRequest& request, const QByteArray&) {
+    backend.sign = [connection](QNetworkRequest& request, const QByteArray&,
+                                const QByteArray&) {
         signRequest(request, connection);
+    };
+
+    backend.urlFor = [connection](const QString& relative) {
+        return normalizedRoot(connection.target).resolved(QUrl(relative));
     };
 
     backend.list = [connection](QNetworkAccessManager& manager,

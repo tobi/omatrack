@@ -131,6 +131,36 @@ private slots:
         QVERIFY(reloaded.lookup(QStringLiteral("first")).found);
         QVERIFY(reloaded.lookup(QStringLiteral("second")).found);
     }
+
+    void missingLookupIsEmpty() {
+        SessionMetadataCache cache(QStringLiteral("/tmp/does-not-exist.json"));
+        QVERIFY(!cache.lookup(QStringLiteral("missing")).found);
+        QVERIFY(!cache.lookup(QString()).found);
+    }
+
+    void storeOverwritesTheSameFingerprint() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("index.json"));
+        SessionMetadataCache cache(path);
+        cache.store(QStringLiteral("run"), QStringLiteral("/run.pds"), true,
+                    QJsonObject{{QStringLiteral("driver"),
+                                 QStringLiteral("First")}});
+        cache.store(QStringLiteral("run"), QStringLiteral("/run.pds"), true,
+                    QJsonObject{{QStringLiteral("driver"),
+                                 QStringLiteral("Second")}});
+        QVERIFY(cache.save());
+        QCOMPARE(cache.lookup(QStringLiteral("run"))
+                     .metadata.value(QStringLiteral("driver"))
+                     .toString(),
+                 QStringLiteral("Second"));
+    }
+
+    void missingFileHasNoFingerprint() {
+        QVERIFY(SessionMetadataCache::fingerprint(
+                    QStringLiteral("/tmp/omatrack-missing-session.pds"))
+                    .isEmpty());
+    }
 };
 
 QTEST_MAIN(SessionMetadataCacheTest)

@@ -412,6 +412,44 @@ ComparisonAlignmentResult computeComparisonAlignment(
     return result;
 }
 
+namespace {
+bool alignmentMapUsable(const QVector<double>& map) {
+    return map.size() >= 2 && map.back() - map.front() >= 0.01;
+}
+
+double interpolateMonotonic(const QVector<double>& values, double fraction) {
+    fraction = std::clamp(fraction, 0.0, 1.0);
+    const double position = fraction * double(values.size() - 1);
+    const qsizetype low = qsizetype(std::floor(position));
+    const qsizetype high = std::min(low + 1, values.size() - 1);
+    return values[low] +
+           (values[high] - values[low]) * (position - double(low));
+}
+}  // namespace
+
+double interpolateAlignmentFraction(const QVector<double>& map,
+                                    double primaryFraction) {
+    if (!alignmentMapUsable(map)) return std::clamp(primaryFraction, 0.0, 1.0);
+    return interpolateMonotonic(map, primaryFraction);
+}
+
+double invertAlignmentFraction(const QVector<double>& map,
+                               double compareFraction) {
+    if (!alignmentMapUsable(map)) return std::clamp(compareFraction, 0.0, 1.0);
+    compareFraction = std::clamp(compareFraction, 0.0, 1.0);
+    if (compareFraction <= map.front()) return 0.0;
+    if (compareFraction >= map.back()) return 1.0;
+    const auto upper =
+        std::lower_bound(map.cbegin(), map.cend(), compareFraction);
+    if (upper == map.cbegin()) return 0.0;
+    if (upper == map.cend()) return 1.0;
+    const qsizetype high = qsizetype(upper - map.cbegin());
+    const qsizetype low = high - 1;
+    const double span = map[high] - map[low];
+    const double local = span > 0.0 ? (compareFraction - map[low]) / span : 0.0;
+    return (double(low) + local) / double(map.size() - 1);
+}
+
 QString comparisonAlignmentConfidenceLabel(const QString& basis,
                                            int gpsAnchors) {
     if (basis.isEmpty()) return QStringLiteral("NONE");

@@ -147,8 +147,8 @@ private:
 };
 
 /// Measures one corner of one lap. `startFraction`/`endFraction` are lap
-/// fractions; the caller maps the reference lap's own bounds by distance so
-/// both metrics describe the same piece of track.
+/// fractions. The caller maps the reference zone through the same
+/// primary→reference track-station map used by traces and delta.
 CornerMetrics measureCorner(const UnifiedLap& lap, double startFraction,
                             double endFraction);
 

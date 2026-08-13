@@ -128,9 +128,11 @@ public:
     std::vector<Lap>& sourceLaps() { return sourceLaps_; }
     const std::vector<Lap>& sourceLaps() const { return sourceLaps_; }
 
-    /// Sample a channel at absolute time (seconds) with linear interpolation.
+    /// Sample a channel at absolute time (seconds). Linear interpolation is
+    /// the default; pass linear=false for ordinals such as gear.
     /// Returns false when out of range.
-    bool sampleAt(size_t channelIdx, double timeSec, double* out) const;
+    bool sampleAt(size_t channelIdx, double timeSec, double* out,
+                  bool linear = true) const;
 
     /// Map channel concepts to channel indices (omatrack channelMappings).
     std::map<std::string, int> mapChannels(
@@ -147,6 +149,12 @@ public:
     /// Build a 50 Hz UnifiedLap over [startTime, endTime].
     UnifiedLap unifyLap(double startTime, double endTime,
                         const ChannelOverrides& overrides = {}) const;
+
+    /// Serialise this source to a MoTeC LD file. Requires a live parser
+    /// handle (`open()`, not a synthetic source). No LDX is written.
+
+    bool writeMotec(const std::string& ldPath,
+                    std::string* error = nullptr) const;
 
     // Public so tests can populate channels_ with synthetic data without
     // going through the Rust bridge. Production code uses open().

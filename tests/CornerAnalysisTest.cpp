@@ -30,6 +30,8 @@ struct CornerShape {
     int gearApex = 3;
     double overlapSeconds = 0.0;         ///< throttle held during heavy braking
     double gearShiftDelaySeconds = 0.0;  ///< delay before the first downshift
+    double liftLeadSeconds = 0.0;        ///< lift throttle this long before brake
+    double steeringDelaySeconds = 0.0;   ///< delay the steering build after brake
 };
 
 /// Builds a one-corner lap: a straight, a braking zone, an apex, and a
@@ -79,7 +81,10 @@ UnifiedLap makeLap(const CornerShape& shape) {
             brake = shape.peakBrakeBar * ramp * release;
         }
 
-        double throttle = f < shape.brakeStart ? 1.0 : 0.0;
+        double throttle = 1.0;
+        const double liftTime =
+            shape.brakeStart * kDuration - shape.liftLeadSeconds;
+        if (t >= liftTime && f < shape.throttleOn) throttle = 0.0;
         if (f >= shape.throttleOn) throttle = 1.0;
         // Optional mistake: throttle held while the brake is still hard on.
         if (shape.overlapSeconds > 0.0) {
@@ -89,9 +94,12 @@ UnifiedLap makeLap(const CornerShape& shape) {
         }
 
         double steering = 0.0;
-        if (f >= shape.brakeStart) {
+        const double steerStart =
+            shape.brakeStart * kDuration + shape.steeringDelaySeconds;
+        if (t >= steerStart) {
             const double phase = std::min(
-                1.0, (f - shape.brakeStart) / (shape.apex - shape.brakeStart));
+                1.0, (t - steerStart) /
+                         std::max(0.05, shape.apex * kDuration - steerStart));
             steering = shape.maxSteering * phase;
         }
 
@@ -169,6 +177,18 @@ private slots:
     void anEmptyRangeIsInvalid() {
         const UnifiedLap lap = makeLap({});
         QVERIFY(!measureCorner(lap, 0.5, 0.5).valid);
+    }
+
+    void missingBrakeAndLiftPointsAreNan() {
+        CornerShape flatOut;
+        flatOut.peakBrakeBar = 0.0;
+        flatOut.throttleOn = 0.0;
+        flatOut.brakeStart = 0.99;
+        const UnifiedLap lap = makeLap(flatOut);
+        const CornerMetrics metrics = measureCorner(lap, 0.10, 0.80);
+        QVERIFY(metrics.valid);
+        QVERIFY(!std::isfinite(metrics.brakePoint));
+        QVERIFY(!std::isfinite(metrics.liftPoint));
     }
 
     void unmappedLateralGIsNotLateralG() {
@@ -323,6 +343,236 @@ private slots:
             ids.insert(id);
         }
         QVERIFY(ids.size() >= 12);
+        QVERIFY(ids.contains(QStringLiteral("entry_speed")));
+        QVERIFY(ids.contains(QStringLiteral("turn_in")));
+        QVERIFY(ids.contains(QStringLiteral("coasting")));
+        QVERIFY(ids.contains(QStringLiteral("throttle_timing")));
+        QVERIFY(ids.contains(QStringLiteral("brake_application_rate")));
+        QVERIFY(ids.contains(QStringLiteral("downshift_timing")));
+        QVERIFY(ids.contains(QStringLiteral("combined_grip_early")));
+        QVERIFY(ids.contains(QStringLiteral("combined_grip_mid")));
+    }
+
+    void reportsAFasterEntry() {
+        CornerShape faster;
+        faster.entrySpeed = 230.0;
+        const UnifiedLap primary = makeLap(faster);
+        const UnifiedLap reference = makeLap({});
+        const std::vector<CornerNote> notes =
+            CornerAnalysisRegistry::instance().run(
+                contextFor(primary, reference, 0.10, 0.80));
+        QVERIFY(hasNote(notes, "entry_speed"));
+        QVERIFY(noteText(notes, "entry_speed").find("faster") !=
+                std::string::npos);
+    }
+
+    void aSmallEntryDeltaIsSilent() {
+        CornerShape nudge;
+        nudge.entrySpeed = 205.0;
+        const UnifiedLap primary = makeLap(nudge);
+        const UnifiedLap reference = makeLap({});
+        QVERIFY(!hasNote(CornerAnalysisRegistry::instance().run(
+                             contextFor(primary, reference, 0.10, 0.80)),
+                         "entry_speed"));
+    }
+
+    void reportsLessSteering() {
+        CornerShape calm;
+        calm.maxSteering = 30.0;
+        const UnifiedLap primary = makeLap(calm);
+        const UnifiedLap reference = makeLap({});
+        const std::vector<CornerNote> notes =
+            CornerAnalysisRegistry::instance().run(
+                contextFor(primary, reference, 0.10, 0.80));
+        QVERIFY(hasNote(notes, "steering_input"));
+        QVERIFY(noteText(notes, "steering_input").find("less") !=
+                std::string::npos);
+    }
+
+    void reportsAHigherGear() {
+        CornerShape taller;
+        taller.gearApex = 4;
+        const UnifiedLap primary = makeLap(taller);
+        const UnifiedLap reference = makeLap({});
+        const std::vector<CornerNote> notes =
+            CornerAnalysisRegistry::instance().run(
+                contextFor(primary, reference, 0.10, 0.80));
+        QVERIFY(hasNote(notes, "gear_usage"));
+        QVERIFY(noteText(notes, "gear_usage").find("higher") !=
+                std::string::npos);
+    }
+
+    void reportsHarderBraking() {
+        CornerShape hard;
+        hard.peakBrakeBar = 110.0;
+        const UnifiedLap primary = makeLap(hard);
+        const UnifiedLap reference = makeLap({});
+        const std::vector<CornerNote> notes =
+            CornerAnalysisRegistry::instance().run(
+                contextFor(primary, reference, 0.10, 0.80));
+        QVERIFY(hasNote(notes, "brake_pressure"));
+        QVERIFY(noteText(notes, "brake_pressure").find("harder") !=
+                std::string::npos);
+    }
+
+    void silentWhenNeitherLapBrakes() {
+        CornerShape flat;
+        flat.peakBrakeBar = 0.0;
+        flat.brakeStart = 0.99;
+        const UnifiedLap lap = makeLap(flat);
+        QVERIFY(!hasNote(CornerAnalysisRegistry::instance().run(
+                             contextFor(lap, lap, 0.10, 0.80)),
+                         "brake_pressure"));
+    }
+
+    void reportsMoreCoasting() {
+        CornerShape coast;
+        coast.liftLeadSeconds = 1.6;
+        const UnifiedLap primary = makeLap(coast);
+        const UnifiedLap reference = makeLap({});
+        const std::vector<CornerNote> notes =
+            CornerAnalysisRegistry::instance().run(
+                contextFor(primary, reference, 0.10, 0.80));
+        QVERIFY(hasNote(notes, "coasting"));
+        QVERIFY(noteText(notes, "coasting").find("more") != std::string::npos);
+    }
+
+    void reportsALaterTurnIn() {
+        CornerShape late;
+        late.steeringDelaySeconds = 1.4;
+        const UnifiedLap primary = makeLap(late);
+        const UnifiedLap reference = makeLap({});
+        const std::vector<CornerNote> notes =
+            CornerAnalysisRegistry::instance().run(
+                contextFor(primary, reference, 0.10, 0.80));
+        QVERIFY(hasNote(notes, "turn_in"));
+        QVERIFY(noteText(notes, "turn_in").find("later") != std::string::npos);
+    }
+
+    void reportsAnEarlierTurnIn() {
+        CornerShape late;
+        late.steeringDelaySeconds = 1.4;
+        const UnifiedLap primary = makeLap({});
+        const UnifiedLap reference = makeLap(late);
+        const std::vector<CornerNote> notes =
+            CornerAnalysisRegistry::instance().run(
+                contextFor(primary, reference, 0.10, 0.80));
+        QVERIFY(hasNote(notes, "turn_in"));
+        QVERIFY(noteText(notes, "turn_in").find("earlier") !=
+                std::string::npos);
+    }
+
+    void reportsLateThrottle() {
+        CornerShape late;
+        late.throttleOn = 0.74;
+        const UnifiedLap primary = makeLap(late);
+        CornerShape early;
+        early.throttleOn = 0.52;
+        const UnifiedLap reference = makeLap(early);
+        const std::vector<CornerNote> notes =
+            CornerAnalysisRegistry::instance().run(
+                contextFor(primary, reference, 0.10, 0.90));
+        QVERIFY(hasNote(notes, "throttle_timing"));
+        QVERIFY(noteText(notes, "throttle_timing").find("late") !=
+                std::string::npos);
+    }
+
+    void reportsEarlyThrottle() {
+        CornerShape late;
+        late.throttleOn = 0.74;
+        const UnifiedLap primary = makeLap({});
+        const UnifiedLap reference = makeLap(late);
+        const std::vector<CornerNote> notes =
+            CornerAnalysisRegistry::instance().run(
+                contextFor(primary, reference, 0.10, 0.90));
+        QVERIFY(hasNote(notes, "throttle_timing"));
+        QVERIFY(noteText(notes, "throttle_timing").find("early") !=
+                std::string::npos);
+    }
+
+    void reportsASlowerBrakeApplication() {
+        CornerShape slow;
+        slow.brakeRampSeconds = 2.0;
+        const UnifiedLap primary = makeLap(slow);
+        const UnifiedLap reference = makeLap({});
+        const std::vector<CornerNote> notes =
+            CornerAnalysisRegistry::instance().run(
+                contextFor(primary, reference, 0.10, 0.80));
+        QVERIFY(hasNote(notes, "brake_application_rate"));
+        QVERIFY(noteText(notes, "brake_application_rate").find("slower") !=
+                std::string::npos);
+    }
+
+    void reportsALaterLastDownshift() {
+        CornerShape lazy;
+        lazy.gearShiftDelaySeconds = 1.2;
+        const UnifiedLap primary = makeLap(lazy);
+        const UnifiedLap reference = makeLap({});
+        QVERIFY(hasNote(CornerAnalysisRegistry::instance().run(
+                            contextFor(primary, reference, 0.10, 0.80)),
+                        "downshift_timing"));
+    }
+
+    void reportsLessCombinedGripWhenLateralGIsPresent() {
+        UnifiedLap primary = makeLap({});
+        UnifiedLap reference = makeLap({});
+        auto paint = [](UnifiedLap& lap, double peak) {
+            // Rise after steering is already committed, otherwise detectTurnIn
+            // treats the lateral load as a kerb strike and leaves the point unset.
+            for (size_t i = 0; i < lap.gForceLat.size(); ++i) {
+                const double committed =
+                    std::max(0.0, (std::fabs(lap.steering[i]) - 30.0) / 30.0);
+                lap.gForceLat[i] = committed * peak;
+            }
+        };
+        paint(primary, 0.2);
+        paint(reference, 2.4);
+        const std::vector<CornerNote> notes =
+            CornerAnalysisRegistry::instance().run(
+                contextFor(primary, reference, 0.10, 0.80));
+        QVERIFY(hasNote(notes, "combined_grip_early") ||
+                hasNote(notes, "combined_grip_mid"));
+    }
+
+    void combinedGripStaysSilentWithoutLateralG() {
+        const UnifiedLap lap = makeLap({});
+        QVERIFY(!hasNote(CornerAnalysisRegistry::instance().run(
+                             contextFor(lap, lap, 0.10, 0.80)),
+                         "combined_grip_early"));
+        QVERIFY(!hasNote(CornerAnalysisRegistry::instance().run(
+                             contextFor(lap, lap, 0.10, 0.80)),
+                         "combined_grip_mid"));
+    }
+
+    void anEmptyLapIsInvalid() {
+        QVERIFY(!measureCorner(UnifiedLap{}, 0.1, 0.8).valid);
+    }
+
+    void anInvertedRangeIsInvalid() {
+        QVERIFY(!measureCorner(makeLap({}), 0.80, 0.10).valid);
+    }
+
+    void severityNamesAreStable() {
+        QCOMPARE(QString::fromLatin1(severityName(NoteSeverity::Info)),
+                 QStringLiteral("info"));
+        QCOMPARE(QString::fromLatin1(severityName(NoteSeverity::Warning)),
+                 QStringLiteral("warning"));
+        QCOMPARE(QString::fromLatin1(severityName(NoteSeverity::Error)),
+                 QStringLiteral("error"));
+    }
+
+    void analyzeCornerMatchesTheRegistry() {
+        CornerShape sloppy;
+        sloppy.overlapSeconds = 1.2;
+        const UnifiedLap primary = makeLap(sloppy);
+        const UnifiedLap reference = makeLap({});
+        const CornerContext context = contextFor(primary, reference, 0.10, 0.80);
+        const auto viaRegistry = CornerAnalysisRegistry::instance().run(context);
+        const auto viaHelper = analyzeCorner(context);
+        QCOMPARE(int(viaHelper.size()), int(viaRegistry.size()));
+        for (size_t i = 0; i < viaHelper.size(); ++i)
+            QCOMPARE(QString::fromStdString(viaHelper[i].id),
+                     QString::fromStdString(viaRegistry[i].id));
     }
 };
 

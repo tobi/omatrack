@@ -118,6 +118,55 @@ private slots:
             omatrack::trackatlas::spatialStationMap(lap, circularCenterline())
                 .isEmpty());
     }
+
+    void rejectsGarbageGeoJson() {
+        QVERIFY(omatrack::trackatlas::parseCenterline("not json").isEmpty());
+        QVERIFY(omatrack::trackatlas::parseCenterline("{}").isEmpty());
+        QVERIFY(omatrack::trackatlas::parseCenterline(
+                    R"json({"type":"FeatureCollection","features":[]})json")
+                    .isEmpty());
+        QVERIFY(omatrack::trackatlas::parseCenterline(
+                    R"json({"type":"LineString","coordinates":[[-88,43],[-88.01,43.01]]})json")
+                    .isEmpty());
+    }
+
+    void parsesABareLineStringWhenLongEnough() {
+        const QByteArray geoJson = R"json(
+            {"type":"LineString","coordinates":[
+              [-88.0,43.8],[-88.01,43.81],[-88.02,43.8],[-88.0,43.8]
+            ]}
+        )json";
+        QCOMPARE(omatrack::trackatlas::parseCenterline(geoJson).size(), 4);
+    }
+
+    void rejectsAShortGpsTrace() {
+        omatrack::UnifiedLap lap;
+        lap.gpsLat = {43.8, 43.81, 43.82};
+        lap.gpsLon = {-88.0, -88.01, -88.02};
+        QVERIFY(!omatrack::trackatlas::hasPositionalGps(lap));
+    }
+
+    void rejectsNanFixes() {
+        omatrack::UnifiedLap lap;
+        lap.gpsLat.assign(20, std::numeric_limits<double>::quiet_NaN());
+        lap.gpsLon.assign(20, std::numeric_limits<double>::quiet_NaN());
+        QVERIFY(!omatrack::trackatlas::hasPositionalGps(lap));
+    }
+
+    void emptyMappingYieldsNoStation() {
+        QCOMPARE(omatrack::trackatlas::lapFractionAtStation({}, 0.25), -1.0);
+        const QVector<QPointF> mapping{{0.0, 0.0}, {1.0, 1.0}};
+        QCOMPARE(omatrack::trackatlas::lapFractionAtStation(mapping, 0.5), 0.5);
+        QCOMPARE(omatrack::trackatlas::lapFractionAtStation(mapping, -1.0), 0.0);
+        QCOMPARE(omatrack::trackatlas::lapFractionAtStation(mapping, 2.0), 1.0);
+    }
+
+    void shortCenterlineCannotMap() {
+        QVERIFY(omatrack::trackatlas::spatialStationMap(spatialLap(), {}).isEmpty());
+        QVERIFY(omatrack::trackatlas::spatialStationMap(
+                    spatialLap(), {QPointF(-88.0, 43.8), QPointF(-88.01, 43.81)})
+                    .isEmpty());
+    }
 };
 
 QTEST_MAIN(TrackAtlasSpatialTest)

@@ -78,6 +78,7 @@ set_tests_properties(sigv4-test PROPERTIES LABELS unit)
 # downloads, ETag reuse, and offline operation from the on-disk cache.
 qt_add_executable(remote-cache-test RemoteCacheTest.cpp
   ${CMAKE_SOURCE_DIR}/src/app/RemoteCache.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/AimRemoteIndex.cpp
   ${CMAKE_SOURCE_DIR}/src/app/WebDavBackend.cpp
   ${CMAKE_SOURCE_DIR}/src/app/S3Backend.cpp
   ${CMAKE_SOURCE_DIR}/src/app/SigV4.cpp
@@ -92,6 +93,24 @@ target_link_libraries(remote-cache-test PRIVATE
 add_test(NAME remote-cache-test COMMAND remote-cache-test)
 set_tests_properties(remote-cache-test PROPERTIES LABELS unit)
 
+# ── AiM remote extract (parse/pack, no network) ─────────────────────
+qt_add_executable(aim-remote-index-test AimRemoteIndexTest.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/AimRemoteIndex.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/RemoteCache.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/WebDavBackend.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/S3Backend.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/SigV4.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/LibraryLocation.cpp)
+target_include_directories(aim-remote-index-test PRIVATE
+  ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(aim-remote-index-test PRIVATE
+  Qt6::Test
+  Qt6::Core
+  Qt6::Network
+  omatrack_warnings)
+add_test(NAME aim-remote-index-test COMMAND aim-remote-index-test)
+set_tests_properties(aim-remote-index-test PROPERTIES LABELS unit)
+
 # ── session-metadata-cache-test ─────────────────────────────────────
 # Verifies the bounded fingerprint contract and atomic JSON cache round-trip.
 qt_add_executable(session-metadata-cache-test SessionMetadataCacheTest.cpp
@@ -105,6 +124,30 @@ target_link_libraries(session-metadata-cache-test PRIVATE
   omatrack_warnings)
 add_test(NAME session-metadata-cache-test COMMAND session-metadata-cache-test)
 set_tests_properties(session-metadata-cache-test PROPERTIES LABELS unit)
+
+# ── Portable recording sidecars ─────────────────────────────────────
+qt_add_executable(recording-sidecar-test RecordingSidecarTest.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/RecordingSidecar.cpp)
+target_include_directories(recording-sidecar-test PRIVATE
+  ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(recording-sidecar-test PRIVATE
+  Qt6::Test
+  Qt6::Core
+  omatrack_warnings)
+add_test(NAME recording-sidecar-test COMMAND recording-sidecar-test)
+set_tests_properties(recording-sidecar-test PROPERTIES LABELS unit)
+
+# ── Attached USB telemetry volumes ──────────────────────────────────
+qt_add_executable(usb-media-test UsbMediaTest.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/UsbMedia.cpp)
+target_include_directories(usb-media-test PRIVATE
+  ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(usb-media-test PRIVATE
+  Qt6::Test
+  Qt6::Core
+  omatrack_warnings)
+add_test(NAME usb-media-test COMMAND usb-media-test)
+set_tests_properties(usb-media-test PROPERTIES LABELS unit)
 
 # ── Omarchy theme bridge test ──
 # Exercises the atomic directory replacement used by `omarchy theme set` and
