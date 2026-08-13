@@ -10,6 +10,7 @@
 #include <QtTest>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 
@@ -445,17 +446,16 @@ private slots:
         QVERIFY(QFile::exists(legacyFile.fileName()));
     }
     void trackMetadataMergeOverlaysNestedMaps() {
-        QVariantMap base{{QStringLiteral("car"),
-                          QVariantMap{{QStringLiteral("number"),
-                                       QStringLiteral("7")},
-                                      {QStringLiteral("class"),
-                                       QStringLiteral("LMP2")}}},
-                         {QStringLiteral("keep"), QStringLiteral("yes")}};
+        QVariantMap base{
+            {QStringLiteral("car"),
+             QVariantMap{{QStringLiteral("number"), QStringLiteral("7")},
+                         {QStringLiteral("class"), QStringLiteral("LMP2")}}},
+            {QStringLiteral("keep"), QStringLiteral("yes")}};
         omatrack::track_metadata::merge(
-            &base, {{QStringLiteral("car"),
-                     QVariantMap{{QStringLiteral("number"),
-                                  QStringLiteral("8")}}},
-                    {QStringLiteral("driver"), QStringLiteral("A")}});
+            &base,
+            {{QStringLiteral("car"),
+              QVariantMap{{QStringLiteral("number"), QStringLiteral("8")}}},
+             {QStringLiteral("driver"), QStringLiteral("A")}});
         QCOMPARE(base.value(QStringLiteral("car"))
                      .toMap()
                      .value(QStringLiteral("number"))
@@ -478,7 +478,8 @@ private slots:
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
         QCOMPARE(omatrack::track_metadata::filePath(directory.path()),
-                 QDir(directory.path()).filePath(QStringLiteral("TRACK.yml")));
+                 QDir(QFileInfo(directory.path()).canonicalFilePath())
+                     .filePath(QStringLiteral("TRACK.yml")));
     }
 
     void hierarchyCanOmitTheTargetFolder() {

@@ -27,7 +27,11 @@ QString displayName(const QStorageInfo& storage) {
 
 bool isUsbBlockDevice(const QByteArray& device,
                       const QString& sysClassBlockRoot) {
-#ifdef Q_OS_LINUX
+#ifndef Q_OS_LINUX
+    // Live mounts are Linux-only. Tests inject a fake sysfs tree and still
+    // exercise the classifier on every platform.
+    if (sysClassBlockRoot == QStringLiteral("/sys/class/block")) return false;
+#endif
     const QString deviceName =
         QFileInfo(QString::fromLocal8Bit(device)).fileName();
     if (deviceName.isEmpty()) return false;
@@ -52,11 +56,6 @@ bool isUsbBlockDevice(const QByteArray& device,
 
     const QDir parent = QFileInfo(canonical).dir();
     return removableFlag(parent.filePath(QStringLiteral("removable")));
-#else
-    Q_UNUSED(device)
-    Q_UNUSED(sysClassBlockRoot)
-    return false;
-#endif
 }
 
 QVector<UsbVolume> mountedUsbVolumes() {
