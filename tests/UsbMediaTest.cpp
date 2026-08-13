@@ -20,6 +20,9 @@ class UsbMediaTest : public QObject {
 
 private slots:
     void detectsUsbTransportPath() {
+#ifdef Q_OS_WIN
+        QSKIP("Windows cannot follow the POSIX sysfs symlink fixtures");
+#endif
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
         const QString sys = directory.filePath(QStringLiteral("class/block"));
@@ -34,6 +37,9 @@ private slots:
     }
 
     void detectsKernelRemovableFlagOnParentDisk() {
+#ifdef Q_OS_WIN
+        QSKIP("Windows cannot follow the POSIX sysfs symlink fixtures");
+#endif
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
         const QString sys = directory.filePath(QStringLiteral("class/block"));
