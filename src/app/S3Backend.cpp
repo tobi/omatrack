@@ -517,8 +517,8 @@ RemoteBackend makeS3Backend(const RemoteConnection& connection) {
 
     backend.urlFor = [connection, parsed, region](const QString& relative) {
         if (region->isEmpty())
-            *region = connection.options.value(QStringLiteral("region"))
-                          .trimmed();
+            *region =
+                connection.options.value(QStringLiteral("region")).trimmed();
         if (region->isEmpty() && connection.type == LocationType::Gcs)
             *region = QStringLiteral("auto");
         if (region->isEmpty()) *region = QStringLiteral("us-east-1");
