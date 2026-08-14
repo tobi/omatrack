@@ -1,6 +1,7 @@
 #include "MpvVideoItem.h"
 
 #include "RemoteCache.h"
+#include "VerboseLog.h"
 
 #include <QDebug>
 #include <QDir>
@@ -18,6 +19,7 @@
 #include <mpv/render_gl.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -242,6 +244,9 @@ MpvVideoItem::MpvVideoItem(QQuickItem* parent)
     mpv_observe_property(state_->handle, 6, "media-title", MPV_FORMAT_STRING);
     mpv_observe_property(state_->handle, 7, "seeking", MPV_FORMAT_FLAG);
     mpv_observe_property(state_->handle, 8, "speed", MPV_FORMAT_DOUBLE);
+    mpv_observe_property(state_->handle, 9, "container-fps", MPV_FORMAT_DOUBLE);
+    mpv_observe_property(state_->handle, 10, "estimated-vf-fps",
+                         MPV_FORMAT_DOUBLE);
     mpv_set_wakeup_callback(state_->handle, &MpvVideoItem::wakeup, this);
 }
 
@@ -378,6 +383,15 @@ void MpvVideoItem::processEvents() {
                         playbackRate_ = value;
                         emit playbackRateChanged();
                     }
+                } else if ((std::strcmp(property->name, "container-fps") == 0 ||
+                            std::strcmp(property->name, "estimated-vf-fps") ==
+                                0) &&
+                           property->format == MPV_FORMAT_DOUBLE) {
+                    const double value = *static_cast<double*>(property->data);
+                    if (value > 0.0 &&
+                        (containerFps_ <= 0.0 ||
+                         std::strcmp(property->name, "container-fps") == 0))
+                        containerFps_ = value;
                 }
                 break;
             }
@@ -419,6 +433,8 @@ void MpvVideoItem::openMedia(const QUrl& source) {
     exactSeekCount_ = 0;
     resumePosition_ = 0.0;
     reopenAttempts_ = 0;
+    containerFps_ = 0.0;
+    qCInfo(lcIo).noquote() << "video open" << omatrack::displayUrl(source);
 
     source_ = source;
     pendingSource_ = source;
@@ -440,6 +456,9 @@ void MpvVideoItem::openMedia(const QUrl& source) {
 void MpvVideoItem::reopenMedia(const QUrl& source) {
     if (!source.isValid() || source.isEmpty()) return;
     ++reopenAttempts_;
+    qCInfo(lcIo).noquote() << "video reopen" << omatrack::displayUrl(source)
+                           << "attempt" << reopenAttempts_ << "at" << position_
+                           << "s";
     // Where it was, and whether it was running: reopening has to be invisible
     // beyond a stutter, or it is just a different way of losing your place.
     resumePosition_ = position_;
@@ -544,6 +563,17 @@ void MpvVideoItem::seek(double seconds) {
     seconds = std::max(0.0, seconds);
     if (duration_ > 0.0) seconds = std::min(seconds, duration_);
     ++exactSeekCount_;
+    if (lcSeek().isInfoEnabled()) {
+        QString line = QStringLiteral("seek video %1  t=%2s")
+                           .arg(omatrack::displayUrl(source_),
+                                QString::number(seconds, 'f', 3));
+        if (containerFps_ > 0.0) {
+            line += QStringLiteral("  frame ~%1  fps=%2")
+                        .arg(int(std::lround(seconds * containerFps_)))
+                        .arg(containerFps_, 0, 'f', 3);
+        }
+        qCInfo(lcSeek).noquote() << line;
+    }
     command({
         QByteArrayLiteral("seek"),
         QByteArray::number(seconds, 'f', 6),

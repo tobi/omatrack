@@ -122,6 +122,8 @@ public:
     std::optional<double> videoPresentationOffsetSec() const {
         return videoPresentationOffsetSec_;
     }
+    /// Presentation-order video frame at file-relative telemetry time.
+    std::optional<std::uint64_t> videoFrameAt(double timeSec) const;
 
     std::vector<RawChannel>& channels() { return channels_; }
     const std::vector<RawChannel>& channels() const { return channels_; }
@@ -150,11 +152,10 @@ public:
     UnifiedLap unifyLap(double startTime, double endTime,
                         const ChannelOverrides& overrides = {}) const;
 
-    /// Serialise this source to a MoTeC LD file. Requires a live parser
-    /// handle (`open()`, not a synthetic source). No LDX is written.
-
-    bool writeMotec(const std::string& ldPath,
-                    std::string* error = nullptr) const;
+    /// Serialise this source to a native `.telemetry` recording. Requires a
+    /// live parser handle (`open()`, not a synthetic source).
+    bool writeTelemetry(const std::string& path,
+                        std::string* error = nullptr) const;
 
     // Public so tests can populate channels_ with synthetic data without
     // going through the Rust bridge. Production code uses open().
@@ -173,6 +174,21 @@ private:
 };
 
 // ── helpers exposed for CLI/tests ───────────────────────────────────
+
+/// Catalog-only `.telemetry` meaning this video has no usable telemetry.
+bool writeUnsupportedTelemetry(const std::string& path,
+                               std::string* error = nullptr);
+
+/// Header-only: the `.telemetry` stores a presentation offset and video
+/// frames. A v1 companion without `video_frames.bin` is false.
+bool telemetryHasVideoClock(const std::string& path);
+
+/// Side-by-side dump of GPS, main channels, laps, and video-frame sync.
+/// `left` is typically the AiM extract; `right` is the native `.telemetry`.
+std::string compareTelemetrySources(
+    const TelemetrySource& left, const TelemetrySource& right,
+    const std::string& leftLabel = "aimd",
+    const std::string& rightLabel = "telemetry");
 
 /// Normalize a channel name: lowercase + strip non-alphanumeric.
 std::string normalizeChannelName(const std::string& raw);

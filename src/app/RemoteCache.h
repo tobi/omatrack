@@ -143,9 +143,16 @@ QString cacheRoot();
 /// one-time AiM extract at `.omatrack/aim-{etag}.mp4`.
 QString etagFileKey(const QString& etag);
 /// True for cache-private `.omatrack/` artifacts and hidden recording
-/// companions (`.<video>.json`, `.<video>.ld`). Companions download before
-/// the media they describe and are not library sources.
+/// companions (`.<video>.telemetry`, plus leftover `.json` / `.ld`).
+/// Companions download before the media they describe and are not
+/// library sources.
 bool isSidecarPath(const QString& relativePath);
+/// Hidden native companion the sync will fetch: `.<video>.telemetry`.
+/// Leftover Motec/JSON sidecars stay classified as sidecars so they are
+/// not library rows, but they are not downloaded.
+bool isPortableTelemetryCompanion(const QString& relativePath);
+/// Wait until the I/O thread has finished tearing down the last reply.
+void drainNetworkIo();
 
 /// The ETag the last sync recorded for `localPath`, or empty.
 QString cachedObjectEtag(const RemoteConnection& connection,

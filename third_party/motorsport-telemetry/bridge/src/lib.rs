@@ -101,7 +101,17 @@ fn parse_path(open_path: &Path, index_only: bool) -> Result<Box<dyn TelemetrySou
         "ld" => motec_telemetry::MotecFile::open(open_path)
             .map(|source| Box::new(source) as Box<dyn TelemetrySource>)
             .map_err(|error| error.to_string()),
-        "vbo" => racelogic_telemetry::RacelogicFile::open(open_path)
+        "vbo" => {
+            let source = if index_only {
+                racelogic_telemetry::RacelogicFile::open_metadata(open_path)
+            } else {
+                racelogic_telemetry::RacelogicFile::open(open_path)
+            };
+            source
+                .map(|source| Box::new(source) as Box<dyn TelemetrySource>)
+                .map_err(|error| error.to_string())
+        }
+        "telemetry" => telemetry_format::NativeRecording::open(open_path)
             .map(|source| Box::new(source) as Box<dyn TelemetrySource>)
             .map_err(|error| error.to_string()),
         other => Err(format!("unsupported telemetry format: {other:?}")),
@@ -321,12 +331,14 @@ pub unsafe extern "C" fn omatrack_format(handle: *mut c_void) -> *const c_char {
                 static PDS: &[u8] = b"pds\0";
                 static LD: &[u8] = b"ld\0";
                 static VBO: &[u8] = b"vbo\0";
+                static TELEMETRY: &[u8] = b"telemetry\0";
                 let fmt = f.src.format();
                 let bytes: &[u8] = match fmt {
                     "aimd" => AIMD,
                     "pds" => PDS,
                     "ld" | "motec" => LD,
                     "vbo" => VBO,
+                    "telemetry" => TELEMETRY,
                     _ => b"unknown\0",
                 };
                 bytes.as_ptr() as *const c_char
@@ -783,49 +795,144 @@ pub unsafe extern "C" fn omatrack_sample_time_ns(
     )
 }
 
-/// Serialise an open handle to a MoTeC LD file. Lap markers stay in the
-/// recording JSON; no LDX companion is written.
+/// Serialise an open handle to a native `.telemetry` recording.
 /// Returns 1 on success, 0 on error (`omatrack_last_error`).
 ///
 /// # Safety
-/// `handle` must be NULL or a live `omatrack_open` handle. `ld_path` must be
+/// `handle` must be NULL or a live `omatrack_open` handle. `path` must be
 /// NULL or a valid NUL-terminated UTF-8 path.
 #[no_mangle]
-pub unsafe extern "C" fn omatrack_write_motec(
+pub unsafe extern "C" fn omatrack_write_telemetry(
     handle: *mut c_void,
-    ld_path: *const c_char,
+    path: *const c_char,
 ) -> c_int {
-    ffi_guard(stringify!(omatrack_write_motec), 0, || {
+    ffi_guard(stringify!(omatrack_write_telemetry), 0, || {
         let Some(file) = as_file(handle) else {
-            set_error("omatrack_write_motec: null handle");
+            set_error("omatrack_write_telemetry: null handle");
             return 0;
         };
-        if ld_path.is_null() {
-            set_error("omatrack_write_motec: null path");
+        if path.is_null() {
+            set_error("omatrack_write_telemetry: null path");
             return 0;
         }
-        let path_str = match unsafe { CStr::from_ptr(ld_path) }.to_str() {
+        let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
             Ok(path) => path,
             Err(_) => {
-                set_error("omatrack_write_motec: path is not valid UTF-8");
+                set_error("omatrack_write_telemetry: path is not valid UTF-8");
                 return 0;
             }
         };
-        match motec_telemetry::write_motec_bytes(
-            file.src.as_ref(),
-            &motec_telemetry::MotecMetadata::default(),
-        ) {
-            Ok(bytes) => match std::fs::write(path_str, bytes) {
-                Ok(()) => 1,
-                Err(error) => {
-                    set_error(format!("omatrack_write_motec: {error}"));
-                    0
-                }
-            },
+        match telemetry_format::write_from_source(file.src.as_ref(), path_str) {
+            Ok(()) => 1,
             Err(error) => {
-                set_error(format!("omatrack_write_motec: {error}"));
+                set_error(format!("omatrack_write_telemetry: {error}"));
                 0
             }
+        }
+    })
+}
+
+struct UnsupportedSource {
+    path: String,
+}
+
+impl TelemetrySource for UnsupportedSource {
+    fn path(&self) -> &str {
+        &self.path
+    }
+    fn format(&self) -> &'static str {
+        "unsupported"
+    }
+    fn channels(&self) -> &[motorsport_telemetry_core::Channel] {
+        &[]
+    }
+    fn decode(&self, _: usize, _: usize, _: u64) -> f64 {
+        0.0
+    }
+}
+
+/// Writes a catalog-only `.telemetry` that means "this video has no telemetry".
+///
+/// # Safety
+/// `path` must be NULL or a valid NUL-terminated UTF-8 path.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_write_unsupported_telemetry(path: *const c_char) -> c_int {
+    ffi_guard(stringify!(omatrack_write_unsupported_telemetry), 0, || {
+        if path.is_null() {
+            set_error("omatrack_write_unsupported_telemetry: null path");
+            return 0;
+        }
+        let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
+            Ok(path) => path,
+            Err(_) => {
+                set_error("omatrack_write_unsupported_telemetry: path is not valid UTF-8");
+                return 0;
+            }
+        };
+        let source = UnsupportedSource {
+            path: path_str.to_owned(),
+        };
+        match telemetry_format::write_from_source(&source, path_str) {
+            Ok(()) => 1,
+            Err(error) => {
+                set_error(format!("omatrack_write_unsupported_telemetry: {error}"));
+                0
+            }
+        }
+    })
+}
+
+/// Maps file-relative telemetry time to a presentation-order video frame.
+/// Returns 1 when the source knows the frame.
+///
+/// # Safety
+/// `handle` must be NULL or a live `omatrack_open` handle, and `out` must
+/// point to a writable `u64`.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_video_frame_at(
+    handle: *mut c_void,
+    time_ns: u64,
+    out: *mut u64,
+) -> c_int {
+    ffi_guard(stringify!(omatrack_video_frame_at), 0, || {
+        let Some(file) = as_file(handle) else {
+            return 0;
+        };
+        if out.is_null() {
+            return 0;
+        }
+        let Some(frame) = file.src.video_frame_at(time_ns) else {
+            return 0;
+        };
+        *out = frame;
+        1
+    })
+}
+
+/// Header-only: 1 when a `.telemetry` file stores a presentation offset and
+/// at least one video frame. Older companions without `video_frames.bin`
+/// return 0 — rewrite them from the vendor recording.
+///
+/// # Safety
+/// `path` must be NULL or a valid NUL-terminated UTF-8 path.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_telemetry_has_video_clock(path: *const c_char) -> c_int {
+    ffi_guard(stringify!(omatrack_telemetry_has_video_clock), 0, || {
+        if path.is_null() {
+            return 0;
+        }
+        let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
+            Ok(path) => path,
+            Err(_) => return 0,
+        };
+        match telemetry_format::read_metadata(path_str) {
+            Ok(metadata)
+                if metadata.video_presentation_offset_ns.is_some()
+                    && metadata.video_frame_count.unwrap_or(0) > 0 =>
+            {
+                1
+            }
+            _ => 0,
         }
     })
 }
@@ -902,6 +1009,7 @@ mod tests {
                         end_ns: 91_000_000_000,
                         duration_ns: 90_000_000_000,
                         complete: true,
+                        first_video_frame: Some(60),
                     },
                     LapMetadata {
                         number: 8,
@@ -909,6 +1017,7 @@ mod tests {
                         end_ns: 100_000_000_000,
                         duration_ns: 9_000_000_000,
                         complete: false,
+                        first_video_frame: None,
                     },
                 ]),
             }),

@@ -642,6 +642,8 @@ private slots:
     }
 
     void downloadsRecordingSidecarsWithoutListingThemAsSources() {
+        QVERIFY(isSidecarPath(QStringLiteral(".session.mp4.telemetry")));
+        QVERIFY(isSidecarPath(QStringLiteral("event/.session.mp4.telemetry")));
         QVERIFY(isSidecarPath(QStringLiteral(".session.mp4.json")));
         QVERIFY(isSidecarPath(QStringLiteral("event/.session.mp4.json")));
         QVERIFY(isSidecarPath(QStringLiteral(".session.mp4.ld")));
@@ -661,18 +663,22 @@ private slots:
         const RemoteSyncResult result = syncConnection(connection);
         QVERIFY2(result.success, qPrintable(result.error));
         QCOMPARE(result.files, QStringList{QStringLiteral("session.mp4")});
+        QVERIFY(isPortableTelemetryCompanion(
+            QStringLiteral(".session.mp4.telemetry")));
+        QVERIFY(
+            !isPortableTelemetryCompanion(QStringLiteral(".session.mp4.json")));
         const QString sidecar =
             QDir(result.cachePath)
-                .filePath(QStringLiteral(".session.mp4.json"));
+                .filePath(QStringLiteral(".session.mp4.telemetry"));
         QVERIFY(QFileInfo::exists(sidecar));
         QFile file(sidecar);
         QVERIFY(file.open(QIODevice::ReadOnly));
-        QCOMPARE(file.readAll(), QByteArrayLiteral("{\"supported\":true}"));
+        QCOMPARE(file.readAll(), QByteArrayLiteral("native-companion"));
 
-        const QByteArray body = QByteArrayLiteral("{\"supported\":false}");
-        QCOMPARE(
-            putObject(connection, QStringLiteral(".session.mp4.json"), body),
-            QString());
+        const QByteArray body = QByteArrayLiteral("updated-companion");
+        QCOMPARE(putObject(connection, QStringLiteral(".session.mp4.telemetry"),
+                           body),
+                 QString());
         QVERIFY(!lastPayloadHash_.isEmpty());
         QCOMPARE(
             lastPayloadHash_,
@@ -1072,6 +1078,8 @@ private:
                 contents(QStringLiteral("session.mp4"), QStringLiteral("e1"));
             body += contents(QStringLiteral(".session.mp4.json"),
                              QStringLiteral("meta1"));
+            body += contents(QStringLiteral(".session.mp4.telemetry"),
+                             QStringLiteral("tele1"));
         } else if (scenario_ == QStringLiteral("late-encoding")) {
             body =
                 "<?xml version=\"1.0\"?><ListBucketResult>"
@@ -1203,6 +1211,11 @@ private:
         } else if (target.startsWith("/team-telemetry/.session.mp4.json")) {
             ++gets_;
             payload = QByteArrayLiteral("{\"supported\":true}");
+            status = "200 OK";
+        } else if (target.startsWith(
+                       "/team-telemetry/.session.mp4.telemetry")) {
+            ++gets_;
+            payload = QByteArrayLiteral("native-companion");
             status = "200 OK";
         } else if (target.startsWith("/team-telemetry/")) {
             ++gets_;

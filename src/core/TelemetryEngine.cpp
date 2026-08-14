@@ -10,10 +10,13 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <iomanip>
 #include <limits>
 #include <set>
+#include <sstream>
 
 namespace omatrack {
 
@@ -559,24 +562,281 @@ TelemetrySource::~TelemetrySource() {
     if (handle_) omatrack_close(handle_);
 }
 
-bool TelemetrySource::writeMotec(const std::string& ldPath,
-                                 std::string* error) const {
+bool TelemetrySource::writeTelemetry(const std::string& path,
+                                     std::string* error) const {
     if (error) error->clear();
     if (!handle_) {
-        if (error) *error = "MoTeC export requires an opened telemetry source";
+        if (error)
+            *error = "Native .telemetry export requires an opened source";
         return false;
     }
-    if (ldPath.empty()) {
-        if (error) *error = "MoTeC export path is empty";
+    if (path.empty()) {
+        if (error) *error = "Native .telemetry export path is empty";
         return false;
     }
-    if (omatrack_write_motec(handle_, ldPath.c_str()) != 0) return true;
+    if (omatrack_write_telemetry(handle_, path.c_str()) != 0) return true;
     if (error) {
         const char* message = omatrack_last_error();
-        *error =
-            message && message[0] ? message : "Unable to write MoTeC telemetry";
+        *error = message && message[0] ? message
+                                       : "Unable to write .telemetry recording";
     }
     return false;
+}
+
+bool writeUnsupportedTelemetry(const std::string& path, std::string* error) {
+    if (error) error->clear();
+    if (path.empty()) {
+        if (error) *error = "Native .telemetry export path is empty";
+        return false;
+    }
+    if (omatrack_write_unsupported_telemetry(path.c_str()) != 0) return true;
+    if (error) {
+        const char* message = omatrack_last_error();
+        *error = message && message[0] ? message
+                                       : "Unable to write .telemetry recording";
+    }
+    return false;
+}
+
+bool telemetryHasVideoClock(const std::string& path) {
+    return !path.empty() &&
+           omatrack_telemetry_has_video_clock(path.c_str()) != 0;
+}
+
+std::optional<std::uint64_t> TelemetrySource::videoFrameAt(
+    double timeSec) const {
+    if (!handle_ || !std::isfinite(timeSec) || timeSec < 0.0)
+        return std::nullopt;
+    const uint64_t timeNs = uint64_t(std::llround(timeSec * 1e9));
+    uint64_t frame = 0;
+    if (!omatrack_video_frame_at(handle_, timeNs, &frame)) return std::nullopt;
+    return frame;
+}
+
+namespace {
+
+double sourceDuration(const TelemetrySource& source) {
+    double duration = 0.0;
+    for (const RawChannel& channel : source.channels())
+        duration = std::max(duration, channel.durationSec);
+    for (const Lap& lap : source.sourceLaps())
+        duration = std::max(duration, lap.endTime);
+    return duration;
+}
+
+const RawChannel* mappedChannel(const TelemetrySource& source,
+                                const std::map<std::string, int>& mapping,
+                                const std::string& conceptName) {
+    const auto it = mapping.find(conceptName);
+    if (it == mapping.end() || it->second < 0 ||
+        it->second >= int(source.channels().size()))
+        return nullptr;
+    return &source.channels()[size_t(it->second)];
+}
+
+void formatOptional(std::ostringstream& out, const std::optional<double>& value,
+                    int precision) {
+    if (!value || !std::isfinite(*value)) {
+        out << "-";
+        return;
+    }
+    out << std::fixed << std::setprecision(precision) << *value;
+}
+
+std::string sampleText(const TelemetrySource& source, int channelIndex,
+                       double timeSec, bool linear) {
+    if (channelIndex < 0) return "-";
+    double value = 0.0;
+    if (!source.sampleAt(size_t(channelIndex), timeSec, &value, linear))
+        return "-";
+    if (!std::isfinite(value)) return "nan";
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(6) << value;
+    return out.str();
+}
+
+void appendRawAnchors(std::ostringstream& out, const RawChannel* channel) {
+    if (!channel || channel->samples.empty()) {
+        out << "    raw: -\n";
+        return;
+    }
+    const auto finiteAt = [&](size_t start, int step) -> std::string {
+        for (size_t i = start; i < channel->samples.size(); i += size_t(step)) {
+            if (std::isfinite(channel->samples[i])) {
+                std::ostringstream value;
+                value << std::fixed << std::setprecision(6)
+                      << channel->samples[i];
+                return value.str();
+            }
+        }
+        return "nan";
+    };
+    const size_t last = channel->samples.size() - 1;
+    const size_t mid = last / 2;
+    out << "    raw[" << 0 << "]=" << finiteAt(0, 1) << "  [" << mid
+        << "]=" << finiteAt(mid, 1) << "  [" << last
+        << "]=" << finiteAt(last, -1) << "\n";
+}
+
+}  // namespace
+
+std::string compareTelemetrySources(const TelemetrySource& left,
+                                    const TelemetrySource& right,
+                                    const std::string& leftLabel,
+                                    const std::string& rightLabel) {
+    static const char* kConcepts[] = {
+        "speed", "throttle", "driver_throttle", "brake",   "steering",
+        "gear",  "distance", "gps_lat",         "gps_lon", "gps_speed"};
+    const auto leftMap = left.mapChannels();
+    const auto rightMap = right.mapChannels();
+    const double leftDuration = sourceDuration(left);
+    const double rightDuration = sourceDuration(right);
+    const double duration = std::max(leftDuration, rightDuration);
+
+    std::ostringstream out;
+    out << "compare " << leftLabel << " vs " << rightLabel << "\n";
+    out << "  format  " << left.formatName() << " / " << right.formatName()
+        << "\n";
+    out << "  path    " << left.path() << "\n";
+    out << "          " << right.path() << "\n";
+    out << "  channels " << left.channels().size() << " / "
+        << right.channels().size() << "\n";
+    out << "  duration " << std::fixed << std::setprecision(6) << leftDuration
+        << " / " << rightDuration << " s  d=" << (rightDuration - leftDuration)
+        << "\n";
+    out << "  offset  ";
+    formatOptional(out, left.videoPresentationOffsetSec(), 9);
+    out << " / ";
+    formatOptional(out, right.videoPresentationOffsetSec(), 9);
+    out << " s\n";
+
+    const auto leftLaps =
+        left.sourceLaps().empty() ? left.detectLaps() : left.sourceLaps();
+    const auto rightLaps =
+        right.sourceLaps().empty() ? right.detectLaps() : right.sourceLaps();
+    out << "  laps    " << leftLaps.size() << " / " << rightLaps.size() << "\n";
+    const size_t lapCount = std::max(leftLaps.size(), rightLaps.size());
+    for (size_t i = 0; i < lapCount && i < 12; ++i) {
+        out << "    L" << (i + 1) << "  ";
+        if (i < leftLaps.size())
+            out << std::fixed << std::setprecision(3) << leftLaps[i].startTime
+                << "->" << leftLaps[i].endTime;
+        else
+            out << "-";
+        out << "  /  ";
+        if (i < rightLaps.size())
+            out << std::fixed << std::setprecision(3) << rightLaps[i].startTime
+                << "->" << rightLaps[i].endTime;
+        else
+            out << "-";
+        if (i < leftLaps.size() && i < rightLaps.size()) {
+            out << "  dStart=" << std::setprecision(6)
+                << (rightLaps[i].startTime - leftLaps[i].startTime)
+                << "  dEnd=" << (rightLaps[i].endTime - leftLaps[i].endTime);
+        }
+        out << "\n";
+    }
+
+    out << "  mapped channels:\n";
+    for (const char* conceptName : kConcepts) {
+        const RawChannel* leftChannel =
+            mappedChannel(left, leftMap, conceptName);
+        const RawChannel* rightChannel =
+            mappedChannel(right, rightMap, conceptName);
+        out << "    " << std::left << std::setw(16) << conceptName << std::right
+            << " " << leftLabel << "=";
+        if (leftChannel) {
+            out << leftChannel->name << " unit='" << leftChannel->unit << "' "
+                << std::setprecision(3) << leftChannel->frequencyHz
+                << "Hz n=" << leftChannel->samples.size();
+        } else {
+            out << "-";
+        }
+        out << "\n                    " << rightLabel << "=";
+        if (rightChannel) {
+            out << rightChannel->name << " unit='" << rightChannel->unit << "' "
+                << std::setprecision(3) << rightChannel->frequencyHz
+                << "Hz n=" << rightChannel->samples.size();
+        } else {
+            out << "-";
+        }
+        out << "\n";
+        if (leftChannel) appendRawAnchors(out, leftChannel);
+        if (rightChannel && rightChannel != leftChannel)
+            appendRawAnchors(out, rightChannel);
+    }
+
+    std::vector<double> times;
+    if (duration > 0.0) {
+        times.push_back(0.0);
+        times.push_back(std::min(1.0, duration));
+        times.push_back(duration * 0.25);
+        times.push_back(duration * 0.5);
+        times.push_back(duration * 0.75);
+        times.push_back(std::max(0.0, duration - 1.0));
+    }
+    for (const Lap& lap : leftLaps) {
+        times.push_back(lap.startTime);
+        if (lap.endTime > lap.startTime)
+            times.push_back(0.5 * (lap.startTime + lap.endTime));
+    }
+    std::sort(times.begin(), times.end());
+    times.erase(
+        std::unique(times.begin(), times.end(),
+                    [](double a, double b) { return std::fabs(a - b) < 1e-6; }),
+        times.end());
+    if (times.size() > 16) times.resize(16);
+
+    out << "  samples:\n";
+    for (double timeSec : times) {
+        out << "    t=" << std::fixed << std::setprecision(6) << timeSec
+            << "s\n";
+        for (const char* conceptName : kConcepts) {
+            const auto leftIt = leftMap.find(conceptName);
+            const auto rightIt = rightMap.find(conceptName);
+            const int leftIdx = leftIt == leftMap.end() ? -1 : leftIt->second;
+            const int rightIdx =
+                rightIt == rightMap.end() ? -1 : rightIt->second;
+            const bool linear = std::string(conceptName) != "gear";
+            const std::string leftText =
+                sampleText(left, leftIdx, timeSec, linear);
+            const std::string rightText =
+                sampleText(right, rightIdx, timeSec, linear);
+            out << "      " << std::left << std::setw(16) << conceptName
+                << std::right << " " << leftLabel << "=" << leftText << "  "
+                << rightLabel << "=" << rightText;
+            double leftValue = 0.0;
+            double rightValue = 0.0;
+            if (leftIdx >= 0 && rightIdx >= 0 &&
+                left.sampleAt(size_t(leftIdx), timeSec, &leftValue, linear) &&
+                right.sampleAt(size_t(rightIdx), timeSec, &rightValue,
+                               linear) &&
+                std::isfinite(leftValue) && std::isfinite(rightValue)) {
+                out << "  d=" << std::setprecision(6)
+                    << (rightValue - leftValue);
+            }
+            out << "\n";
+        }
+        const auto leftFrame = left.videoFrameAt(timeSec);
+        const auto rightFrame = right.videoFrameAt(timeSec);
+        out << "      " << std::left << std::setw(16) << "video_frame"
+            << std::right << " " << leftLabel << "=";
+        if (leftFrame)
+            out << *leftFrame;
+        else
+            out << "-";
+        out << "  " << rightLabel << "=";
+        if (rightFrame)
+            out << *rightFrame;
+        else
+            out << "-";
+        if (leftFrame && rightFrame) {
+            const auto delta = int64_t(*rightFrame) - int64_t(*leftFrame);
+            out << "  d=" << delta;
+        }
+        out << "\n";
+    }
+    return out.str();
 }
 
 bool TelemetrySource::sampleAt(size_t channelIdx, double timeSec, double* out,
@@ -981,8 +1241,10 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime,
     const bool hasSpeed = resampled.count("speed") != 0;
     const bool hasBrake = resampled.count("brake") != 0;
     const bool hasGpsSpeedAccuracy = resampled.count("gps_speed_accuracy") != 0;
-    const double wheelSpeedFactor =
-        speedFactor("speed", format_ == "aimd" ? 1.0 : 3.6);
+    // Empty unit is km/h. AiM scalars are unitless by design; the Motec
+    // companion copies that emptiness. Treating it as m/s made wheel speed
+    // 3.6× high and rejected native lap distance.
+    const double wheelSpeedFactor = speedFactor("speed", 1.0);
     const double throttleFactor = pedalFactor(unitOf("throttle"));
     const double clutchFactor = pedalFactor(unitOf("clutch"));
     const double driverThrottleFactor = pedalFactor(unitOf("driver_throttle"));

@@ -79,6 +79,7 @@ set_tests_properties(sigv4-test PROPERTIES LABELS unit)
 qt_add_executable(remote-cache-test RemoteCacheTest.cpp
   ${CMAKE_SOURCE_DIR}/src/app/RemoteCache.cpp
   ${CMAKE_SOURCE_DIR}/src/app/AimRemoteIndex.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/VerboseLog.cpp
   ${CMAKE_SOURCE_DIR}/src/app/WebDavBackend.cpp
   ${CMAKE_SOURCE_DIR}/src/app/S3Backend.cpp
   ${CMAKE_SOURCE_DIR}/src/app/SigV4.cpp
@@ -97,6 +98,7 @@ set_tests_properties(remote-cache-test PROPERTIES LABELS unit)
 qt_add_executable(aim-remote-index-test AimRemoteIndexTest.cpp
   ${CMAKE_SOURCE_DIR}/src/app/AimRemoteIndex.cpp
   ${CMAKE_SOURCE_DIR}/src/app/RemoteCache.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/VerboseLog.cpp
   ${CMAKE_SOURCE_DIR}/src/app/WebDavBackend.cpp
   ${CMAKE_SOURCE_DIR}/src/app/S3Backend.cpp
   ${CMAKE_SOURCE_DIR}/src/app/SigV4.cpp
@@ -111,23 +113,10 @@ target_link_libraries(aim-remote-index-test PRIVATE
 add_test(NAME aim-remote-index-test COMMAND aim-remote-index-test)
 set_tests_properties(aim-remote-index-test PROPERTIES LABELS unit)
 
-# ── session-metadata-cache-test ─────────────────────────────────────
-# Verifies the bounded fingerprint contract and atomic JSON cache round-trip.
-qt_add_executable(session-metadata-cache-test SessionMetadataCacheTest.cpp
-  ${CMAKE_SOURCE_DIR}/src/app/SessionMetadataCache.cpp)
-target_include_directories(session-metadata-cache-test PRIVATE
-  ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(session-metadata-cache-test PRIVATE
-  Qt6::Test
-  Qt6::Core
-  omatrack_rust_bridge
-  omatrack_warnings)
-add_test(NAME session-metadata-cache-test COMMAND session-metadata-cache-test)
-set_tests_properties(session-metadata-cache-test PROPERTIES LABELS unit)
-
 # ── Portable recording sidecars ─────────────────────────────────────
 qt_add_executable(recording-sidecar-test RecordingSidecarTest.cpp
-  ${CMAKE_SOURCE_DIR}/src/app/RecordingSidecar.cpp)
+  ${CMAKE_SOURCE_DIR}/src/app/RecordingSidecar.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/VerboseLog.cpp)
 target_include_directories(recording-sidecar-test PRIVATE
   ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(recording-sidecar-test PRIVATE

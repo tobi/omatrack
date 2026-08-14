@@ -25,6 +25,8 @@
 #include <QThread>
 #include <QTimer>
 
+#include "VerboseLog.h"
+
 #include <algorithm>
 #include <mutex>
 
@@ -32,6 +34,7 @@ namespace omatrack {
 namespace {
 
 constexpr int kRequestTimeoutMs = 30'000;
+constexpr int kDownloadTimeoutMs = 120'000;
 /// Enough for the usual http→https or bucket-region hop, low enough that a
 /// redirect loop ends as an error rather than a hang.
 constexpr int kMaximumRedirects = 5;
@@ -157,6 +160,10 @@ public:
         return true;
     }
 
+    void drain() {
+        QMetaObject::invokeMethod(this, []() {}, Qt::BlockingQueuedConnection);
+    }
+
 private:
     NetworkIo() = default;
 
@@ -244,7 +251,7 @@ private:
                 result.status =
                     reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
                         .toInt();
-                result.body = reply->readAll();
+                if (reply->isOpen()) result.body = reply->readAll();
                 for (const auto& [name, value] : reply->rawHeaderPairs())
                     result.headers.insert(name.toLower(), value);
                 const QUrl next = timedOut || ioCancelled(cancel)
@@ -302,7 +309,7 @@ private:
         QObject::connect(timeout, &QTimer::timeout, reply, [reply]() {
             if (reply->isRunning()) reply->abort();
         });
-        timeout->start(kRequestTimeoutMs);
+        timeout->start(kDownloadTimeoutMs);
 
         struct DownloadState {
             qint64 bytes = 0;
@@ -320,7 +327,7 @@ private:
                     return;
                 }
                 state->bytes += chunk.size();
-                timeout->start(kRequestTimeoutMs);
+                timeout->start(kDownloadTimeoutMs);
                 const QVariant declared =
                     reply->header(QNetworkRequest::ContentLengthHeader);
                 if ((progress &&
@@ -338,7 +345,8 @@ private:
              timeout, state, output]() {
                 const bool timedOut = !timeout->isActive();
                 timeout->stop();
-                const QByteArray finalChunk = reply->readAll();
+                const QByteArray finalChunk =
+                    reply->isOpen() ? reply->readAll() : QByteArray();
                 if (!finalChunk.isEmpty() && !state->writeFailed) {
                     if (output->write(finalChunk) != finalChunk.size())
                         state->writeFailed = true;
@@ -467,7 +475,8 @@ private:
         const QUrl redirect = redirectTarget(reply, from);
         const int status =
             reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        const QByteArray body = reply->readAll();
+        const QByteArray body =
+            reply->isOpen() ? reply->readAll() : QByteArray();
         const QString replyError = reply->error() == QNetworkReply::NoError
                                        ? QString()
                                        : safeReplyError(reply);
@@ -542,6 +551,8 @@ DownloadResult downloadToFile(const QUrl& url, const RequestFactory& build,
 }
 
 }  // namespace
+
+void drainNetworkIo() { NetworkIo::instance().drain(); }
 
 QNetworkRequest makeRequest(const QUrl& url) {
     QNetworkRequest request(url);
@@ -813,7 +824,12 @@ qint64 enforceCacheBudget(qint64 limitBytes, const QSet<QString>& keepPaths) {
         // The index still lists what was just deleted, which is what makes
         // this safe: the next sync finds the file missing and fetches it
         // again, rather than treating the gap as something the server dropped.
-        if (QFile::remove(candidate.path)) freed += candidate.size;
+        if (QFile::remove(candidate.path)) {
+            qCInfo(lcIo).noquote()
+                << "cache evict" << omatrack::displayPath(candidate.path)
+                << omatrack::formatBytes(candidate.size);
+            freed += candidate.size;
+        }
     }
     return freed;
 }
@@ -851,8 +867,16 @@ bool isSidecarPath(const QString& relativePath) {
     const QFileInfo info(relativePath);
     if (!info.fileName().startsWith(QLatin1Char('.'))) return false;
     const QString suffix = info.suffix().toLower();
-    return suffix == QStringLiteral("json") || suffix == QStringLiteral("ld") ||
+    return suffix == QStringLiteral("telemetry") ||
+           suffix == QStringLiteral("json") || suffix == QStringLiteral("ld") ||
            suffix == QStringLiteral("ldx");
+}
+
+bool isPortableTelemetryCompanion(const QString& relativePath) {
+    const QFileInfo info(relativePath);
+    return info.fileName().startsWith(QLatin1Char('.')) &&
+           info.suffix().compare(QStringLiteral("telemetry"),
+                                 Qt::CaseInsensitive) == 0;
 }
 
 QString cachedObjectEtag(const RemoteConnection& connection,
@@ -951,14 +975,22 @@ QString putObject(const RemoteConnection& connection,
         sendFollowing(unused, url, "PUT", put, body, cancel);
     if (response.status == 200 || response.status == 201 ||
         response.status == 204) {
+        qCInfo(lcIo).noquote()
+            << "write put" << relativePath << omatrack::formatBytes(body.size())
+            << "HTTP" << response.status;
         if (QFileInfo(localPath).size() > 0) return {};
         QSaveFile local(localPath);
         if (!local.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
             local.write(body) != body.size() || !local.commit())
             return QStringLiteral("Unable to write the metadata cache");
+        qCInfo(lcIo).noquote()
+            << "write cache" << omatrack::displayPath(localPath)
+            << omatrack::formatBytes(body.size());
         return {};
     }
     if (response.status == 412) {
+        qCInfo(lcIo).noquote()
+            << "write exists" << relativePath << "HTTP 412 (kept server copy)";
         if (QFileInfo(localPath).size() > 0) return {};
         const RequestFactory get = [backend](const QUrl& hop) {
             QNetworkRequest request = makeRequest(hop);
@@ -977,6 +1009,9 @@ QString putObject(const RemoteConnection& connection,
             local.write(existing.body) != existing.body.size() ||
             !local.commit())
             return QStringLiteral("Unable to write the metadata cache");
+        qCInfo(lcIo).noquote()
+            << "write cache fetched" << omatrack::displayPath(localPath)
+            << omatrack::formatBytes(existing.body.size());
         return {};
     }
     return response.error.isEmpty()
@@ -1219,9 +1254,12 @@ QString fetchObject(const RemoteConnection& connection,
             return QStringLiteral("This recording is not on a server.");
     }
 
+    qCInfo(lcIo).noquote() << "download start" << relative;
     const DownloadResult download =
         downloadToFile(target, build, localPath, progress, cancel);
     if (download.status != 200 || !download.error.isEmpty()) {
+        qCInfo(lcIo).noquote()
+            << "download failed" << relative << download.error;
         // Whatever partial state a failure left, the recording still has to be
         // playable, and a stub is what the rest of the app expects to find.
         ensureStub(localPath);
@@ -1230,6 +1268,8 @@ QString fetchObject(const RemoteConnection& connection,
                          .arg(download.status)
                    : download.error;
     }
+    qCInfo(lcIo).noquote() << "write download" << relative
+                           << formatBytes(download.bytes);
     return {};
 }
 
@@ -1332,8 +1372,12 @@ RemoteSyncResult syncConnection(const RemoteConnection& connection,
     QNetworkAccessManager manager;
     QVector<RemoteObject> objects;
     QString listingError;
+    qCInfo(lcIo).noquote() << "sync" << locationTypeKey(connection.type)
+                           << connection.name << connection.target;
     if (!backend.list(manager, &objects, &listingError)) {
         result.error = listingError;
+        qCInfo(lcIo).noquote()
+            << "sync offline" << listingError << cached.size() << "cached";
         return offlineResult(std::move(result), cached, listingError);
     }
 
@@ -1379,10 +1423,18 @@ RemoteSyncResult syncConnection(const RemoteConnection& connection,
         // keeps discovery, pairing, pins and recents working off a local path
         // exactly as they do for a file that really is here.
         if (isSidecarPath(object.relativePath)) {
+            if (!isPortableTelemetryCompanion(object.relativePath)) {
+                qCInfo(lcIo).noquote()
+                    << "cache skip leftover sidecar" << object.relativePath;
+                continue;
+            }
             const bool unchanged =
                 QFileInfo::exists(localPath) && !object.etag.isEmpty() &&
                 object.etag == old.value(QStringLiteral("etag")).toString();
             if (!unchanged) {
+                qCInfo(lcIo).noquote()
+                    << "cache miss sidecar" << object.relativePath
+                    << omatrack::formatBytes(object.size);
                 const RequestFactory build = [&backend](const QUrl& url) {
                     QNetworkRequest request = makeRequest(url);
                     backend.sign(request, "GET", {});
@@ -1390,16 +1442,26 @@ RemoteSyncResult syncConnection(const RemoteConnection& connection,
                 };
                 const DownloadResult download =
                     downloadToFile(object.url, build, localPath, {}, cancel);
-                if (download.status != 200 || !download.error.isEmpty()) {
-                    result.error =
-                        download.error.isEmpty()
-                            ? QStringLiteral("Download returned HTTP %1")
-                                  .arg(download.status)
-                            : download.error;
+                if (ioCancelled(cancel)) {
+                    result.error = QStringLiteral("Cancelled");
                     result.status = result.error;
                     return result;
                 }
+                if (download.status != 200 || !download.error.isEmpty()) {
+                    qCInfo(lcIo).noquote()
+                        << "sidecar download failed" << object.relativePath
+                        << (download.error.isEmpty()
+                                ? QStringLiteral("HTTP %1").arg(download.status)
+                                : download.error);
+                    continue;
+                }
                 result.downloadedBytes += download.bytes;
+                qCInfo(lcIo).noquote()
+                    << "write download" << object.relativePath
+                    << omatrack::formatBytes(download.bytes);
+            } else {
+                qCInfo(lcIo).noquote()
+                    << "cache hit sidecar" << object.relativePath;
             }
             newEntries.insert(
                 object.relativePath,
@@ -1421,6 +1483,15 @@ RemoteSyncResult syncConnection(const RemoteConnection& connection,
                 object.etag == old.value(QStringLiteral("etag")).toString() &&
                 object.modified ==
                     old.value(QStringLiteral("modified")).toString();
+            if (keep) {
+                qCInfo(lcIo).noquote()
+                    << "cache keep offline" << object.relativePath
+                    << omatrack::formatBytes(QFileInfo(localPath).size());
+            } else {
+                qCInfo(lcIo).noquote()
+                    << "cache stub video" << object.relativePath
+                    << omatrack::formatBytes(object.size);
+            }
             if (!keep && !ensureStub(localPath)) {
                 result.error =
                     QStringLiteral("Unable to write the cache placeholder");
@@ -1444,6 +1515,8 @@ RemoteSyncResult syncConnection(const RemoteConnection& connection,
             object.etag == old.value(QStringLiteral("etag")).toString() &&
             object.modified == old.value(QStringLiteral("modified")).toString();
         if (!unchanged) {
+            qCInfo(lcIo).noquote() << "cache miss object" << object.relativePath
+                                   << omatrack::formatBytes(object.size);
             const RequestFactory build = [&backend](const QUrl& url) {
                 QNetworkRequest request = makeRequest(url);
                 backend.sign(request, "GET", {});
@@ -1460,6 +1533,10 @@ RemoteSyncResult syncConnection(const RemoteConnection& connection,
                 return result;
             }
             result.downloadedBytes += download.bytes;
+            qCInfo(lcIo).noquote() << "write download" << object.relativePath
+                                   << omatrack::formatBytes(download.bytes);
+        } else {
+            qCInfo(lcIo).noquote() << "cache hit object" << object.relativePath;
         }
 
         newEntries.insert(
@@ -1500,6 +1577,11 @@ RemoteSyncResult syncConnection(const RemoteConnection& connection,
         result.status = result.error;
         return result;
     }
+    qCInfo(lcIo).noquote() << "write cache-index"
+                           << omatrack::displayPath(indexPath)
+                           << newEntries.size() << "entries"
+                           << omatrack::formatBytes(result.downloadedBytes)
+                           << "downloaded";
     result.success = true;
     result.status =
         result.downloadedBytes > 0

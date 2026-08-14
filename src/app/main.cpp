@@ -21,31 +21,50 @@
 #include "AutotestHarness.h"
 #endif
 #include "TelemetryStore.h"
+#include "VerboseLog.h"
 #ifdef Q_OS_WIN
 #include "WindowsIntegration.h"
 #endif
 
 namespace {
 
-bool helpRequested(int argc, char** argv) {
-    return argc > 1 && (std::strcmp(argv[1], "--help") == 0 ||
-                        std::strcmp(argv[1], "-h") == 0);
+bool takeFlag(int& argc, char** argv, const char* longName,
+              const char* shortName) {
+    bool found = false;
+    int out = 1;
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], longName) == 0 ||
+            (shortName && std::strcmp(argv[i], shortName) == 0)) {
+            found = true;
+            continue;
+        }
+        argv[out++] = argv[i];
+    }
+    argv[out] = nullptr;
+    argc = out;
+    return found;
 }
 
 void printHelp(const char* executable) {
     std::printf(
         "Omatrack telemetry workstation\n\n"
         "Usage:\n"
-        "  %s [telemetry-directory|telemetry-or-video-file]\n"
+        "  %s [options] [telemetry-directory|telemetry-or-video-file]\n"
         "  %s --help\n\n"
         "Options:\n"
-        "  -h, --help  Show this help and exit.\n\n"
+        "  -h, --help     Show this help and exit.\n"
+        "  -v, --verbose  Log file opens, cache hits and misses, writes,\n"
+        "                 video/cursor seeks, and AiM vs .telemetry channel\n"
+        "                 compare. Same as OMATRACK_VERBOSE=1.\n"
+        "                 On Arch/Omarchy also set QT_FORCE_STDERR_LOGGING=1\n"
+        "                 if you launch from a desktop entry.\n\n"
         "Headless inspection, CSV export, and corner analysis are currently "
         "provided by omatrack-cli:\n"
-        "  omatrack-cli parse <file>\n"
+        "  omatrack-cli parse <file>   (.pds .ld .vbo .mp4 .telemetry)\n"
         "  omatrack-cli unify <file> --output <csv>\n"
         "  omatrack-cli corners <file> [--reference <file>] "
-        "--zone <start:end>\n\n"
+        "--zone <start:end>\n"
+        "  omatrack-cli compare <aimd.mp4> <file.telemetry>\n\n"
         "Run omatrack-cli without arguments for its complete usage.\n",
         executable, executable);
 }
@@ -53,10 +72,15 @@ void printHelp(const char* executable) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (helpRequested(argc, argv)) {
+    const bool helpRequested = takeFlag(argc, argv, "--help", "-h");
+    const bool verbose = takeFlag(argc, argv, "--verbose", "-v") ||
+                         qEnvironmentVariableIntValue("OMATRACK_VERBOSE") != 0;
+    if (helpRequested) {
         printHelp(argc > 0 ? argv[0] : "omatrack");
         return 0;
     }
+    // Must precede QGuiApplication: Arch Qt logs qInfo to journald otherwise.
+    if (verbose) qputenv("QT_FORCE_STDERR_LOGGING", "1");
 #ifdef OMATRACK_ENABLE_AUTOTEST_HARNESS
     const bool autotest = !qgetenv("OMATRACK_AUTOTEST").isEmpty();
 #else
@@ -82,6 +106,7 @@ int main(int argc, char** argv) {
     QSurfaceFormat::setDefaultFormat(surfaceFormat);
     QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
     QGuiApplication app(argc, argv);
+    if (verbose) omatrack::setVerbose(true);
     std::setlocale(LC_NUMERIC, "C");
 #ifdef Q_OS_WIN
     omatrack::initializeWindowsIntegration(app);

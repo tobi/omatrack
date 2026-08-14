@@ -967,8 +967,19 @@ private slots:
         double out = 0;
         QVERIFY(!src.sampleAt(0, 0.0, &out));
         std::string error;
-        QVERIFY(!src.writeMotec("/tmp/unused.ld", &error));
+        QVERIFY(!src.writeTelemetry("/tmp/unused.telemetry", &error));
         QVERIFY(!error.empty());
+    }
+
+    void unifyLapTreatsUnitlessSpeedAsKmh() {
+        TelemetrySource src;
+        RawChannel speed;
+        speed.name = "Speed_Wspd_App";
+        speed.samples = {250.0, 250.0};
+        speed.frequencyHz = 2.0;
+        speed.durationSec = 1.0;
+        src.channels() = {speed};
+        QCOMPARE(src.unifyLap(0.0, 1.0).speed[25], 250.0);
     }
 
     void unifyLapConvertsMilesPerHour() {
@@ -1138,6 +1149,35 @@ private slots:
 class MotecExportTest : public QObject {
     Q_OBJECT
 private slots:
+    void missingTelemetryHasNoVideoClock() {
+        QVERIFY(!telemetryHasVideoClock(""));
+        QVERIFY(!telemetryHasVideoClock("/no/such/file.telemetry"));
+    }
+
+    void compareReportsChannelDelta() {
+        TelemetrySource left;
+        TelemetrySource right;
+        RawChannel speed;
+        speed.name = "Speed";
+        speed.unit = "km/h";
+        speed.samples = {100.0, 110.0};
+        speed.frequencyHz = 2.0;
+        speed.durationSec = 1.0;
+        RawChannel latitude;
+        latitude.name = "GPS Latitude";
+        latitude.samples = {43.8, 43.9};
+        latitude.frequencyHz = 2.0;
+        latitude.durationSec = 1.0;
+        left.channels() = {speed, latitude};
+        RawChannel shifted = speed;
+        shifted.samples = {100.0, 120.0};
+        right.channels() = {shifted, latitude};
+        const std::string report =
+            compareTelemetrySources(left, right, "aimd", "telemetry");
+        QVERIFY(report.find("gps_lat") != std::string::npos);
+        QVERIFY(report.find("d=10") != std::string::npos);
+    }
+
     void writesLdThatReopens() {
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
@@ -1158,16 +1198,16 @@ private slots:
         std::string error;
         const auto source = TelemetrySource::open(vbo.toStdString(), &error);
         QVERIFY2(source, error.c_str());
-        const QString ld = directory.filePath(QStringLiteral(".run.vbo.ld"));
-        QVERIFY2(source->writeMotec(ld.toStdString(), &error), error.c_str());
-        QVERIFY(QFileInfo::exists(ld));
-        QVERIFY(!QFileInfo::exists(
-            directory.filePath(QStringLiteral(".run.vbo.ldx"))));
+        const QString native =
+            directory.filePath(QStringLiteral(".run.vbo.telemetry"));
+        QVERIFY2(source->writeTelemetry(native.toStdString(), &error),
+                 error.c_str());
+        QVERIFY(QFileInfo::exists(native));
 
         error.clear();
-        const auto reopened = TelemetrySource::open(ld.toStdString(), &error);
+        const auto reopened =
+            TelemetrySource::open(native.toStdString(), &error);
         QVERIFY2(reopened, error.c_str());
-        QCOMPARE(reopened->formatName(), std::string("ld"));
         QVERIFY(!reopened->channels().empty());
     }
 

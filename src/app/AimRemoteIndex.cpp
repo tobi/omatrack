@@ -1,4 +1,5 @@
 #include "AimRemoteIndex.h"
+#include "VerboseLog.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -418,7 +419,13 @@ QString materializeAimExtract(const RemoteConnection& connection,
                               const IoCancel& cancel) {
     const QString outputPath = aimExtractPath(connection, etag);
     if (outputPath.isEmpty()) return QStringLiteral("Remote video has no ETag");
-    if (QFileInfo(outputPath).size() > 0) return {};
+    if (QFileInfo(outputPath).size() > 0) {
+        qCInfo(lcIo).noquote() << "cache hit extract" << displayPath(outputPath)
+                               << formatBytes(QFileInfo(outputPath).size());
+        return {};
+    }
+    qCInfo(lcIo).noquote() << "cache miss extract" << displayPath(outputPath)
+                           << "etag" << etag;
 
     const qint64 fileSize = cachedObjectSize(connection, stubPath);
     const QUrl objectUrl = objectUrlForPath(connection, stubPath);
@@ -505,6 +512,8 @@ QString materializeAimExtract(const RemoteConnection& connection,
     if (!output.open(QIODevice::WriteOnly) ||
         output.write(extract) != extract.size() || !output.commit())
         return QStringLiteral("Unable to write AiM extract cache");
+    qCInfo(lcIo).noquote() << "write extract" << displayPath(outputPath)
+                           << formatBytes(extract.size());
     return {};
 }
 

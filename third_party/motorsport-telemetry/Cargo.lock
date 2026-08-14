@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "aim-telemetry"
 version = "0.1.0"
-source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=b7059fce9a0107a8efea2623e62a256809c20b36#b7059fce9a0107a8efea2623e62a256809c20b36"
+source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=534f9fd48825938e20b69a577c27d1fd4a715a79#534f9fd48825938e20b69a577c27d1fd4a715a79"
 dependencies = [
  "memmap2",
  "motorsport-telemetry-core",
@@ -86,7 +86,7 @@ checksum = "7c74b8349d32d297c9134b8c88677813a227df8f779daa29bfc29c183fe3dca6"
 [[package]]
 name = "cosworth-telemetry"
 version = "0.1.0"
-source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=b7059fce9a0107a8efea2623e62a256809c20b36#b7059fce9a0107a8efea2623e62a256809c20b36"
+source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=534f9fd48825938e20b69a577c27d1fd4a715a79#534f9fd48825938e20b69a577c27d1fd4a715a79"
 dependencies = [
  "memmap2",
  "motorsport-telemetry-core",
@@ -120,6 +120,16 @@ name = "find-msvc-tools"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "26b73573e6edcd2af0cdf47bd6cb58f0b3839491263c314eaad1ccf24430e1de"
+
+[[package]]
+name = "flatbuffers"
+version = "25.12.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35f6839d7b3b98adde531effaf34f0c2badc6f4735d26fe74709d8e513a96ef3"
+dependencies = [
+ "bitflags",
+ "rustc_version",
+]
 
 [[package]]
 name = "getrandom"
@@ -197,7 +207,7 @@ dependencies = [
 [[package]]
 name = "motec-telemetry"
 version = "0.1.0"
-source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=b7059fce9a0107a8efea2623e62a256809c20b36#b7059fce9a0107a8efea2623e62a256809c20b36"
+source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=534f9fd48825938e20b69a577c27d1fd4a715a79#534f9fd48825938e20b69a577c27d1fd4a715a79"
 dependencies = [
  "memmap2",
  "motorsport-telemetry-core",
@@ -208,7 +218,7 @@ dependencies = [
 [[package]]
 name = "motorsport-telemetry-core"
 version = "0.1.0"
-source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=b7059fce9a0107a8efea2623e62a256809c20b36#b7059fce9a0107a8efea2623e62a256809c20b36"
+source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=534f9fd48825938e20b69a577c27d1fd4a715a79#534f9fd48825938e20b69a577c27d1fd4a715a79"
 
 [[package]]
 name = "omatrack-bridge"
@@ -220,6 +230,7 @@ dependencies = [
  "motec-telemetry",
  "motorsport-telemetry-core",
  "racelogic-telemetry",
+ "telemetry-format",
 ]
 
 [[package]]
@@ -271,11 +282,20 @@ checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
 [[package]]
 name = "racelogic-telemetry"
 version = "0.1.0"
-source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=b7059fce9a0107a8efea2623e62a256809c20b36#b7059fce9a0107a8efea2623e62a256809c20b36"
+source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=534f9fd48825938e20b69a577c27d1fd4a715a79#534f9fd48825938e20b69a577c27d1fd4a715a79"
 dependencies = [
  "memmap2",
  "motorsport-telemetry-core",
  "thiserror",
+]
+
+[[package]]
+name = "rustc_version"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92"
+dependencies = [
+ "semver",
 ]
 
 [[package]]
@@ -290,6 +310,12 @@ dependencies = [
  "linux-raw-sys",
  "windows-sys",
 ]
+
+[[package]]
+name = "semver"
+version = "1.0.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
 name = "serde"
@@ -369,6 +395,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "telemetry-format"
+version = "0.1.0"
+source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=534f9fd48825938e20b69a577c27d1fd4a715a79#534f9fd48825938e20b69a577c27d1fd4a715a79"
+dependencies = [
+ "blake3",
+ "flatbuffers",
+ "memmap2",
+ "motorsport-telemetry-core",
+ "thiserror",
 ]
 
 [[package]]

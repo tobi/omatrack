@@ -7,13 +7,23 @@ Item {
     id: overlay
 
     readonly property real aspectRatio: 0.21
-    property real dragStartX: 0
-    property real dragStartY: 0
-    property real pressX: 0
-    property real pressY: 0
+    property real dragOriginX: 0
+    property real dragOriginY: 0
+    property real mediaTime: 0
     readonly property real scaleFactor: 0.65
     readonly property real unscaledWidth: Math.min(overlay.parent.width - 16, 1000, Math.max(520, overlay.parent.width * 0.72))
     property bool userPositioned: false
+
+    function clampX(value) {
+        if (!overlay.parent)
+            return 0;
+        return Math.max(0, Math.min(overlay.parent.width - overlay.width, value));
+    }
+    function clampY(value) {
+        if (!overlay.parent)
+            return 0;
+        return Math.max(0, Math.min(overlay.parent.height - overlay.height, value));
+    }
 
     height: overlay.width * overlay.aspectRatio
     objectName: "videoTelemetryOverlay"
@@ -38,32 +48,29 @@ Item {
         brakeColor: Style.brakeTelemetryColor
         compareColor: Style.orangeColor
         foregroundColor: Style.foregroundColor
+        mediaTime: overlay.mediaTime
         monoFontFamily: Style.monoFontFamily
         mutedColor: Style.mutedTextColor
         steeringColor: Style.steeringTelemetryColor
         store: Store
         throttleColor: Style.throttleTelemetryColor
     }
-    MouseArea {
-        acceptedButtons: Qt.LeftButton
-        anchors.fill: parent
-        cursorShape: Qt.SizeAllCursor
-        preventStealing: true
+    DragHandler {
+        target: null
 
-        onPositionChanged: mouse => {
-            if (!pressed)
-                return;
-            const maxX = Math.max(0, overlay.parent.width - overlay.width);
-            const maxY = Math.max(0, overlay.parent.height - overlay.height);
-            overlay.x = Math.max(0, Math.min(maxX, overlay.dragStartX + mouse.x - overlay.pressX));
-            overlay.y = Math.max(0, Math.min(maxY, overlay.dragStartY + mouse.y - overlay.pressY));
+        onActiveChanged: {
+            if (active) {
+                overlay.userPositioned = true;
+                overlay.dragOriginX = overlay.x;
+                overlay.dragOriginY = overlay.y;
+            }
         }
-        onPressed: mouse => {
-            overlay.userPositioned = true;
-            overlay.dragStartX = overlay.x;
-            overlay.dragStartY = overlay.y;
-            overlay.pressX = mouse.x;
-            overlay.pressY = mouse.y;
+        onTranslationChanged: {
+            overlay.x = overlay.clampX(overlay.dragOriginX + translation.x);
+            overlay.y = overlay.clampY(overlay.dragOriginY + translation.y);
         }
+    }
+    HoverHandler {
+        cursorShape: Qt.SizeAllCursor
     }
 }

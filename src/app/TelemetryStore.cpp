@@ -3,13 +3,14 @@
 
 #include "ComparisonAlignment.h"
 #include "RecordingSidecar.h"
-#include "SessionMetadataCache.h"
+
 #include "TrackMetadata.h"
 #include "TrackAtlasSpatial.h"
 #include "core/CornerAnalysis.h"
 #include "core/TelemetryEngine.h"
 #include "YamlConfig.h"
 #include "RemoteCache.h"
+#include "VerboseLog.h"
 
 #include <QCoreApplication>
 #include <QClipboard>
@@ -64,18 +65,33 @@ QString legacyAppDataPath() {
                QStandardPaths::GenericDataLocation) +
            QStringLiteral("/racecraft/racecraft-qt");
 }
-QString telemetryPathForInput(const QString& path) {
-    if (QFileInfo(path).suffix().compare(QStringLiteral("ldx"),
-                                         Qt::CaseInsensitive) != 0)
-        return path;
-    QString stem = path;
+bool isTelemetryFilePath(const QString& path) {
+    return QFileInfo(path).suffix().compare(QStringLiteral("telemetry"),
+                                            Qt::CaseInsensitive) == 0;
+}
+
+bool isMotecLayoutPath(const QString& path) {
+    return QFileInfo(path).suffix().compare(QStringLiteral("ldx"),
+                                            Qt::CaseInsensitive) == 0;
+}
+
+/// Motec layout files are not recordings. A sibling `.ld` is ingest-only and
+/// is converted to `.telemetry` before anything analyses it.
+QString motecRecordingPath(const QString& ldxPath) {
+    QString stem = ldxPath;
     stem.chop(3);
     for (const QString& extension :
          {QStringLiteral("ld"), QStringLiteral("LD")}) {
-        const QString companion = stem + extension;
-        if (QFileInfo::exists(companion)) return companion;
+        const QString recording = stem + extension;
+        if (QFileInfo::exists(recording)) return recording;
     }
     return {};
+}
+
+/// Vendor file the Rust crates may open. Never a Motec `.ldx`.
+QString vendorSourcePath(const QString& path) {
+    if (isMotecLayoutPath(path)) return motecRecordingPath(path);
+    return path;
 }
 
 // One list, shared with the sync engine, which has to agree about what
@@ -516,6 +532,17 @@ SessionHandle::SessionHandle(const QString& path,
     applyCachedMetadata(cachedMetadata);
 }
 
+void SessionHandle::setVideoPresentationOffset(
+    std::optional<double> offsetSec) {
+    if (!offsetSec || !std::isfinite(*offsetSec)) return;
+    videoPresentationOffsetSec_ = offsetSec;
+    for (LapEntry& lap : laps_) {
+        if (lap.hasMediaAnchors() || !(lap.endTime > lap.startTime)) continue;
+        lap.videoStartTime = lap.startTime + *offsetSec;
+        lap.videoEndTime = lap.endTime + *offsetSec;
+    }
+}
+
 SessionHandle::~SessionHandle() = default;
 
 QString SessionHandle::stem() const {
@@ -604,6 +631,7 @@ bool SessionHandle::loadSummaryForIndex() {
     populateLaps(source->detectLaps());
     applyEventDriverId(source->detectDriverId());
     captureGpsLocation(*source);
+    setVideoPresentationOffset(source->videoPresentationOffsetSec());
     return true;
 }
 
@@ -632,6 +660,7 @@ bool SessionHandle::loadSummaryForOpen(QString* errorString) {
     populateLaps(source->detectLaps());
     applyEventDriverId(source->detectDriverId());
     captureGpsLocation(*source);
+    setVideoPresentationOffset(source->videoPresentationOffsetSec());
     return true;
 }
 
@@ -805,6 +834,10 @@ void SessionHandle::applyCachedMetadata(const QJsonObject& metadata) {
                 object.value(QStringLiteral("videoEndTime")).toDouble();
         laps_.append(lap);
     }
+    if (metadata.contains(QStringLiteral("videoPresentationOffset")))
+        setVideoPresentationOffset(
+            metadata.value(QStringLiteral("videoPresentationOffset"))
+                .toDouble());
     summaryLoaded_ = true;
 }
 
@@ -844,7 +877,7 @@ QJsonObject SessionHandle::metadataForCache() const {
     for (auto it = automaticChannelMappings_.cbegin();
          it != automaticChannelMappings_.cend(); ++it)
         automaticMappings.insert(it.key(), it.value());
-    return QJsonObject{
+    QJsonObject cached{
         {QStringLiteral("version"), 10},
         {QStringLiteral("time"), time_},
         {QStringLiteral("driverId"), driverId_},
@@ -862,6 +895,10 @@ QJsonObject SessionHandle::metadataForCache() const {
         {QStringLiteral("automaticChannelMappings"), automaticMappings},
         {QStringLiteral("laps"), laps},
     };
+    if (videoPresentationOffsetSec_)
+        cached.insert(QStringLiteral("videoPresentationOffset"),
+                      *videoPresentationOffsetSec_);
+    return cached;
 }
 
 double SessionHandle::bestLapMs() {
@@ -937,7 +974,9 @@ void SessionHandle::adoptLoadedLap(int lapId,
                        forceDriverId);
     if (!hasGpsLocation()) captureGpsLocation(*source);
     captureSourceChannels(*source);
-    videoPresentationOffsetSec_ = source->videoPresentationOffsetSec();
+    if (const auto offset = source->videoPresentationOffsetSec())
+        setVideoPresentationOffset(offset);
+    captureVideoHud(*source);
     unifiedCache_.insert(lapId, std::move(unified));
     // source (decoded raw channel arrays, ~300 MB per session) is freed when
     // it goes out of scope here. The UnifiedLap is what rendering and analysis
@@ -1396,47 +1435,26 @@ bool isRemoteConnection(const RemoteConnection& connection) {
            !cacheDirectory(connection).isEmpty();
 }
 
-QString publishRecordingCompanions(const RemoteConnection& connection,
-                                   const QString& videoPath,
-                                   const QString& telemetryPath, bool supported,
-                                   const QJsonObject& session,
-                                   const IoCancel& cancel = {}) {
+void logAimdVsTelemetry(const QString& aimdPath, const QString& telemetryPath);
+
+QString publishTelemetryCompanion(const RemoteConnection& connection,
+                                  const QString& videoPath,
+                                  const IoCancel& cancel = {}) {
     const QString cachePath = cacheDirectory(connection);
     if (cachePath.isEmpty())
         return QStringLiteral("This file is not on a server.");
     const QString relative = QDir(cachePath).relativeFilePath(videoPath);
     if (relative.isEmpty() || relative.startsWith(QStringLiteral("..")))
         return QStringLiteral("Recording is outside this cache");
-
-    if (supported && !telemetryPath.isEmpty() &&
-        QFileInfo(telemetryPath).isFile() && !isStreamStub(telemetryPath)) {
-        QFile file(telemetryPath);
-        if (file.open(QIODevice::ReadOnly)) {
-            const QString error =
-                putObject(connection, recordingTelemetryRelativePath(relative),
-                          file.readAll(), cancel);
-            if (!error.isEmpty()) return error;
-        }
-    }
-
-    QJsonObject body{
-        {QStringLiteral("schema"), QStringLiteral("omatrack.recording/1")},
-        {QStringLiteral("source"),
-         QJsonObject{{QStringLiteral("etag"),
-                      cachedObjectEtag(connection, videoPath)}}},
-        {QStringLiteral("video"),
-         QJsonObject{
-             {QStringLiteral("path"), QFileInfo(videoPath).fileName()}}},
-        {QStringLiteral("supported"), supported},
-    };
-    if (supported && !telemetryPath.isEmpty() &&
-        QFileInfo(telemetryPath).fileName().startsWith(QLatin1Char('.')))
-        body.insert(QStringLiteral("telemetry"),
-                    QJsonObject{{QStringLiteral("path"),
-                                 QFileInfo(telemetryPath).fileName()}});
-    if (!session.isEmpty()) body.insert(QStringLiteral("session"), session);
-    return putObject(connection, recordingSidecarRelativePath(relative),
-                     QJsonDocument(body).toJson(QJsonDocument::Compact),
+    const QString local = recordingTelemetryPath(videoPath);
+    QFile file(local);
+    if (!file.open(QIODevice::ReadOnly))
+        return QStringLiteral("Native companion is missing");
+    const QByteArray body = file.readAll();
+    qCInfo(lcIo).noquote() << "write publish"
+                           << recordingTelemetryRelativePath(relative)
+                           << omatrack::formatBytes(body.size());
+    return putObject(connection, recordingTelemetryRelativePath(relative), body,
                      cancel);
 }
 
@@ -1445,8 +1463,12 @@ bool materializeStubSession(const RemoteConnection& connection,
                             QString* error) {
     if (!handle) return false;
     const QString etag = cachedObjectEtag(connection, path);
+    qCInfo(lcIo).noquote() << "open stub" << omatrack::displayPath(path)
+                           << "etag" << etag;
     const QString extractError = materializeAimExtract(connection, path, etag);
     if (!extractError.isEmpty()) {
+        qCInfo(lcIo).noquote()
+            << "extract failed" << omatrack::displayPath(path) << extractError;
         if (error) *error = extractError;
         return false;
     }
@@ -1455,97 +1477,151 @@ bool materializeStubSession(const RemoteConnection& connection,
         if (error) *error = QStringLiteral("Unable to materialize AiM extract");
         return false;
     }
+    qCInfo(lcIo).noquote() << "extract ready" << omatrack::displayPath(extract);
     handle->setTelemetryPath(extract);
     if (!handle->hasSummary() && !handle->loadSummaryForOpen(error))
         return false;
     const QString companion = recordingTelemetryPath(path);
-    std::string motecError;
+    std::string convertError;
     const auto source =
-        TelemetrySource::open(extract.toStdString(), &motecError);
-    if (source && source->writeMotec(companion.toStdString(), &motecError))
-        handle->setTelemetryPath(companion);
-    publishRecordingCompanions(connection, path, handle->telemetryPath(), true,
-                               handle->metadataForCache());
+        TelemetrySource::open(extract.toStdString(), &convertError);
+    if (!source) {
+        if (error) *error = QString::fromStdString(convertError);
+        return false;
+    }
+    handle->setVideoPresentationOffset(source->videoPresentationOffsetSec());
+    if (!source->writeTelemetry(companion.toStdString(), &convertError)) {
+        if (error) *error = QString::fromStdString(convertError);
+        return false;
+    }
+    handle->setTelemetryPath(companion);
+    qCInfo(lcIo).noquote() << "write telemetry"
+                           << omatrack::displayPath(companion)
+                           << omatrack::formatBytes(QFileInfo(companion).size())
+                           << "offset"
+                           << handle->videoPresentationOffsetSec().value_or(0.0)
+                           << "s";
+    logAimdVsTelemetry(extract, companion);
+    publishTelemetryCompanion(connection, path);
     return true;
 }
 
-IndexedSession indexSession(const QString& path, SessionMetadataCache& cache,
+void logAimdVsTelemetry(const QString& aimdPath, const QString& telemetryPath) {
+    if (!isVerbose()) return;
+    if (aimdPath.isEmpty() || telemetryPath.isEmpty()) return;
+    if (!QFileInfo(aimdPath).isFile() || QFileInfo(aimdPath).size() == 0)
+        return;
+    if (!QFileInfo(telemetryPath).isFile() ||
+        QFileInfo(telemetryPath).size() == 0)
+        return;
+    if (QFileInfo(aimdPath).canonicalFilePath() ==
+        QFileInfo(telemetryPath).canonicalFilePath())
+        return;
+    std::string error;
+    const auto aimd = TelemetrySource::open(aimdPath.toStdString(), &error);
+    if (!aimd) {
+        qCInfo(lcIo).noquote() << "compare skip aimd" << displayPath(aimdPath)
+                               << QString::fromStdString(error);
+        return;
+    }
+    error.clear();
+    const auto telemetry =
+        TelemetrySource::open(telemetryPath.toStdString(), &error);
+    if (!telemetry) {
+        qCInfo(lcIo).noquote()
+            << "compare skip telemetry" << displayPath(telemetryPath)
+            << QString::fromStdString(error);
+        return;
+    }
+    const std::string report =
+        compareTelemetrySources(*aimd, *telemetry, "aimd", "telemetry");
+    for (const QString& line : QString::fromStdString(report).split('\n')) {
+        if (!line.isEmpty()) qCInfo(lcIo).noquote() << line;
+    }
+}
+
+bool ensureNativeCompanion(const QString& sourcePath, QString* nativePath,
+                           QString* error) {
+    const QString vendor = vendorSourcePath(sourcePath);
+    if (vendor.isEmpty()) {
+        if (error)
+            *error = QStringLiteral(
+                "This Motec layout file has no recording beside it.");
+        return false;
+    }
+    const QString dest = nativeCompanionPath(vendor);
+    if (nativePath) *nativePath = dest;
+    if (isTelemetryFilePath(vendor)) return QFileInfo(vendor).isFile();
+    if (isStreamStub(vendor)) return false;
+    if (QFileInfo(dest).isFile() && QFileInfo(dest).size() > 0) {
+        if (!isVideoPath(vendor) || telemetryHasVideoClock(dest.toStdString()))
+            return true;
+        qCInfo(lcIo).noquote() << "rewrite telemetry" << displayPath(dest)
+                               << "missing video clock";
+    }
+    std::string convertError;
+    const auto source =
+        TelemetrySource::open(vendor.toStdString(), &convertError);
+    if (!source) {
+        if (error) *error = QString::fromStdString(convertError);
+        return false;
+    }
+    if (!source->writeTelemetry(dest.toStdString(), &convertError)) {
+        if (error) *error = QString::fromStdString(convertError);
+        return false;
+    }
+    qCInfo(lcIo).noquote() << "write telemetry" << displayPath(dest)
+                           << formatBytes(QFileInfo(dest).size());
+    if (isVideoPath(vendor)) logAimdVsTelemetry(vendor, dest);
+    return true;
+}
+
+IndexedSession indexSession(const QString& path,
                             const RemoteConnection* connection = nullptr,
-                            int* cacheHits = nullptr,
-                            int* cacheMisses = nullptr,
                             const IoCancel& cancel = {}) {
     Q_UNUSED(cancel);
     const QString cacheRoot =
         connection ? cacheDirectory(*connection) : QString();
-    QString parserPath = telemetryPathForInput(path);
+    QString parserPath = vendorSourcePath(path);
     if (parserPath.isEmpty()) parserPath = path;
 
     if (isVideoPath(path)) {
         const auto sidecar = readRecordingSidecar(path, cacheRoot);
         if (sidecar) {
-            if (!sidecar->supported) {
-                if (cacheHits) ++*cacheHits;
-                IndexedSession result;
-                result.unsupportedVideo = true;
-                return result;
-            }
-            if (!sidecar->telemetryPath.isEmpty())
-                parserPath = sidecar->telemetryPath;
-            else
-                parserPath = telemetryOpenPath(connection, path);
-
-            if (!sidecar->session.isEmpty()) {
-                auto handle = std::make_unique<SessionHandle>(
-                    path, sidecar->session, parserPath);
-                if (handle->hasSummary()) {
-                    if (cacheHits) ++*cacheHits;
-                    IndexedSession result;
-                    result.handle = std::move(handle);
-                    return result;
-                }
-            }
+            parserPath = sidecar->telemetryPath;
+            qCInfo(lcIo).noquote() << "sidecar" << displayPath(path) << "parser"
+                                   << displayPath(parserPath);
             if (isStreamStub(parserPath) || !QFileInfo(parserPath).isFile()) {
                 IndexedSession result;
                 result.unsupportedVideo = true;
                 return result;
             }
         } else if (isStreamStub(path)) {
-            // A zero-byte stand-in has no embedded telemetry. Opening the
-            // recording materializes an extract and publishes companions;
-            // the scan must not do that for every video in the library.
             IndexedSession result;
             result.unsupportedVideo = true;
             return result;
+        } else {
+            QString native;
+            if (!ensureNativeCompanion(parserPath, &native, nullptr) ||
+                !isTelemetryFilePath(native)) {
+                IndexedSession result;
+                result.unsupportedVideo = true;
+                return result;
+            }
+            parserPath = native;
         }
+    } else {
+        QString native;
+        if (!ensureNativeCompanion(parserPath, &native, nullptr) ||
+            !isTelemetryFilePath(native))
+            return {};
+        parserPath = native;
     }
 
-    const QString fingerprint = SessionMetadataCache::fingerprint(parserPath);
-    const SessionMetadataCache::Lookup cached = cache.lookup(fingerprint);
-    if (cached.found && !cached.supported) {
-        if (cacheHits) ++*cacheHits;
-        IndexedSession result;
-        result.unsupportedVideo = isVideoPath(path);
-        return result;
-    }
-    if (cached.found) {
-        auto handle =
-            std::make_unique<SessionHandle>(path, cached.metadata, parserPath);
-        if (handle->hasSummary()) {
-            if (cacheHits) ++*cacheHits;
-            IndexedSession result;
-            result.handle = std::move(handle);
-            return result;
-        }
-    }
-
-    if (cacheMisses) ++*cacheMisses;
     auto handle =
         std::make_unique<SessionHandle>(path, QJsonObject{}, parserPath);
-    const bool supported = handle->loadSummaryForIndex();
-    cache.store(fingerprint, parserPath, supported,
-                supported ? handle->metadataForCache() : QJsonObject{});
     IndexedSession result;
-    if (!supported) {
+    if (!handle->loadSummaryForIndex()) {
         result.unsupportedVideo = isVideoPath(path);
         return result;
     }
@@ -1932,17 +2008,18 @@ QString resolveLocationDirectory(const LibraryLocation& location,
 
 std::shared_ptr<SessionScanResult> scanLibraryLocations(
     const QVector<LibraryLocation>& locations, const QSet<QString>& extraPaths,
-    const QString& sessionIndexPath, const QSet<QString>& openPaths,
-    qint64 cacheLimitBytes, const IoCancel& cancel = {}) {
+    const QSet<QString>& openPaths, qint64 cacheLimitBytes,
+    const IoCancel& cancel = {}) {
     QElapsedTimer timer;
     timer.start();
     auto result = std::make_shared<SessionScanResult>();
     QSet<QString> uniquePaths = extraPaths;
     QSet<QString> metadataPaths;
     const QStringList filters{
-        "*.pds", "*.PDS", "*.ld",  "*.LD",  "*.ldx",  "*.LDX",  "*.vbo",
-        "*.VBO", "*.mp4", "*.MP4", "*.mov", "*.MOV",  "*.mkv",  "*.MKV",
-        "*.avi", "*.AVI", "*.m4v", "*.M4V", "*.webm", "*.WEBM", "TRACK.yml"};
+        "*.pds",       "*.PDS",  "*.ld",     "*.LD",  "*.vbo", "*.telemetry",
+        "*.TELEMETRY", "*.VBO",  "*.mp4",    "*.MP4", "*.mov", "*.MOV",
+        "*.mkv",       "*.MKV",  "*.avi",    "*.AVI", "*.m4v", "*.M4V",
+        "*.webm",      "*.WEBM", "TRACK.yml"};
 
     // Every connection syncs before anything is enumerated, so the budget is
     // applied once against the finished cache and the file list that follows
@@ -1955,9 +2032,12 @@ std::shared_ptr<SessionScanResult> scanLibraryLocations(
         directories.append(resolveLocationDirectory(location, &status, cancel));
         result->locationStatuses.insert(location.id, status);
     }
+    drainNetworkIo();
+    if (ioCancelled(cancel)) {
+        result->elapsedMs = timer.elapsed();
+        return result;
+    }
     enforceCacheBudget(cacheLimitBytes, openPaths);
-
-    SessionMetadataCache indexCache(sessionIndexPath);
 
     for (int index = 0; index < locations.size(); ++index) {
         const LibraryLocation& location = locations[index];
@@ -1986,8 +2066,9 @@ std::shared_ptr<SessionScanResult> scanLibraryLocations(
                     QFileInfo(it.filePath()).absoluteFilePath());
                 continue;
             }
-            const QString path = telemetryPathForInput(it.filePath());
+            const QString path = vendorSourcePath(it.filePath());
             if (path.isEmpty()) continue;
+            if (isSidecarPath(QDir(directory).relativeFilePath(path))) continue;
             const QFileInfo resolved(path);
             const QString canonical = resolved.canonicalFilePath().isEmpty()
                                           ? resolved.absoluteFilePath()
@@ -2001,9 +2082,6 @@ std::shared_ptr<SessionScanResult> scanLibraryLocations(
                     if (!linked.isEmpty()) linkedTelemetry.insert(linked);
                 }
             }
-            if (location.isConnection())
-                indexSession(canonical, indexCache, &remote, nullptr, nullptr,
-                             cancel);
             sourcePaths.insert(canonical);
             uniquePaths.insert(canonical);
         }
@@ -2024,7 +2102,6 @@ std::shared_ptr<SessionScanResult> scanLibraryLocations(
             source.insert(QStringLiteral("name"), location.name.trimmed());
         result->fileSources.append(source);
     }
-    indexCache.save();
     result->trackMetadataPaths =
         QStringList(metadataPaths.cbegin(), metadataPaths.cend());
     std::sort(result->trackMetadataPaths.begin(),
@@ -2051,57 +2128,48 @@ std::shared_ptr<SessionScanResult> scanLibraryLocations(
     return result;
 }
 std::shared_ptr<SidebarMetadataResult> loadSidebarMetadata(
-    const QString& path, const QString& cachePath,
-    const RemoteConnection& connection) {
+    const QString& path, const RemoteConnection& connection) {
     auto result = std::make_shared<SidebarMetadataResult>();
     result->path = path;
     result->metadata =
         omatrack::track_metadata::readHierarchy(QFileInfo(path).absolutePath());
-    SessionMetadataCache cache(cachePath);
-    IndexedSession indexed = indexSession(
-        path, cache, connection.id.isEmpty() ? nullptr : &connection);
-    cache.save();
+    IndexedSession indexed =
+        indexSession(path, connection.id.isEmpty() ? nullptr : &connection);
     result->handle = std::move(indexed.handle);
     result->unsupportedVideo = indexed.unsupportedVideo;
     return result;
 }
 
 std::shared_ptr<FileOpenResult> openIndexedFile(
-    const QString& path, const QString& cachePath, const QVariantMap& metadata,
-    bool expectTelemetry, const RemoteConnection& connection) {
+    const QString& path, const QVariantMap& metadata, bool expectTelemetry,
+    const RemoteConnection& connection) {
     auto result = std::make_shared<FileOpenResult>();
     result->path = path;
-    SessionMetadataCache cache(cachePath);
     const RemoteConnection* remote =
         isRemoteConnection(connection) ? &connection : nullptr;
-    IndexedSession indexed = indexSession(path, cache, remote);
+    IndexedSession indexed = indexSession(path, remote);
 
-    const auto telemetryMissing = [](const SessionHandle* handle) {
-        if (!handle) return true;
-        const QString telemetry = handle->telemetryPath();
-        return telemetry.isEmpty() || isStreamStub(telemetry) ||
-               !QFileInfo(telemetry).isFile();
-    };
+    const QString companion = nativeCompanionPath(path);
+    const bool companionMissing =
+        remote && isStreamStub(path) && !QFileInfo(companion).isFile();
+    const bool companionStale =
+        remote && isStreamStub(path) && QFileInfo(companion).isFile() &&
+        !telemetryHasVideoClock(companion.toStdString());
 
-    if (remote && isStreamStub(path) &&
-        (!indexed.handle || telemetryMissing(indexed.handle.get()))) {
+    if (companionMissing || companionStale) {
         if (!indexed.handle)
             indexed.handle = std::make_unique<SessionHandle>(path);
         if (materializeStubSession(connection, indexed.handle.get(), path,
                                    &result->error)) {
             indexed.unsupportedVideo = false;
-            cache.store(SessionMetadataCache::fingerprint(
-                            indexed.handle->telemetryPath()),
-                        indexed.handle->telemetryPath(), true,
-                        indexed.handle->metadataForCache());
         } else if (result->error ==
                    QStringLiteral("MP4 has no AiM aimd track")) {
-            publishRecordingCompanions(connection, path, {}, false, {});
+            writeUnsupportedTelemetry(nativeCompanionPath(path).toStdString());
+            publishTelemetryCompanion(connection, path);
             indexed.handle.reset();
             indexed.unsupportedVideo = true;
             result->error.clear();
-        } else if (telemetryMissing(indexed.handle.get())) {
-            cache.save();
+        } else {
             return result;
         }
     }
@@ -2109,33 +2177,19 @@ std::shared_ptr<FileOpenResult> openIndexedFile(
     if (!indexed.handle && expectTelemetry && isVideoPath(path) &&
         !isStreamStub(path)) {
         auto handle = std::make_unique<SessionHandle>(path);
-        if (!handle->loadSummaryForOpen(&result->error)) {
-            cache.save();
-            return result;
-        }
-        const QString fingerprint = SessionMetadataCache::fingerprint(path);
-        cache.store(fingerprint, path, true, handle->metadataForCache());
+        if (!handle->loadSummaryForOpen(&result->error)) return result;
         indexed.handle = std::move(handle);
         indexed.unsupportedVideo = false;
     }
     if (!indexed.handle) {
-        cache.save();
         result->standaloneVideo = indexed.unsupportedVideo || isVideoPath(path);
         return result;
     }
     const LapEntry* lap = bestLap(*indexed.handle);
     if (!lap && indexed.handle->isVideo()) {
-        if (!indexed.handle->loadSummaryForOpen(&result->error)) {
-            cache.save();
-            return result;
-        }
-        const QString fingerprint =
-            SessionMetadataCache::fingerprint(indexed.handle->telemetryPath());
-        cache.store(fingerprint, indexed.handle->telemetryPath(), true,
-                    indexed.handle->metadataForCache());
+        if (!indexed.handle->loadSummaryForOpen(&result->error)) return result;
         lap = bestLap(*indexed.handle);
     }
-    cache.save();
     if (!lap) {
         result->error =
             indexed.handle->isVideo()
@@ -2146,6 +2200,27 @@ std::shared_ptr<FileOpenResult> openIndexedFile(
                       "No usable laps were found in this telemetry file");
         return result;
     }
+    QString native;
+    if (ensureNativeCompanion(indexed.handle->telemetryPath(), &native,
+                              &result->error))
+        indexed.handle->setTelemetryPath(native);
+    const QString parser = indexed.handle->telemetryPath();
+    if (!isTelemetryFilePath(parser)) {
+        if (result->error.isEmpty())
+            result->error = QStringLiteral(
+                "Analysis requires a native .telemetry recording");
+        return result;
+    }
+    if (isVideoPath(path)) {
+        const QString aimd = remote ? telemetryOpenPath(remote, path) : path;
+        if (!aimd.isEmpty() && !isStreamStub(aimd) &&
+            QFileInfo(aimd).suffix().compare(QStringLiteral("mp4"),
+                                             Qt::CaseInsensitive) == 0)
+            logAimdVsTelemetry(aimd, parser);
+    }
+    qCInfo(lcIo).noquote() << "open" << displayPath(path) << "parser"
+                           << displayPath(parser) << "lap" << lap->lapId
+                           << lap->timeText;
     result->lap = loadSessionLap(indexed.handle->telemetryPath(),
                                  indexed.handle->sessionKey(), *lap, metadata);
     if (!result->lap->error.isEmpty()) result->error = result->lap->error;
@@ -2773,11 +2848,16 @@ void TelemetryStore::loadTrackAtlasCache() {
         cache.setFileName(legacyAppDataPath() +
                           QStringLiteral("/track-atlas/tracks.jsonl"));
         if (!cache.open(QIODevice::ReadOnly)) {
+            qCInfo(lcIo).noquote() << "track-atlas cache miss none";
             trackAtlasStatus_ = QStringLiteral("No track-atlas cache");
             return;
         }
     }
-    if (!parseTrackAtlas(cache.readAll()))
+    const QByteArray payload = cache.readAll();
+    qCInfo(lcIo).noquote() << "track-atlas cache hit"
+                           << omatrack::displayPath(cache.fileName())
+                           << omatrack::formatBytes(payload.size());
+    if (!parseTrackAtlas(payload))
         trackAtlasStatus_ = QStringLiteral("Invalid track-atlas cache");
 }
 
@@ -2788,7 +2868,12 @@ void TelemetryStore::updateTrackAtlas(bool force) {
     if (!force && cache.exists()) {
         const qint64 ageSeconds =
             cache.lastModified().secsTo(QDateTime::currentDateTimeUtc());
-        if (ageSeconds >= 0 && ageSeconds < kTrackAtlasMaxAgeSeconds) return;
+        if (ageSeconds >= 0 && ageSeconds < kTrackAtlasMaxAgeSeconds) {
+            qCInfo(lcIo).noquote()
+                << "track-atlas skip fetch age" << ageSeconds << "s"
+                << omatrack::displayPath(cache.absoluteFilePath());
+            return;
+        }
     }
 
     if (atlasCancel_) atlasCancel_->store(true);
@@ -2830,22 +2915,27 @@ void TelemetryStore::updateTrackAtlas(bool force) {
                 return request;
             },
             {}, cancel);
-        if (ioCancelled(cancel) || response.status != 200) return QByteArray();
+        if (ioCancelled(cancel) || response.status != 200) {
+            qCInfo(lcIo).noquote() << "track-atlas fetch failed status"
+                                   << response.status << response.error;
+            return QByteArray();
+        }
         QSaveFile output(cachePath);
         if (output.open(QIODevice::WriteOnly) &&
-            output.write(response.body) == qsizetype(response.body.size()))
-            output.commit();
+            output.write(response.body) == qsizetype(response.body.size()) &&
+            output.commit()) {
+            qCInfo(lcIo).noquote()
+                << "write track-atlas" << omatrack::displayPath(cachePath)
+                << omatrack::formatBytes(response.body.size());
+        } else {
+            qCInfo(lcIo).noquote() << "write track-atlas failed"
+                                   << omatrack::displayPath(cachePath);
+        }
         return response.body;
     }));
 }
 
 // ── scanning / grouping ─────────────────────────────────────────────
-
-QString TelemetryStore::sessionIndexCachePath() const {
-    return QStandardPaths::writableLocation(
-               QStandardPaths::GenericCacheLocation) +
-           QStringLiteral("/omatrack/session-index.json");
-}
 
 void TelemetryStore::scan() {
     closedTracks_.clear();
@@ -2865,7 +2955,6 @@ void TelemetryStore::startSessionScan() {
     scanCancel_ = std::make_shared<std::atomic<bool>>(false);
     const QVector<LibraryLocation> locations = locations_;
     const QSet<QString> extraPaths = transientSessionPaths_;
-    const QString cachePath = sessionIndexCachePath();
     // Evicting what is on screen would leave the reader holding a file that
     // no longer exists, so the current selection is named as off limits.
     QSet<QString> openPaths;
@@ -2873,10 +2962,10 @@ void TelemetryStore::startSessionScan() {
         if (session) openPaths.insert(session->path());
     const qint64 limit = cacheLimitBytes_;
     const IoCancel cancel = scanCancel_;
-    scanWatcher_->setFuture(QtConcurrent::run(
-        [locations, extraPaths, cachePath, openPaths, limit, cancel]() {
-            return scanLibraryLocations(locations, extraPaths, cachePath,
-                                        openPaths, limit, cancel);
+    scanWatcher_->setFuture(
+        QtConcurrent::run([locations, extraPaths, openPaths, limit, cancel]() {
+            return scanLibraryLocations(locations, extraPaths, openPaths, limit,
+                                        cancel);
         }));
 }
 
@@ -2930,6 +3019,7 @@ void TelemetryStore::removeSessionDirectory(const QString& dirPath) {
 }
 
 void TelemetryStore::openFile(const QString& filePath) {
+    qCInfo(lcIo).noquote() << "open request" << omatrack::displayPath(filePath);
     queueFileOpen(filePath, FileOpenRole::Automatic);
 }
 
@@ -2946,11 +3036,11 @@ void TelemetryStore::queueFileOpen(const QString& filePath, FileOpenRole role,
             QStringLiteral("The file no longer exists:\n%1").arg(filePath));
         return;
     }
-    const QString resolvedPath = telemetryPathForInput(filePath);
+    const QString resolvedPath = vendorSourcePath(filePath);
     if (resolvedPath.isEmpty()) {
         emit operationError(
-            QStringLiteral("Missing telemetry companion"),
-            QStringLiteral("%1 needs a matching .ld file in the same folder.")
+            QStringLiteral("Unable to open file"),
+            QStringLiteral("%1 has no Motec recording beside it.")
                 .arg(QFileInfo(filePath).fileName()));
         return;
     }
@@ -2998,7 +3088,6 @@ void TelemetryStore::startNextFileOpen() {
     const PendingFileOpen request = pendingFileOpens_.takeFirst();
     const QString path = request.path;
     markRecentlyUsed(path);
-    const QString cachePath = sessionIndexCachePath();
     const QVariantMap metadata =
         recordingMetadataForPath(path, recordingMetadata_);
     auto* watcher = new QFutureWatcher<std::shared_ptr<FileOpenResult>>(this);
@@ -3106,10 +3195,9 @@ void TelemetryStore::startNextFileOpen() {
     const LibraryLocation* location = connectionHolding(path);
     const RemoteConnection remote =
         location ? connectionFor(*location) : RemoteConnection{};
-    watcher->setFuture(QtConcurrent::run(
-        [path, cachePath, metadata, expectTelemetry, remote]() {
-            return openIndexedFile(path, cachePath, metadata, expectTelemetry,
-                                   remote);
+    watcher->setFuture(
+        QtConcurrent::run([path, metadata, expectTelemetry, remote]() {
+            return openIndexedFile(path, metadata, expectTelemetry, remote);
         }));
 }
 
@@ -3600,7 +3688,6 @@ void TelemetryStore::startNextSidebarMetadataLoad() {
 
         sidebarMetadataLoadingPath_ = path;
         const quint64 generation = sidebarMetadataGeneration_;
-        const QString cachePath = sessionIndexCachePath();
         auto* watcher =
             new QFutureWatcher<std::shared_ptr<SidebarMetadataResult>>(this);
         connect(
@@ -3624,9 +3711,8 @@ void TelemetryStore::startNextSidebarMetadataLoad() {
         const RemoteConnection remote =
             location ? connectionFor(*location) : RemoteConnection{};
         watcher->setFuture(QtConcurrent::run(
-            &sidebarMetadataPool_, [path, cachePath, remote]() {
-                return loadSidebarMetadata(path, cachePath, remote);
-            }));
+            &sidebarMetadataPool_,
+            [path, remote]() { return loadSidebarMetadata(path, remote); }));
         return;
     }
 }
@@ -5111,6 +5197,10 @@ void TelemetryStore::requestLapLoad(SessionHandle* session, int lapId,
     pauseSidebarMetadataQueue();
     const std::shared_ptr<const UnifiedLap> cached = session->unifiedLap(lapId);
     if (cached) {
+        qCInfo(lcIo).noquote()
+            << "unify cache hit" << omatrack::displayPath(session->path())
+            << "parser" << omatrack::displayPath(session->telemetryPath())
+            << "lap" << lapId;
         if (session->isVideo()) rememberRecentFile(session->path());
         if (compare) {
             ++compareLoadGeneration_;
@@ -5200,10 +5290,49 @@ void TelemetryStore::requestLapLoad(SessionHandle* session, int lapId,
             }
             resumeSidebarMetadataQueue();
         });
+    qCInfo(lcIo).noquote() << "unify parse" << omatrack::displayPath(path)
+                           << "parser" << omatrack::displayPath(parserPath)
+                           << "lap" << lapId;
     watcher->setFuture(
         QtConcurrent::run([parserPath, sessionKey, lap, metadata]() {
             return loadSessionLap(parserPath, sessionKey, lap, metadata);
         }));
+}
+
+static void logSelectedLap(const char* role, const SessionHandle* session,
+                           int lapId) {
+    if (!session) {
+        qCInfo(lcIo).noquote() << role << "cleared";
+        return;
+    }
+    QString lapText = QStringLiteral("L%1").arg(lapId);
+    for (const LapEntry& lap : session->laps()) {
+        if (lap.lapId != lapId) continue;
+        lapText = QStringLiteral("L%1 %2").arg(lap.lapId).arg(lap.timeText);
+        if (lap.hasMediaAnchors())
+            lapText += QStringLiteral(" media=%1–%2s")
+                           .arg(lap.videoStartTime, 0, 'f', 3)
+                           .arg(lap.videoEndTime, 0, 'f', 3);
+        break;
+    }
+    const auto unified = session->unifiedLap(lapId);
+    QString details;
+    if (unified) {
+        details = QStringLiteral("samples=%1").arg(unified->size());
+        if (!unified->distance.empty())
+            details += QStringLiteral(" distance=%1–%2m")
+                           .arg(unified->distance.front(), 0, 'f', 0)
+                           .arg(unified->distance.back(), 0, 'f', 0);
+        details += QStringLiteral(" gear=%1 gps=%2")
+                       .arg(unified->gear.empty() ? "no" : "yes")
+                       .arg(unified->gpsLat.empty() ? "no" : "yes");
+    }
+    if (const auto offset = session->videoPresentationOffsetSec())
+        details += QStringLiteral(" video-offset=%1s").arg(*offset, 0, 'f', 6);
+    qCInfo(lcIo).noquote() << role << "library"
+                           << omatrack::displayPath(session->path()) << "parser"
+                           << omatrack::displayPath(session->telemetryPath())
+                           << lapText << details;
 }
 
 void TelemetryStore::setPrimary(SessionHandle* session, int lapId) {
@@ -5227,6 +5356,7 @@ void TelemetryStore::setPrimary(SessionHandle* session, int lapId) {
     emit selectionChanged();
     emit cornersChanged();
     emit videoTimeChanged();
+    logSelectedLap("select primary", session, lapId);
 }
 
 void TelemetryStore::setCompare(SessionHandle* session, int lapId) {
@@ -5245,6 +5375,74 @@ void TelemetryStore::setCompare(SessionHandle* session, int lapId) {
     rebuildComparisonAlignment();
     if (sessionChanged) setReferenceAlignment(0.0);
     emit selectionChanged();
+    logSelectedLap("select compare", session, lapId);
+}
+
+int TelemetryStore::nextPrimaryLapId() const {
+    if (!primarySession_ || primaryLap_ < 0) return -1;
+    const QVector<LapEntry>& laps = primarySession_->laps();
+    int index = -1;
+    for (int i = 0; i < laps.size(); ++i) {
+        if (laps[i].lapId == primaryLap_) {
+            index = i;
+            break;
+        }
+    }
+    if (index < 0) return -1;
+    for (int i = index + 1; i < laps.size(); ++i) {
+        if (laps[i].endTime > laps[i].startTime) return laps[i].lapId;
+    }
+    return -1;
+}
+
+QString TelemetryStore::lapLabel(const QString& sessionKey, int lapId) const {
+    SessionHandle* session = findSession(sessionKey);
+    if (!session) return {};
+    for (const LapEntry& lap : session->laps()) {
+        if (lap.lapId == lapId) return lap.label;
+    }
+    return {};
+}
+
+void TelemetryStore::prefetchLap(const QString& sessionKey, int lapId) {
+    SessionHandle* session = findSession(sessionKey);
+    if (!session || lapId < 0) return;
+    if (session->unifiedLap(lapId)) return;
+    const LapEntry* wanted = nullptr;
+    for (const LapEntry& lap : session->laps()) {
+        if (lap.lapId == lapId) {
+            wanted = &lap;
+            break;
+        }
+    }
+    if (!wanted) return;
+    const QString parserPath = session->telemetryPath();
+    const QString path = session->path();
+    const LapEntry lap = *wanted;
+    const QVariantMap metadata =
+        recordingMetadataForPath(path, recordingMetadata_);
+    auto* watcher =
+        new QFutureWatcher<std::shared_ptr<SessionLapLoadResult>>(this);
+    connect(watcher,
+            &QFutureWatcher<std::shared_ptr<SessionLapLoadResult>>::finished,
+            this, [this, watcher]() {
+                const std::shared_ptr<SessionLapLoadResult> result =
+                    watcher->result();
+                watcher->deleteLater();
+                if (!result || !result->error.isEmpty() || !result->source ||
+                    !result->unified)
+                    return;
+                SessionHandle* session = findSession(result->sessionKey);
+                if (!session) return;
+                session->adoptLoadedLap(
+                    result->lapId, std::move(result->source),
+                    std::move(result->unified), result->driverId,
+                    result->forceDriverId);
+            });
+    watcher->setFuture(
+        QtConcurrent::run([parserPath, sessionKey, lap, metadata]() {
+            return loadSessionLap(parserPath, sessionKey, lap, metadata);
+        }));
 }
 
 void TelemetryStore::selectLap(const QString& sessionKey, int lapId) {
@@ -5344,6 +5542,35 @@ void TelemetryStore::setCursorFrac(double v) {
     v = qBound(0.0, v, 1.0);
     if (qFuzzyCompare(v, cursorFrac_)) return;
     cursorFrac_ = v;
+    if (lcSeek().isInfoEnabled()) {
+        const UnifiedLap* lap = primaryUnified();
+        QString location = QStringLiteral("frac=%1").arg(v, 0, 'f', 4);
+        if (lap && lap->size() > 0) {
+            const double pos = v * double(lap->size() - 1);
+            const size_t index = size_t(std::lround(pos));
+            const size_t clamped = std::min(index, lap->size() - 1);
+            location +=
+                QStringLiteral(" sample=%1/%2").arg(clamped).arg(lap->size());
+            if (clamped < lap->time.size())
+                location +=
+                    QStringLiteral(" t=%1s").arg(lap->time[clamped], 0, 'f', 3);
+            if (clamped < lap->distance.size())
+                location += QStringLiteral(" d=%1m").arg(lap->distance[clamped],
+                                                         0, 'f', 1);
+            if (clamped < lap->speed.size())
+                location += QStringLiteral(" %1km/h").arg(lap->speed[clamped],
+                                                          0, 'f', 1);
+            if (clamped < lap->gpsLat.size() &&
+                std::isfinite(lap->gpsLat[clamped]) &&
+                clamped < lap->gpsLon.size() &&
+                std::isfinite(lap->gpsLon[clamped]))
+                location += QStringLiteral(" %1,%2")
+                                .arg(lap->gpsLat[clamped], 0, 'f', 6)
+                                .arg(lap->gpsLon[clamped], 0, 'f', 6);
+        }
+        qCInfo(lcSeek).noquote() << "seek cursor" << location << "video"
+                                 << primaryVideoTime() << "s";
+    }
     emit cursorFracChanged();
     emit videoTimeChanged();
 }
@@ -5424,6 +5651,7 @@ void TelemetryStore::setCursorFromVideoTime(double mediaTime) {
         const double relativeTime =
             lap.telemetryTime(mediaTime, presentationOffset);
         double fraction = 0.0;
+        const bool wasAtEnd = cursorFrac_ >= 0.999;
         if (relativeTime >= unified->time.back()) {
             fraction = 1.0;
         } else if (relativeTime > unified->time.front()) {
@@ -5436,9 +5664,13 @@ void TelemetryStore::setCursorFromVideoTime(double mediaTime) {
                 span > 0.0 ? (relativeTime - unified->time[low]) / span : 0.0;
             fraction = (double(low) + local) / double(unified->time.size() - 1);
         }
-        if (qFuzzyCompare(fraction, cursorFrac_)) return;
+        if (qFuzzyCompare(fraction, cursorFrac_)) {
+            if (fraction >= 0.999 && !wasAtEnd) emit primaryLapPlaybackEnded();
+            return;
+        }
         cursorFrac_ = fraction;
         emit cursorFracChanged();
+        if (fraction >= 0.999 && !wasAtEnd) emit primaryLapPlaybackEnded();
         return;
     }
 }
@@ -6907,6 +7139,67 @@ const omatrack::UnifiedLap* TelemetryStore::primaryUnified() const {
     return u ? u.get() : nullptr;
 }
 
+const VideoHudSeries* TelemetryStore::primaryVideoHud() const {
+    if (!primarySession_ || primarySession_->videoHud().empty()) return nullptr;
+    return &primarySession_->videoHud();
+}
+
+void SessionHandle::captureVideoHud(const TelemetrySource& source) {
+    videoHud_ = {};
+    double duration = 0.0;
+    for (const RawChannel& channel : source.channels())
+        duration = std::max(duration, channel.durationSec);
+    if (!(duration > 0.0)) return;
+
+    constexpr double kRate = 25.0;
+    const int count = std::max(2, int(std::llround(duration * kRate)) + 1);
+    videoHud_.duration = duration;
+    videoHud_.time.resize(size_t(count));
+    for (int i = 0; i < count; ++i)
+        videoHud_.time[size_t(i)] = double(i) / kRate;
+
+    const auto mapping = source.mapChannels();
+    const auto fill = [&](const char* field, std::vector<double>* values,
+                          bool linear) {
+        values->assign(size_t(count), std::numeric_limits<double>::quiet_NaN());
+        const auto it = mapping.find(field);
+        if (it == mapping.end() || it->second < 0 ||
+            it->second >= int(source.channels().size()))
+            return;
+        const RawChannel& channel = source.channels()[size_t(it->second)];
+        for (int i = 0; i < count; ++i) {
+            const double timeSec = videoHud_.time[size_t(i)];
+            double value = 0.0;
+            bool ok = false;
+            if (channel.frequencyHz > 0.0 && channel.samples.size() >= 2) {
+                const double position = timeSec * channel.frequencyHz;
+                if (position >= 0.0 &&
+                    position <= double(channel.samples.size() - 1)) {
+                    const size_t low = size_t(std::floor(position));
+                    const size_t high =
+                        std::min(low + 1, channel.samples.size() - 1);
+                    value = !linear ? channel.samples[low]
+                                    : channel.samples[low] +
+                                          (channel.samples[high] -
+                                           channel.samples[low]) *
+                                              (position - double(low));
+                    ok = std::isfinite(value);
+                }
+            } else {
+                ok = source.sampleAt(size_t(it->second), timeSec, &value,
+                                     linear) &&
+                     std::isfinite(value);
+            }
+            if (ok) (*values)[size_t(i)] = value;
+        }
+    };
+    fill("speed", &videoHud_.speed, true);
+    fill("throttle", &videoHud_.throttle, true);
+    fill("brake", &videoHud_.brake, true);
+    fill("steering", &videoHud_.steering, true);
+    fill("gear", &videoHud_.gear, false);
+}
+
 const omatrack::UnifiedLap* TelemetryStore::compareUnified() const {
     if (!compareSession_ || compareLap_ < 0) return nullptr;
     auto u = compareSession_->unifiedLap(compareLap_);
@@ -7141,8 +7434,11 @@ QUrl TelemetryStore::videoSourceFor(const QString& path, bool renew) const {
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     const auto known = streamUrls_.constFind(path);
     if (!renew && known != streamUrls_.cend() &&
-        now - known->signedAtMs < qint64(kStreamExpirySeconds) * 500)
+        now - known->signedAtMs < qint64(kStreamExpirySeconds) * 500) {
+        qCInfo(lcIo).noquote()
+            << "cache hit stream-url" << omatrack::displayPath(path);
         return known->url;
+    }
 
     const QUrl stream = streamSource(connectionFor(*location), path);
     // A connection also caches real files, holds a recording downloaded for a
@@ -7150,8 +7446,13 @@ QUrl TelemetryStore::videoSourceFor(const QString& path, bool renew) const {
     // the local path is still the answer.
     if (!stream.isValid()) {
         streamUrls_.remove(path);
+        qCInfo(lcIo).noquote() << "video local" << omatrack::displayPath(path)
+                               << omatrack::formatBytes(QFileInfo(path).size());
         return QUrl::fromLocalFile(path);
     }
+    qCInfo(lcIo).noquote() << (renew ? "stream-url renew" : "stream-url sign")
+                           << omatrack::displayPath(path)
+                           << omatrack::displayUrl(stream);
     streamUrls_.insert(path, StreamUrl{stream, now});
     // Remembered in reverse so that an address the server stops honouring can
     // be replaced without the player having to know where it came from.

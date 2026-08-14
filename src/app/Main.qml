@@ -27,6 +27,10 @@ ApplicationWindow {
     // primary video is telemetry-linked, so both can be distance-aligned.
     readonly property bool dualVideo: telemetryVideoActive && Store.compareVideoSource.toString() !== "" && Store.compareVideoSource.toString() !== Store.primaryVideoSource.toString()
     property var filmstripSessions: []
+    property int lapAdvanceCount: 0
+    property int lapAdvanceNextId: -1
+    property string lapAdvanceNextLabel: ""
+    property bool lapAdvanceResume: false
     // Rapid selection changes update one pending source instead of queuing
     // stale callLater closures that can reopen the previous recording.
     property url pendingVideoSource: ""
@@ -76,6 +80,13 @@ ApplicationWindow {
                 return laps[i];
         return laps.length > 0 ? laps[0] : null;
     }
+    function cancelLapAdvance(): void {
+        lapAdvanceTimer.stop();
+        root.lapAdvanceCount = 0;
+        root.lapAdvanceNextId = -1;
+        root.lapAdvanceNextLabel = "";
+        root.lapAdvanceResume = false;
+    }
     function defaultTelemetryFolder() {
         return "file://" + Store.defaultTelemetryDirectory();
     }
@@ -85,6 +96,16 @@ ApplicationWindow {
     function dismissPointerTooltip(owner: string): void {
         if (root.pointerTooltipOwner === owner)
             root.pointerTooltipOwner = "";
+    }
+    function finishLapAdvance(): void {
+        const sessionKey = Store.primarySessionKey;
+        const nextId = root.lapAdvanceNextId;
+        root.cancelLapAdvance();
+        if (sessionKey === "" || nextId < 0)
+            return;
+        Store.selectLap(sessionKey, nextId);
+        root.lapAdvanceResume = true;
+        root.tryResumeLapAdvance();
     }
     function formatMediaTime(seconds) {
         if (!isFinite(seconds) || seconds < 0)
@@ -98,6 +119,7 @@ ApplicationWindow {
         return hours > 0 ? hours + ":" + paddedMinutes + ":" + paddedSeconds : minutes + ":" + paddedSeconds;
     }
     function hideVideo(): void {
+        root.cancelLapAdvance();
         root.pendingVideoSource = "";
         if (root.videoFullscreen)
             root.videoSetFullscreen(false);
@@ -312,6 +334,19 @@ ApplicationWindow {
         pendingVideoSource = source;
         Qt.callLater(root.openPendingVideo);
     }
+    function startLapAdvance(): void {
+        if (root.lapAdvanceCount > 0)
+            return;
+        const nextId = Store.nextPrimaryLapId();
+        videoPlayer.paused = true;
+        if (nextId < 0)
+            return;
+        root.lapAdvanceNextId = nextId;
+        root.lapAdvanceNextLabel = Store.lapLabel(Store.primarySessionKey, nextId);
+        root.lapAdvanceCount = 3;
+        Store.prefetchLap(Store.primarySessionKey, nextId);
+        lapAdvanceTimer.start();
+    }
     function syncReferenceSource(): void {
         const ref = videoReference();
         if (!ref)
@@ -403,9 +438,28 @@ ApplicationWindow {
         }
         syncReferenceSource();
     }
+    function tickLapAdvance(): void {
+        if (root.lapAdvanceCount <= 1) {
+            root.finishLapAdvance();
+            return;
+        }
+        root.lapAdvanceCount = root.lapAdvanceCount - 1;
+    }
     function toLocalPath(value) {
         const text = value.toString();
         return text.startsWith("file://") ? decodeURIComponent(text.substring(7)) : text;
+    }
+    function tryResumeLapAdvance(): void {
+        if (!root.lapAdvanceResume)
+            return;
+        if (Store.lapLoading || videoPlayer.seeking)
+            return;
+        root.lapAdvanceResume = false;
+        if (!videoPlayer.loaded)
+            return;
+        videoPlayer.paused = false;
+        if (root.dualVideo)
+            root.syncReferenceVideo(true);
     }
     function useSessionAlone(key) {
         const lap = bestLapForSession(key);
@@ -484,6 +538,10 @@ ApplicationWindow {
     function videoTogglePaused() {
         if (!videoPlayer.loaded)
             return;
+        if (root.lapAdvanceCount > 0) {
+            root.cancelLapAdvance();
+            return;
+        }
         videoPlayer.togglePaused();
         if (!videoPlayer.paused)
             syncReferenceVideo(true);
@@ -568,7 +626,7 @@ ApplicationWindow {
         id: fileDropArea
 
         anchors.fill: parent
-        z: 10000
+        z: root.videoFullscreen ? 0 : 10000
 
         onDropped: drop => {
             if (!drop.hasUrls)
@@ -634,6 +692,14 @@ ApplicationWindow {
 
             onTriggered: root.verifyPausedVideoAlignment()
         }
+        Timer {
+            id: lapAdvanceTimer
+
+            interval: 500
+            repeat: true
+
+            onTriggered: root.tickLapAdvance()
+        }
         RowLayout {
             anchors.fill: parent
             spacing: root.dualVideo && (!root.videoFullscreen || root.videoFullscreenLayout === 0) ? 2 : 0
@@ -664,6 +730,10 @@ ApplicationWindow {
                             Store.setCursorFromVideoTime(position);
                         else if (root.dualVideo && loaded && paused && root.referenceSyncPauseAttempts > 0)
                             pausedVideoAlignmentTimer.restart();
+                    }
+                    onSeekingChanged: {
+                        if (!seeking)
+                            root.tryResumeLapAdvance();
                     }
                     onSourceExpired: root.reopenExpiredVideo(videoPlayer)
                 }
@@ -1123,19 +1193,77 @@ ApplicationWindow {
         VideoTelemetryOverlay {
             id: videoTelemetryOverlay
 
+            mediaTime: videoPlayer.position
             visible: root.videoFullscreen && root.videoOverlayVisible && root.telemetryVideoActive && videoPlayer.loaded
+        }
+        Rectangle {
+            anchors.centerIn: parent
+            color: Style.videoControlBackgroundColor
+            height: lapAdvanceColumn.implicitHeight + 20
+            opacity: root.lapAdvanceCount > 0 ? 1 : 0
+            radius: 6
+            visible: opacity > 0.01
+            width: Math.max(160, lapAdvanceColumn.implicitWidth + 32)
+            z: 12
+
+            Behavior on opacity {
+                NumberAnimation {
+                    duration: 80
+                }
+            }
+
+            Column {
+                id: lapAdvanceColumn
+
+                anchors.centerIn: parent
+                spacing: 2
+
+                Label {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    color: Style.mutedTextColor
+                    font.bold: true
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: Style.smallFontSize
+                    text: "NEXT LAP"
+                }
+                Label {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    color: Style.accentColor
+                    font.bold: true
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: Style.fontSize + 4
+                    text: root.lapAdvanceNextLabel
+                    visible: root.lapAdvanceNextLabel !== ""
+                }
+                Label {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    color: Style.foregroundColor
+                    font.bold: true
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: 42
+                    text: root.lapAdvanceCount > 0 ? String(root.lapAdvanceCount) : ""
+                }
+            }
         }
     }
     Connections {
         function onChannelConfigChanged(): void {
             root.refreshDeltaTraceVisible();
         }
+        function onLapLoadingChanged(): void {
+            root.tryResumeLapAdvance();
+        }
         function onOperationError(title: string, message: string): void {
             operationErrorDialog.errorTitle = title;
             operationErrorDialog.errorMessage = message;
             operationErrorDialog.open();
         }
+        function onPrimaryLapPlaybackEnded(): void {
+            root.startLapAdvance();
+        }
         function onSelectionChanged(): void {
+            if (root.lapAdvanceCount > 0)
+                root.cancelLapAdvance();
             root.refreshLapStrip();
             root.syncTelemetryVideo();
         }
@@ -1180,7 +1308,7 @@ ApplicationWindow {
             }
             Label {
                 color: Style.mutedTextColor
-                text: "Scan a directory of .pds / .ld / .ldx / .vbo / .mp4 files"
+                text: "Scan a directory of .pds / .ld / .vbo / .mp4 / .telemetry files"
                 wrapMode: Text.Wrap
             }
             CompactTextField {
@@ -1269,7 +1397,7 @@ ApplicationWindow {
         id: fileDialog
 
         fileMode: Platform.FileDialog.OpenFile
-        nameFilters: ["Telemetry and video (*.pds *.PDS *.ld *.LD *.ldx *.LDX *.vbo *.VBO *.mp4 *.MP4 *.mov *.MOV *.mkv *.MKV *.avi *.AVI *.m4v *.M4V *.webm *.WEBM)", "Telemetry (*.pds *.PDS *.ld *.LD *.ldx *.LDX *.vbo *.VBO *.mp4 *.MP4)", "Video (*.mp4 *.MP4 *.mov *.MOV *.mkv *.MKV *.avi *.AVI *.m4v *.M4V *.webm *.WEBM)", "All files (*)"]
+        nameFilters: ["Telemetry and video (*.pds *.PDS *.ld *.LD *.vbo *.VBO *.telemetry *.TELEMETRY *.mp4 *.MP4 *.mov *.MOV *.mkv *.MKV *.avi *.AVI *.m4v *.M4V *.webm *.WEBM)", "Telemetry (*.pds *.PDS *.ld *.LD *.vbo *.VBO *.telemetry *.TELEMETRY *.mp4 *.MP4)", "Video (*.mp4 *.MP4 *.mov *.MOV *.mkv *.MKV *.avi *.AVI *.m4v *.M4V *.webm *.WEBM)", "All files (*)"]
         title: "Open telemetry or video"
 
         onAccepted: Store.openFile(root.toLocalPath(fileDialog.file))

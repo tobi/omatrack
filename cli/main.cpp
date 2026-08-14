@@ -3,6 +3,7 @@
 //   omatrack-cli parse <file>
 //   omatrack-cli unify <file> --output <csv>
 //   omatrack-cli corners <file> [--reference <file>] --zone <start:end> ...
+//   omatrack-cli compare <aimd.mp4> <file.telemetry>
 //
 // Exit code is the acceptance signal: 0 = success, non-zero = failure.
 
@@ -301,26 +302,51 @@ static int cmdCorners(const std::string& path, const std::string& referencePath,
     return 0;
 }
 
+static int cmdCompare(const std::string& leftPath,
+                      const std::string& rightPath) {
+    std::string error;
+    auto left = TelemetrySource::open(leftPath, &error);
+    if (!left) {
+        std::fprintf(stderr, "omatrack-cli: %s\n", error.c_str());
+        return 1;
+    }
+    error.clear();
+    auto right = TelemetrySource::open(rightPath, &error);
+    if (!right) {
+        std::fprintf(stderr, "omatrack-cli: %s\n", error.c_str());
+        return 1;
+    }
+    const std::string report =
+        compareTelemetrySources(*left, *right, "aimd", "telemetry");
+    std::fputs(report.c_str(), stdout);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
-        fprintf(stderr,
-                "usage:\n"
-                "  %s parse <file.pds|file.ld|file.vbo|file.mp4>\n"
-                "  %s unify <file> --output <csv>\n"
-                "  %s corners <file> [--reference <file>] "
-                "--zone <start:end> [--zone ...]\n\n"
-                "unify exports location-bearing GPS fields when available; "
-                "choose an explicit output path and handle it as sensitive "
-                "data.\n"
-                "corners runs the corner analyzers on the fastest lap; zones "
-                "are lap fractions.\n",
-                argv[0], argv[0], argv[0]);
+        fprintf(
+            stderr,
+            "usage:\n"
+            "  %s parse <file.pds|file.ld|file.vbo|file.mp4|file.telemetry>\n"
+            "  %s unify <file> --output <csv>\n"
+            "  %s corners <file> [--reference <file>] "
+            "--zone <start:end> [--zone ...]\n"
+            "  %s compare <aimd.mp4> <file.telemetry>\n\n"
+            "unify exports location-bearing GPS fields when available; "
+            "choose an explicit output path and handle it as sensitive "
+            "data.\n"
+            "corners runs the corner analyzers on the fastest lap; zones "
+            "are lap fractions.\n"
+            "compare dumps GPS, main channels, laps, and video-frame "
+            "sync from an AiM extract against its .telemetry companion.\n",
+            argv[0], argv[0], argv[0], argv[0]);
         return 2;
     }
     const std::string cmd = argv[1];
     if (cmd == "parse" && argc == 3) return cmdParse(argv[2]);
     if (cmd == "unify" && argc == 5 && std::string(argv[3]) == "--output")
         return cmdUnify(argv[2], argv[4]);
+    if (cmd == "compare" && argc == 4) return cmdCompare(argv[2], argv[3]);
     if (cmd == "corners" && argc >= 3) {
         std::string reference;
         std::vector<std::pair<double, double>> zones;

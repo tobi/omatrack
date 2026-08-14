@@ -111,6 +111,7 @@ private:
     double duration_ = 0.0;
     double volume_ = 75.0;
     double playbackRate_ = 1.0;
+    double containerFps_ = 0.0;
     int exactSeekCount_ = 0;
     /// Where a reopen puts the playhead back, and how many reopens have been
     /// tried since a file last loaded. Without the count, a recording that is

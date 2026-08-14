@@ -72,7 +72,6 @@ qt_add_qml_module(omatrack
     MpvVideoItem.h MpvVideoItem.cpp
     OmarchyTheme.h OmarchyTheme.cpp
     ComparisonAlignment.h ComparisonAlignment.cpp
-    SessionMetadataCache.h SessionMetadataCache.cpp
     RecordingSidecar.h RecordingSidecar.cpp
     TrackMetadata.h TrackMetadata.cpp
     TelemetryStore.h TelemetryStore.cpp
@@ -85,6 +84,7 @@ qt_add_qml_module(omatrack
     TraceSceneBuilder.h TraceSceneBuilder.cpp
     TraceTextCache.h TraceTextCache.cpp
     UsbMedia.h UsbMedia.cpp
+    VerboseLog.h VerboseLog.cpp
     TraceView.h TraceView.cpp
     VideoTelemetryHud.h VideoTelemetryHud.cpp
     YamlConfig.h YamlConfig.cpp

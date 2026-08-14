@@ -30,8 +30,8 @@ through braking, turn-in, apex, and throttle pickup.
 
 ## Current capabilities
 
-- Open Pi/Cosworth `.pds`, MoTeC `.ld`, Racelogic `.vbo`, and AiM `aimd` telemetry embedded in `.mp4`.
-- Resolve `.ldx` files to their companion `.ld`; play ordinary MP4, MOV, MKV, AVI, M4V, and WebM video without treating it as telemetry.
+- Open Pi/Cosworth `.pds`, MoTeC `.ld`, Racelogic `.vbo`, AiM `aimd` telemetry embedded in `.mp4`, and native `.telemetry`. Vendor files convert once to a hidden `.{filename}.telemetry` companion; analysis always reads that.
+- Play ordinary MP4, MOV, MKV, AVI, M4V, and WebM video without treating it as telemetry.
 - Group a library as Track → Date → Session → Laps, with lazy parsing and fastest-lap selection.
 - Compare primary and reference laps through a cached track-station map that remains useful when GPS is sparse or absent.
 - Overlay standard and raw channels, share a cursor, pan, zoom, select ranges, pin lanes, and manually align specialist signals.

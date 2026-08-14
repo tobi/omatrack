@@ -1,39 +1,37 @@
 #pragma once
 
-#include <QJsonObject>
 #include <QString>
 
 #include <optional>
 
 namespace omatrack {
 
+/// Hidden native recording next to any source: `foo.pds` →
+/// `.foo.pds.telemetry`. A path that is already `.telemetry` is returned
+/// unchanged.
+QString nativeCompanionPath(const QString& sourcePath);
+
+/// Server-relative form: `event/foo.mp4` → `event/.foo.mp4.telemetry`.
+QString nativeCompanionRelativePath(const QString& sourceRelativePath);
+
 struct RecordingSidecar {
     QString path;
     QString videoPath;
     QString telemetryPath;
-    QString sourceEtag;
-    QJsonObject session;
     bool supported = false;
 };
 
-/// Hidden metadata next to `videoPath`: `foo.mp4` -> `.foo.mp4.json`.
-QString recordingSidecarPath(const QString& videoPath);
-
-/// Hidden MoTeC companion next to `videoPath`: `foo.mp4` -> `.foo.mp4.ld`.
-QString recordingTelemetryPath(const QString& videoPath);
-
-/// Reads the hidden recording sidecar before either media or telemetry is
-/// opened. Relative links are resolved beside the sidecar. When `cacheRoot` is
-/// set, linked files must stay inside that remote connection's cache. A video
-/// with no JSON but a hidden `.ld` still returns a sidecar that points at it.
+/// Hidden `.telemetry` beside a video, if present.
 std::optional<RecordingSidecar> readRecordingSidecar(
     const QString& videoPath, const QString& cacheRoot = {});
 
-/// Server-relative form used by the remote cache and uploader.
-QString recordingSidecarRelativePath(const QString& videoRelativePath);
+inline QString recordingTelemetryPath(const QString& videoPath) {
+    return nativeCompanionPath(videoPath);
+}
 
-/// Server-relative hidden MoTeC companion: `event/foo.mp4` ->
-/// `event/.foo.mp4.ld`.
-QString recordingTelemetryRelativePath(const QString& videoRelativePath);
+inline QString recordingTelemetryRelativePath(
+    const QString& videoRelativePath) {
+    return nativeCompanionRelativePath(videoRelativePath);
+}
 
 }  // namespace omatrack

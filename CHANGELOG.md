@@ -4,6 +4,31 @@ All notable user-facing changes are documented here.
 
 ## Unreleased
 
+- Native `.telemetry` is the only persisted analysis file. First open of a
+  `.pds` / `.ld` / `.vbo` / AiM video writes hidden `.{filename}.telemetry`
+  and every later open reads that. JSON sidecars, Motec companions, and the
+  session-index cache are gone. Analysis never reopens a Motec `.ld`.
+  Load-time and precomputed analysis belongs in `.telemetry`, not a second
+  store. Pinned `motorsport-telemetry-rs` now persists presentation offset
+  and `video_frames.bin`; a companion written before that is rewritten
+  from the AiM extract instead of migrated in place.
+- `--verbose` (or `OMATRACK_VERBOSE=1`) logs file opens, cache hits and
+  misses, writes, video/cursor seeks, and an AiM vs `.telemetry` dump of
+  GPS, main channels, laps, presentation offset, and video frames.
+  `omatrack-cli compare <aimd.mp4> <file.telemetry>` prints the same
+  report. Library path is kept distinct from the parser path.
+- The fullscreen video HUD follows the native `.telemetry` clock at the
+  current media time for the whole recording, not only the selected lap.
+  Drag uses a pointer handler so the strip moves with the cursor instead
+  of sticking in a window-move grab.
+- Library sync fetches only hidden `.telemetry` companions. Leftover
+  `.json` / `.ld` / `.ldx` sidecars are skipped, a failed companion no
+  longer aborts the whole sync, and the cache walk waits until the I/O
+  thread has closed the last reply.
+- Reaching the end of the current lap while onboard video is playing
+  pauses, counts down the next lap (3, 2, 1), then selects that lap and
+  resumes. The reference lap is left unchanged. Space cancels.
+
 ## 0.9.11 — 2026-08-12
 
 - Library sync, Track Atlas refresh, cache clear, and raw-channel reloads

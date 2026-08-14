@@ -29,6 +29,7 @@
 #include <cmath>
 #include <limits>
 #include <vector>
+#include <vector>
 
 namespace omatrack {
 class TelemetrySource;
@@ -162,6 +163,20 @@ struct SidebarPin {
     QString path;
 };
 
+/// Session-length HUD strip sampled from the native recording. The
+/// fullscreen overlay follows video time on this clock, not the selected
+/// lap's UnifiedLap (which is empty outside that lap).
+struct VideoHudSeries {
+    std::vector<double> time;
+    std::vector<double> speed;
+    std::vector<double> throttle;
+    std::vector<double> brake;
+    std::vector<double> steering;
+    std::vector<double> gear;
+    double duration = 0.0;
+    bool empty() const { return time.size() < 2; }
+};
+
 struct SourceChannelSummary {
     QString name;
     QString unit;
@@ -230,8 +245,14 @@ public:
     std::optional<double> videoPresentationOffsetSec() const {
         return videoPresentationOffsetSec_;
     }
+    /// File-relative telemetry + this offset is media time. Also fills
+    /// missing per-lap videoStart/videoEnd when the native recording has no
+    /// per-lap media anchors.
+    void setVideoPresentationOffset(std::optional<double> offsetSec);
+    const VideoHudSeries& videoHud() const { return videoHud_; }
 
 private:
+    void captureVideoHud(const omatrack::TelemetrySource& source);
     void applyCachedMetadata(const QJsonObject& metadata);
     void ensureLapSummary();
     void applyEventDriverId(double eventDriverId, bool force = false);
@@ -259,6 +280,7 @@ private:
     double gpsLatitude_ = std::numeric_limits<double>::quiet_NaN();
     double gpsLongitude_ = std::numeric_limits<double>::quiet_NaN();
     std::optional<double> videoPresentationOffsetSec_;
+    VideoHudSeries videoHud_;
 };
 
 // ── store (root model exposed to QML) ───────────────────────────────
@@ -444,6 +466,11 @@ public:
     Q_INVOKABLE void compareLap(const QString& sessionKey, int lapId);
     Q_INVOKABLE void clearCompare();
     Q_INVOKABLE void clearPrimary();
+    /// Next lap in recording order after the primary, or -1 at the last lap.
+    Q_INVOKABLE int nextPrimaryLapId() const;
+    Q_INVOKABLE QString lapLabel(const QString& sessionKey, int lapId) const;
+    /// Load a lap into the session cache without changing the selection.
+    Q_INVOKABLE void prefetchLap(const QString& sessionKey, int lapId);
     Q_INVOKABLE QVariantList lapsForSession(const QString& sessionKey) const;
     Q_INVOKABLE bool traceConfidenceIncludesLap(const QString& sessionKey,
                                                 int lapId) const;
@@ -522,6 +549,7 @@ public:
     // ── data access for the trace canvas ───────────────────────────
     const omatrack::UnifiedLap* primaryUnified() const;
     const omatrack::UnifiedLap* compareUnified() const;
+    const VideoHudSeries* primaryVideoHud() const;
     const SessionHandle* primarySession() const { return primarySession_; }
     const SessionHandle* compareSession() const { return compareSession_; }
     int primaryLapIndex() const { return primaryLap_; }
@@ -599,6 +627,8 @@ signals:
     void readyChanged();
     void loadingChanged();
     void lapLoadingChanged();
+    /// Video playback has just reached the end of the primary lap.
+    void primaryLapPlaybackEnded();
     void selectionChanged();
     void editingCornersChanged();
     void cursorFracChanged();
@@ -665,7 +695,6 @@ private:
     void resumeSidebarMetadataQueue();
     void setPrimaryLapLoading(bool loading);
     void setCompareLapLoading(bool loading);
-    QString sessionIndexCachePath() const;
     void startSessionScan();
     void finishSessionScan();
     void loadPreferences();

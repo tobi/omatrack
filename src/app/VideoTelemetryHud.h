@@ -5,6 +5,8 @@
 #include <QString>
 #include <QtQml/qqmlregistration.h>
 
+#include <limits>
+
 #include "TraceSceneBuilder.h"
 
 class TelemetryStore;
@@ -25,12 +27,16 @@ class VideoTelemetryHud : public QQuickItem {
         QColor backgroundColor MEMBER backgroundColor_ NOTIFY paletteChanged)
     Q_PROPERTY(
         QString monoFontFamily MEMBER monoFontFamily_ NOTIFY paletteChanged)
+    Q_PROPERTY(double mediaTime READ mediaTime WRITE setMediaTime NOTIFY
+                   mediaTimeChanged)
 
 public:
     explicit VideoTelemetryHud(QQuickItem* parent = nullptr);
 
     TelemetryStore* store() const { return store_; }
     void setStore(TelemetryStore* store);
+    double mediaTime() const { return mediaTime_; }
+    void setMediaTime(double mediaTime);
 
 protected:
     QSGNode* updatePaintNode(QSGNode* oldNode,
@@ -40,9 +46,11 @@ protected:
 signals:
     void storeChanged();
     void paletteChanged();
+    void mediaTimeChanged();
 
 private:
     TelemetryStore* store_ = nullptr;
+    double mediaTime_ = std::numeric_limits<double>::quiet_NaN();
     QColor throttleColor_ = QColor(QStringLiteral("#a7c080"));
     QColor compareColor_ = QColor(QStringLiteral("#e09d7f"));
     QColor foregroundColor_ = Qt::white;

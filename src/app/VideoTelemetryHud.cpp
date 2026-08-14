@@ -21,8 +21,9 @@ double sample(const std::vector<double>& values, double fraction) {
         std::clamp(fraction, 0.0, 1.0) * double(values.size() - 1);
     const size_t low = size_t(std::floor(position));
     const size_t high = std::min(low + 1, values.size() - 1);
-    return values[low] +
-           (values[high] - values[low]) * (position - double(low));
+    const double value =
+        values[low] + (values[high] - values[low]) * (position - double(low));
+    return std::isfinite(value) ? value : 0.0;
 }
 
 int sampleGear(const std::vector<int>& values, double fraction) {
@@ -51,6 +52,9 @@ VideoTelemetryHud::VideoTelemetryHud(QQuickItem* parent) : QQuickItem(parent) {
     setFlag(QQuickItem::ItemHasContents, true);
     connect(this, &VideoTelemetryHud::paletteChanged, this,
             [this]() { update(); });
+    connect(this, &QQuickItem::visibleChanged, this, [this]() {
+        if (isVisible()) update();
+    });
 }
 
 void VideoTelemetryHud::setStore(TelemetryStore* store) {
@@ -64,9 +68,18 @@ void VideoTelemetryHud::setStore(TelemetryStore* store) {
                 [this]() { update(); });
         connect(store_, &TelemetryStore::referenceAlignmentChanged, this,
                 [this]() { update(); });
+        connect(store_, &TelemetryStore::lapLoadingChanged, this,
+                [this]() { update(); });
     }
     update();
     emit storeChanged();
+}
+
+void VideoTelemetryHud::setMediaTime(double mediaTime) {
+    if (qFuzzyCompare(mediaTime_ + 1.0, mediaTime + 1.0)) return;
+    mediaTime_ = mediaTime;
+    emit mediaTimeChanged();
+    update();
 }
 
 QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
@@ -79,8 +92,10 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
         return root;
     }
 
+    const VideoHudSeries* hud = store_->primaryVideoHud();
     const omatrack::UnifiedLap* primary = store_->primaryUnified();
-    if (primary && primary->size() >= 2) {
+    const bool haveHud = hud && !hud->empty();
+    if (haveHud || (primary && primary->size() >= 2)) {
         // The QML overlay is aspect-locked to 1000:210 (VideoTelemetryOverlay
         // aspectRatio 0.21), so the old painter scale(sx, sy) was uniform.
         const qreal s = width() / 1000.0;
@@ -90,10 +105,20 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
         };
 
         const omatrack::UnifiedLap* compare = store_->compareUnified();
-        const double cursor = store_->cursorFrac();
+        const double lapCursor = store_->cursorFrac();
+        double cursor = lapCursor;
+        if (haveHud && std::isfinite(mediaTime_) && hud->duration > 0.0) {
+            const double offset = store_->primarySession()
+                                      ? store_->primarySession()
+                                            ->videoPresentationOffsetSec()
+                                            .value_or(0.0)
+                                      : 0.0;
+            cursor =
+                std::clamp((mediaTime_ - offset) / hud->duration, 0.0, 1.0);
+        }
         const double compareCursor =
             compare ? store_->compareFractionForPrimaryFraction(std::clamp(
-                          cursor - store_->referenceAlignment(), 0.0, 1.0))
+                          lapCursor - store_->referenceAlignment(), 0.0, 1.0))
                     : 0.0;
 
         constexpr qreal bandTop = 35.0;
@@ -127,7 +152,10 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
         }
 
         const double primaryDuration =
-            primary->time.empty() ? 1.0 : std::max(1.0, primary->time.back());
+            haveHud ? std::max(1.0, hud->duration)
+            : !primary || primary->time.empty()
+                ? 1.0
+                : std::max(1.0, primary->time.back());
         const double halfWindow = std::min(0.18, 4.0 / primaryDuration);
         constexpr double currentMarkerFraction = 0.86;
 
@@ -208,17 +236,28 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
                 builder_.polyline(run.constData(), run.size(), width, color);
         };
 
-        const double primaryBrakeMax =
-            primary->brake.empty() ? 1.0
-                                   : *std::max_element(primary->brake.begin(),
-                                                       primary->brake.end());
-        const double compareBrakeMax =
-            !compare || compare->brake.empty()
-                ? 1.0
-                : *std::max_element(compare->brake.begin(),
-                                    compare->brake.end());
+        const std::vector<double>& primaryThrottle =
+            haveHud ? hud->throttle : primary->throttle;
+        const std::vector<double>& primaryBrake =
+            haveHud ? hud->brake : primary->brake;
+        const std::vector<double>& primarySteer =
+            haveHud ? hud->steering : primary->steering;
+        const std::vector<double>& primarySpd =
+            haveHud ? hud->speed : primary->speed;
+        const auto samplePrimaryGear = [&](double fraction) {
+            if (haveHud) return int(std::lround(sample(hud->gear, fraction)));
+            return sampleGear(primary->gear, fraction);
+        };
+
+        const auto finiteMax = [](const std::vector<double>& values) {
+            double peak = 0.0;
+            for (double value : values)
+                if (std::isfinite(value)) peak = std::max(peak, value);
+            return peak;
+        };
         const double brakeMax =
-            std::max({1.0, primaryBrakeMax, compareBrakeMax});
+            std::max({1.0, finiteMax(primaryBrake),
+                      compare ? finiteMax(compare->brake) : 0.0});
 
         if (compare) {
             const auto throttlePts = tracePoints(compare->throttle, 1.0, true);
@@ -230,14 +269,15 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
                 dashedPolyline(brakePts, 1.1 * s, withAlpha(compareColor_, 42),
                                4.0 * s, 4.0 * s);
         }
+        const double throttleScale =
+            finiteMax(primaryThrottle) > 1.5 ? 100.0 : 1.0;
         const auto primaryThrottlePts =
-            tracePoints(primary->throttle, 1.0, false);
+            tracePoints(primaryThrottle, throttleScale, false);
         if (primaryThrottlePts.size() >= 2)
             builder_.polyline(primaryThrottlePts.constData(),
                               primaryThrottlePts.size(), 2.5 * s,
                               throttleColor_);
-        const auto primaryBrakePts =
-            tracePoints(primary->brake, brakeMax, false);
+        const auto primaryBrakePts = tracePoints(primaryBrake, brakeMax, false);
         if (primaryBrakePts.size() >= 2)
             builder_.polyline(primaryBrakePts.constData(),
                               primaryBrakePts.size(), 2.5 * s, brakeColor_);
@@ -249,8 +289,8 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
                        1.0 * s, withAlpha(foregroundColor_, 150));
 
         // Brake / throttle pedal bars.
-        const double throttle = sample(primary->throttle, cursor);
-        const double brake = sample(primary->brake, cursor) / brakeMax;
+        const double throttle = sample(primaryThrottle, cursor) / throttleScale;
+        const double brake = sample(primaryBrake, cursor) / brakeMax;
         const double pedals[] = {brake, throttle};
         const QColor pedalColors[] = {brakeColor_, throttleColor_};
         for (int i = 0; i < 2; ++i) {
@@ -333,7 +373,7 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
                 fillConvex(verts, color);
             };
 
-        const double primarySteering = sample(primary->steering, cursor);
+        const double primarySteering = sample(primarySteer, cursor);
         const QPointF primarySteeringDirection =
             steeringDirection(primarySteering);
         const QPointF primarySteeringPoint =
@@ -369,7 +409,7 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
                            steeringColor_, 8.0, 6.0);
 
         // Gear readout + delta arrow.
-        const int primaryGear = sampleGear(primary->gear, cursor);
+        const int primaryGear = samplePrimaryGear(cursor);
         const int referenceGear =
             compare ? sampleGear(compare->gear, compareCursor) : primaryGear;
         const int gearDelta = primaryGear - referenceGear;
@@ -416,7 +456,7 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
             builder_.text(QStringLiteral("km/h"), kmhFont, foregroundColor_,
                           R(QRectF(842, 98, 120, 20)), Qt::AlignCenter);
         }
-        const double primarySpeed = sample(primary->speed, cursor);
+        const double primarySpeed = sample(primarySpd, cursor);
         const double referenceSpeed =
             compare ? sample(compare->speed, compareCursor) : primarySpeed;
         const double speedDelta = primarySpeed - referenceSpeed;
