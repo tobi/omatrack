@@ -32,12 +32,14 @@ Item {
 
     Binding {
         property: "x"
+        restoreMode: Binding.RestoreNone
         target: overlay
         value: (overlay.parent.width - overlay.width) * 0.5
         when: !overlay.userPositioned
     }
     Binding {
         property: "y"
+        restoreMode: Binding.RestoreNone
         target: overlay
         value: Math.max(0, Math.min(overlay.parent.height - overlay.height, overlay.parent.height * 0.9 - overlay.height * 0.5))
         when: !overlay.userPositioned
@@ -60,9 +62,9 @@ Item {
 
         onActiveChanged: {
             if (active) {
-                overlay.userPositioned = true;
                 overlay.dragOriginX = overlay.x;
                 overlay.dragOriginY = overlay.y;
+                overlay.userPositioned = true;
             }
         }
         onTranslationChanged: {

@@ -147,7 +147,7 @@ const char* severityName(NoteSeverity severity) {
 // ── metrics ─────────────────────────────────────────────────────────
 
 CornerMetrics measureCorner(const UnifiedLap& lap, double startFraction,
-                            double endFraction) {
+                            double endFraction, bool allowLateralG) {
     CornerMetrics metrics;
     const int last = int(lap.size()) - 1;
     if (last < 2 || lap.distance.size() < size_t(last + 1) ||
@@ -230,7 +230,8 @@ CornerMetrics measureCorner(const UnifiedLap& lap, double startFraction,
             ? std::max(0.0, metrics.brakePoint - metrics.liftPoint)
             : nan();
 
-    const int turnIn = detectTurnIn(lap, first, apexIndex, metrics.hasLateralG);
+    const int turnIn = detectTurnIn(lap, first, apexIndex,
+                                    metrics.hasLateralG && allowLateralG);
     metrics.turnInIndex = turnIn;
     metrics.turnInPoint = turnIn >= 0 ? distanceFrom(turnIn) : nan();
 
@@ -430,11 +431,17 @@ OMATRACK_ANALYZER(CoastingAnalyzer, "coasting", true) {
                      NoteSeverity::Info});
 }
 
+double alignedOrRaw(double aligned, double primary, double reference) {
+    if (finite(aligned)) return aligned;
+    if (!finite(primary) || !finite(reference)) return nan();
+    return primary - reference;
+}
+
 OMATRACK_ANALYZER(TurnInAnalyzer, "turn_in", true) {
-    const double primary = context.primaryMetrics.turnInPoint;
-    const double reference = context.referenceMetrics.turnInPoint;
-    if (!finite(primary) || !finite(reference)) return;
-    const double delta = primary - reference;
+    const double delta =
+        alignedOrRaw(context.turnInDelta, context.primaryMetrics.turnInPoint,
+                     context.referenceMetrics.turnInPoint);
+    if (!finite(delta)) return;
     if (std::fabs(delta) < 10.0) return;
     notes.push_back({id(),
                      format("turn-in %.0fm %s than reference", std::fabs(delta),
@@ -443,10 +450,10 @@ OMATRACK_ANALYZER(TurnInAnalyzer, "turn_in", true) {
 }
 
 OMATRACK_ANALYZER(ThrottleTimingAnalyzer, "throttle_timing", true) {
-    const double primary = context.primaryMetrics.throttlePoint;
-    const double reference = context.referenceMetrics.throttlePoint;
-    if (!finite(primary) || !finite(reference)) return;
-    const double delta = primary - reference;
+    const double delta = alignedOrRaw(context.throttlePointDelta,
+                                      context.primaryMetrics.throttlePoint,
+                                      context.referenceMetrics.throttlePoint);
+    if (!finite(delta)) return;
     if (std::fabs(delta) < 15.0) return;
     notes.push_back({id(),
                      format("throttle %.0fm %s", std::fabs(delta),

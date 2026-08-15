@@ -66,6 +66,7 @@ qt_add_qml_module(omatrack
     ThinScrollBar.qml
     VideoMetadataDialog.qml
     VideoTelemetryOverlay.qml
+    VideoDeltaBar.qml
   SOURCES
     AimRemoteIndex.h AimRemoteIndex.cpp
     DamperStripView.h DamperStripView.cpp

@@ -522,6 +522,39 @@ const TraceView::ChannelRange& TraceView::rangeFor(const ChannelSpec& spec,
     return inserted.value();
 }
 
+qreal TraceView::devicePixelRatio() const {
+    return window() ? std::max(1.0, window()->effectiveDevicePixelRatio())
+                    : 1.0;
+}
+
+int TraceView::deviceColumns(const QRectF& rect) const {
+    return std::max(2, int(std::lround(rect.width() * devicePixelRatio())));
+}
+
+void TraceView::emitSeriesStroke(TraceSceneBuilder& builder,
+                                 const QVector<QPointF>& points,
+                                 const QRectF& rect, const QColor& color,
+                                 bool fill, qreal width) {
+    if (points.size() < 2) return;
+    if (fill) {
+        const QColor fillColor = alpha(color, 42);
+        builder.reserveQuads(points.size());
+        for (int i = 1; i < points.size(); ++i) {
+            const QPointF& from = points[i - 1];
+            const QPointF& to = points[i];
+            const qreal top = std::min(from.y(), to.y());
+            if (top >= rect.bottom()) continue;
+            builder.fillQuad(from, to, QPointF(to.x(), rect.bottom()),
+                             QPointF(from.x(), rect.bottom()), fillColor);
+        }
+    }
+    // A slightly wider, dimmer stroke under the core line hides the hard
+    // quad edge that 4× MSAA alone still leaves on a steep slope.
+    builder.polyline(points.constData(), points.size(), width + 0.9,
+                     alpha(color, 80));
+    builder.polyline(points.constData(), points.size(), width, color);
+}
+
 void TraceView::buildSeries(TraceSceneBuilder& builder,
                             const std::vector<double>* values,
                             const QRectF& rect, const ChannelRange& range,
@@ -531,11 +564,11 @@ void TraceView::buildSeries(TraceSceneBuilder& builder,
     if (!values || values->size() < 2 || rect.width() < 2.0) return;
     const int valueLast = int(values->size()) - 1;
     const double span = std::max(1.0e-12, range.max - range.min);
-    const int columns = std::max(2, int(rect.width()));
-    const double columnWidth = rect.width() / double(columns);
     const double viewStart = store_->viewStart();
     const double viewSpan = store_->viewSpan();
-    const qreal half = std::max(0.5, width * 0.5);
+    const qreal dpr = devicePixelRatio();
+    const int columns = deviceColumns(rect);
+    const double columnWidth = rect.width() / double(columns);
     const QColor fillColor = alpha(color, 42);
 
     auto toY = [&](double value) {
@@ -546,6 +579,73 @@ void TraceView::buildSeries(TraceSceneBuilder& builder,
         return alignCompare ? store_->compareFractionForPrimaryFraction(shifted)
                             : shifted;
     };
+    auto viewX = [&](double fraction) {
+        return rect.left() + (fraction - viewStart) / viewSpan * rect.width();
+    };
+
+    const double samplesPerPixel =
+        (viewSpan * double(valueLast)) / std::max(1.0, rect.width() * dpr);
+    if (samplesPerPixel < 1.25) {
+        QVector<QPointF> points;
+        auto flush = [&]() {
+            emitSeriesStroke(builder, points, rect, color, fill, width);
+            points.clear();
+        };
+        if (!alignCompare) {
+            const double viewLo = std::max(clipLow, viewStart);
+            const double viewHi = std::min(clipHigh, viewStart + viewSpan);
+            const int first = std::clamp(
+                int(std::floor((viewLo - shift) * double(valueLast))) - 1, 0,
+                valueLast);
+            const int last = std::clamp(
+                int(std::ceil((viewHi - shift) * double(valueLast))) + 1, 0,
+                valueLast);
+            points.reserve(last - first + 1);
+            for (int i = first; i <= last; ++i) {
+                const double viewFrac = double(i) / double(valueLast) + shift;
+                if (viewFrac < clipLow || viewFrac > clipHigh) {
+                    flush();
+                    continue;
+                }
+                const double value = (*values)[size_t(i)];
+                if (!std::isfinite(value)) {
+                    flush();
+                    continue;
+                }
+                points.append(
+                    QPointF(viewX(viewFrac),
+                            std::clamp(toY(value), rect.top(), rect.bottom())));
+            }
+        } else {
+            points.reserve(columns);
+            for (int column = 0; column < columns; ++column) {
+                const double fraction = viewStart + viewSpan *
+                                                        (double(column) + 0.5) /
+                                                        double(columns);
+                if (fraction < clipLow || fraction > clipHigh) {
+                    flush();
+                    continue;
+                }
+                const double position = sourceFraction(fraction) * valueLast;
+                const int lower =
+                    std::clamp(int(std::floor(position)), 0, valueLast);
+                const int upper = std::min(lower + 1, valueLast);
+                const double value =
+                    (*values)[size_t(lower)] +
+                    ((*values)[size_t(upper)] - (*values)[size_t(lower)]) *
+                        (position - double(lower));
+                if (!std::isfinite(value)) {
+                    flush();
+                    continue;
+                }
+                points.append(
+                    QPointF(rect.left() + columnWidth * (double(column) + 0.5),
+                            std::clamp(toY(value), rect.top(), rect.bottom())));
+            }
+        }
+        flush();
+        return;
+    }
 
     builder.reserveQuads(columns * (fill ? 2 : 1));
     bool hasPrevious = false;
@@ -573,8 +673,6 @@ void TraceView::buildSeries(TraceSceneBuilder& builder,
         const int firstIndex = std::clamp(int(std::floor(from)), 0, valueLast);
         const int lastIndex = std::clamp(int(std::ceil(to)), 0, valueLast);
         if (lastIndex - firstIndex >= 2) {
-            // More than a sample per pixel: the column carries the whole
-            // min/max envelope, which is what a 4096 px raster used to give.
             for (int i = firstIndex; i <= lastIndex; ++i) {
                 const double value = (*values)[size_t(i)];
                 if (!std::isfinite(value)) continue;
@@ -597,13 +695,12 @@ void TraceView::buildSeries(TraceSceneBuilder& builder,
 
         double top = std::clamp(toY(high), rect.top(), rect.bottom());
         double bottom = std::clamp(toY(low), rect.top(), rect.bottom());
-        // Join to the previous column so a steep edge stays a continuous
-        // line instead of two disconnected dots.
         if (hasPrevious) {
             if (bottom < previousTop) bottom = previousTop;
             if (top > previousBottom) top = previousBottom;
         }
         const double x = rect.left() + columnWidth * column;
+        const qreal half = std::max(0.5 / dpr, width * 0.5);
 
         if (fill && bottom < rect.bottom())
             builder.rect(QRectF(x, top, columnWidth, rect.bottom() - top),
@@ -870,10 +967,13 @@ void TraceView::buildDelta(TraceSceneBuilder& builder, const QRectF& rect) {
     }
 
     const int last = n - 1;
-    const int columns = std::max(2, int(rect.width()));
+    const int columns = deviceColumns(rect);
     const double columnWidth = rect.width() / double(columns);
     const double viewStart = store_->viewStart();
     const double viewSpan = store_->viewSpan();
+    const qreal dpr = devicePixelRatio();
+    const double samplesPerPixel =
+        (viewSpan * double(last)) / std::max(1.0, rect.width() * dpr);
     auto toY = [&](double value) {
         return rect.top() +
                (1.0 - (value + deltaMaxAbs_) / (2.0 * deltaMaxAbs_)) *
@@ -881,43 +981,73 @@ void TraceView::buildDelta(TraceSceneBuilder& builder, const QRectF& rect) {
     };
     const double zeroY = std::clamp(toY(0.0), rect.top(), rect.bottom());
 
-    builder.reserveQuads(columns * 2);
-    bool hasPrevious = false;
-    double previousY = 0.0;
-    for (int column = 0; column < columns; ++column) {
-        const double fraction =
-            viewStart + viewSpan * double(column) / double(columns);
-        // The Δ trace belongs to this lap only; past the bounds there is
-        // nothing to compare.
-        if (fraction < 0.0 || fraction > 1.0) {
-            hasPrevious = false;
-            continue;
+    if (samplesPerPixel < 1.25) {
+        QVector<QPointF> points;
+        const int first =
+            std::clamp(int(std::floor(viewStart * last)) - 1, 0, last);
+        const int lastIndex = std::clamp(
+            int(std::ceil((viewStart + viewSpan) * last)) + 1, 0, last);
+        points.reserve(lastIndex - first + 1);
+        for (int i = first; i <= lastIndex; ++i) {
+            const double fraction = double(i) / double(last);
+            const double y =
+                std::clamp(toY(delta[i]), rect.top(), rect.bottom());
+            const double x =
+                rect.left() + (fraction - viewStart) / viewSpan * rect.width();
+            points.append(QPointF(x, y));
         }
-        const double position = std::clamp(fraction, 0.0, 1.0) * last;
-        const int lower = std::clamp(int(std::floor(position)), 0, last);
-        const int upper = std::min(lower + 1, last);
-        const double value =
-            delta[lower] + (delta[upper] - delta[lower]) * (position - lower);
-        const double y = std::clamp(toY(value), rect.top(), rect.bottom());
-        const double x = rect.left() + columnWidth * column;
-
-        // Ahead of the reference is green, behind is red — the band is the
-        // signed area between the trace and the zero line.
-        const QColor band = alpha(value < 0.0 ? kGreen : kRed, 48);
-        builder.rect(
-            QRectF(x, std::min(y, zeroY), columnWidth, std::fabs(zeroY - y)),
-            band);
-
-        double top = y;
-        double bottom = y;
-        if (hasPrevious) {
-            top = std::min(top, previousY);
-            bottom = std::max(bottom, previousY);
+        if (points.size() >= 2) {
+            builder.reserveQuads(points.size());
+            for (int i = 1; i < points.size(); ++i) {
+                const QPointF& from = points[i - 1];
+                const QPointF& to = points[i];
+                const double midY = 0.5 * (from.y() + to.y());
+                const QColor band = alpha(midY > zeroY ? kGreen : kRed, 48);
+                builder.fillQuad(from, to, QPointF(to.x(), zeroY),
+                                 QPointF(from.x(), zeroY), band);
+            }
+            builder.polyline(points.constData(), points.size(), 1.8 + 0.9,
+                             alpha(kForeground, 80));
+            builder.polyline(points.constData(), points.size(), 1.8,
+                             kForeground);
         }
-        builder.rect(QRectF(x, top - 0.85, columnWidth, bottom - top + 1.7),
-                     kForeground);
-        previousY = y;
-        hasPrevious = true;
+    } else {
+        builder.reserveQuads(columns * 2);
+        bool hasPrevious = false;
+        double previousY = 0.0;
+        for (int column = 0; column < columns; ++column) {
+            const double fraction =
+                viewStart + viewSpan * double(column) / double(columns);
+            if (fraction < 0.0 || fraction > 1.0) {
+                hasPrevious = false;
+                continue;
+            }
+            const double position = std::clamp(fraction, 0.0, 1.0) * last;
+            const int lower = std::clamp(int(std::floor(position)), 0, last);
+            const int upper = std::min(lower + 1, last);
+            const double value = delta[lower] + (delta[upper] - delta[lower]) *
+                                                    (position - lower);
+            const double y = std::clamp(toY(value), rect.top(), rect.bottom());
+            const double x = rect.left() + columnWidth * column;
+
+            const QColor band = alpha(value < 0.0 ? kGreen : kRed, 48);
+            builder.rect(QRectF(x, std::min(y, zeroY), columnWidth,
+                                std::fabs(zeroY - y)),
+                         band);
+
+            double top = y;
+            double bottom = y;
+            if (hasPrevious) {
+                top = std::min(top, previousY);
+                bottom = std::max(bottom, previousY);
+            }
+            const qreal half = std::max(0.5 / dpr, 0.85);
+            builder.rect(
+                QRectF(x, top - half, columnWidth, bottom - top + half * 2.0),
+                kForeground);
+            previousY = y;
+            hasPrevious = true;
+        }
     }
 
     dashedHLine(builder, zeroY, rect.left(), rect.right(), kGridStrong);
@@ -1113,6 +1243,7 @@ void TraceView::buildCursorScene(TraceSceneBuilder& builder) {
     }
 
     buildCornerMarkers(builder);
+    buildHoveredCornerDelta(builder);
 }
 
 void TraceView::buildSelection(TraceSceneBuilder& builder) {
@@ -1155,10 +1286,7 @@ void TraceView::buildSelection(TraceSceneBuilder& builder) {
             return delta[i0] + (delta[i1] - delta[i0]) * (position - i0);
         };
         const double regionDelta = sampleDelta(hi) - sampleDelta(lo);
-        const double referenceTime = primaryTime - regionDelta;
-        label = QString("P %1s  R %2s  Δ %3%4s")
-                    .arg(primaryTime, 0, 'f', 3)
-                    .arg(referenceTime, 0, 'f', 3)
+        label = QString("Δ %1%2s")
                     .arg(regionDelta >= 0.0 ? "+" : "")
                     .arg(regionDelta, 0, 'f', 3);
         labelColor = regionDelta > 0.01    ? kRed
@@ -1177,6 +1305,48 @@ void TraceView::buildSelection(TraceSceneBuilder& builder) {
     builder.rect(pill, alpha(backgroundColor_, 238));
     outline(builder, pill, alpha(labelColor, 170));
     builder.text(label, pillFont_, labelColor, pill, Qt::AlignCenter);
+}
+
+void TraceView::buildHoveredCornerDelta(TraceSceneBuilder& builder) {
+    if (!store_ || !store_->comparing() || hoveredCorner_ < 0) return;
+    const auto& corners = store_->corners();
+    if (hoveredCorner_ >= corners.size()) return;
+    const QVector<double>& delta = store_->deltaTrace();
+    if (delta.size() < 2) return;
+
+    const CornerZone& corner = corners[hoveredCorner_];
+    const int last = int(delta.size()) - 1;
+    auto sampleDelta = [&](double fraction) {
+        const double position = std::clamp(fraction, 0.0, 1.0) * double(last);
+        const int i0 = std::clamp(int(std::floor(position)), 0, last);
+        const int i1 = std::min(i0 + 1, last);
+        return delta[i0] + (delta[i1] - delta[i0]) * (position - i0);
+    };
+    const double regionDelta =
+        sampleDelta(corner.end) - sampleDelta(corner.start);
+    const QString label = QString("%1%2s")
+                              .arg(regionDelta >= 0.0 ? "+" : "")
+                              .arg(regionDelta, 0, 'f', 3);
+    const QColor color = regionDelta > 0.01    ? kRed
+                         : regionDelta < -0.01 ? kGreen
+                                               : kForeground;
+
+    const double x1 = xForFrac(corner.start);
+    const double x2 = xForFrac(corner.end);
+    const QFontMetricsF labelMetrics(markerFont_);
+    const QSizeF textSize = labelMetrics.size(Qt::TextSingleLine, label);
+    const qreal inset = 2.0;
+    const qreal bandY = 2.0;
+    const qreal bandH = 17.0;
+    qreal pillWidth = textSize.width() + 8;
+    const qreal inner = std::max(0.0, (x2 - x1) - 2.0 * inset);
+    if (pillWidth > inner) pillWidth = inner;
+    const QRectF pill(x2 - inset - pillWidth, bandY + 1.0, pillWidth,
+                      bandH - 2.0);
+    if (pill.width() < 4.0) return;
+    builder.rect(pill, alpha(backgroundColor_, 235));
+    outline(builder, pill, alpha(color, 170));
+    builder.text(label, markerFont_, color, pill, Qt::AlignCenter);
 }
 
 // Hover keeps the event name available without redrawing the guide over the
@@ -1320,6 +1490,13 @@ void TraceView::updateHoveredMarker(const QPointF& position) {
     const int marker = markerIndexAt(position);
     if (marker == hoveredMarker_) return;
     hoveredMarker_ = marker;
+    emit overlayChanged();
+}
+
+void TraceView::updateHoveredCorner(const QPointF& position) {
+    const int index = cornerIndexAt(position);
+    if (index == hoveredCorner_) return;
+    hoveredCorner_ = index;
     emit overlayChanged();
 }
 
@@ -1572,6 +1749,7 @@ void TraceView::keyPressEvent(QKeyEvent* event) {
 void TraceView::hoverMoveEvent(QHoverEvent* event) {
     if (!store_ || !store_->primaryUnified()) return;
     updateZoneHoverCursor(event->position());
+    updateHoveredCorner(event->position());
     if (cursorTimer_.isValid() && cursorTimer_.elapsed() < kHoverFrameMs) {
         event->accept();
         return;
@@ -1586,8 +1764,9 @@ void TraceView::hoverMoveEvent(QHoverEvent* event) {
 }
 
 void TraceView::hoverLeaveEvent(QHoverEvent* event) {
-    if (hoveredMarker_ >= 0) {
+    if (hoveredMarker_ >= 0 || hoveredCorner_ >= 0) {
         hoveredMarker_ = -1;
+        hoveredCorner_ = -1;
         emit overlayChanged();
     }
     if (!dragging_ && !panning_ && !selecting_) unsetCursor();

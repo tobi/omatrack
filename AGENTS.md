@@ -114,6 +114,10 @@ wins on load. Caches (Track Atlas snapshot) stay outside the file.
 - Dispatch formats through the Rust parser workspace.
 - Infer inexpensive metadata from filenames/folders before parsing samples.
 - Group the library as Track → Date → Session → Laps.
+- The file sidebar groups each folder's recordings by calendar day, oldest
+  first. A row is session and driver, not the filename: session name when
+  known, then the mapped driver or the raw ID, with best lap always on the
+  right and start time, lap count, and drive time on the second line.
 - Detect lap boundaries from the best available beacon, lap-time, lap-number, or lap-distance signal.
 - Classify every detected lap, including vendor-supplied lap lists: leading/trailing recording fragments and crossing pairs implausibly shorter than the session median are incomplete (`Out`/`In`/`Frag`), crossings that cover much less lap-distance than the best pair are incomplete, and complete laps far above the session median are pit in/out laps. Only representative laps (`LapEntry::countsForBest`) feed fastest-lap marks, sidebar best times, and default lap selection.
 - Cache parsed/unified laps lazily per session. Opening and normalizing active
@@ -222,7 +226,7 @@ Native lap distance is accepted only when its continuity and total agree with in
 ### Trace workspace
 
 - Overlay an active lap and optional reference lap.
-- Show a track-station-aligned cumulative delta that starts at zero. The same GPS/speed alignment maps every reference trace and synchronized video frame.
+- Show a track-station-aligned cumulative delta that starts at zero. The same lap-progress map (GPS-refined when fixes are good) maps every reference trace and synchronized video frame.
 - Render standard channels plus opt-in raw source channels.
 - Configure channel visibility, color, and lane weight; lanes always fit the pane height with no vertical scrolling or pinning, sized in proportion to channel weight. Right-click a lane for size (double/normal/half) and hide.
 - Share one cursor/readout across traces.
@@ -234,8 +238,8 @@ Native lap distance is accepted only when its continuity and total agree with in
 
 - Open MP4, MOV, MKV, AVI, M4V, and WebM video inside the main analysis workspace; an MP4 containing an AiM `aimd` track is also a telemetry session.
 - Render through libmpv's OpenGL Render API in `MpvVideoItem`; never spawn the mpv CLI or embed a foreign native window.
-- Place video in the resizable section above the traces. Playback chrome stays minimal: the top-left speaker button toggles persisted audio mute, Space toggles playback, Left seeks 5 seconds back, and Right seeks 15 seconds forward. Store the mute preference under `video.muted` in `omatrack.yml`.
-- Selecting an AiM video session selects its fastest lap and pauses at the telemetry cursor. Cursor seeks map to media time, and active playback advances the telemetry cursor. Reaching the end of the current lap pauses, shows a short next-lap 3-2-1, then selects the next lap in the same session and resumes; the reference lap is not changed. Primary/reference video consumes the same cached track-station map as traces and delta: speed landmarks provide the base map, only well-distributed accurate GPS matches correct it, and the UI reports the resulting confidence. Continuous playback uses bounded rate correction rather than periodic hard seeks. Derive each MP4 offset from valid AiM record timestamps and track presentation times; never infer a packet clock from undocumented bytes.
+- Place video in the resizable section above the traces. Playback chrome stays minimal: the top-left speaker button toggles persisted audio mute, Space toggles playback, and Left/Right skip the primary recording by 2 seconds. Store the mute preference under `video.muted` in `omatrack.yml`. Fullscreen dual-video compose is split, active-with-reference pip, reference-with-active pip, active only, or reference only (keys 1–5). In pip layouts the main recording is inset so it is not confused with a single full-frame video. `S` toggles 0.25× slow motion on the primary clock (the reference follows). The top bar shows the layout name, then driver / lap N/M / fuel for the active and reference recordings.
+- Selecting an AiM video session selects its fastest lap and pauses at the telemetry cursor. The primary recording is the clock: it always plays at 1×, each frame advances the telemetry cursor and traces, and it is never rate-corrected or sought to chase telemetry during play. An explicit cursor jump still seeks both recordings. Reaching the end of the current lap pauses, shows a short next-lap 3-2-1, then selects the next lap in the same session and resumes; the reference lap is not changed. Primary/reference video consumes the same cached track-station map as traces and delta: lap progress (monotonic distance at 50 Hz) is the station. GPS position matching is only used when that distance is unusable. The UI reports the resulting confidence. The reference hard-seeks to the mapped station on pause and after a primary jump; during play it holds 1× through corners and uses the following straight to speed up or slow down so both recordings arrive together at the next turn-in. Derive each MP4 offset from valid AiM record timestamps and track presentation times; never infer a packet clock from undocumented bytes.
 - Treat video files as read-only. Parsing and playback must never rewrite embedded telemetry or media.
 - Qt Quick must use the OpenGL graphics API before the first window because `QQuickFramebufferObject` and libmpv share that context.
 - `OMATRACK_VIDEO=/path/to/video` first attempts to open a telemetry-bearing MP4 session, falls back to standalone playback, and is also used by the GUI acceptance harness.
@@ -405,7 +409,7 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
 | C ABI | `third_party/motorsport-telemetry/bridge/` | Extension dispatch, opaque handles, format-neutral lap metadata, bulk decode, stable strings, thread-local errors | Vendor decoding, analysis policy, or exceptions/panics crossing FFI |
 | Core | `src/core/TelemetryEngine.*` | Channel mapping, units, lap detection, resampling, `UnifiedLap` | Qt types, QML, settings, network access |
 | Corner analysis | `src/core/CornerAnalysis.*` | Per-corner metrics and the pluggable checks that produce driver-facing notes | Qt types, UI text layout, Track Atlas fetching |
-| Session/store | `src/app/TelemetryStore.*`, `src/app/RecordingSidecar.*` | Lazy session handles, portable recording/telemetry pairing, selection, cached GPS/speed track-station alignment, comparison, viewport, preferences, Track Atlas, corner analysis | Pixel-level paint loops or vendor byte parsing |
+| Session/store | `src/app/TelemetryStore.*`, `src/app/RecordingSidecar.*` | Lazy session handles, portable recording/telemetry pairing, selection, cached lap-progress track-station alignment, comparison, viewport, preferences, Track Atlas, corner analysis | Pixel-level paint loops or vendor byte parsing |
 | Remote cache | `src/app/RemoteCache.*`, `src/app/AimRemoteIndex.*` | Sync engine: cache layout, hidden `.telemetry` companions, ETag/Last-Modified reuse, stale prune, offline fallback, bounded sparse AiM extraction, create-only companion publish, the LRU budget, video stubs, stream URLs, and pinned offline downloads | Protocol details, telemetry normalization, UI state, source-file mutation |
 | Remote protocols | `src/app/WebDavBackend.cpp`, `src/app/S3Backend.cpp`, `src/app/SigV4.*` | Listing a server and signing a request — PROPFIND/XML, ListObjectsV2, AWS Signature Version 4 | Cache layout, eviction policy, anything that outlives one request |
 | Renderer | `src/app/TraceView.*`, `src/app/TraceSceneBuilder.*`, `src/app/TraceTextCache.*` | Scene-graph geometry generation for the trace surfaces and direct trace interaction | Parsing, network access, persistent product state |
@@ -433,7 +437,7 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
 2. The UI never branches on telemetry format. Add a parser or mapping; do not add `.pds`/`.ld` special cases to QML.
 3. Unified channel arrays share the lap’s 50 Hz absolute-time grid. Keep their lengths aligned with `time`; sample through the source clock so late channel starts, dropped samples, and acquisition gaps cannot shift events.
 4. Unified distance starts at zero and is monotonic.
-5. Comparisons use one cached primary→reference track-station map. Align speed landmarks first; allow only well-distributed accurate GPS fixes to correct drift; use validated/fused velocity progress when landmark matching is unavailable; and retain lap boundaries as start/finish anchors. Traces, delta, cursor values, and video must consume that map. Independent index/distance/time mappings and spatially clustered GPS corrections are incorrect.
+5. Comparisons use one cached primary→reference track-station map. Station is lap progress (monotonic distance) on the 50 Hz unified grid, which is also the Δt(s) = t_you(s) − t_ref(s) definition. Do not overlay a start/finish-pinned GPS time correction on that map — it becomes a lap-long low-Hz ramp. GPS position matching is only the station when distance is unusable. Speed-landmark matching is the last fallback. Retain lap boundaries as start/finish anchors. Traces, delta, cursor values, and video must consume that map. Independent index/distance/time mappings and spatially clustered GPS corrections are incorrect.
 6. The same cached delta feeds both the plotted trace and numeric cursor readout.
 7. Primary means active lap; compare means reference lap. Preserve that semantic and its colors throughout the UI.
 8. Track identity and corner metadata come from Track Atlas when available; local edits are overlays, not upstream truth.
@@ -680,12 +684,11 @@ Embedded libmpv playback must be verified on the native Linux/Omarchy OpenGL sce
   — no warning, no error, just missing traces. Declaring 32-bit indices keeps
   the node out of that merge path. Do not "simplify" it back to unindexed
   triangles.
-- `TraceView` draws one min/max envelope column per pixel, joined to the
-  previous column, for both laps of every lane. The old two-path renderer (a
-  4096 px cached raster above `viewSpan >= 0.65`, a stride-limited
-  `QPolygonF` walk below it) existed only because QPainter path rasterisation
-  dominated the frame; on the GPU the envelope walk is the cheap path and the
-  raster cache is gone. Only each channel's vertical range is cached.
+- `TraceView` draws a device-pixel min/max envelope when a column covers
+  more than one sample. Once there is less than one sample per device
+  pixel it switches to a polyline through the samples, so a zoomed slope
+  is a line instead of a staircase of axis-aligned bars. Only each
+  channel's vertical range is cached.
 - Measured on a full-height Sebring lap, seven lanes, 1280×800 at dpr 1.94
   (`OMATRACK_AUTOTEST_ZOOM=1`, `OMATRACK_AUTOTEST_HOVER=1`): geometry build
   **0.32 ms average, 0.74 ms worst** for ~4900 quads, and **0.006 ms** for the

@@ -158,19 +158,26 @@ private:
                              const TraceConfidenceBand* band,
                              const QRectF& rect, const ChannelRange& range);
     void buildConsistencyStrip(TraceSceneBuilder& builder, const QRectF& rect);
-    /// Emits one lap's trace for `values` into `rect`. Each pixel column
-    /// contributes the min/max of the samples it covers, joined to the
-    /// previous column, so the same code draws a whole lap and a 20 m zoom.
+    /// Emits one lap's trace for `values` into `rect`. Zoomed-out columns
+    /// carry a min/max envelope at device-pixel width. Once there is less
+    /// than one sample per device pixel the same series is a polyline
+    /// through the samples, so a slope stays a line instead of a staircase.
     void buildSeries(TraceSceneBuilder& builder,
                      const std::vector<double>* values, const QRectF& rect,
                      const ChannelRange& range, const QColor& color, bool fill,
                      bool alignCompare, double shift, qreal width,
                      double clipLow = 0.0, double clipHigh = 1.0);
+    void emitSeriesStroke(TraceSceneBuilder& builder,
+                          const QVector<QPointF>& points, const QRectF& rect,
+                          const QColor& color, bool fill, qreal width);
+    qreal devicePixelRatio() const;
+    int deviceColumns(const QRectF& rect) const;
     /// Masks the space outside the lap and names the lap on the other side.
     void buildOutOfLap(TraceSceneBuilder& builder, const QRectF& totalRect);
     void buildDelta(TraceSceneBuilder& builder, const QRectF& rect);
     void buildCornerZones(TraceSceneBuilder& builder, const QRectF& totalRect);
     void buildCornerFocus(TraceSceneBuilder& builder, const QRectF& totalRect);
+    void buildHoveredCornerDelta(TraceSceneBuilder& builder);
     double xForFrac(double frac) const;
     int cornerIndexAt(const QPointF& position) const;
     int markerIndexAt(const QPointF& position) const;
@@ -178,6 +185,7 @@ private:
     // 0 = none, 1 = start edge, 2 = end edge, 3 = label-band body.
     int focusedZoneHandleAt(const QPointF& position) const;
     void updateHoveredMarker(const QPointF& position);
+    void updateHoveredCorner(const QPointF& position);
     void updateZoneHoverCursor(const QPointF& position);
     double fracForX(double x) const;
     int channelIndexAt(const QPointF& position) const;
@@ -206,6 +214,7 @@ private:
     double dragStartFrac_ = 0.0;
     double lastPanFrac_ = 0.0;
     int hoveredMarker_ = -1;
+    int hoveredCorner_ = -1;
     double pressX_ = 0.0;
     QFont canvasFont_;
     QFont emptyStateFont_;

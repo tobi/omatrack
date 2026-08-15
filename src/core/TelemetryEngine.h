@@ -83,6 +83,7 @@ struct UnifiedLap {
     std::vector<double> damperFL, damperFR, damperRL, damperRR;
     std::vector<double> gpsLat, gpsLon;
     std::vector<double> gpsPositionAccuracy, gpsSpeedAccuracy;
+    std::vector<double> fuel;  // litres remaining; NaN when unmapped
     size_t size() const { return time.size(); }
 };
 

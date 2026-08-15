@@ -14,6 +14,7 @@ Item {
     required property string bestTime
     required property string carClass
     required property int childCount
+    readonly property string detailText: (row.sessionStart || "—") + " · " + row.lapCount + (row.lapCount === 1 ? " lap" : " laps") + " · " + (row.driveTime || "—")
     required property string driveTime
     required property string driver
     readonly property bool expandableRow: row.sectionRow || row.role === "folder"
@@ -35,6 +36,9 @@ Item {
     readonly property bool sectionRow: row.role === "source" || row.role === "pins" || row.role === "recent"
     required property string seriesName
     required property string sessionDate
+    required property string sessionName
+    required property string sessionStart
+    readonly property string titleText: row.sessionName !== "" && row.driver !== "" ? row.sessionName + " " + row.driver : row.sessionName || row.driver || "Untitled"
     readonly property string tooltipOwner: "file:" + row.path
     required property string topQuartileTime
     readonly property bool videoFile: row.role === "file" && row.isVideo
@@ -49,10 +53,14 @@ Item {
     signal toggleNodeRequested(string role, string path)
 
     function hoverText(): string {
+        if (row.role === "day")
+            return row.name;
         if (row.role !== "file")
             return row.path;
         const lines = [];
         if (row.hasSession) {
+            if (row.sessionName !== "")
+                lines.push("Session: " + row.sessionName);
             lines.push("Driver: " + (row.driver !== "" ? row.driver : "—"));
             lines.push("Best lap: " + (row.bestTime !== "" ? row.bestTime : "—"));
             lines.push("Avg fastest 25%: " + (row.topQuartileTime !== "" ? row.topQuartileTime : "—"));
@@ -62,6 +70,8 @@ Item {
             lines.push("Series: " + (row.seriesName !== "" ? row.seriesName : "—"));
             lines.push("Date: " + (row.sessionDate !== "" ? row.sessionDate : "—"));
         } else {
+            if (row.sessionName !== "")
+                lines.push("Session: " + row.sessionName);
             if (row.driver !== "")
                 lines.push("Driver: " + row.driver);
             if (row.carClass !== "")
@@ -78,7 +88,7 @@ Item {
             Store.requestSidebarMetadata(row.path, row.metadataInViewport);
     }
 
-    height: row.sectionRow ? 40 : row.role === "file" ? 38 : 28
+    height: row.sectionRow ? 40 : row.role === "file" ? 38 : row.role === "day" ? 22 : 28
     width: ListView.view.width
 
     Component.onCompleted: row.requestVisibleMetadata()
@@ -92,7 +102,7 @@ Item {
     RowLayout {
         anchors.fill: parent
         anchors.leftMargin: 5 + row.indent * 10
-        anchors.rightMargin: row.hasSession ? 48 : 6
+        anchors.rightMargin: 6
         spacing: 5
         z: 1
 
@@ -125,49 +135,75 @@ Item {
             Layout.fillWidth: true
             spacing: 0
 
-            Label {
-                id: fileName
-
+            RowLayout {
                 Layout.fillWidth: true
-                color: !row.available ? Style.redColor : row.activeFile ? Style.accentColor : row.referenceFile ? Style.orangeColor : Style.foregroundColor
+                spacing: 6
+                visible: row.role === "file"
+
+                Label {
+                    id: fileName
+
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    color: !row.available ? Style.redColor : row.activeFile ? Style.accentColor : row.referenceFile ? Style.orangeColor : Style.foregroundColor
+                    elide: Text.ElideRight
+                    font.bold: row.activeFile
+                    font.family: Style.uiFontFamily
+                    font.pixelSize: 10
+                    text: row.titleText
+                }
+                Label {
+                    Layout.alignment: Qt.AlignRight
+                    color: row.activeFile ? Style.accentColor : row.referenceFile ? Style.orangeColor : Style.foregroundColor
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: 10
+                    text: row.bestTime || "—"
+                }
+            }
+            Label {
+                Layout.fillWidth: true
+                color: !row.available ? Style.redColor : row.activeFile ? Style.accentColor : row.referenceFile ? Style.orangeColor : row.role === "day" ? Style.dimTextColor : Style.foregroundColor
                 elide: Text.ElideRight
-                font.bold: row.sectionRow || row.activeFile
-                font.family: row.role === "file" ? Style.monoFontFamily : Style.uiFontFamily
-                font.pixelSize: row.sectionRow ? 10 : 9
+                font.bold: row.sectionRow || row.role === "day" || row.activeFile
+                font.family: row.role === "day" ? Style.monoFontFamily : Style.uiFontFamily
+                font.letterSpacing: row.role === "day" ? 0.6 : 0
+                font.pixelSize: row.sectionRow ? 10 : row.role === "day" ? 8 : 9
                 text: row.name
+                visible: row.role !== "file"
             }
-            Label {
+            RowLayout {
                 Layout.fillWidth: true
-                color: !row.available ? Style.redColor : Style.mutedTextColor
-                elide: Text.ElideMiddle
-                font.family: Style.monoFontFamily
-                font.pixelSize: 8
-                text: row.role === "pins" ? row.childCount + (row.childCount === 1 ? " pinned item" : " pinned items") : row.role === "recent" ? row.childCount + (row.childCount === 1 ? " recent item" : " recent items") : row.role === "source" ? (!row.available ? "Folder not found" : row.childCount + (row.childCount === 1 ? " file" : " files")) : row.driver !== "" ? row.driver + (row.bestTime !== "" ? " · best " + row.bestTime : "") + (row.modified !== "" ? " · " + row.modified : "") : row.modified
-                visible: row.role !== "folder"
+                spacing: 4
+                visible: row.role === "file" || row.role === "pins" || row.role === "recent" || row.role === "source"
+
+                Label {
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    color: !row.available ? Style.redColor : Style.mutedTextColor
+                    elide: Text.ElideRight
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: 8
+                    text: row.role === "file" ? row.detailText : row.role === "pins" ? row.childCount + (row.childCount === 1 ? " pinned item" : " pinned items") : row.role === "recent" ? row.childCount + (row.childCount === 1 ? " recent item" : " recent items") : row.role === "source" ? (!row.available ? "Folder not found" : row.childCount + (row.childCount === 1 ? " file" : " files")) : ""
+                }
+                RoleDot {
+                    activeColor: Style.accentColor
+                    selected: row.activeFile
+                    size: 9
+                    tip: "Make current lap"
+                    visible: row.hasSession
+
+                    onActivated: row.setActiveRequested(row.key)
+                }
+                RoleDot {
+                    activeColor: Style.orangeColor
+                    selected: row.referenceFile
+                    size: 9
+                    tip: row.referenceFile ? "Clear reference" : "Make reference lap"
+                    visible: row.hasSession
+
+                    onActivated: row.setReferenceRequested(row.key)
+                }
             }
-        }
-    }
-    Row {
-        anchors.right: parent.right
-        anchors.rightMargin: 8
-        anchors.verticalCenter: parent.verticalCenter
-        spacing: 8
-        visible: row.hasSession
-        z: 2
-
-        RoleDot {
-            activeColor: Style.accentColor
-            selected: row.activeFile
-            tip: "Make current lap"
-
-            onActivated: row.setActiveRequested(row.key)
-        }
-        RoleDot {
-            activeColor: Style.orangeColor
-            selected: row.referenceFile
-            tip: row.referenceFile ? "Clear reference" : "Make reference lap"
-
-            onActivated: row.setReferenceRequested(row.key)
         }
     }
     MouseArea {
@@ -187,7 +223,7 @@ Item {
             }
             if (row.expandableRow)
                 row.toggleNodeRequested(row.role, row.path);
-            else
+            else if (row.role === "file")
                 row.fileActivated(row.path, row.key, row.hasSession);
         }
         onEntered: {

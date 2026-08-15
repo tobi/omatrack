@@ -77,6 +77,12 @@ void TraceSceneBuilder::rect(const QRectF& rect, const QColor& color) {
          color);
 }
 
+void TraceSceneBuilder::fillQuad(const QPointF& a, const QPointF& b,
+                                 const QPointF& c, const QPointF& d,
+                                 const QColor& color) {
+    quad(a, b, c, d, color);
+}
+
 void TraceSceneBuilder::line(const QPointF& from, const QPointF& to,
                              qreal width, const QColor& color) {
     const qreal dx = to.x() - from.x();

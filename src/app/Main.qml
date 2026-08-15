@@ -52,11 +52,13 @@ ApplicationWindow {
     property bool telemetryVideoActive: false
     property bool videoControlsRequested: true
     property bool videoFullscreen: false
-    // 0 = both, 1 = active/left, 2 = reference/right. The docked workspace
-    // always shows both recordings; this selector is a fullscreen aid.
-    property int videoFullscreenLayout: 0
+    // Fullscreen compose: 1 split, 2 active+pip, 3 ref+pip, 4 active,
+    // 5 reference. Docked playback always uses split when both exist.
+    property int videoFullscreenLayout: 1
+    readonly property string videoFullscreenLayoutTitle: root.videoFullscreenLayout === 1 ? "SPLIT" : root.videoFullscreenLayout === 2 ? "ACTIVE + REF" : root.videoFullscreenLayout === 3 ? "REF + ACTIVE" : root.videoFullscreenLayout === 4 ? "ACTIVE" : root.videoFullscreenLayout === 5 ? "REFERENCE" : ""
     property bool videoOverlayVisible: true
     property int videoRestoreVisibility: Window.Windowed
+    property bool videoSlowMotion: false
     property bool videoVisible: false
 
     function addDir(p): void {
@@ -151,6 +153,11 @@ ApplicationWindow {
             flexibleTimeMs: Math.max(1, flexibleTimeMs)
         };
     }
+    function lockPrimaryRealtime(): void {
+        const rate = root.videoSlowMotion && root.videoFullscreen ? 0.25 : 1;
+        if (videoPlayer.loaded && videoPlayer.playbackRate !== rate)
+            videoPlayer.playbackRate = rate;
+    }
     function movePointerTooltip(owner: string, x: real, y: real): void {
         if (root.pointerTooltipOwner !== owner)
             return;
@@ -182,6 +189,9 @@ ApplicationWindow {
             return;
         videoPlayer.openMedia(source);
     }
+    function primaryClockRate(): real {
+        return root.videoSlowMotion && root.videoFullscreen ? 0.25 : 1;
+    }
     function realignPausedVideos(): void {
         const ref = root.videoReference();
         if (!root.dualVideo || !videoPlayer.loaded || !videoPlayer.paused || !ref || !ref.loaded)
@@ -200,7 +210,7 @@ ApplicationWindow {
 
         ref.paused = true;
         ref.playbackRate = 1;
-        root.referenceSyncBaseRate = Store.comparisonVideoRate;
+        root.referenceSyncBaseRate = 1;
         root.referenceSyncError = target - ref.position;
         root.referenceSyncLastPrimary = videoPlayer.position;
         root.referenceSyncLastTarget = target;
@@ -251,17 +261,32 @@ ApplicationWindow {
         videoControlsHideTimer.restart();
     }
     function seekVideoRelative(seconds) {
-        if (telemetryVideoActive)
-            Store.seekCursorSeconds(seconds);
-        else
-            videoPlayer.seekRelative(seconds);
+        if (!videoPlayer.loaded)
+            return;
+        if (root.lapAdvanceCount > 0)
+            root.cancelLapAdvance();
+        const target = Math.max(0, videoPlayer.position + seconds);
+        videoPlayer.seek(target);
+        if (root.telemetryVideoActive)
+            Store.setCursorFromVideoTime(target);
+        if (root.dualVideo)
+            root.syncReferenceVideo(true);
         root.revealVideoControls();
     }
     function seekVideoToTelemetry() {
         if (!telemetryVideoActive || !videoPlayer.loaded)
             return;
+        root.lockPrimaryRealtime();
         const target = Store.primaryVideoTime;
-        if (Math.abs(videoPlayer.position - target) > 0.025)
+        const error = Math.abs(videoPlayer.position - target);
+        if (videoPlayer.paused) {
+            if (error > 0.025)
+                videoPlayer.seek(target);
+            return;
+        }
+        // Playing: the primary file is the clock. Only honor an explicit
+        // cursor jump — never tug the recording back onto a telemetry sample.
+        if (error > 0.2)
             videoPlayer.seek(target);
     }
     function sessionInfoForKey(key) {
@@ -319,6 +344,14 @@ ApplicationWindow {
             Store.compareLap(key, lap.lapId);
         else
             Store.selectSession(key, true);
+    }
+    function setVideoFullscreenLayout(layout: int): void {
+        if (layout < 1 || layout > 5)
+            return;
+        if (!root.dualVideo && layout !== 4)
+            return;
+        root.videoFullscreenLayout = layout;
+        root.revealVideoControls();
     }
     function showPointerTooltip(owner: string, text: string, x: real, y: real): void {
         root.pointerTooltipOwner = owner;
@@ -378,50 +411,30 @@ ApplicationWindow {
         const error = target - ref.position;
         const primaryDelta = videoPlayer.position - referenceSyncLastPrimary;
         referenceSyncError = error;
-        if (force) {
-            ref.playbackRate = Store.comparisonVideoRate;
+        if (force || videoPlayer.paused || Math.abs(primaryDelta) > 0.5) {
+            // Pause, play-start, and an explicit primary jump all snap the
+            // reference onto the mapped station. Continuous play never seeks.
+            ref.playbackRate = videoPlayer.paused ? 1 : root.primaryClockRate();
             ref.seek(target);
             referenceSyncError = 0;
-            referenceSyncBaseRate = Store.comparisonVideoRate;
+            referenceSyncBaseRate = 1;
             referenceSyncLastPrimary = videoPlayer.position;
             referenceSyncLastTarget = target;
-            referenceSyncState = "LOCKED";
+            referenceSyncState = videoPlayer.paused ? "ALIGNING" : "LOCKED";
+            if (videoPlayer.paused)
+                pausedVideoAlignmentTimer.restart();
             return;
-        }
-        if (videoPlayer.paused) {
-            ref.playbackRate = 1;
-            if (Math.abs(error) > 0.025)
-                ref.seek(target);
-            referenceSyncError = 0;
-            referenceSyncLastPrimary = videoPlayer.position;
-            referenceSyncLastTarget = target;
-            referenceSyncState = "LOCKED";
-            return;
-        }
-        if (Math.abs(primaryDelta) > 0.5) {
-            // Follow an explicit primary seek exactly. This is navigation, not
-            // the periodic correction that previously made playback jump.
-            referenceSyncBaseRate = Store.comparisonVideoRate;
-            ref.playbackRate = referenceSyncBaseRate;
-            ref.seek(target);
-            referenceSyncError = 0;
-            referenceSyncLastPrimary = videoPlayer.position;
-            referenceSyncLastTarget = target;
-            referenceSyncState = "LOCKED";
-            return;
-        }
-        if (primaryDelta > 0.02) {
-            const mappedRate = Store.comparisonVideoRate;
-            referenceSyncBaseRate = mappedRate;
-            referenceSyncLastPrimary = videoPlayer.position;
-            referenceSyncLastTarget = target;
         }
 
-        // Feed forward the track-map rate, then trim residual clock error.
-        // No periodic seeks: continuous playback remains visually continuous.
-        const correction = Math.max(-0.3, Math.min(0.3, error * 0.8));
-        ref.playbackRate = Math.max(0.5, Math.min(2, referenceSyncBaseRate + correction));
-        referenceSyncState = Math.abs(error) < 0.08 ? "LOCKED" : "TRIMMING";
+        referenceSyncLastPrimary = videoPlayer.position;
+        referenceSyncLastTarget = target;
+        const rate = Store.referencePlaybackRate(ref.position) * root.primaryClockRate();
+        referenceSyncBaseRate = rate;
+        ref.playbackRate = rate;
+        if (Store.cursorInCorner())
+            referenceSyncState = Math.abs(error) < 0.08 ? "CORNER" : "HOLD";
+        else
+            referenceSyncState = Math.abs(error) < 0.08 ? "LOCKED" : "STRAIGHT";
     }
     function syncTelemetryVideo() {
         const source = Store.primaryVideoSource;
@@ -449,6 +462,15 @@ ApplicationWindow {
         const text = value.toString();
         return text.startsWith("file://") ? decodeURIComponent(text.substring(7)) : text;
     }
+    function toggleVideoSlowMotion(): void {
+        if (!root.videoFullscreen || !videoPlayer.loaded)
+            return;
+        root.videoSlowMotion = !root.videoSlowMotion;
+        root.lockPrimaryRealtime();
+        if (root.dualVideo && !videoPlayer.paused)
+            root.syncReferenceVideo(false);
+        root.revealVideoControls();
+    }
     function tryResumeLapAdvance(): void {
         if (!root.lapAdvanceResume)
             return;
@@ -457,6 +479,7 @@ ApplicationWindow {
         root.lapAdvanceResume = false;
         if (!videoPlayer.loaded)
             return;
+        root.lockPrimaryRealtime();
         videoPlayer.paused = false;
         if (root.dualVideo)
             root.syncReferenceVideo(true);
@@ -511,9 +534,10 @@ ApplicationWindow {
         return decodeURIComponent(path.substring(path.lastIndexOf("/") + 1));
     }
     // ── reference recording ─────────────────────────────────────────
-    // The reference video is driven by the telemetry cursor and a cached,
-    // monotonic track-position map. GPS fixes remove slow distance drift;
-    // bounded playback-rate trim removes clock drift without periodic seeks.
+    // The primary recording is the clock: it always plays at 1× and each
+    // frame moves the telemetry cursor. The reference snaps to the mapped
+    // station on pause, then uses the next straight to arrive with it at
+    // turn-in. Corners stay at 1× so a turn is never time-warped.
     function videoReference(): MpvVideoItem {
         return videoReferenceLoader.player;
     }
@@ -522,14 +546,38 @@ ApplicationWindow {
             return;
         if (on) {
             videoVisible = true;
-            videoFullscreenLayout = dualVideo ? 0 : 1;
+            videoFullscreenLayout = dualVideo ? 1 : 4;
             videoRestoreVisibility = root.visibility;
             videoFullscreen = true;
             root.visibility = Window.FullScreen;
         } else {
             videoFullscreen = false;
+            root.videoSlowMotion = false;
+            root.lockPrimaryRealtime();
             root.visibility = videoRestoreVisibility;
         }
+    }
+    function videoSourceAt(x: real, y: real): url {
+        const host = videoComposeHost;
+        if (!root.dualVideo || host.composeMode === 4)
+            return videoPlayer.source;
+        if (host.composeMode === 5)
+            return Store.compareVideoSource;
+        if (host.composeMode === 2) {
+            const left = host.width - host.pipWidth - host.pipMargin;
+            const top = host.height - host.pipHeight - host.pipMargin;
+            if (x >= left && x <= left + host.pipWidth && y >= top && y <= top + host.pipHeight)
+                return Store.compareVideoSource;
+            return videoPlayer.source;
+        }
+        if (host.composeMode === 3) {
+            const left = host.pipMargin;
+            const top = host.height - host.pipHeight - host.pipMargin;
+            if (x >= left && x <= left + host.pipWidth && y >= top && y <= top + host.pipHeight)
+                return videoPlayer.source;
+            return Store.compareVideoSource;
+        }
+        return x > videoStageMouse.width / 2 ? Store.compareVideoSource : videoPlayer.source;
     }
     function videoToggleMuted() {
         if (videoPlayer.loaded)
@@ -542,6 +590,7 @@ ApplicationWindow {
             root.cancelLapAdvance();
             return;
         }
+        root.lockPrimaryRealtime();
         videoPlayer.togglePaused();
         if (!videoPlayer.paused)
             syncReferenceVideo(true);
@@ -700,14 +749,127 @@ ApplicationWindow {
 
             onTriggered: root.tickLapAdvance()
         }
-        RowLayout {
+        Rectangle {
+            id: fullscreenChrome
+
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            color: Qt.rgba(0, 0, 0, 0.72)
+            height: 28
+            visible: root.videoFullscreen
+            z: 10
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 10
+                anchors.rightMargin: 8
+                spacing: 10
+
+                Label {
+                    color: Style.foregroundColor
+                    font.bold: true
+                    font.family: Style.monoFontFamily
+                    font.letterSpacing: 0.8
+                    font.pixelSize: 10
+                    text: root.videoFullscreenLayoutTitle
+                }
+                Label {
+                    color: Style.yellowColor
+                    font.bold: true
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: 10
+                    text: "0.25×"
+                    visible: root.videoSlowMotion
+                }
+                Label {
+                    color: Style.accentColor
+                    font.family: Style.uiFontFamily
+                    font.pixelSize: 10
+                    text: Store.primaryDriverName || "—"
+                    visible: root.telemetryVideoActive
+                }
+                Label {
+                    color: Style.mutedTextColor
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: 10
+                    text: "LAP " + Store.primaryLapOrdinal + "/" + Store.primaryLapTotal
+                    visible: root.telemetryVideoActive
+                }
+                Label {
+                    color: Style.mutedTextColor
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: 10
+                    text: "FUEL " + (Store.primaryFuelLoad || "—")
+                    visible: root.telemetryVideoActive
+                }
+                Label {
+                    color: Style.orangeColor
+                    font.family: Style.uiFontFamily
+                    font.pixelSize: 10
+                    text: Store.compareDriverName || "—"
+                    visible: root.telemetryVideoActive && root.dualVideo
+                }
+                Label {
+                    color: Style.mutedTextColor
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: 10
+                    text: "LAP " + Store.compareLapOrdinal + "/" + Store.compareLapTotal
+                    visible: root.telemetryVideoActive && root.dualVideo
+                }
+                Label {
+                    color: Style.mutedTextColor
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: 10
+                    text: "FUEL " + (Store.compareFuelLoad || "—")
+                    visible: root.telemetryVideoActive && root.dualVideo
+                }
+                Item {
+                    Layout.fillWidth: true
+                }
+                Repeater {
+                    model: root.dualVideo ? 5 : 0
+
+                    ToolButton {
+                        required property int index
+
+                        Layout.preferredHeight: 22
+                        Layout.preferredWidth: 22
+                        checkable: true
+                        checked: root.videoFullscreenLayout === index + 1
+                        font.family: Style.monoFontFamily
+                        font.pixelSize: 9
+                        padding: 0
+                        text: String(index + 1)
+
+                        onClicked: root.setVideoFullscreenLayout(index + 1)
+                    }
+                }
+            }
+        }
+        Item {
+            id: videoComposeHost
+
+            readonly property int composeMode: !root.dualVideo ? 4 : !root.videoFullscreen ? 1 : root.videoFullscreenLayout
+            readonly property real gap: 2
+            readonly property real mainHeight: Math.max(0, height - 2 * videoComposeHost.mainInset)
+            readonly property real mainInset: videoComposeHost.composeMode === 2 || videoComposeHost.composeMode === 3 ? Math.round(Math.min(width, height) * 0.07) : 0
+            readonly property real mainWidth: Math.max(0, width - 2 * videoComposeHost.mainInset)
+            readonly property real pipHeight: Math.round(videoComposeHost.pipWidth * 9 / 16)
+            readonly property real pipMargin: 16
+            readonly property real pipWidth: Math.round(width * 0.3)
+            readonly property real splitWidth: Math.max(0, (width - videoComposeHost.gap) / 2)
+
             anchors.fill: parent
-            spacing: root.dualVideo && (!root.videoFullscreen || root.videoFullscreenLayout === 0) ? 2 : 0
+            z: 0
 
             Item {
-                Layout.fillHeight: true
-                Layout.fillWidth: true
-                visible: !root.videoFullscreen || !root.dualVideo || root.videoFullscreenLayout !== 2
+                height: videoComposeHost.composeMode === 3 ? videoComposeHost.pipHeight : videoComposeHost.composeMode === 2 ? videoComposeHost.mainHeight : videoComposeHost.height
+                visible: videoComposeHost.composeMode !== 5
+                width: videoComposeHost.composeMode === 1 ? videoComposeHost.splitWidth : videoComposeHost.composeMode === 3 ? videoComposeHost.pipWidth : videoComposeHost.composeMode === 2 ? videoComposeHost.mainWidth : videoComposeHost.width
+                x: videoComposeHost.composeMode === 3 ? videoComposeHost.pipMargin : videoComposeHost.composeMode === 2 ? videoComposeHost.mainInset : 0
+                y: videoComposeHost.composeMode === 3 ? videoComposeHost.height - videoComposeHost.pipHeight - videoComposeHost.pipMargin : videoComposeHost.composeMode === 2 ? videoComposeHost.mainInset : 0
+                z: videoComposeHost.composeMode === 3 ? 2 : 0
 
                 MpvVideoItem {
                     id: videoPlayer
@@ -719,6 +881,7 @@ ApplicationWindow {
                     onLoadedChanged: {
                         if (loaded && root.telemetryVideoActive) {
                             Qt.callLater(() => {
+                                root.lockPrimaryRealtime();
                                 videoPlayer.paused = true;
                                 root.seekVideoToTelemetry();
                             });
@@ -736,6 +899,14 @@ ApplicationWindow {
                             root.tryResumeLapAdvance();
                     }
                     onSourceExpired: root.reopenExpiredVideo(videoPlayer)
+                }
+                Rectangle {
+                    anchors.fill: parent
+                    border.color: Style.accentColor
+                    border.width: 1
+                    color: "transparent"
+                    visible: videoComposeHost.composeMode === 2 || videoComposeHost.composeMode === 3
+                    z: 3
                 }
                 Label {
                     anchors.left: parent.left
@@ -781,9 +952,12 @@ ApplicationWindow {
                 }
             }
             Item {
-                Layout.fillHeight: true
-                Layout.fillWidth: true
-                visible: root.dualVideo && (!root.videoFullscreen || root.videoFullscreenLayout !== 1)
+                height: videoComposeHost.composeMode === 2 ? videoComposeHost.pipHeight : videoComposeHost.composeMode === 3 ? videoComposeHost.mainHeight : videoComposeHost.height
+                visible: root.dualVideo && videoComposeHost.composeMode !== 4
+                width: videoComposeHost.composeMode === 1 ? videoComposeHost.splitWidth : videoComposeHost.composeMode === 2 ? videoComposeHost.pipWidth : videoComposeHost.composeMode === 3 ? videoComposeHost.mainWidth : videoComposeHost.width
+                x: videoComposeHost.composeMode === 1 ? videoComposeHost.splitWidth + videoComposeHost.gap : videoComposeHost.composeMode === 2 ? videoComposeHost.width - videoComposeHost.pipWidth - videoComposeHost.pipMargin : videoComposeHost.composeMode === 3 ? videoComposeHost.mainInset : 0
+                y: videoComposeHost.composeMode === 2 ? videoComposeHost.height - videoComposeHost.pipHeight - videoComposeHost.pipMargin : videoComposeHost.composeMode === 3 ? videoComposeHost.mainInset : 0
+                z: videoComposeHost.composeMode === 2 ? 2 : 0
 
                 Loader {
                     id: videoReferenceLoader
@@ -839,6 +1013,14 @@ ApplicationWindow {
                     }
 
                     target: videoPlayer
+                }
+                Rectangle {
+                    anchors.fill: parent
+                    border.color: Style.orangeColor
+                    border.width: 1
+                    color: "transparent"
+                    visible: videoComposeHost.composeMode === 2 || videoComposeHost.composeMode === 3
+                    z: 3
                 }
                 Label {
                     anchors.left: parent.left
@@ -898,11 +1080,7 @@ ApplicationWindow {
 
             onClicked: mouse => {
                 if (mouse.button === Qt.RightButton) {
-                    let source = videoPlayer.source;
-                    const referenceVisible = root.dualVideo && (!root.videoFullscreen || root.videoFullscreenLayout !== 1);
-                    const activeVisible = !root.videoFullscreen || !root.dualVideo || root.videoFullscreenLayout !== 2;
-                    if (referenceVisible && (!activeVisible || mouse.x > videoStageMouse.width / 2))
-                        source = Store.compareVideoSource;
+                    const source = root.videoSourceAt(mouse.x, mouse.y);
                     const point = videoStageMouse.mapToItem(Overlay.overlay, mouse.x, mouse.y);
                     videoMetadataMenu.videoPath = Store.localPathForVideoSource(source);
                     videoMetadataMenu.x = point.x;
@@ -1060,15 +1238,15 @@ ApplicationWindow {
 
                     ToolButton {
                         Layout.preferredWidth: 42
-                        ToolTip.text: "Back 5 seconds (Left)"
+                        ToolTip.text: "Back 2 seconds (Left)"
                         ToolTip.visible: hovered
                         font.capitalization: Font.MixedCase
                         font.pixelSize: Style.smallFontSize
                         objectName: "videoSeekBackButton"
-                        text: "−5s"
+                        text: "−2s"
                         visible: root.standaloneVideoActive
 
-                        onClicked: root.seekVideoRelative(-5)
+                        onClicked: root.seekVideoRelative(-2)
                     }
                     ToolButton {
                         Layout.preferredWidth: 54
@@ -1086,59 +1264,40 @@ ApplicationWindow {
                     }
                     ToolButton {
                         Layout.preferredWidth: 42
-                        ToolTip.text: "Forward 15 seconds (Right)"
+                        ToolTip.text: "Forward 2 seconds (Right)"
                         ToolTip.visible: hovered
                         font.capitalization: Font.MixedCase
                         font.pixelSize: Style.smallFontSize
                         objectName: "videoSeekForwardButton"
-                        text: "+15s"
+                        text: "+2s"
                         visible: root.standaloneVideoActive
 
-                        onClicked: root.seekVideoRelative(15)
+                        onClicked: root.seekVideoRelative(2)
                     }
                     Row {
                         Layout.preferredHeight: 28
                         spacing: 2
                         visible: root.videoFullscreen && root.dualVideo
 
-                        ToolButton {
-                            ToolTip.text: "Show active video"
-                            ToolTip.visible: hovered
-                            checkable: true
-                            checked: root.videoFullscreenLayout === 1
-                            font.capitalization: Font.MixedCase
-                            font.pixelSize: Style.smallFontSize
-                            height: 28
-                            text: "Left"
-                            width: 42
+                        Repeater {
+                            model: ["Split", "Active+", "Ref+", "Active", "Ref"]
 
-                            onClicked: root.videoFullscreenLayout = 1
-                        }
-                        ToolButton {
-                            ToolTip.text: "Show both videos"
-                            ToolTip.visible: hovered
-                            checkable: true
-                            checked: root.videoFullscreenLayout === 0
-                            font.capitalization: Font.MixedCase
-                            font.pixelSize: Style.smallFontSize
-                            height: 28
-                            text: "Both"
-                            width: 42
+                            ToolButton {
+                                required property int index
+                                required property string modelData
 
-                            onClicked: root.videoFullscreenLayout = 0
-                        }
-                        ToolButton {
-                            ToolTip.text: "Show reference video"
-                            ToolTip.visible: hovered
-                            checkable: true
-                            checked: root.videoFullscreenLayout === 2
-                            font.capitalization: Font.MixedCase
-                            font.pixelSize: Style.smallFontSize
-                            height: 28
-                            text: "Right"
-                            width: 42
+                                ToolTip.text: modelData + " (" + (index + 1) + ")"
+                                ToolTip.visible: hovered
+                                checkable: true
+                                checked: root.videoFullscreenLayout === index + 1
+                                font.capitalization: Font.MixedCase
+                                font.pixelSize: Style.smallFontSize
+                                height: 28
+                                text: String(index + 1)
+                                width: 28
 
-                            onClicked: root.videoFullscreenLayout = 2
+                                onClicked: root.setVideoFullscreenLayout(index + 1)
+                            }
                         }
                     }
                     ToolButton {
@@ -1195,6 +1354,9 @@ ApplicationWindow {
 
             mediaTime: videoPlayer.position
             visible: root.videoFullscreen && root.videoOverlayVisible && root.telemetryVideoActive && videoPlayer.loaded
+        }
+        VideoDeltaBar {
+            visible: root.videoFullscreen && root.videoOverlayVisible && root.telemetryVideoActive && videoPlayer.loaded && Store.comparing
         }
         Rectangle {
             anchors.centerIn: parent
@@ -1277,8 +1439,9 @@ ApplicationWindow {
             root.showVideo(source, false);
         }
         function onVideoTimeChanged(): void {
+            const jumped = Math.abs(videoPlayer.position - Store.primaryVideoTime) > 0.2;
             root.seekVideoToTelemetry();
-            root.syncReferenceVideo(videoPlayer.paused);
+            root.syncReferenceVideo(videoPlayer.paused || jumped);
         }
 
         target: Store
@@ -1800,18 +1963,16 @@ ApplicationWindow {
                         onActivated: root.videoTogglePaused()
                     }
                     Shortcut {
-                        context: Qt.WidgetShortcut
-                        enabled: videoPane.visible && videoPlayer.loaded && videoPane.activeFocus
+                        enabled: videoPane.visible && videoPlayer.loaded
                         sequence: "Left"
 
-                        onActivated: root.seekVideoRelative(-5)
+                        onActivated: root.seekVideoRelative(-2)
                     }
                     Shortcut {
-                        context: Qt.WidgetShortcut
-                        enabled: videoPane.visible && videoPlayer.loaded && videoPane.activeFocus
+                        enabled: videoPane.visible && videoPlayer.loaded
                         sequence: "Right"
 
-                        onActivated: root.seekVideoRelative(15)
+                        onActivated: root.seekVideoRelative(2)
                     }
                     Shortcut {
                         enabled: root.videoFullscreen && root.telemetryVideoActive
@@ -1830,6 +1991,42 @@ ApplicationWindow {
                         sequence: "F"
 
                         onActivated: root.videoSetFullscreen(!root.videoFullscreen)
+                    }
+                    Shortcut {
+                        enabled: root.videoFullscreen && root.dualVideo
+                        sequence: "1"
+
+                        onActivated: root.setVideoFullscreenLayout(1)
+                    }
+                    Shortcut {
+                        enabled: root.videoFullscreen && root.dualVideo
+                        sequence: "2"
+
+                        onActivated: root.setVideoFullscreenLayout(2)
+                    }
+                    Shortcut {
+                        enabled: root.videoFullscreen && root.dualVideo
+                        sequence: "3"
+
+                        onActivated: root.setVideoFullscreenLayout(3)
+                    }
+                    Shortcut {
+                        enabled: root.videoFullscreen
+                        sequence: "4"
+
+                        onActivated: root.setVideoFullscreenLayout(4)
+                    }
+                    Shortcut {
+                        enabled: root.videoFullscreen && root.dualVideo
+                        sequence: "5"
+
+                        onActivated: root.setVideoFullscreenLayout(5)
+                    }
+                    Shortcut {
+                        enabled: root.videoFullscreen && videoPlayer.loaded
+                        sequence: "S"
+
+                        onActivated: root.toggleVideoSlowMotion()
                     }
                     // Docked home of videoStage; the stage itself is at
                     // window scope so it can move fullscreen without

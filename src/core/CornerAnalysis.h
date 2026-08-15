@@ -27,6 +27,7 @@
 
 #pragma once
 
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -110,6 +111,13 @@ struct CornerContext {
     double timeDelta = 0.0;
     double entryTimeDelta = 0.0;
     double exitTimeDelta = 0.0;
+    /// Along-track metres on the primary lap after the same track-station
+    /// map traces and the overlay use. Positive means the primary event is
+    /// later. NaN when the caller has no map; analyzers then fall back to
+    /// each lap's own metres-from-zone-start.
+    double brakePointDelta = std::numeric_limits<double>::quiet_NaN();
+    double turnInDelta = std::numeric_limits<double>::quiet_NaN();
+    double throttlePointDelta = std::numeric_limits<double>::quiet_NaN();
 
     bool comparing() const {
         return reference != nullptr && referenceMetrics.valid;
@@ -150,7 +158,7 @@ private:
 /// fractions. The caller maps the reference zone through the same
 /// primary→reference track-station map used by traces and delta.
 CornerMetrics measureCorner(const UnifiedLap& lap, double startFraction,
-                            double endFraction);
+                            double endFraction, bool allowLateralG = true);
 
 /// Convenience: measure both laps and run the registry.
 std::vector<CornerNote> analyzeCorner(const CornerContext& context);

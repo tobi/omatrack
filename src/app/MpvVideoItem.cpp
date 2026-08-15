@@ -547,7 +547,7 @@ void MpvVideoItem::setVolume(double volume) {
 }
 
 void MpvVideoItem::setPlaybackRate(double rate) {
-    rate = std::clamp(rate, 0.5, 2.0);
+    rate = std::clamp(rate, 0.25, 2.0);
     if (qFuzzyCompare(playbackRate_ + 1.0, rate + 1.0) || !state_ ||
         !state_->handle)
         return;

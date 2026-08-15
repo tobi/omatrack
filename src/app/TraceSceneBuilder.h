@@ -53,6 +53,8 @@ public:
                const QColor& color);
     void polyline(const QPointF* points, int count, qreal width,
                   const QColor& color);
+    void fillQuad(const QPointF& a, const QPointF& b, const QPointF& c,
+                  const QPointF& d, const QColor& color);
     void dot(const QPointF& center, qreal radius, const QColor& color);
     /// Text is laid out inside `box` with `alignment`; the returned width is
     /// the measured text width, 0 when nothing was emitted.

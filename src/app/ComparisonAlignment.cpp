@@ -181,6 +181,57 @@ QVector<double> speedLandmarkAlignment(const omatrack::UnifiedLap& primary,
     }
     return result;
 }
+
+bool usableLapDistance(const omatrack::UnifiedLap& lap) {
+    return lap.distance.size() == lap.time.size() && lap.distance.size() >= 2 &&
+           std::isfinite(lap.distance.front()) &&
+           std::isfinite(lap.distance.back()) &&
+           lap.distance.back() - lap.distance.front() > 100.0;
+}
+
+// Time on `lap` at a 0-1 station. Distance is the station when the lap
+// carries a usable monotonic run; otherwise the sample index is the
+// progress axis. This is the iRacing model: Δt(s) = t_you(s) − t_ref(s).
+double timeAtProgress(const omatrack::UnifiedLap& lap, double progress) {
+    progress = std::clamp(progress, 0.0, 1.0);
+    if (!usableLapDistance(lap)) {
+        const double position = progress * double(lap.time.size() - 1);
+        const size_t low = size_t(std::floor(position));
+        const size_t high = std::min(low + 1, lap.time.size() - 1);
+        return lap.time[low] +
+               (lap.time[high] - lap.time[low]) * (position - double(low));
+    }
+
+    const double target =
+        lap.distance.front() +
+        progress * (lap.distance.back() - lap.distance.front());
+    const auto upper =
+        std::lower_bound(lap.distance.begin(), lap.distance.end(), target);
+    if (upper == lap.distance.begin()) return lap.time.front();
+    if (upper == lap.distance.end()) return lap.time.back();
+    const size_t high = size_t(upper - lap.distance.begin());
+    const size_t low = high - 1;
+    const double span = lap.distance[high] - lap.distance[low];
+    const double local = span > 0.0 ? (target - lap.distance[low]) / span : 0.0;
+    return lap.time[low] + local * (lap.time[high] - lap.time[low]);
+}
+
+QVector<double> progressAlignment(const omatrack::UnifiedLap& primary,
+                                  const omatrack::UnifiedLap& compare) {
+    QVector<double> times(qsizetype(primary.time.size()));
+    const bool primaryDistance = usableLapDistance(primary);
+    const double span = primaryDistance
+                            ? primary.distance.back() - primary.distance.front()
+                            : 0.0;
+    for (size_t i = 0; i < primary.time.size(); ++i) {
+        const double progress =
+            primaryDistance
+                ? (primary.distance[i] - primary.distance.front()) / span
+                : double(i) / double(primary.time.size() - 1);
+        times[qsizetype(i)] = timeAtProgress(compare, progress);
+    }
+    return times;
+}
 }  // namespace
 
 ComparisonAlignmentResult computeComparisonAlignment(
@@ -188,62 +239,27 @@ ComparisonAlignmentResult computeComparisonAlignment(
     ComparisonAlignmentResult result;
     if (primary.time.size() < 2 || compare.time.size() < 2) return result;
 
-    result.time = speedLandmarkAlignment(primary, compare);
-    const bool speedLandmarks =
-        result.time.size() == qsizetype(primary.time.size());
-    if (!speedLandmarks) {
-        auto timeAtProgress = [&compare](double progress) {
-            progress = std::clamp(progress, 0.0, 1.0);
-            const bool usableDistance =
-                compare.distance.size() == compare.time.size() &&
-                compare.distance.back() - compare.distance.front() > 100.0;
-            if (!usableDistance) {
-                const double position =
-                    progress * double(compare.time.size() - 1);
-                const size_t low = size_t(std::floor(position));
-                const size_t high = std::min(low + 1, compare.time.size() - 1);
-                return compare.time[low] +
-                       (compare.time[high] - compare.time[low]) *
-                           (position - double(low));
-            }
-
-            const double target =
-                compare.distance.front() +
-                progress * (compare.distance.back() - compare.distance.front());
-            const auto upper = std::lower_bound(compare.distance.begin(),
-                                                compare.distance.end(), target);
-            if (upper == compare.distance.begin()) return compare.time.front();
-            if (upper == compare.distance.end()) return compare.time.back();
-            const size_t high = size_t(upper - compare.distance.begin());
-            const size_t low = high - 1;
-            const double span = compare.distance[high] - compare.distance[low];
-            const double local =
-                span > 0.0 ? (target - compare.distance[low]) / span : 0.0;
-            return compare.time[low] +
-                   local * (compare.time[high] - compare.time[low]);
-        };
-
-        const bool primaryDistanceUsable =
-            primary.distance.size() == primary.time.size() &&
-            primary.distance.back() - primary.distance.front() > 100.0;
-        result.time.resize(qsizetype(primary.time.size()));
-        for (size_t i = 0; i < primary.time.size(); ++i) {
-            const double progress =
-                primaryDistanceUsable
-                    ? (primary.distance[i] - primary.distance.front()) /
-                          (primary.distance.back() - primary.distance.front())
-                    : double(i) / double(primary.time.size() - 1);
-            result.time[qsizetype(i)] = timeAtProgress(progress);
+    // Station is lap progress, evaluated at every unified sample (50 Hz).
+    // Speed-signature DTW is only the no-distance fallback: matching
+    // braking events is not the same place on the circuit.
+    const bool haveDistance =
+        usableLapDistance(primary) && usableLapDistance(compare);
+    if (haveDistance) {
+        result.time = progressAlignment(primary, compare);
+        result.basis =
+            primary.distanceSource == omatrack::DistanceSource::Native &&
+                    compare.distanceSource == omatrack::DistanceSource::Native
+                ? QStringLiteral("validated lap distance")
+                : QStringLiteral("lap progress");
+    } else {
+        result.time = speedLandmarkAlignment(primary, compare);
+        if (result.time.size() == qsizetype(primary.time.size())) {
+            result.basis = QStringLiteral("speed landmarks");
+        } else {
+            result.time = progressAlignment(primary, compare);
+            result.basis = QStringLiteral("sample index");
         }
     }
-    result.basis =
-        speedLandmarks
-            ? QStringLiteral("speed landmarks")
-            : (primary.distanceSource == omatrack::DistanceSource::Native &&
-                       compare.distanceSource ==
-                           omatrack::DistanceSource::Native
-                   ? QStringLiteral("validated lap distance")
-                   : QStringLiteral("wheel/GPS speed"));
 
     struct GpsAnchor {
         size_t primaryIndex;
@@ -265,9 +281,17 @@ ComparisonAlignmentResult computeComparisonAlignment(
                accuracy > 0.0 && accuracy <= 6.0;
     };
 
-    if (gpsAvailable) {
+    // Distance already is the 50 Hz station. A start/finish-pinned GPS
+    // time offset on top of it is a low-Hz bow: it climbs for half the
+    // lap and swamps the real Δt(s). GPS position is only used as the
+    // station when progress is unavailable.
+    if (gpsAvailable && !haveDistance) {
         constexpr double kMetersPerDegree = 111320.0;
-        const size_t anchorStep = size_t(std::max(1, primary.sampleRate / 2));
+        // Match at the GPS rate (typically 10–25 Hz), not once per half
+        // second. The 50 Hz lap already carries interpolated fixes; skip
+        // only enough to land near 25 Hz so a 10 Hz logger is not sampled
+        // twice per real fix.
+        const size_t anchorStep = size_t(std::max(1, primary.sampleRate / 25));
         const size_t searchRadius = size_t(std::max(1, compare.sampleRate * 8));
         for (size_t i = 0; i < primary.time.size(); i += anchorStep) {
             const double primaryAccuracy = primary.gpsPositionAccuracy[i];
@@ -356,27 +380,30 @@ ComparisonAlignmentResult computeComparisonAlignment(
         for (size_t i = 0; i < anchors.size(); ++i)
             anchors[i].correction = filtered[i];
         const int gpsAnchorCount = int(anchors.size());
-        // Lap boundaries are start/finish-line station anchors. Never extend
-        // the first/last intermittent GPS correction backward over them.
-        anchors.insert(anchors.begin(), {0, 0.0});
-        anchors.push_back({primary.time.size() - 1, 0.0});
-
+        // Hold the first/last real correction out to the lap ends. Pinning
+        // those ends to zero forced a lap-long ramp that read as a
+        // monotonic low-Hz Δt.
         size_t anchor = 0;
         for (size_t i = 0; i < primary.time.size(); ++i) {
-            while (anchor + 1 < anchors.size() &&
-                   anchors[anchor + 1].primaryIndex < i)
-                ++anchor;
-            double correction = anchors[anchor].correction;
-            if (anchor + 1 < anchors.size() &&
-                anchors[anchor + 1].primaryIndex >
-                    anchors[anchor].primaryIndex) {
-                const double fraction =
-                    std::clamp(double(i - anchors[anchor].primaryIndex) /
-                                   double(anchors[anchor + 1].primaryIndex -
-                                          anchors[anchor].primaryIndex),
-                               0.0, 1.0);
-                correction +=
-                    fraction * (anchors[anchor + 1].correction - correction);
+            double correction = anchors.front().correction;
+            if (i >= anchors.back().primaryIndex) {
+                correction = anchors.back().correction;
+            } else if (i > anchors.front().primaryIndex) {
+                while (anchor + 1 < anchors.size() &&
+                       anchors[anchor + 1].primaryIndex < i)
+                    ++anchor;
+                correction = anchors[anchor].correction;
+                if (anchor + 1 < anchors.size() &&
+                    anchors[anchor + 1].primaryIndex >
+                        anchors[anchor].primaryIndex) {
+                    const double fraction =
+                        std::clamp(double(i - anchors[anchor].primaryIndex) /
+                                       double(anchors[anchor + 1].primaryIndex -
+                                              anchors[anchor].primaryIndex),
+                                   0.0, 1.0);
+                    correction += fraction *
+                                  (anchors[anchor + 1].correction - correction);
+                }
             }
             result.time[qsizetype(i)] =
                 std::clamp(result.time[qsizetype(i)] + correction,
@@ -386,9 +413,7 @@ ComparisonAlignmentResult computeComparisonAlignment(
                     result.time[qsizetype(i)], result.time[qsizetype(i - 1)]);
         }
         result.gpsAnchors = gpsAnchorCount;
-        result.basis = speedLandmarks
-                           ? QStringLiteral("GPS anchored · speed landmarks")
-                           : QStringLiteral("GPS anchored · wheel/GPS speed");
+        result.basis = QStringLiteral("GPS anchored · ") + result.basis;
     }
 
     result.fraction.resize(result.time.size());
@@ -455,7 +480,8 @@ QString comparisonAlignmentConfidenceLabel(const QString& basis,
     if (basis.isEmpty()) return QStringLiteral("NONE");
     if (gpsAnchors >= 8) return QStringLiteral("HIGH");
     if (basis.contains(QStringLiteral("speed landmarks")) ||
-        basis == QStringLiteral("validated lap distance"))
+        basis.contains(QStringLiteral("validated lap distance")) ||
+        basis.contains(QStringLiteral("lap progress")))
         return QStringLiteral("MED");
     return QStringLiteral("LOW");
 }

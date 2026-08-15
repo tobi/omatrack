@@ -151,32 +151,31 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
                                  Qt::AlignHCenter, -90.0);
         }
 
-        const double primaryDuration =
-            haveHud ? std::max(1.0, hud->duration)
-            : !primary || primary->time.empty()
-                ? 1.0
-                : std::max(1.0, primary->time.back());
-        const double halfWindow = std::min(0.18, 4.0 / primaryDuration);
+        // The strip is a window of track progress, not time. X is lap
+        // fraction around the current station so both cars answer "what
+        // was the pedal here?" and a slower sector cannot stretch one
+        // trace past the other.
         constexpr double currentMarkerFraction = 0.86;
+        constexpr double kWindowFrac = 0.10;
 
-        // Build the 180-point trace polyline in device space.
         const auto tracePoints = [&](const std::vector<double>& values,
                                      double maximum, bool reference) {
             QVector<QPointF> pts;
-            if (values.size() < 2) return pts;
+            if (values.size() < 2 || !primary || primary->size() < 2)
+                return pts;
             constexpr int points = 180;
             pts.reserve(points);
             for (int i = 0; i < points; ++i) {
                 const double local = double(i) / double(points - 1);
-                const double primaryFraction = std::clamp(
-                    cursor + (local - currentMarkerFraction) * 2.0 * halfWindow,
+                const double primaryFrac = std::clamp(
+                    lapCursor + (local - currentMarkerFraction) * kWindowFrac,
                     0.0, 1.0);
                 const double fraction =
                     reference
                         ? store_->compareFractionForPrimaryFraction(std::clamp(
-                              primaryFraction - store_->referenceAlignment(),
-                              0.0, 1.0))
-                        : primaryFraction;
+                              primaryFrac - store_->referenceAlignment(), 0.0,
+                              1.0))
+                        : primaryFrac;
                 const double value =
                     std::clamp(sample(values, fraction) / maximum, 0.0, 1.0);
                 pts.append(P(graph.left() + local * graph.width(),
@@ -185,69 +184,26 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
             return pts;
         };
 
-        // Emulate the painter's dash pattern along a device-space polyline.
-        // Carry pattern state between segments instead of repeatedly using
-        // fmod(cumulativeLength, period): a rounded phase at the pattern
-        // boundary can produce a sub-ULP step and hang the render thread.
-        const auto dashedPolyline = [&](const QVector<QPointF>& pts,
-                                        qreal width, const QColor& color,
-                                        qreal dashOn, qreal dashOff) {
-            if (pts.size() < 2 || dashOn <= 0.0) return;
-            if (dashOff <= 0.0) {
-                builder_.polyline(pts.constData(), pts.size(), width, color);
-                return;
-            }
-
-            bool drawing = true;
-            qreal patternRemaining = dashOn;
-            QVector<QPointF> run;
-            for (int i = 1; i < pts.size(); ++i) {
-                const QPointF a = pts[i - 1];
-                const QPointF b = pts[i];
-                const qreal segLen = std::hypot(b.x() - a.x(), b.y() - a.y());
-                if (segLen < 1.0e-9) continue;
-
-                const qreal tolerance =
-                    std::numeric_limits<qreal>::epsilon() *
-                    std::max({1.0, segLen, dashOn, dashOff}) * 16.0;
-                qreal t = 0.0;
-                while (segLen - t > tolerance) {
-                    const qreal step = std::min(patternRemaining, segLen - t);
-                    if (drawing) {
-                        if (run.isEmpty())
-                            run.append(a + (b - a) * (t / segLen));
-                        run.append(a + (b - a) * ((t + step) / segLen));
-                    }
-                    t += step;
-                    patternRemaining -= step;
-
-                    if (patternRemaining <= tolerance) {
-                        if (drawing && !run.isEmpty()) {
-                            builder_.polyline(run.constData(), run.size(),
-                                              width, color);
-                            run.clear();
-                        }
-                        drawing = !drawing;
-                        patternRemaining = drawing ? dashOn : dashOff;
-                    }
-                }
-            }
-            if (!run.isEmpty())
-                builder_.polyline(run.constData(), run.size(), width, color);
-        };
-
-        const std::vector<double>& primaryThrottle =
-            haveHud ? hud->throttle : primary->throttle;
-        const std::vector<double>& primaryBrake =
-            haveHud ? hud->brake : primary->brake;
-        const std::vector<double>& primarySteer =
-            haveHud ? hud->steering : primary->steering;
-        const std::vector<double>& primarySpd =
-            haveHud ? hud->speed : primary->speed;
+        const bool haveLap = primary && primary->size() >= 2;
+        const std::vector<double>& primaryThrottle = haveLap ? primary->throttle
+                                                     : haveHud
+                                                         ? hud->throttle
+                                                         : primary->throttle;
+        const std::vector<double>& primaryBrake = haveLap   ? primary->brake
+                                                  : haveHud ? hud->brake
+                                                            : primary->brake;
+        const std::vector<double>& primarySteer = haveLap   ? primary->steering
+                                                  : haveHud ? hud->steering
+                                                            : primary->steering;
+        const std::vector<double>& primarySpd = haveLap   ? primary->speed
+                                                : haveHud ? hud->speed
+                                                          : primary->speed;
         const auto samplePrimaryGear = [&](double fraction) {
+            if (haveLap) return sampleGear(primary->gear, fraction);
             if (haveHud) return int(std::lround(sample(hud->gear, fraction)));
             return sampleGear(primary->gear, fraction);
         };
+        const double nowFrac = haveLap ? lapCursor : cursor;
 
         const auto finiteMax = [](const std::vector<double>& values) {
             double peak = 0.0;
@@ -262,12 +218,12 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
         if (compare) {
             const auto throttlePts = tracePoints(compare->throttle, 1.0, true);
             if (throttlePts.size() >= 2)
-                dashedPolyline(throttlePts, 1.1 * s,
-                               withAlpha(compareColor_, 55), 4.0 * s, 4.0 * s);
+                builder_.polyline(throttlePts.constData(), throttlePts.size(),
+                                  1.5 * s, withAlpha(throttleColor_, 150));
             const auto brakePts = tracePoints(compare->brake, brakeMax, true);
             if (brakePts.size() >= 2)
-                dashedPolyline(brakePts, 1.1 * s, withAlpha(compareColor_, 42),
-                               4.0 * s, 4.0 * s);
+                builder_.polyline(brakePts.constData(), brakePts.size(),
+                                  1.5 * s, withAlpha(brakeColor_, 150));
         }
         const double throttleScale =
             finiteMax(primaryThrottle) > 1.5 ? 100.0 : 1.0;
@@ -289,8 +245,9 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
                        1.0 * s, withAlpha(foregroundColor_, 150));
 
         // Brake / throttle pedal bars.
-        const double throttle = sample(primaryThrottle, cursor) / throttleScale;
-        const double brake = sample(primaryBrake, cursor) / brakeMax;
+        const double throttle =
+            sample(primaryThrottle, nowFrac) / throttleScale;
+        const double brake = sample(primaryBrake, nowFrac) / brakeMax;
         const double pedals[] = {brake, throttle};
         const QColor pedalColors[] = {brakeColor_, throttleColor_};
         for (int i = 0; i < 2; ++i) {
@@ -302,22 +259,12 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
             builder_.rect(R(fill), withAlpha(pedalColors[i], 220));
         }
 
-        // Steering dial: filled disc then ring outline.
+        // Steering wheel: 10 px black rim, dark disc for the readouts.
         const QPointF dialCenterPx = P(dialCenter.x(), dialCenter.y());
-        builder_.dot(dialCenterPx, dialRadius * s, QColor(35, 35, 35, 245));
-        {
-            const qreal r = dialRadius * s;
-            QVector<QPointF> ring;
-            const int segs = 64;
-            ring.reserve(segs + 1);
-            for (int i = 0; i <= segs; ++i) {
-                const double ang = 2.0 * M_PI * double(i) / double(segs);
-                ring.append(QPointF(dialCenterPx.x() + std::cos(ang) * r,
-                                    dialCenterPx.y() + std::sin(ang) * r));
-            }
-            builder_.polyline(ring.constData(), ring.size(), 2.0 * s,
-                              withAlpha(mutedColor_, 80));
-        }
+        constexpr qreal ringWidth = 10.0;
+        const qreal innerRadius = dialRadius - ringWidth;
+        builder_.dot(dialCenterPx, dialRadius * s, QColor(0, 0, 0, 255));
+        builder_.dot(dialCenterPx, innerRadius * s, QColor(35, 35, 35, 245));
 
         constexpr double pi = 3.14159265358979323846;
         const auto steeringDirection = [](double steering) {
@@ -327,8 +274,8 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
             return QPointF(-std::sin(angle), -std::cos(angle));
         };
         // Scanline-fill a convex polygon with 1px device rows; the only way to
-        // produce a filled non-rect shape (diamond marker / gear arrow) with
-        // the quad-only builder. MSAA antialiases the stair-stepped edges.
+        // produce a filled non-rect shape (rim notch / gear arrow) with the
+        // quad-only builder. MSAA antialiases the stair-stepped edges.
         const auto fillConvex = [&](const QVector<QPointF>& verts,
                                     const QColor& color) {
             if (verts.size() < 3) return;
@@ -358,76 +305,54 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
                 if (xMax > xMin) builder_.hLine(y, xMin, xMax, 1.0, color);
             }
         };
-        const auto drawSteeringMarker =
-            [&](const QPointF& point, const QPointF& radial,
-                const QColor& color, qreal radialSize, qreal tangentSize) {
-                const QPointF tangent(-radial.y(), radial.x());
-                const qreal rs = radialSize * s;
-                const qreal ts = tangentSize * s;
-                QVector<QPointF> verts;
-                verts.reserve(4);
-                verts.append(point + radial * rs);
-                verts.append(point + tangent * ts);
-                verts.append(point - radial * rs);
-                verts.append(point - tangent * ts);
-                fillConvex(verts, color);
-            };
+        // A 5×10 (primary) or narrower (reference) notch sitting in the rim.
+        const auto drawRingNotch = [&](double steering, const QColor& color,
+                                       qreal tangentWidth) {
+            const QPointF radial = steeringDirection(steering);
+            const QPointF tangent(-radial.y(), radial.x());
+            const QPointF outer = dialCenterPx + radial * (dialRadius * s);
+            const QPointF inner = dialCenterPx + radial * (innerRadius * s);
+            const qreal half = 0.5 * tangentWidth * s;
+            QVector<QPointF> verts;
+            verts.reserve(4);
+            verts.append(outer + tangent * half);
+            verts.append(outer - tangent * half);
+            verts.append(inner - tangent * half);
+            verts.append(inner + tangent * half);
+            fillConvex(verts, color);
+        };
 
-        const double primarySteering = sample(primarySteer, cursor);
-        const QPointF primarySteeringDirection =
-            steeringDirection(primarySteering);
-        const QPointF primarySteeringPoint =
-            dialCenterPx + primarySteeringDirection * (dialRadius * s);
+        const double primarySteering = sample(primarySteer, nowFrac);
         if (compare) {
             const double referenceSteering =
                 sample(compare->steering, compareCursor);
-            const QPointF referenceSteeringDirection =
-                steeringDirection(referenceSteering);
-            const QPointF referenceSteeringPoint =
-                dialCenterPx + referenceSteeringDirection * (dialRadius * s);
-            const double steeringSweep =
-                std::remainder(primarySteering - referenceSteering, 360.0);
-            const int arcSegments =
-                std::max(1, int(std::ceil(std::abs(steeringSweep) / 5.0)));
-            QVector<QPointF> arc;
-            arc.reserve(arcSegments + 1);
-            arc.append(referenceSteeringPoint);
-            for (int segment = 1; segment <= arcSegments; ++segment) {
-                const double steeringAlongArc =
-                    referenceSteering +
-                    steeringSweep * double(segment) / double(arcSegments);
-                arc.append(dialCenterPx + steeringDirection(steeringAlongArc) *
-                                              (dialRadius * s));
-            }
-            builder_.polyline(arc.constData(), arc.size(), 1.5 * s,
-                              withAlpha(compareColor_, 65));
-            drawSteeringMarker(referenceSteeringPoint,
-                               referenceSteeringDirection,
-                               withAlpha(compareColor_, 210), 5.0, 3.5);
+            drawRingNotch(referenceSteering, QColor(150, 150, 150, 230), 3.0);
         }
-        drawSteeringMarker(primarySteeringPoint, primarySteeringDirection,
-                           steeringColor_, 8.0, 6.0);
+        drawRingNotch(primarySteering, QColor(255, 255, 255, 255), 5.0);
 
-        // Gear readout + delta arrow.
-        const int primaryGear = samplePrimaryGear(cursor);
+        // Gear + speed, centred on the wheel. The shift triangle sits
+        // immediately beside the digit, not out on the rim.
+        const int primaryGear = samplePrimaryGear(nowFrac);
         const int referenceGear =
             compare ? sampleGear(compare->gear, compareCursor) : primaryGear;
         const int gearDelta = primaryGear - referenceGear;
         const QColor gearColor = gearDelta < 0   ? brakeColor_
                                  : gearDelta > 0 ? throttleColor_
                                                  : foregroundColor_;
+        constexpr qreal dialCx = 902.0;
         {
             QFont gearFont(monoFontFamily_);
             gearFont.setBold(true);
-            gearFont.setPixelSize(int(std::lround(52.0 * s)));
+            gearFont.setPixelSize(int(std::lround(50.0 * s)));
             builder_.text(QString::number(primaryGear), gearFont, gearColor,
-                          R(QRectF(842, 42, 120, 55)), Qt::AlignCenter);
+                          R(QRectF(dialCx - 28.0, 64.0, 56.0, 50.0)),
+                          Qt::AlignCenter);
         }
         if (gearDelta != 0) {
-            constexpr qreal triangleCenterX = 944.0;
-            constexpr qreal triangleCenterY = 73.0;
-            constexpr qreal triangleHalfWidth = 6.0;
-            constexpr qreal triangleHalfHeight = 5.0;
+            constexpr qreal triangleCenterX = dialCx + 26.0;
+            constexpr qreal triangleCenterY = 89.0;
+            constexpr qreal triangleHalfWidth = 5.0;
+            constexpr qreal triangleHalfHeight = 4.5;
             QVector<QPointF> tri;
             tri.reserve(3);
             if (gearDelta > 0) {
@@ -448,15 +373,15 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
             fillConvex(tri, gearColor);
         }
 
-        // Speed readout.
         {
             QFont kmhFont(monoFontFamily_);
             kmhFont.setBold(true);
-            kmhFont.setPixelSize(int(std::lround(17.0 * s)));
+            kmhFont.setPixelSize(int(std::lround(14.0 * s)));
             builder_.text(QStringLiteral("km/h"), kmhFont, foregroundColor_,
-                          R(QRectF(842, 98, 120, 20)), Qt::AlignCenter);
+                          R(QRectF(dialCx - 36.0, 112.0, 72.0, 16.0)),
+                          Qt::AlignCenter);
         }
-        const double primarySpeed = sample(primarySpd, cursor);
+        const double primarySpeed = sample(primarySpd, nowFrac);
         const double referenceSpeed =
             compare ? sample(compare->speed, compareCursor) : primarySpeed;
         const double speedDelta = primarySpeed - referenceSpeed;
@@ -472,36 +397,10 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
         {
             QFont speedFont(monoFontFamily_);
             speedFont.setBold(true);
-            speedFont.setPixelSize(int(std::lround(23.0 * s)));
-            builder_.text(QString::number(qRound(primarySpeed)), speedFont,
-                          speedColor, R(QRectF(842, 118, 120, 29)),
-                          Qt::AlignCenter);
-        }
-
-        // Reference time-delta readout.
-        if (compare) {
-            const QVector<double>& deltaTrace = store_->deltaTrace();
-            if (!deltaTrace.isEmpty()) {
-                const double position = std::clamp(cursor, 0.0, 1.0) *
-                                        double(deltaTrace.size() - 1);
-                const qsizetype low = qsizetype(std::floor(position));
-                const qsizetype high = std::min(low + 1, deltaTrace.size() - 1);
-                const double timeDelta =
-                    deltaTrace[low] + (deltaTrace[high] - deltaTrace[low]) *
-                                          (position - double(low));
-                const QColor deltaColor = timeDelta > 0.01    ? brakeColor_
-                                          : timeDelta < -0.01 ? throttleColor_
-                                                              : mutedColor_;
-                QFont deltaFont(monoFontFamily_);
-                deltaFont.setBold(true);
-                deltaFont.setPixelSize(int(std::lround(12.0 * s)));
-                builder_.text(
-                    QStringLiteral("ΔT %1%2s")
-                        .arg(timeDelta >= 0.0 ? QStringLiteral("+") : QString())
-                        .arg(timeDelta, 0, 'f', 3),
-                    deltaFont, deltaColor, R(QRectF(834, 150, 136, 18)),
-                    Qt::AlignCenter);
-            }
+            speedFont.setPixelSize(int(std::lround(24.0 * s)));
+            builder_.text(
+                QString::number(qRound(primarySpeed)), speedFont, speedColor,
+                R(QRectF(dialCx - 40.0, 126.0, 80.0, 28.0)), Qt::AlignCenter);
         }
     }
 

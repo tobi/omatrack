@@ -50,6 +50,8 @@ Pane {
             role: role,
             seriesName: node.seriesName || "",
             sessionDate: node.sessionDate || "",
+            sessionName: node.sessionName || "",
+            sessionStart: node.sessionStart || "",
             topQuartileTime: node.topQuartileTime || ""
         });
         if (expanded)
@@ -76,13 +78,15 @@ Pane {
     function nodeExpanded(role: string, path: string): bool {
         if (fileFilter.text.trim() !== "")
             return true;
+        if (role === "day")
+            return true;
         const stored = browser.expandedNodes[role + ":" + path];
         return stored === undefined ? role === "source" || role === "pins" || role === "recent" : stored;
     }
     function nodeMatches(node, query: string): bool {
         if (query === "")
             return true;
-        const searchable = [node.name || "", node.path || "", node.driver || "", node.bestTime || "", node.carClass || "", node.seriesName || "", node.sessionDate || ""].join(" ").toLowerCase();
+        const searchable = [node.name || "", node.path || "", node.driver || "", node.sessionName || "", node.sessionStart || "", node.bestTime || "", node.carClass || "", node.seriesName || "", node.sessionDate || ""].join(" ").toLowerCase();
         if (searchable.includes(query))
             return true;
         const children = node.children || [];
@@ -145,6 +149,8 @@ Pane {
             treeModel.setProperty(index, "mappingKey", details.mappingKey || "");
             treeModel.setProperty(index, "seriesName", details.seriesName || "");
             treeModel.setProperty(index, "sessionDate", details.sessionDate || "");
+            treeModel.setProperty(index, "sessionName", details.sessionName || "");
+            treeModel.setProperty(index, "sessionStart", details.sessionStart || "");
             treeModel.setProperty(index, "topQuartileTime", details.topQuartileTime || "");
         }
     }

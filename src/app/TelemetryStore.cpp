@@ -108,6 +108,30 @@ bool isStreamStub(const QString& path) {
     return info.isFile() && info.size() == 0;
 }
 
+QString formatFuelLoad(const std::vector<double>& fuel, double fraction) {
+    if (fuel.size() < 2) return {};
+    const double position =
+        std::clamp(fraction, 0.0, 1.0) * double(fuel.size() - 1);
+    const size_t low = size_t(std::floor(position));
+    const size_t high = std::min(low + 1, fuel.size() - 1);
+    const double value =
+        fuel[low] + (fuel[high] - fuel[low]) * (position - double(low));
+    if (!std::isfinite(value)) return {};
+    if (value >= 0.0 && value <= 1.5)
+        return QStringLiteral("%1%").arg(qRound(value * 100.0));
+    return QStringLiteral("%1 L").arg(value, 0, 'f', 1);
+}
+
+int lapOrdinalInSession(const SessionHandle* session, int lapId) {
+    if (!session || lapId < 0) return 0;
+    int ordinal = 0;
+    for (const LapEntry& lap : session->laps()) {
+        ++ordinal;
+        if (lap.lapId == lapId) return ordinal;
+    }
+    return 0;
+}
+
 QDate sessionDate(const SessionHandle* session) {
     if (!session) return {};
     QDate date =
@@ -115,6 +139,140 @@ QDate sessionDate(const SessionHandle* session) {
     if (date.isValid()) return date;
     return QDate::fromString(QFileInfo(session->path()).dir().dirName(),
                              Qt::ISODate);
+}
+
+QString normalizeSessionToken(QString token) {
+    const QString upper = token.toUpper();
+    if (upper.startsWith(QStringLiteral("FP")) ||
+        upper.startsWith(QStringLiteral("CT")))
+        return upper;
+    if (upper == QStringLiteral("QUALI") || upper == QStringLiteral("QUALY") ||
+        upper == QStringLiteral("QUALIFYING"))
+        return QStringLiteral("Qualifying");
+    if (upper == QStringLiteral("QUALYSIM")) return QStringLiteral("QualySim");
+    if (upper == QStringLiteral("WARM-UP") || upper == QStringLiteral("WARMUP"))
+        return QStringLiteral("Warmup");
+    token = token.toLower();
+    if (!token.isEmpty()) token[0] = token[0].toUpper();
+    return token;
+}
+
+QString inferredSessionName(const QString& stem, const QString& folderName) {
+    static const QRegularExpression kSessionToken(
+        QStringLiteral("(?:^|[_ \\-])(FP\\d+|CT\\d+|Qualifying|QualySim|"
+                       "Quali|Qualy|Practice|Race|Warm-?up)(?:$|[_ \\-])"),
+        QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpressionMatch stemMatch = kSessionToken.match(stem);
+    if (stemMatch.hasMatch())
+        return normalizeSessionToken(stemMatch.captured(1));
+    const QRegularExpressionMatch folderMatch = kSessionToken.match(folderName);
+    if (folderMatch.hasMatch())
+        return normalizeSessionToken(folderMatch.captured(1));
+    return {};
+}
+
+QString sessionStartClock(const QString& sessionTime,
+                          const QDateTime& modified) {
+    QTime time = QTime::fromString(sessionTime, QStringLiteral("HH:mm:ss"));
+    if (!time.isValid())
+        time = QTime::fromString(sessionTime, QStringLiteral("HH:mm"));
+    if (time.isValid()) return time.toString(QStringLiteral("HH:mm"));
+    if (modified.isValid()) return modified.toString(QStringLiteral("HH:mm"));
+    return {};
+}
+
+QString sessionStartSortKey(const QString& sessionTime,
+                            const QDateTime& modified) {
+    QTime time = QTime::fromString(sessionTime, QStringLiteral("HH:mm:ss"));
+    if (!time.isValid())
+        time = QTime::fromString(sessionTime, QStringLiteral("HH:mm"));
+    if (time.isValid()) return time.toString(QStringLiteral("HH:mm:ss"));
+    if (modified.isValid())
+        return modified.toString(QStringLiteral("HH:mm:ss"));
+    return {};
+}
+
+QVariantList groupFolderChildrenByDay(const QString& folderPath,
+                                      const QVariantList& children) {
+    QVariantList folders;
+    QVector<QVariantMap> files;
+    folders.reserve(children.size());
+    files.reserve(children.size());
+    for (const QVariant& child : children) {
+        const QVariantMap node = child.toMap();
+        if (node.value(QStringLiteral("role")).toString() ==
+            QStringLiteral("file"))
+            files.append(node);
+        else
+            folders.append(node);
+    }
+    std::sort(
+        files.begin(), files.end(),
+        [](const QVariantMap& left, const QVariantMap& right) {
+            const QString leftDay =
+                left.value(QStringLiteral("sessionDayKey")).toString();
+            const QString rightDay =
+                right.value(QStringLiteral("sessionDayKey")).toString();
+            const bool leftUnknown =
+                leftDay.isEmpty() || leftDay == QStringLiteral("unknown");
+            const bool rightUnknown =
+                rightDay.isEmpty() || rightDay == QStringLiteral("unknown");
+            if (leftUnknown != rightUnknown) return !leftUnknown;
+            if (leftDay != rightDay) return leftDay < rightDay;
+            const QString leftStart =
+                left.value(QStringLiteral("sessionStartSort")).toString();
+            const QString rightStart =
+                right.value(QStringLiteral("sessionStartSort")).toString();
+            if (leftStart != rightStart) return leftStart < rightStart;
+            const qint64 leftModified =
+                left.value(QStringLiteral("modifiedMs")).toLongLong();
+            const qint64 rightModified =
+                right.value(QStringLiteral("modifiedMs")).toLongLong();
+            if (leftModified != rightModified)
+                return leftModified < rightModified;
+            return left.value(QStringLiteral("name"))
+                       .toString()
+                       .compare(right.value(QStringLiteral("name")).toString(),
+                                Qt::CaseInsensitive) < 0;
+        });
+
+    QVariantList grouped = folders;
+    QString currentDay;
+    QVariantMap dayNode;
+    QVariantList dayFiles;
+    const auto flushDay = [&]() {
+        if (dayNode.isEmpty()) return;
+        dayNode.insert(QStringLiteral("children"), dayFiles);
+        grouped.append(dayNode);
+        dayNode.clear();
+        dayFiles.clear();
+    };
+    for (const QVariantMap& file : std::as_const(files)) {
+        QString dayKey = file.value(QStringLiteral("sessionDayKey")).toString();
+        if (dayKey.isEmpty()) dayKey = QStringLiteral("unknown");
+        if (dayKey != currentDay) {
+            flushDay();
+            currentDay = dayKey;
+            QString heading =
+                file.value(QStringLiteral("sessionDayHeading")).toString();
+            if (heading.isEmpty())
+                heading = dayKey == QStringLiteral("unknown")
+                              ? QStringLiteral("Unknown date")
+                              : dayKey;
+            dayNode = QVariantMap{
+                {QStringLiteral("role"), QStringLiteral("day")},
+                {QStringLiteral("name"), heading},
+                {QStringLiteral("path"),
+                 folderPath + QStringLiteral("#day-") + dayKey},
+                {QStringLiteral("available"), true},
+                {QStringLiteral("pinned"), false},
+                {QStringLiteral("children"), QVariantList{}},
+            };
+        }
+        dayFiles.append(file);
+    }
+    flushDay();
+    return grouped;
 }
 
 QString normalizeAtlasName(QString value) {
@@ -272,6 +430,7 @@ const std::vector<MetadataChannelDefinition>& metadataChannelDefinitions() {
         {"gps_speed_accuracy", "GPS speed accuracy", "m/s",
          "Reported speed uncertainty"},
         {"lap_number", "Lap number", "integer", "Logger lap counter"},
+        {"fuel", "Fuel remaining", "L", "Fuel load remaining in the tank"},
     };
     return definitions;
 }
@@ -3779,18 +3938,52 @@ QVariantMap TelemetryStore::sidebarFileDetails(const QString& path) const {
         const QString value = nestedText(metadata, field);
         return value.isEmpty() ? fallback : value;
     };
+    const QFileInfo info(path);
+    const SessionMeta filenameMeta =
+        sessionMetaFromFilename(info.completeBaseName().toStdString());
     QString date = session ? session->date() : QString();
     if (date == QStringLiteral("Unknown")) date.clear();
+
+    QString driver;
+    if (session) {
+        driver = driverDisplay(session);
+        if (driver.startsWith(QStringLiteral("Driver id ")))
+            driver = session->driverId();
+        else if (driver == QStringLiteral("Unknown driver"))
+            driver = session->driverId();
+    }
+
+    QString sessionName = nestedText(metadata, {QStringLiteral("session")});
+    if (sessionName.isEmpty())
+        sessionName =
+            inferredSessionName(info.completeBaseName(), info.dir().dirName());
+
+    QDate day = sessionDate(session);
+    if (!day.isValid())
+        day = QDate::fromString(QString::fromStdString(filenameMeta.date),
+                                QStringLiteral("dd/MM/yyyy"));
+    if (!day.isValid()) day = info.lastModified().date();
+    const QString dayKey =
+        day.isValid() ? day.toString(Qt::ISODate) : QStringLiteral("unknown");
+    const QString dayHeading =
+        day.isValid() ? QLocale(QLocale::English)
+                            .toString(day, QStringLiteral("ddd d MMM yyyy"))
+                      : QStringLiteral("Unknown date");
+
+    const QString recordedTime =
+        session ? session->sessionTime()
+                : QString::fromStdString(filenameMeta.time);
+    const QDateTime modified = info.lastModified();
+
     return QVariantMap{
         {QStringLiteral("key"), session ? session->sessionKey() : QString()},
         {QStringLiteral("hasSession"), session != nullptr},
         {QStringLiteral("isVideo"), video},
-        {QStringLiteral("driver"),
-         session ? driverDisplay(session) : QString()},
+        {QStringLiteral("driver"), driver},
         {QStringLiteral("mappingKey"),
          session ? session->driverMappingKey() : QString()},
         {QStringLiteral("bestTime"),
-         session ? session->bestLapTime() : QString()},
+         session ? session->bestLapTime() : QStringLiteral("—")},
         {QStringLiteral("topQuartileTime"),
          averageFastestQuartileTime(session)},
         {QStringLiteral("driveTime"), indexedDriveTime(session)},
@@ -3801,6 +3994,13 @@ QVariantMap TelemetryStore::sidebarFileDetails(const QString& path) const {
         {QStringLiteral("seriesName"),
          nestedText(metadata, {QStringLiteral("series")})},
         {QStringLiteral("sessionDate"), date},
+        {QStringLiteral("sessionName"), sessionName},
+        {QStringLiteral("sessionStart"),
+         sessionStartClock(recordedTime, modified)},
+        {QStringLiteral("sessionStartSort"),
+         sessionStartSortKey(recordedTime, modified)},
+        {QStringLiteral("sessionDayKey"), dayKey},
+        {QStringLiteral("sessionDayHeading"), dayHeading},
     };
 }
 
@@ -3830,6 +4030,9 @@ QVariantList TelemetryStore::fileSources() const {
         children.reserve(sourceChildren.size());
         for (const QVariant& child : sourceChildren)
             children.append(self(self, child.toMap()));
+        if (role == QStringLiteral("source") ||
+            role == QStringLiteral("folder"))
+            children = groupFolderChildrenByDay(path, children);
         node.insert(QStringLiteral("children"), children);
         return node;
     };
@@ -5375,6 +5578,7 @@ void TelemetryStore::setCompare(SessionHandle* session, int lapId) {
     rebuildComparisonAlignment();
     if (sessionChanged) setReferenceAlignment(0.0);
     emit selectionChanged();
+    emit cursorFracChanged();
     logSelectedLap("select compare", session, lapId);
 }
 
@@ -5486,6 +5690,7 @@ void TelemetryStore::clearCompare() {
     setReferenceAlignment(0.0);
     savePreferences();
     emit selectionChanged();
+    emit cursorFracChanged();
     emit videoTimeChanged();
 }
 
@@ -6137,7 +6342,42 @@ QVariantList TelemetryStore::cornerComparison() const {
             compareCorner.start =
                 compareFractionForPrimaryFraction(corner.start);
             compareCorner.end = compareFractionForPrimaryFraction(corner.end);
-            const QVariantMap compareStats = stats(*compare, compareCorner);
+            context.reference = compare;
+            context.referenceMetrics = omatrack::measureCorner(
+                *compare, compareCorner.start, compareCorner.end);
+            // A comparison must use the same turn-in definition on both
+            // laps. Lateral G on only one of them would invent a 20–30 m
+            // "late" that the steering overlay does not show.
+            if (context.primaryMetrics.hasLateralG !=
+                context.referenceMetrics.hasLateralG) {
+                context.primaryMetrics = omatrack::measureCorner(
+                    *primary, corner.start, corner.end, false);
+                context.referenceMetrics = omatrack::measureCorner(
+                    *compare, compareCorner.start, compareCorner.end, false);
+            }
+            auto assignPoint = [](QVariantMap* target, const char* key,
+                                  double metres) {
+                if (std::isfinite(metres))
+                    target->insert(QString::fromLatin1(key), metres);
+            };
+            assignPoint(&row, "brakePoint", context.primaryMetrics.brakePoint);
+            assignPoint(&row, "liftPoint", context.primaryMetrics.liftPoint);
+            assignPoint(&row, "turnInPoint",
+                        context.primaryMetrics.turnInPoint);
+            assignPoint(&row, "apexPoint", context.primaryMetrics.apexPoint);
+            assignPoint(&row, "throttlePoint",
+                        context.primaryMetrics.throttlePoint);
+            QVariantMap compareStats = stats(*compare, compareCorner);
+            assignPoint(&compareStats, "brakePoint",
+                        context.referenceMetrics.brakePoint);
+            assignPoint(&compareStats, "liftPoint",
+                        context.referenceMetrics.liftPoint);
+            assignPoint(&compareStats, "turnInPoint",
+                        context.referenceMetrics.turnInPoint);
+            assignPoint(&compareStats, "apexPoint",
+                        context.referenceMetrics.apexPoint);
+            assignPoint(&compareStats, "throttlePoint",
+                        context.referenceMetrics.throttlePoint);
             // Map a compare-lap event (metres from that lap's zone start)
             // onto the primary lap's distance axis through the same
             // track-station map traces and delta use. Subtracting each
@@ -6155,8 +6395,13 @@ QVariantList TelemetryStore::cornerComparison() const {
                               compareEventPrimaryFraction(point));
             };
             auto pointDelta = [&](const QString& key) {
-                return startDistance + primaryStats.value(key).toDouble() -
-                       compareEventPrimaryMetres(compareStats.value(key));
+                const double primaryMetres = row.value(key).toDouble();
+                const double compareMetres = compareStats.value(key).toDouble();
+                if (!std::isfinite(primaryMetres) ||
+                    !std::isfinite(compareMetres))
+                    return std::numeric_limits<double>::quiet_NaN();
+                return startDistance + primaryMetres -
+                       compareEventPrimaryMetres(compareMetres);
             };
             // The reference apex, expressed on the primary lap's distance
             // axis, so both markers land on the same zoomed viewport.
@@ -6204,12 +6449,12 @@ QVariantList TelemetryStore::cornerComparison() const {
                 50.0 - timeDelta * 40.0 + exitDelta * 0.8 + apexDelta * 0.35,
                 100.0);
 
-            context.reference = compare;
-            context.referenceMetrics = omatrack::measureCorner(
-                *compare, compareCorner.start, compareCorner.end);
             context.timeDelta = timeDelta;
             context.entryTimeDelta = entryTimeDelta;
             context.exitTimeDelta = exitTimeDelta;
+            context.brakePointDelta = brakePointDelta;
+            context.turnInDelta = turnInDelta;
+            context.throttlePointDelta = throttlePointDelta;
 
             row.insert("compareEntrySpeed", compareStats.value("entrySpeed"));
             row.insert("compareApexSpeed", compareStats.value("apexSpeed"));
@@ -7144,6 +7389,68 @@ const VideoHudSeries* TelemetryStore::primaryVideoHud() const {
     return &primarySession_->videoHud();
 }
 
+int TelemetryStore::primaryLapOrdinal() const {
+    return lapOrdinalInSession(primarySession_, primaryLap_);
+}
+
+int TelemetryStore::primaryLapTotal() const {
+    return primarySession_ ? int(primarySession_->laps().size()) : 0;
+}
+
+QString TelemetryStore::primaryFuelLoad() const {
+    const UnifiedLap* unified = primaryUnified();
+    if (!unified) return {};
+    return formatFuelLoad(unified->fuel, cursorFrac_);
+}
+
+QString TelemetryStore::compareDriverName() const {
+    return compareSession_ ? driverDisplay(compareSession_) : QString();
+}
+
+int TelemetryStore::compareLapOrdinal() const {
+    return lapOrdinalInSession(compareSession_, compareLap_);
+}
+
+int TelemetryStore::compareLapTotal() const {
+    return compareSession_ ? int(compareSession_->laps().size()) : 0;
+}
+
+QString TelemetryStore::compareFuelLoad() const {
+    const UnifiedLap* unified = compareUnified();
+    if (!unified) return {};
+    return formatFuelLoad(unified->fuel,
+                          compareFractionForPrimaryFraction(cursorFrac_));
+}
+
+double TelemetryStore::primaryFractionForVideoTime(double mediaTime) const {
+    if (!std::isfinite(mediaTime) || !primarySession_ || primaryLap_ < 0)
+        return std::numeric_limits<double>::quiet_NaN();
+    const UnifiedLap* unified = primaryUnified();
+    if (!unified || unified->time.size() < 2)
+        return std::numeric_limits<double>::quiet_NaN();
+    for (const LapEntry& lap : primarySession_->laps()) {
+        if (lap.lapId != primaryLap_) continue;
+        const double relativeTime = lap.telemetryTime(
+            mediaTime,
+            primarySession_->videoPresentationOffsetSec().value_or(0.0));
+        if (relativeTime < unified->time.front() ||
+            relativeTime > unified->time.back())
+            return std::numeric_limits<double>::quiet_NaN();
+        if (relativeTime <= unified->time.front()) return 0.0;
+        const auto upper = std::lower_bound(unified->time.begin(),
+                                            unified->time.end(), relativeTime);
+        const size_t high = size_t(upper - unified->time.begin());
+        if (high == 0) return 0.0;
+        if (high >= unified->time.size()) return 1.0;
+        const size_t low = high - 1;
+        const double span = unified->time[high] - unified->time[low];
+        const double local =
+            span > 0.0 ? (relativeTime - unified->time[low]) / span : 0.0;
+        return (double(low) + local) / double(unified->time.size() - 1);
+    }
+    return std::numeric_limits<double>::quiet_NaN();
+}
+
 void SessionHandle::captureVideoHud(const TelemetrySource& source) {
     videoHud_ = {};
     double duration = 0.0;
@@ -7198,6 +7505,7 @@ void SessionHandle::captureVideoHud(const TelemetrySource& source) {
     fill("brake", &videoHud_.brake, true);
     fill("steering", &videoHud_.steering, true);
     fill("gear", &videoHud_.gear, false);
+    fill("fuel", &videoHud_.fuel, true);
 }
 
 const omatrack::UnifiedLap* TelemetryStore::compareUnified() const {
@@ -7246,6 +7554,48 @@ QVariantMap TelemetryStore::cursorReadout() const {
     return out;
 }
 
+double TelemetryStore::cursorTimeDelta() const {
+    const QVector<double>& delta = deltaTrace();
+    if (delta.size() < 2) return std::numeric_limits<double>::quiet_NaN();
+    const double position =
+        qBound(0.0, cursorFrac_, 1.0) * double(delta.size() - 1);
+    const int low = int(std::floor(position));
+    const int high = std::min(low + 1, int(delta.size()) - 1);
+    const double value =
+        delta[low] + (delta[high] - delta[low]) * (position - low);
+    return std::isfinite(value) ? value
+                                : std::numeric_limits<double>::quiet_NaN();
+}
+
+double TelemetryStore::cursorSpeedDelta() const {
+    const UnifiedLap* primary = primaryUnified();
+    const UnifiedLap* compare = compareUnified();
+    if (!primary || !compare || primary->speed.size() < 2 ||
+        compare->speed.size() < 2)
+        return std::numeric_limits<double>::quiet_NaN();
+
+    const auto sampleAt = [](const std::vector<double>& values,
+                             double fraction) {
+        const double position =
+            qBound(0.0, fraction, 1.0) * double(values.size() - 1);
+        const size_t low = size_t(std::floor(position));
+        const size_t high = std::min(low + 1, values.size() - 1);
+        const double value = values[low] + (values[high] - values[low]) *
+                                               (position - double(low));
+        return std::isfinite(value) ? value
+                                    : std::numeric_limits<double>::quiet_NaN();
+    };
+
+    const double primaryFrac = qBound(0.0, cursorFrac_, 1.0);
+    const double compareFrac = compareFractionForPrimaryFraction(
+        qBound(0.0, primaryFrac - referenceAlignment_, 1.0));
+    const double primarySpeed = sampleAt(primary->speed, primaryFrac);
+    const double compareSpeed = sampleAt(compare->speed, compareFrac);
+    if (!std::isfinite(primarySpeed) || !std::isfinite(compareSpeed))
+        return std::numeric_limits<double>::quiet_NaN();
+    return primarySpeed - compareSpeed;
+}
+
 const QVector<double>& TelemetryStore::deltaTrace() const {
     if (deltaCacheValid_) return deltaCache_;
     deltaCache_.clear();
@@ -7258,8 +7608,7 @@ const QVector<double>& TelemetryStore::deltaTrace() const {
         return deltaCache_;
 
     // One track-station map feeds delta, comparison traces, cursor readouts,
-    // and video. GPS anchors correct the fused distance model only where the
-    // receiver reports a good fix; speed propagation bridges the gaps.
+    // and video. Station is lap progress (50 Hz distance). Δt starts at zero.
     const int count = int(primary->size());
     deltaCache_.resize(count);
     double base = 0.0;
@@ -7577,22 +7926,84 @@ double TelemetryStore::primaryFractionForCompareFraction(
 }
 
 double TelemetryStore::compareVideoTime() const {
+    return compareVideoTimeAtFraction(qBound(0.0, cursorFrac_, 1.0));
+}
+
+double TelemetryStore::primaryTimeAtFraction(double fraction) const {
+    const UnifiedLap* primary = primaryUnified();
+    if (!primary || primary->time.size() < 2) return 0.0;
+    const double position =
+        std::clamp(fraction, 0.0, 1.0) * double(primary->time.size() - 1);
+    const size_t low = size_t(std::floor(position));
+    const size_t high = std::min(low + 1, primary->time.size() - 1);
+    return primary->time[low] + (primary->time[high] - primary->time[low]) *
+                                    (position - double(low));
+}
+
+double TelemetryStore::compareVideoTimeAtFraction(double fraction) const {
     if (!compareSession_ || !compareSession_->isVideo() || compareLap_ < 0)
         return 0.0;
-    const SessionHandle* session = compareSession_;
     const UnifiedLap* primary = primaryUnified();
     if (!primary || primary->time.size() < 2) return 0.0;
 
-    const double relativeTime =
-        compareTimeForPrimaryFraction(qBound(0.0, cursorFrac_, 1.0));
+    const double relativeTime = compareTimeForPrimaryFraction(fraction);
     if (relativeTime < 0.0) return 0.0;
-    for (const LapEntry& lap : session->laps()) {
+    for (const LapEntry& lap : compareSession_->laps()) {
         if (lap.lapId == compareLap_)
             return lap.mediaTime(
                 relativeTime,
-                session->videoPresentationOffsetSec().value_or(0.0));
+                compareSession_->videoPresentationOffsetSec().value_or(0.0));
     }
     return 0.0;
+}
+
+double TelemetryStore::nextCornerStartFraction() const {
+    constexpr double kEps = 1e-4;
+    for (const CornerZone& corner : corners_) {
+        if (corner.start > cursorFrac_ + kEps) return corner.start;
+    }
+    return -1.0;
+}
+
+bool TelemetryStore::cursorInCorner() const {
+    for (const CornerZone& corner : corners_) {
+        if (cursorFrac_ + 1e-6 >= corner.start &&
+            cursorFrac_ <= corner.end + 1e-6)
+            return true;
+    }
+    return false;
+}
+
+double TelemetryStore::referencePlaybackRate(double refMediaTime) const {
+    if (!std::isfinite(refMediaTime)) return 1.0;
+    if (cursorInCorner()) return 1.0;
+
+    constexpr double kLockSeconds = 0.25;
+    constexpr double kMinRate = 0.70;
+    constexpr double kMaxRate = 1.80;
+    constexpr double kUnguidedHorizon = 4.0;
+
+    if (corners_.isEmpty()) {
+        const double error = compareVideoTime() - refMediaTime;
+        const double remaining =
+            primaryTimeAtFraction(1.0) - primaryTimeAtFraction(cursorFrac_);
+        const double horizon =
+            std::min(kUnguidedHorizon, std::max(kLockSeconds, remaining));
+        return std::clamp(1.0 + error / horizon, kMinRate, kMaxRate);
+    }
+
+    double horizonFrac = nextCornerStartFraction();
+    if (horizonFrac < 0.0) horizonFrac = 1.0;
+
+    const double remainingPrimary =
+        primaryTimeAtFraction(horizonFrac) - primaryTimeAtFraction(cursorFrac_);
+    if (remainingPrimary < kLockSeconds) return 1.0;
+
+    const double arrive = compareVideoTimeAtFraction(horizonFrac);
+    if (arrive <= 0.0) return 1.0;
+    const double remainingCompare = arrive - refMediaTime;
+    if (remainingCompare <= 0.0) return kMinRate;
+    return std::clamp(remainingCompare / remainingPrimary, kMinRate, kMaxRate);
 }
 
 double TelemetryStore::comparisonVideoRate() const {

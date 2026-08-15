@@ -3,10 +3,11 @@
 // and comparisonAlignmentConfidenceLabel).
 //
 // Synthetic omatrack::UnifiedLap inputs exercise every alignment path:
-//   - speed-landmark DTW alignment
-//   - distance and index progress fallbacks (absent / misaligned / too-short
-//     speed data)
-//   - GPS anchor refinement (valid, distributed fixes)
+//   - lap-progress (distance) alignment at the 50 Hz grid
+//   - speed-landmark DTW when distance is absent
+//   - sample-index fallback (absent / misaligned / too-short speed and
+//     distance)
+//   - GPS anchor refinement at ~25 Hz (valid, distributed fixes)
 //   - insufficient / invalid GPS fallback to the underlying basis
 //   - output size, range, and monotonicity invariants
 //   - basis strings, GPS anchor counts, and confidence labels
@@ -173,13 +174,13 @@ private slots:
             QStringLiteral("MED"));
     }
 
-    void absentSpeedWithoutDistanceUsesWheelGps() {
+    void absentSpeedWithoutDistanceUsesSampleIndex() {
         const int N = 100;
         auto primary = makeLap(N, 50, false, false, false, false);
         auto compare = primary;
         const auto result = computeComparisonAlignment(primary, compare);
 
-        QCOMPARE(result.basis, QStringLiteral("wheel/GPS speed"));
+        QCOMPARE(result.basis, QStringLiteral("sample index"));
         QCOMPARE(result.gpsAnchors, 0);
         QVERIFY(result.time.size() == qsizetype(N));
         QVERIFY(monotonicNonDecreasing(result.time));
@@ -195,7 +196,7 @@ private slots:
         compare.speed.resize(50);  // 50 != 100 time samples → speed mismatch
         const auto result = computeComparisonAlignment(primary, compare);
 
-        QCOMPARE(result.basis, QStringLiteral("wheel/GPS speed"));
+        QCOMPARE(result.basis, QStringLiteral("sample index"));
         QCOMPARE(result.gpsAnchors, 0);
         QVERIFY(result.time.size() == qsizetype(N));
         QVERIFY(monotonicNonDecreasing(result.time));
@@ -211,13 +212,73 @@ private slots:
         auto compare = makeLap(N, 50, true, false, false, false);
         const auto result = computeComparisonAlignment(primary, compare);
 
-        QCOMPARE(result.basis, QStringLiteral("wheel/GPS speed"));
+        QCOMPARE(result.basis, QStringLiteral("sample index"));
         QCOMPARE(result.gpsAnchors, 0);
         QVERIFY(result.time.size() == qsizetype(N));
         QVERIFY(monotonicNonDecreasing(result.time));
         QCOMPARE(
             comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
             QStringLiteral("LOW"));
+    }
+
+    void distanceIsPreferredOverSpeedWhenBothPresent() {
+        const int N = 100;
+        auto primary = makeLap(N, 50, true, true, true, false);
+        auto compare = primary;
+        const auto result = computeComparisonAlignment(primary, compare);
+
+        QCOMPARE(result.basis, QStringLiteral("validated lap distance"));
+        QCOMPARE(result.gpsAnchors, 0);
+        QVERIFY(approx(result.time[50], compare.time[50]));
+        QCOMPARE(
+            comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
+            QStringLiteral("MED"));
+    }
+
+    void slowerLapDeltaIsTimeAtTheSameStation() {
+        const int N = 201;
+        auto primary = makeLap(N, 50, true, true, true, false);
+        auto compare = makeLap(N, 50, true, true, true, false);
+        for (int i = 0; i < N; ++i) primary.time[size_t(i)] *= 1.1;
+
+        const auto result = computeComparisonAlignment(primary, compare);
+        QCOMPARE(result.basis, QStringLiteral("validated lap distance"));
+        QVERIFY(approx(result.time[N / 2], compare.time[N / 2], 1e-6));
+
+        const double midDelta =
+            primary.time[size_t(N / 2)] - result.time[N / 2];
+        const double endDelta = primary.time.back() - result.time.last();
+        QVERIFY(midDelta > 0.1);
+        QVERIFY(endDelta > midDelta);
+        QVERIFY(
+            approx(endDelta, primary.time.back() - compare.time.back(), 1e-6));
+    }
+
+    void identicalGpsDoesNotTurnAStepDeltaIntoARamp() {
+        // A real gain/loss is a step in Δt at the station where time was
+        // made. The old start/finish-pinned GPS overlay turned that into a
+        // lap-long climb even when both cars shared the same GPS path.
+        const int N = 201;
+        auto primary = makeLap(N, 50, true, true, true, true);
+        auto compare = makeLap(N, 50, true, true, true, true);
+        for (int i = N / 2; i < N; ++i) primary.time[size_t(i)] += 0.25;
+
+        const auto result = computeComparisonAlignment(primary, compare);
+        QCOMPARE(result.basis, QStringLiteral("validated lap distance"));
+        QCOMPARE(result.gpsAnchors, 0);
+
+        const double early = primary.time[size_t(N / 4)] - result.time[N / 4];
+        const double late =
+            primary.time[size_t(3 * N / 4)] - result.time[3 * N / 4];
+        QVERIFY2(std::abs(early -
+                          (primary.time.front() - result.time.first())) < 0.02,
+                 qPrintable(QStringLiteral("early delta %1 is a ramp, not a "
+                                           "hold")
+                                .arg(early, 0, 'f', 4)));
+        QVERIFY2(late - early > 0.2,
+                 qPrintable(QStringLiteral("late-early %1 missing the 0.25 s "
+                                           "step")
+                                .arg(late - early, 0, 'f', 4)));
     }
 };
 
@@ -264,8 +325,7 @@ private slots:
         auto compare = primary;
         const auto result = computeComparisonAlignment(primary, compare);
 
-        QCOMPARE(result.basis,
-                 QStringLiteral("GPS anchored · wheel/GPS speed"));
+        QCOMPARE(result.basis, QStringLiteral("GPS anchored · sample index"));
         QVERIFY(result.gpsAnchors >= 8);
         QVERIFY(result.time.size() == qsizetype(N));
         QVERIFY(monotonicNonDecreasing(result.time));
@@ -303,8 +363,9 @@ private slots:
         const int N = 300;
         auto primary = makeLap(N, 50, true, false, false, true);
         auto compare = primary;
-        // Only the first 25 samples carry valid GPS; with anchorStep 25 only a
-        // single anchor survives, far below the >= 8 distributed threshold.
+        // Only the first 25 samples carry valid GPS; at 25 Hz that is a
+        // dozen clustered anchors, still far below the distributed
+        // threshold (4 bins and 50 % coverage).
         const int clusterEnd = 24;
         const double nan = std::numeric_limits<double>::quiet_NaN();
         for (int i = 0; i < N; ++i) {
@@ -335,8 +396,8 @@ class AlignmentInvariantTest : public QObject {
     Q_OBJECT
 private slots:
     void timeAndFractionRespectInvariants() {
-        // N=200 lands exactly 8 GPS anchors (anchorStep 25): a boundary case
-        // for the gpsDistributed >= 8 threshold.
+        // N=200 at 25 Hz produces many GPS anchors, well above the
+        // gpsDistributed >= 8 threshold.
         const int N = 200;
         auto primary = makeLap(N, 50, true, false, false, true);
         auto compare = primary;
@@ -374,7 +435,10 @@ private slots:
                      QStringLiteral("GPS anchored · speed landmarks"), 8),
                  QStringLiteral("HIGH"));
         QCOMPARE(comparisonAlignmentConfidenceLabel(
-                     QStringLiteral("GPS anchored · wheel/GPS speed"), 12),
+                     QStringLiteral("GPS anchored · sample index"), 12),
+                 QStringLiteral("HIGH"));
+        QCOMPARE(comparisonAlignmentConfidenceLabel(
+                     QStringLiteral("GPS anchored · lap progress"), 8),
                  QStringLiteral("HIGH"));
     }
     void speedLandmarksIsMedium() {
@@ -387,10 +451,15 @@ private slots:
                      QStringLiteral("validated lap distance"), 0),
                  QStringLiteral("MED"));
     }
-    void wheelGpsSpeedIsLow() {
+    void sampleIndexIsLow() {
         QCOMPARE(comparisonAlignmentConfidenceLabel(
-                     QStringLiteral("wheel/GPS speed"), 0),
+                     QStringLiteral("sample index"), 0),
                  QStringLiteral("LOW"));
+    }
+    void lapProgressIsMedium() {
+        QCOMPARE(comparisonAlignmentConfidenceLabel(
+                     QStringLiteral("lap progress"), 0),
+                 QStringLiteral("MED"));
     }
     void anchorsTakePrecedenceOverBasis() {
         // >= 8 anchors is HIGH even when the basis would otherwise classify
@@ -404,7 +473,7 @@ private slots:
                      QStringLiteral("speed landmarks"), 7),
                  QStringLiteral("MED"));
         QCOMPARE(comparisonAlignmentConfidenceLabel(
-                     QStringLiteral("wheel/GPS speed"), 7),
+                     QStringLiteral("sample index"), 7),
                  QStringLiteral("LOW"));
     }
     void unknownBasisIsLow() {

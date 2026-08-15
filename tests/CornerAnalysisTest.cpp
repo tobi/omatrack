@@ -30,8 +30,9 @@ struct CornerShape {
     int gearApex = 3;
     double overlapSeconds = 0.0;         ///< throttle held during heavy braking
     double gearShiftDelaySeconds = 0.0;  ///< delay before the first downshift
-    double liftLeadSeconds = 0.0;        ///< lift throttle this long before brake
-    double steeringDelaySeconds = 0.0;   ///< delay the steering build after brake
+    double liftLeadSeconds = 0.0;  ///< lift throttle this long before brake
+    double steeringDelaySeconds =
+        0.0;  ///< delay the steering build after brake
 };
 
 /// Builds a one-corner lap: a straight, a braking zone, an apex, and a
@@ -462,6 +463,25 @@ private slots:
                 std::string::npos);
     }
 
+    void turnInNotePrefersAlignedDelta() {
+        CornerShape late;
+        late.steeringDelaySeconds = 1.4;
+        const UnifiedLap primary = makeLap(late);
+        const UnifiedLap reference = makeLap({});
+        CornerContext context = contextFor(primary, reference, 0.10, 0.80);
+        QVERIFY(std::fabs(context.primaryMetrics.turnInPoint -
+                          context.referenceMetrics.turnInPoint) >= 10.0);
+        context.turnInDelta = 3.0;
+        QVERIFY(!hasNote(CornerAnalysisRegistry::instance().run(context),
+                         "turn_in"));
+        context.turnInDelta = 15.0;
+        const std::vector<CornerNote> notes =
+            CornerAnalysisRegistry::instance().run(context);
+        QVERIFY(hasNote(notes, "turn_in"));
+        QVERIFY(noteText(notes, "turn_in").find("15m") != std::string::npos);
+        QVERIFY(noteText(notes, "turn_in").find("later") != std::string::npos);
+    }
+
     void reportsLateThrottle() {
         CornerShape late;
         late.throttleOn = 0.74;
@@ -518,7 +538,8 @@ private slots:
         UnifiedLap reference = makeLap({});
         auto paint = [](UnifiedLap& lap, double peak) {
             // Rise after steering is already committed, otherwise detectTurnIn
-            // treats the lateral load as a kerb strike and leaves the point unset.
+            // treats the lateral load as a kerb strike and leaves the point
+            // unset.
             for (size_t i = 0; i < lap.gForceLat.size(); ++i) {
                 const double committed =
                     std::max(0.0, (std::fabs(lap.steering[i]) - 30.0) / 30.0);
@@ -566,8 +587,10 @@ private slots:
         sloppy.overlapSeconds = 1.2;
         const UnifiedLap primary = makeLap(sloppy);
         const UnifiedLap reference = makeLap({});
-        const CornerContext context = contextFor(primary, reference, 0.10, 0.80);
-        const auto viaRegistry = CornerAnalysisRegistry::instance().run(context);
+        const CornerContext context =
+            contextFor(primary, reference, 0.10, 0.80);
+        const auto viaRegistry =
+            CornerAnalysisRegistry::instance().run(context);
         const auto viaHelper = analyzeCorner(context);
         QCOMPARE(int(viaHelper.size()), int(viaRegistry.size()));
         for (size_t i = 0; i < viaHelper.size(); ++i)

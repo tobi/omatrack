@@ -163,9 +163,10 @@ struct SidebarPin {
     QString path;
 };
 
-/// Session-length HUD strip sampled from the native recording. The
-/// fullscreen overlay follows video time on this clock, not the selected
-/// lap's UnifiedLap (which is empty outside that lap).
+/// Session-length HUD strip sampled from the native recording. Numeric
+/// readouts may follow video time on this clock when no lap is loaded.
+/// Compared pedal traces use the selected UnifiedLap and the track-station
+/// map, not this series.
 struct VideoHudSeries {
     std::vector<double> time;
     std::vector<double> speed;
@@ -173,6 +174,7 @@ struct VideoHudSeries {
     std::vector<double> brake;
     std::vector<double> steering;
     std::vector<double> gear;
+    std::vector<double> fuel;
     double duration = 0.0;
     bool empty() const { return time.size() < 2; }
 };
@@ -326,6 +328,18 @@ class TelemetryStore : public QObject {
     Q_PROPERTY(QString primarySessionKey READ primarySessionKey NOTIFY
                    selectionChanged)
     Q_PROPERTY(int primaryLapIndex READ primaryLapIndex NOTIFY selectionChanged)
+    Q_PROPERTY(
+        int primaryLapOrdinal READ primaryLapOrdinal NOTIFY selectionChanged)
+    Q_PROPERTY(int primaryLapTotal READ primaryLapTotal NOTIFY selectionChanged)
+    Q_PROPERTY(
+        QString primaryFuelLoad READ primaryFuelLoad NOTIFY cursorFracChanged)
+    Q_PROPERTY(QString compareDriverName READ compareDriverName NOTIFY
+                   selectionChanged)
+    Q_PROPERTY(
+        int compareLapOrdinal READ compareLapOrdinal NOTIFY selectionChanged)
+    Q_PROPERTY(int compareLapTotal READ compareLapTotal NOTIFY selectionChanged)
+    Q_PROPERTY(
+        QString compareFuelLoad READ compareFuelLoad NOTIFY cursorFracChanged)
     Q_PROPERTY(QString compareSessionKey READ compareSessionKey NOTIFY
                    selectionChanged)
     Q_PROPERTY(int compareLapIndex READ compareLapIndex NOTIFY selectionChanged)
@@ -348,6 +362,8 @@ class TelemetryStore : public QObject {
     /// that something is happening.
     Q_PROPERTY(QString videoDownloadStatus READ videoDownloadStatus NOTIFY
                    videoDownloadChanged)
+    /// Local primary/reference pace ratio around the cursor. Playback uses
+    /// `referencePlaybackRate()`, not this value.
     Q_PROPERTY(double comparisonVideoRate READ comparisonVideoRate NOTIFY
                    videoTimeChanged)
     Q_PROPERTY(QString comparisonAlignmentBasis READ comparisonAlignmentBasis
@@ -553,10 +569,24 @@ public:
     const SessionHandle* primarySession() const { return primarySession_; }
     const SessionHandle* compareSession() const { return compareSession_; }
     int primaryLapIndex() const { return primaryLap_; }
+    int primaryLapOrdinal() const;
+    int primaryLapTotal() const;
+    QString primaryFuelLoad() const;
+    QString compareDriverName() const;
+    int compareLapOrdinal() const;
+    int compareLapTotal() const;
+    QString compareFuelLoad() const;
+    double primaryFractionForVideoTime(double mediaTime) const;
     int compareLapIndex() const { return compareLap_; }
     const QVector<CornerZone>& corners() const { return corners_; }
     QString cornerNameAt(double frac) const;
     Q_INVOKABLE QVariantMap cursorReadout() const;
+    /// Accumulated primary−reference time at the cursor station. NaN when
+    /// there is no compare lap. Negative is ahead.
+    Q_INVOKABLE double cursorTimeDelta() const;
+    /// Primary−reference speed at the same station. NaN when either lap
+    /// has no speed. Positive means the active car is faster right now.
+    Q_INVOKABLE double cursorSpeedDelta() const;
     Q_INVOKABLE double sessionStartUnixTime() const;
     Q_INVOKABLE bool hasGlobalTime() const;
     // Per-sample Δ-time (primary vs compare, distance-aligned; empty when no
@@ -610,11 +640,20 @@ public:
     /// URLs; the library and metadata dialogs need the local stub path.
     Q_INVOKABLE QString localPathForVideoSource(const QUrl& source) const;
     double primaryVideoTime() const;
-    // Reference-lap recording uses the same GPS/speed track-station alignment
-    // as traces and delta, so every comparison view shares one coordinate.
+    // Reference-lap recording uses the same lap-progress track-station
+    // alignment as traces and delta, so every comparison view shares one
+    // coordinate.
     QUrl compareVideoSource() const;
     double compareVideoTime() const;
     double comparisonVideoRate() const;
+    /// True when the primary cursor sits inside a corner range. The reference
+    /// video holds 1× here so a turn is never time-warped.
+    Q_INVOKABLE bool cursorInCorner() const;
+    /// Playback speed for the reference recording. On a straight this is the
+    /// rate that lands both videos at the next turn-in together; inside a
+    /// corner it is 1. `refMediaTime` is the reference player's current
+    /// position in seconds.
+    Q_INVOKABLE double referencePlaybackRate(double refMediaTime) const;
     QString videoDownloadStatus() const { return videoDownloadStatus_; }
     QString comparisonAlignmentBasis() const;
     QString comparisonAlignmentConfidence() const;
@@ -741,6 +780,9 @@ private:
     double compareTimeForPrimaryFraction(double fraction) const;
     double compareFractionForPrimaryFraction(double fraction) const;
     double primaryFractionForCompareFraction(double fraction) const;
+    double primaryTimeAtFraction(double fraction) const;
+    double compareVideoTimeAtFraction(double fraction) const;
+    double nextCornerStartFraction() const;
     QVector<omatrack::LibraryLocation> locations_;
     /// Per-location scan outcome, keyed by location id: the status line shown
     /// in preferences and the number of telemetry files discovered.

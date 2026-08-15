@@ -3,8 +3,10 @@
 // TelemetryStore owns the QML-facing caches (comparisonAlignmentTime_,
 // comparisonAlignmentFraction_, comparisonAlignmentBasis_, and
 // comparisonGpsAnchors_) and rebuilds them when the selected lap pair changes.
-// This helper owns only the calculation — speed-landmark DTW, the
-// distance/progress fallback, GPS anchor refinement, and the fraction remap —
+// This helper owns only the calculation — lap-progress (distance) alignment
+// at the 50 Hz unified grid, speed-landmark DTW when distance is missing,
+// GPS position matching only when progress is unavailable, and the
+// fraction remap —
 // so it can be exercised headless with synthetic omatrack::UnifiedLap inputs.
 // The store moves the result into its caches, preserving every threshold,
 // basis string, anchor count, and monotonicity guarantee.
@@ -39,7 +41,8 @@ ComparisonAlignmentResult computeComparisonAlignment(
 
 // Map a (basis, gpsAnchors) pair to the confidence label exposed to QML:
 // "NONE" (no alignment), "HIGH" (GPS-anchored with enough anchors), "MED"
-// (speed landmarks or validated lap distance), or "LOW" (everything else).
+// (lap progress, validated lap distance, or speed landmarks), or "LOW"
+// (sample-index fallback).
 QString comparisonAlignmentConfidenceLabel(const QString& basis,
                                            int gpsAnchors);
 

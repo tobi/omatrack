@@ -63,6 +63,9 @@ const AliasTable& channelMappings() {
         {"gps_speed", {"fia_gpsvel", "gps speed"}},
         {"gps_position_accuracy", {"gps position accuracy"}},
         {"gps_speed_accuracy", {"gps speed accuracy"}},
+        {"fuel",
+         {"fuel remaining", "fuel remain", "fuel level", "fuel qty", "fuelqty",
+          "fuelvol", "fuel volume", "fuel load", "fuelload", "ufuel", "fuel"}},
     };
     return table;
 }
@@ -1266,6 +1269,15 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime,
         speedFactor("gps_speed_accuracy", 3.6) / 3.6;
     const double gpsSpeedFactor =
         speedFactor("gps_speed", format_ == "aimd" ? 3.6 : 1.0) / 3.6;
+    const bool hasFuel = resampled.count("fuel") != 0;
+    double fuelFactor = 1.0;
+    const std::string fuelUnit = unitOf("fuel");
+    if (fuelUnit == "ml")
+        fuelFactor = 0.001;
+    else if (fuelUnit == "gal" || fuelUnit == "usgal")
+        fuelFactor = 3.78541;
+    else if (fuelUnit == "ukgal" || fuelUnit == "impgal")
+        fuelFactor = 4.54609;
 
     int gearOffset = 0;
     auto gearIt = resampled.find("gear");
@@ -1300,6 +1312,7 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime,
     unified.damperRL.reserve(nSamples);
     unified.damperRR.reserve(nSamples);
     unified.driverThrottle.reserve(nSamples);
+    unified.fuel.reserve(nSamples);
 
     std::vector<double> gpsSpeedMps;
     gpsSpeedMps.reserve(nSamples);
@@ -1358,6 +1371,7 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime,
             0.0, get("gps_speed_accuracy", i) * gpsSpeedAccuracyFactor));
         gpsSpeedMps.push_back(
             std::max(0.0, get("gps_speed", i) * gpsSpeedFactor));
+        unified.fuel.push_back(hasFuel ? get("fuel", i) * fuelFactor : nan);
     }
 
     // Distance propagates from wheel/vehicle speed at 50 Hz. GPS Doppler

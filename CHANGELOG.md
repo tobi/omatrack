@@ -4,6 +4,10 @@ All notable user-facing changes are documented here.
 
 ## Unreleased
 
+- Zoomed traces are polylines through the 50 Hz samples, not one
+  axis-aligned bar per pixel. Zoomed-out envelopes still use a min/max
+  column, now sized to a device pixel so a 2× display is not twice as
+  blocky.
 - Native `.telemetry` is the only persisted analysis file. First open of a
   `.pds` / `.ld` / `.vbo` / AiM video writes hidden `.{filename}.telemetry`
   and every later open reads that. JSON sidecars, Motec companions, and the
@@ -28,6 +32,46 @@ All notable user-facing changes are documented here.
 - Reaching the end of the current lap while onboard video is playing
   pauses, counts down the next lap (3, 2, 1), then selects that lap and
   resumes. The reference lap is left unchanged. Space cancels.
+- Primary onboard video is the clock: it always plays at 1× and each
+  frame moves the telemetry cursor. The reference recording snaps to the
+  mapped station on pause, then uses the next straight to speed up or
+  slow down so both videos arrive together at turn-in. Corners stay at
+  1× so a turn is never time-warped.
+- Left and Right skip the primary recording by 2 seconds whenever video
+  is showing, and the traces follow that seek. They no longer require
+  the video pane to be focused.
+- Folder listings in the sidebar group recordings by day, oldest first.
+  Rows show session and driver instead of the filename, with best lap
+  time always on the right and start time, laps, and drive time below.
+- Fullscreen video has five compose layouts (hotkeys 1–5): split, active
+  with a reference pip, reference with an active pip, active only, and
+  reference only. Pip layouts inset the main recording. `S` toggles
+  0.25× slow motion. The top bar shows the layout name plus driver,
+  lap N/M, and fuel for both recordings. Dragging the telemetry HUD no
+  longer jumps to the origin on the first move. HUD reference traces
+  follow the mapped compare lap instead of the session clock.
+- Corner notes use the same track-station-aligned metres as the overlay
+  gauges, so a 3 m later turn-in is no longer reported as 28 m later.
+- The fullscreen HUD pedal traces are a window of track progress, not
+  time, so primary and reference answer "what was the pedal here?" and
+  no longer slide at different speeds. Reference traces are solid, thinner
+  and dimmer copies of the same green throttle and red brake colours.
+- A live delta bar sits at the centre of the fullscreen video, 15% from
+  the top. It can be dragged and resized like the telemetry HUD. The
+  number is the accumulated time versus the reference at this station;
+  the bar colour is whether that gap is improving right now (relative
+  speed). Green is gaining, red is losing, so a car can be behind on the
+  number and still show green. The steering wheel no longer repeats ΔT:
+  gear and speed sit in the hub, the rim is a 10 px black ring, and
+  steering is a white notch (narrower grey for the reference).
+- Comparison Δt is time at the same lap-progress station, at 50 Hz (the
+  unified grid). It is no longer the leftover of a 5 Hz speed-signature
+  warp, and a start/finish-pinned GPS time overlay no longer turns it
+  into a lap-long climb. Traces, the cursor, and video still share this
+  one map.
+- Hovering a corner header shows the time delta to the reference tucked
+  against the inside-right of that tab. A dragged range no longer prints
+  primary and reference durations, only Δ.
 
 ## 0.9.11 — 2026-08-12
 
