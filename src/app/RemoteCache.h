@@ -289,6 +289,21 @@ QString pinOfflineVideo(const RemoteConnection& connection,
 /// until it says. Returning false abandons the download.
 using DownloadProgress = std::function<bool(qint64 received, qint64 total)>;
 
+/// Outcome of a streamed GET written straight to disk. Used by the AppImage
+/// updater so a 100+ MiB payload never materialises as a QByteArray.
+struct FileDownload {
+    int status = 0;
+    QString error;
+    qint64 bytes = 0;
+};
+
+/// Streams `url` into `path` on the I/O thread. The caller waits on the
+/// returned result; the GUI loop must not be the waiter.
+FileDownload downloadFile(const QUrl& url, const RequestFactory& build,
+                          const QString& path,
+                          const DownloadProgress& progress = {},
+                          const IoCancel& cancel = {});
+
 /// Downloads one already-listed object into the place in the cache it belongs,
 /// blocking until it is there. Returns the reason it failed, or an empty
 /// string. Meant for the one file a person asked for by name — a whole

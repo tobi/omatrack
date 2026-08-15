@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Assemble the Windows release zip from a fresh release build.
+# Assemble a local Windows zip from a fresh release build.
 #
-# Run from the MSYS2 UCRT64 shell:
+# Tagged GitHub releases ship a Velopack installer instead; this script is
+# the offline/dev zip. Run from the MSYS2 UCRT64 shell:
 #   ./scripts/package-windows.sh
 #
 # Produces dist/omatrack-<version>-windows-x86_64.zip with a flat layout:

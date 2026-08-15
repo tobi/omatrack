@@ -161,10 +161,17 @@ cmake --install build --prefix "$HOME/.local"
 ```
 
 The install target provides `omatrack`, `omatrack-cli`, platform deployment
-metadata, and license notices. Tagged releases publish a Linux AppImage, a
-macOS disk image, and a Windows zip from GitHub Actions. The macOS build is
-ad-hoc signed but not Apple-notarized. Portable builds bundle Qt, libmpv,
-libyaml, QML modules, media codecs, and their redistributable dependency
+metadata, and license notices. Tagged releases publish a Linux AppImage, its
+`.zsync` sidecar, a macOS disk image, a Windows Velopack installer, and
+`SHA256SUMS.txt` from GitHub Actions. The macOS build is
+ad-hoc signed but not Apple-notarized. Portable Linux AppImages, Windows
+Velopack installs, and macOS apps check GitHub Releases from the header,
+keep an update icon until the new build is installed, and replace
+themselves after a SHA-256 check. The Windows installer is per-user (no
+UAC) and applies updates through Velopack `Update.exe`.
+From-source builds do not self-update. Portable builds
+bundle Qt, libmpv, libyaml, QML modules, media codecs, and their
+redistributable dependency
 closure. Linux and Windows also statically link Omatrack's GNU C++ runtime.
 Each package is rejected if a binary still refers to a build-machine library;
 only operating-system and graphics-driver interfaces remain host-provided.
@@ -177,7 +184,11 @@ selected-layout geometry cache is missing or older than 24 hours, Omatrack
 requests the public data from `raw.githubusercontent.com`; manual refresh
 performs the same metadata request. Fresh caches are used without a startup
 request. Offline starts retain cached corner geometry; without it, GPS laps do
-not silently substitute distance-based corner locations.
+not silently substitute distance-based corner locations. A portable Linux
+AppImage, Windows Velopack install, or macOS app may also request
+`api.github.com/repos/tobi/omatrack/releases/latest`
+once a day; Later snoozes the prompt for a week. Turn the check off under
+Preferences → Updates. No session paths are sent.
 
 Server connections are opt-in and configured in Preferences. WebDAV uses
 authenticated `PROPFIND` discovery; `s3://` and `gs://` buckets use

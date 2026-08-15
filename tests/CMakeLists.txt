@@ -44,6 +44,21 @@ target_link_libraries(yamlconfig-test PRIVATE
 add_test(NAME yamlconfig-test COMMAND yamlconfig-test)
 set_tests_properties(yamlconfig-test PROPERTIES LABELS unit)
 
+# ── appupdate-test ──────────────────────────────────────────────────
+# Parses GitHub release JSON, version compare, checksums, and the
+# AppImage on-disk swap. No network and no QML.
+qt_add_executable(appupdate-test
+  AppUpdateTest.h
+  AppUpdateTest.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/AppUpdate.cpp)
+target_include_directories(appupdate-test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(appupdate-test PRIVATE
+  Qt6::Test
+  Qt6::Core
+  omatrack_warnings)
+add_test(NAME appupdate-test COMMAND appupdate-test)
+set_tests_properties(appupdate-test PROPERTIES LABELS unit)
+
 # ── apptypes-test ───────────────────────────────────────────────────
 # Tests inline struct methods from TelemetryStore.h. No .cpp to link —
 # the structs are header-only. Needs Qt6::Qml for the QML_NAMED_ELEMENT

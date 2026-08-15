@@ -68,7 +68,7 @@ ApplicationWindow {
                     }
                     Label {
                         color: Style.mutedTextColor
-                        text: "Data sources, driver identity, and track metadata"
+                        text: "Data sources, driver identity, track metadata, and updates"
                     }
                 }
                 CompactButton {
@@ -161,6 +161,10 @@ ApplicationWindow {
                                 detail: "Track Atlas cache"
                                 label: "Track data"
                             }
+                            ListElement {
+                                detail: "GitHub AppImage"
+                                label: "Updates"
+                            }
                         }
                     }
                     Item {
@@ -190,6 +194,8 @@ ApplicationWindow {
                     id: driversPage
                 }
                 PreferencesTrackDataPage {
+                }
+                PreferencesUpdatesPage {
                 }
             }
         }

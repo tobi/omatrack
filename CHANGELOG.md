@@ -4,6 +4,16 @@ All notable user-facing changes are documented here.
 
 ## Unreleased
 
+## 1.2.0 — 2026-08-15
+
+- Portable Linux AppImages, Windows Velopack installs, and macOS apps
+  check GitHub Releases from the header, keep an update icon after Later
+  (which snoozes the prompt for a week), and replace themselves after
+  verifying `SHA256SUMS.txt`. Windows uses a per-user Velopack installer
+  (no UAC) and `Update.exe` to apply the nupkg. First run asks about file
+  associations: `.pds` / `.ld` / `.vbo` / `.telemetry` default on, `.mp4`
+  default off. From-source builds do not self-update.
+
 ## 1.1.0 — 2026-08-14
 
 - Zoomed traces are polylines through the 50 Hz samples, not one

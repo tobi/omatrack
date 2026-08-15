@@ -554,6 +554,18 @@ DownloadResult downloadToFile(const QUrl& url, const RequestFactory& build,
 
 void drainNetworkIo() { NetworkIo::instance().drain(); }
 
+FileDownload downloadFile(const QUrl& url, const RequestFactory& build,
+                          const QString& path, const DownloadProgress& progress,
+                          const IoCancel& cancel) {
+    const DownloadResult result =
+        downloadToFile(url, build, path, progress, cancel);
+    FileDownload download;
+    download.status = result.status;
+    download.error = result.error;
+    download.bytes = result.bytes;
+    return download;
+}
+
 QNetworkRequest makeRequest(const QUrl& url) {
     QNetworkRequest request(url);
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,

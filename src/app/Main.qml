@@ -658,6 +658,8 @@ ApplicationWindow {
         }
         if (root.videoVisible && root.width < 1000)
             root.sidebarVisible = false;
+        if (Updater.associationPrompt)
+            associationDialog.open();
     }
 
     Shortcut {
@@ -1631,6 +1633,14 @@ ApplicationWindow {
             driverRenameField.forceActiveFocus();
             driverRenameField.selectAll();
         }
+    }
+    FileAssociationsDialog {
+        id: associationDialog
+
+        parent: Overlay.overlay
+        width: Math.min(480, root.width - 32)
+        x: Math.round((parent.width - width) / 2)
+        y: Math.round((parent.height - height) / 2)
     }
     TrackAssignmentDialog {
         id: trackAssignmentDialog

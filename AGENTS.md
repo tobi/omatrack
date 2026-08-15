@@ -79,7 +79,8 @@ Application-wide user configuration state belongs in `omatrack.yml`
 (`$XDG_CONFIG_HOME/omatrack/omatrack.yml`, else `~/.config/omatrack/omatrack.yml`).
 It is the single source of truth for telemetry directories, server connection
 settings, the download cache limit, recent file history, channel display,
-driver naming, last selection, and per-track corner overrides, and it is meant
+driver naming, last selection, per-track corner overrides, and portable
+AppImage update checks, and it is meant
 to be read, diffed, and hand-edited. Never add a second configuration store, and never write
 configuration into telemetry, caches, or `QSettings`.
 
@@ -342,6 +343,39 @@ CornerContext{primary, reference metrics, delta-trace time deltas}
   (`g_lat`) but absent from every local fixture, so turn-in currently runs the
   Lua's steering-only fallback and the combined-grip checks stay silent.
 
+### Portable updates
+
+- Only a portable release build may check for updates or replace itself.
+  Linux: launched through `$APPIMAGE`. Windows: the Velopack per-user
+  install (`Update.exe` next to `current/`, or a leftover zip tree with
+  `qt.conf`). macOS: `Omatrack.app` on Apple Silicon, not from a mounted
+  disk image. Source trees stay silent.
+- `AppUpdater` (`Updater` in QML) asks GitHub Releases `/latest` on the I/O
+  thread, at most once a day, and never while `OMATRACK_AUTOTEST` is set.
+  It does not upload session data. `updates.check` in `omatrack.yml` is the
+  opt-out; Later writes `updates.snooze_until` one week ahead and keeps the
+  header icon so the user can still update.
+- Linux: one click downloads `Omatrack-*-linux-x86_64.AppImage` next to the
+  running file, verifies `SHA256SUMS.txt`, swaps it in place, and relaunches
+  from the same path. The running squashfs mount is left alone.
+- Windows: tagged releases ship a Velopack per-user installer
+  (`io.github.tobi.omatrack-win-Setup.exe`) plus a `*-win-full.nupkg`.
+  One click downloads the nupkg, verifies `SHA256SUMS.txt`, and hands it
+  to `Update.exe apply --waitPid`. No UAC; `current/` is replaced in a
+  couple of seconds. A leftover zip install is offered the Setup.exe so
+  it can migrate. File associations are HKCU: telemetry formats default
+  on, `.mp4` default off, prompted on first run.
+- macOS: one click downloads `Omatrack-*-macOS-arm64.dmg`, verifies
+  `SHA256SUMS.txt`, copies `Omatrack.app` off the image, then a helper
+  waits for this process to exit, dittos the new bundle over the old one,
+  and relaunches with `open`. Intel Macs have no published image.
+- Tagged releases are the update channel. `.github/workflows/release.yml`
+  writes the AppImage under its final GitHub asset name, embeds
+  `gh-releases-zsync|tobi|omatrack|latest|Omatrack-*-linux-x86_64.AppImage.zsync`
+  in `.upd_info`, publishes the matching `.zsync`, and puts the AppImage and
+  Windows Velopack Setup/nupkg, and macOS dmg SHA-256 in `SHA256SUMS.txt`.
+  The publish job refuses to cut a release that is missing any of those.
+
 ### Headless tools and automation
 
 `omatrack-cli` is the headless acceptance surface for parsing, mapping, lap detection, 50 Hz unification, corner analysis, and AiM vs `.telemetry` compare. The GUI also has screenshot and paint-benchmark modes driven by `OMATRACK_AUTOTEST*` environment variables.
@@ -409,8 +443,8 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
 | C ABI | `third_party/motorsport-telemetry/bridge/` | Extension dispatch, opaque handles, format-neutral lap metadata, bulk decode, stable strings, thread-local errors | Vendor decoding, analysis policy, or exceptions/panics crossing FFI |
 | Core | `src/core/TelemetryEngine.*` | Channel mapping, units, lap detection, resampling, `UnifiedLap` | Qt types, QML, settings, network access |
 | Corner analysis | `src/core/CornerAnalysis.*` | Per-corner metrics and the pluggable checks that produce driver-facing notes | Qt types, UI text layout, Track Atlas fetching |
-| Session/store | `src/app/TelemetryStore.*`, `src/app/RecordingSidecar.*` | Lazy session handles, portable recording/telemetry pairing, selection, cached lap-progress track-station alignment, comparison, viewport, preferences, Track Atlas, corner analysis | Pixel-level paint loops or vendor byte parsing |
-| Remote cache | `src/app/RemoteCache.*`, `src/app/AimRemoteIndex.*` | Sync engine: cache layout, hidden `.telemetry` companions, ETag/Last-Modified reuse, stale prune, offline fallback, bounded sparse AiM extraction, create-only companion publish, the LRU budget, video stubs, stream URLs, and pinned offline downloads | Protocol details, telemetry normalization, UI state, source-file mutation |
+| Session/store | `src/app/TelemetryStore.*`, `src/app/RecordingSidecar.*` | Lazy session handles, portable recording/telemetry pairing, selection, cached lap-progress track-station alignment, comparison, viewport, preferences, Track Atlas, corner analysis | Pixel-level paint loops, vendor byte parsing, or self-update |
+| App updates | `src/app/AppUpdate.*`, `src/app/AppUpdater.*`, `src/app/WindowsAssociations.*` | GitHub latest-release parse, SHA-256 verify, AppImage replace, Velopack `Update.exe` apply, macOS dmg stage-and-swap, Windows file associations, header/preferences state | Telemetry, Track Atlas |
 | Remote protocols | `src/app/WebDavBackend.cpp`, `src/app/S3Backend.cpp`, `src/app/SigV4.*` | Listing a server and signing a request — PROPFIND/XML, ListObjectsV2, AWS Signature Version 4 | Cache layout, eviction policy, anything that outlives one request |
 | Renderer | `src/app/TraceView.*`, `src/app/TraceSceneBuilder.*`, `src/app/TraceTextCache.*` | Scene-graph geometry generation for the trace surfaces and direct trace interaction | Parsing, network access, persistent product state |
 | Video renderer | `src/app/MpvVideoItem.*` | libmpv lifecycle, OpenGL FBO rendering, playback state, and exact seek | Telemetry extraction, session association, or QML layout policy |
@@ -446,7 +480,8 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
 11. A flattened decoded array is not a clock. Lap boundaries, resampling, raw channels, and media synchronization must preserve source chunk time bases.
 12. QML reaches C++ only through registered types. `TelemetryStore` is the
     `Store` singleton (`QML_NAMED_ELEMENT` + `QML_SINGLETON`), the Omarchy
-    palette is the `Theme` singleton, and launch inputs arrive as root
+    palette is the `Theme` singleton, portable updates are the `Updater`
+    singleton, and launch inputs arrive as root
     `required property` values through
     `QQmlApplicationEngine::setInitialProperties`. Context properties are
     forbidden: Qt documents them as invisible to `qmllint`, `qmlls`, and the
@@ -468,7 +503,8 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
     model to the row *count* and read the row through the index, so an edit
     re-evaluates bindings instead of recreating items.
 17. The GUI event loop does no I/O. File reads and writes, HTTP, directory
-    walks, parse, unify, Track Atlas refresh, and cache clear belong on a
+    walks, parse, unify, Track Atlas refresh, GitHub update checks, AppImage
+    downloads, and cache clear belong on a
     worker: HTTP on the dedicated I/O thread via `QPromise`/`QFuture`, the
     rest on `QtConcurrent`. A nested `QEventLoop` must not drive or wait
     for that work. Long jobs take an `IoCancel` so a rescan or a window
@@ -482,7 +518,9 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
   invent a parallel JSON/Motec sidecar or re-derive it in QML.
 - New cross-format channel or unit rule: `TelemetryEngine` and `UnifiedLap`.
 - New lap/corner comparison metric: C++ analysis in the store/core, exposed as compact view data. A new corner *check* is a `CornerAnalyzer` in `src/core/CornerAnalysis.cpp` — never an inline `if` in the store and never a string built in QML.
-- New persistent user preference: `TelemetryStore` + `omatrack.yml` through `YamlConfig`; never `QSettings`, and never write it into telemetry.
+- New persistent user preference: the owning app object (`TelemetryStore` or
+  `AppUpdater`) + `omatrack.yml` through `YamlConfig`; never `QSettings`, and
+  never write it into telemetry.
 - New Material control, inspector, or layout: QML.
 - New high-frequency visual: `TraceView` or another focused C++ Quick item, with measured frame cost.
 - New track metadata: contribute it to Track Atlas. Omatrack should consume the upstream result.
@@ -727,9 +765,12 @@ Embedded libmpv playback must be verified on the native Linux/Omarchy OpenGL sce
   alignment are not implemented. Extracts are a convert-time input, not a
   share-root metadata store.
 - Configuration migrates from the pre-YAML `QSettings` store, the pre-rename `racecraft.yml`/Track Atlas cache, and per-track corner CSVs on first run; legacy stores are read only and left untouched.
-- HTTP (sync, range GET, Track Atlas, video fetch) runs on a dedicated
+- HTTP (sync, range GET, Track Atlas, video fetch, GitHub update checks)
+  runs on a dedicated
   I/O thread via `QPromise`/`QFuture`; parse, unify, scan walk, and cache
   clear run on `QtConcurrent`. That split is invariant 17, not optional.
+- Portable Linux AppImages, Windows Velopack installs, and macOS arm64
+  app bundles may self-update from GitHub Releases. Source builds must not.
 
 ## Definition of done
 

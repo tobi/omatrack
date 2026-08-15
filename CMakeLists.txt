@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(omatrack VERSION 1.1.0 LANGUAGES CXX)
+project(omatrack VERSION 1.2.0 LANGUAGES CXX)
 if(WIN32)
   # Windows release layout: the app ships as a flat zip, so executables and
   # their load-time DLLs install at the prefix root and every non-binary

@@ -23,6 +23,7 @@
 #include "TelemetryStore.h"
 #include "VerboseLog.h"
 #ifdef Q_OS_WIN
+#include "WindowsAssociations.h"
 #include "WindowsIntegration.h"
 #endif
 
@@ -72,6 +73,9 @@ void printHelp(const char* executable) {
 }  // namespace
 
 int main(int argc, char** argv) {
+#ifdef Q_OS_WIN
+    if (omatrack::consumeWindowsSetupHook(argc, argv)) return 0;
+#endif
     const bool helpRequested = takeFlag(argc, argv, "--help", "-h");
     const bool verbose = takeFlag(argc, argv, "--verbose", "-v") ||
                          qEnvironmentVariableIntValue("OMATRACK_VERBOSE") != 0;

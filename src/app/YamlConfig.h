@@ -2,7 +2,8 @@
 //
 // `omatrack.yml` is the source of truth for application-wide user
 // configuration: telemetry directories, channel display, driver naming, last
-// selection, per-video overrides, and per-track corner overrides. Portable
+// selection, per-video overrides, per-track corner overrides, and portable
+// AppImage update checks. Portable
 // folder metadata lives in hierarchical TRACK.yml files. omatrack.yml lives
 // under the platform's standard
 // configuration directory (or `$XDG_CONFIG_HOME` when set) so it can be read,

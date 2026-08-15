@@ -7,7 +7,8 @@ import Omatrack
 // Owns its cursor-readout refresh: a Connections block on Store plus
 // Component.onCompleted drive readout.refresh() so Main.qml never has to poke
 // it. Actions that open sibling windows or toggle root state are emitted as
-// signals; the only state read back is sidebarVisible (for the toggle tooltip).
+// signals; the only root-window state read back is sidebarVisible (for the
+// toggle tooltip). Portable AppImage updates come from the Updater singleton.
 
 import QtQuick
 import QtQuick.Controls
@@ -176,6 +177,58 @@ ToolBar {
 
             onClicked: appBar.metadataRequested(Store.primaryMetadataPath, Store.primaryMetadataFolderScope)
         }
+        RowLayout {
+            id: updateCluster
+
+            spacing: 4
+            visible: Updater.supported && Updater.enabled && Updater.available
+
+            ToolButton {
+                id: updateButton
+
+                readonly property string tooltipText: Updater.busy ? Updater.status : "Omatrack " + Updater.latestVersion + " is available"
+
+                Layout.preferredHeight: 28
+                Layout.preferredWidth: 28
+                ToolTip.text: updateButton.tooltipText
+                ToolTip.visible: hovered
+                display: AbstractButton.IconOnly
+                font.pixelSize: 14
+                icon.color: Style.accentColor
+                icon.name: "software-update-available-symbolic"
+                objectName: "headerUpdate"
+                text: "↑"
+
+                onClicked: updateMenu.open()
+            }
+            Label {
+                color: Style.accentColor
+                font.family: Style.monoFontFamily
+                font.pixelSize: 10
+                text: Updater.latestVersion
+                visible: Updater.bannerVisible && !Updater.busy && appBar.width >= 780
+            }
+            CompactButton {
+                text: "Update"
+                visible: Updater.bannerVisible && !Updater.busy && appBar.width >= 780
+
+                onClicked: Updater.install()
+            }
+            CompactButton {
+                text: "Later"
+                visible: Updater.bannerVisible && !Updater.busy && appBar.width >= 780
+
+                onClicked: Updater.snooze()
+            }
+            Label {
+                color: Style.mutedTextColor
+                elide: Text.ElideRight
+                font.family: Style.monoFontFamily
+                font.pixelSize: 10
+                text: Updater.status
+                visible: Updater.busy && appBar.width >= 780
+            }
+        }
         Label {
             id: readout
 
@@ -216,6 +269,34 @@ ToolBar {
             text: "•••"
 
             onClicked: actionsMenu.open()
+        }
+    }
+    Menu {
+        id: updateMenu
+
+        x: Math.max(0, appBar.width - updateMenu.width - 48)
+        y: appBar.height
+
+        MenuItem {
+            enabled: !Updater.busy
+            text: "Update to " + Updater.latestVersion
+
+            onTriggered: Updater.install()
+        }
+        MenuItem {
+            enabled: !Updater.busy
+            height: visible ? implicitHeight : 0
+            text: "Remind in a week"
+            visible: Updater.bannerVisible
+
+            onTriggered: Updater.snooze()
+        }
+        MenuItem {
+            height: visible ? implicitHeight : 0
+            text: "Cancel update"
+            visible: Updater.busy
+
+            onTriggered: Updater.cancel()
         }
     }
     Menu {

@@ -36,7 +36,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends --yes \
-            ccache clang-format libmpv-dev libyaml-dev ninja-build pkg-config
+            binutils ccache clang-format libmpv-dev libyaml-dev ninja-build \
+            pkg-config zsync
       - name: Restore Cargo cache
         uses: actions/cache@v4
         with:
@@ -84,7 +85,15 @@ jobs:
         env:
           LINUXDEPLOY_PLUGIN_QT: ${{ github.workspace }}/release-tools/linuxdeploy-plugin-qt.AppImage
           QML_SOURCES_PATHS: ${{ github.workspace }}/src/app
+          # Final asset names so the .zsync Filename matches the GitHub
+          # download and the in-app updater can find SHA256SUMS + AppImage.
+          LDAI_OUTPUT: Omatrack-${{ env.OMATRACK_RELEASE_VERSION }}-linux-x86_64.AppImage
+          LINUXDEPLOY_OUTPUT_VERSION: ${{ env.OMATRACK_RELEASE_VERSION }}
+          LDAI_VERSION: ${{ env.OMATRACK_RELEASE_VERSION }}
+          UPDATE_INFORMATION: gh-releases-zsync|tobi|omatrack|latest|Omatrack-*-linux-x86_64.AppImage.zsync
+          LDAI_UPDATE_INFORMATION: gh-releases-zsync|tobi|omatrack|latest|Omatrack-*-linux-x86_64.AppImage.zsync
         run: |
+          artifact="Omatrack-${OMATRACK_RELEASE_VERSION}-linux-x86_64.AppImage"
           mapfile -t portable_libraries < <(
             packaging/linux/collect-portable-libraries.sh \
               AppDir/usr/bin/omatrack
@@ -102,10 +111,15 @@ jobs:
             deploy_arguments+=(--library "$library")
           done
           release-tools/linuxdeploy.AppImage "${deploy_arguments[@]}"
-          artifact="Omatrack-${OMATRACK_RELEASE_VERSION}-linux-x86_64.AppImage"
-          mv ./Omatrack-*.AppImage "$artifact"
+          test -f "$artifact"
+          test -f "${artifact}.zsync"
           chmod +x "$artifact"
           "./$artifact" --appimage-version
+          # Type 2 AppImages store the GitHub zsync pointer in .upd_info.
+          # Without it, later AppImages cannot find this channel.
+          readelf -p .upd_info "$artifact" | grep -F \
+            'gh-releases-zsync|tobi|omatrack|latest|Omatrack-*-linux-x86_64.AppImage.zsync'
+          grep -E "^(Filename|Name): ${artifact}$" "${artifact}.zsync"
           mkdir appimage-audit
           (
             cd appimage-audit
@@ -123,7 +137,9 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: release-linux
-          path: Omatrack-${{ env.OMATRACK_RELEASE_VERSION }}-linux-x86_64.AppImage
+          path: |
+            Omatrack-${{ env.OMATRACK_RELEASE_VERSION }}-linux-x86_64.AppImage
+            Omatrack-${{ env.OMATRACK_RELEASE_VERSION }}-linux-x86_64.AppImage.zsync
           if-no-files-found: error
 
   macos:
@@ -326,15 +342,40 @@ jobs:
           set -e
           test "$cli_status" -eq 2
           grep -q '^usage:' <<<"$cli_output"
-      - name: Build zip archive
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build Velopack installer
+        shell: pwsh
         run: |
-          artifact="Omatrack-${OMATRACK_RELEASE_VERSION}-windows-x86_64.zip"
-          (cd stage && 7z a -tzip "../$artifact" .)
-          7z t "$artifact"
+          dotnet tool update -g vpk --version 1.2.0
+          $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
+          vpk pack `
+            --packId io.github.tobi.omatrack `
+            --packVersion $env:OMATRACK_RELEASE_VERSION `
+            --packDir stage `
+            --mainExe omatrack.exe `
+            --icon assets/omatrack.ico `
+            --packTitle Omatrack `
+            --shortcuts StartMenuRoot `
+            --instLocation User `
+            --noPortable `
+            --skipVeloAppCheck `
+            --outputDir velopack-out
+          Get-ChildItem velopack-out | Format-Table Name, Length
+          if (-not (Get-ChildItem velopack-out -Filter *-win-Setup.exe)) {
+            throw "Velopack Setup.exe was not produced"
+          }
+          if (-not (Get-ChildItem velopack-out -Filter *-win-full.nupkg)) {
+            throw "Velopack full nupkg was not produced"
+          }
       - uses: actions/upload-artifact@v7
         with:
           name: release-windows
-          path: Omatrack-${{ env.OMATRACK_RELEASE_VERSION }}-windows-x86_64.zip
+          path: |
+            velopack-out/*-win-Setup.exe
+            velopack-out/*-win-full.nupkg
+            velopack-out/releases.win.json
           if-no-files-found: error
 
   publish:
@@ -352,14 +393,37 @@ jobs:
           merge-multiple: true
       - name: Generate checksums
         working-directory: release-assets
-        run: sha256sum Omatrack-* > SHA256SUMS.txt
+        run: |
+          shopt -s nullglob
+          installables=(
+            Omatrack-*-linux-x86_64.AppImage
+            io.github.tobi.omatrack-win-Setup.exe
+            io.github.tobi.omatrack-*-win-full.nupkg
+            Omatrack-*-macOS-arm64.dmg
+          )
+          test "${#installables[@]}" -eq 4
+          sha256sum "${installables[@]}" > SHA256SUMS.txt
+          # In-app updaters resolve these hashes. A missing line would
+          # download and then refuse to install.
+          grep -E '^[0-9a-f]{64}  Omatrack-.+-linux-x86_64\.AppImage$' \
+            SHA256SUMS.txt
+          grep -E '^[0-9a-f]{64}  io.github.tobi.omatrack-.+-win-full\.nupkg$' \
+            SHA256SUMS.txt
+          grep -E '^[0-9a-f]{64}  io.github.tobi.omatrack-win-Setup\.exe$' \
+            SHA256SUMS.txt
+          grep -E '^[0-9a-f]{64}  Omatrack-.+-macOS-arm64\.dmg$' \
+            SHA256SUMS.txt
+          test -f Omatrack-*-linux-x86_64.AppImage.zsync
+          cat SHA256SUMS.txt
       - name: Publish release
         uses: softprops/action-gh-release@v3
         with:
-          name: Omatrack 0.9
+          name: Omatrack ${{ github.ref_name }}
           body: |
-            Omatrack 0.9 aligns telemetry, traces, delta, and primary/reference
-            onboard video through one cached GPS/speed track-station map.
+            Portable Linux AppImages, the Windows Velopack installer, and
+            macOS apps can check this release from the header and update
+            themselves after verifying SHA256SUMS.txt. Windows installs
+            per-user (no UAC) and applies updates through Update.exe.
 
             Downloads are unsigned development builds. The macOS image is
             ad-hoc signed but is not Apple-notarized.

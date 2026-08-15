@@ -30,6 +30,8 @@ if(WIN32)
   target_sources(omatrack PRIVATE
     WindowsIntegration.h
     WindowsIntegration.cpp
+    WindowsAssociations.h
+    WindowsAssociations.cpp
     ${CMAKE_CURRENT_BINARY_DIR}/omatrack.rc)
   set_target_properties(omatrack PROPERTIES WIN32_EXECUTABLE TRUE)
 endif()
@@ -55,12 +57,14 @@ qt_add_qml_module(omatrack
     ChannelsWindow.qml
     CornerFocusOverlay.qml
     DriverMetadataSection.qml
+    FileAssociationsDialog.qml
     FileBrowserPane.qml
     FileTreeDelegate.qml
     PreferencesWindow.qml
     PreferencesDriversPage.qml
     PreferencesLibraryPage.qml
     PreferencesTrackDataPage.qml
+    PreferencesUpdatesPage.qml
     SessionTreeDelegate.qml
     TrackAssignmentDialog.qml
     ThinScrollBar.qml
@@ -68,6 +72,8 @@ qt_add_qml_module(omatrack
     VideoTelemetryOverlay.qml
     VideoDeltaBar.qml
   SOURCES
+    AppUpdate.h AppUpdate.cpp
+    AppUpdater.h AppUpdater.cpp
     AimRemoteIndex.h AimRemoteIndex.cpp
     DamperStripView.h DamperStripView.cpp
     MpvVideoItem.h MpvVideoItem.cpp
