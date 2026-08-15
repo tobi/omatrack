@@ -4,6 +4,8 @@
 // Telemetry formats default on; generic video (.mp4) defaults off.
 #pragma once
 
+#include <QtGlobal>
+
 #ifdef Q_OS_WIN
 
 #include <QString>

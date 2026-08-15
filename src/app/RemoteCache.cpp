@@ -161,7 +161,8 @@ public:
     }
 
     void drain() {
-        QMetaObject::invokeMethod(this, []() {}, Qt::BlockingQueuedConnection);
+        const auto noop = []() {};
+        QMetaObject::invokeMethod(this, noop, Qt::BlockingQueuedConnection);
     }
 
 private:

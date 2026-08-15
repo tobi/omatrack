@@ -43,9 +43,8 @@ int compareVersions(const QString& left, const QString& right) {
     const QString b = stripVersionDecorations(right);
     const QStringList leftParts = a.split(QLatin1Char('.'));
     const QStringList rightParts = b.split(QLatin1Char('.'));
-    const int count =
-        int((std::max)(qsizetype{3},
-                       (std::max)(leftParts.size(), rightParts.size())));
+    const qsizetype widest = (std::max)(leftParts.size(), rightParts.size());
+    const int count = int((std::max)(qsizetype{3}, widest));
     for (int i = 0; i < count; ++i) {
         const int lv = i < leftParts.size() ? leftParts.at(i).toInt() : 0;
         const int rv = i < rightParts.size() ? rightParts.at(i).toInt() : 0;
