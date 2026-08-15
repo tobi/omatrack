@@ -358,7 +358,7 @@ jobs:
             --icon assets/omatrack.ico `
             --packTitle Omatrack `
             --shortcuts StartMenuRoot `
-            --instLocation User `
+            --instLocation PerUser `
             --noPortable `
             --skipVeloAppCheck `
             --outputDir velopack-out
