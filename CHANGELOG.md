@@ -4,6 +4,8 @@ All notable user-facing changes are documented here.
 
 ## Unreleased
 
+## 1.1.0 — 2026-08-14
+
 - Zoomed traces are polylines through the 50 Hz samples, not one
   axis-aligned bar per pixel. Zoomed-out envelopes still use a min/max
   column, now sized to a device pixel so a 2× display is not twice as

@@ -24,6 +24,16 @@
   <url type="bugtracker">https://github.com/tobi/omatrack/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.1.0" date="2026-08-14">
+      <description>
+        <p>Native .telemetry companions as the only analysis file, primary
+        video as the playback clock with reference catch-up on straights,
+        five fullscreen compose layouts, an iRacing-style live delta bar,
+        and Δt taken at the same 50 Hz lap-progress station as traces and
+        video. Sidebar rows group by day. Corner notes and hover chips use
+        that same station map.</p>
+      </description>
+    </release>
     <release version="0.9.11" date="2026-08-12">
       <description>
         <p>S3 and Google Cloud Storage library sources, streamed onboard video
