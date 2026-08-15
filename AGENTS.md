@@ -359,7 +359,7 @@ CornerContext{primary, reference metrics, delta-trace time deltas}
   running file, verifies `SHA256SUMS.txt`, swaps it in place, and relaunches
   from the same path. The running squashfs mount is left alone.
 - Windows: tagged releases ship a Velopack per-user installer
-  (`io.github.tobi.omatrack-win-Setup.exe`) plus a `*-win-full.nupkg`.
+  (`io.github.tobi.omatrack-win-Setup.exe`) plus a `*-full.nupkg`.
   One click downloads the nupkg, verifies `SHA256SUMS.txt`, and hands it
   to `Update.exe apply --waitPid`. No UAC; `current/` is replaced in a
   couple of seconds. A leftover zip install is offered the Setup.exe so

@@ -83,7 +83,7 @@ void AppUpdateTest::selectsWindowsVelopackAssets() {
       "tag_name": "v1.2.0",
       "assets": [
         {
-          "name": "io.github.tobi.omatrack-1.2.0-win-full.nupkg",
+          "name": "io.github.tobi.omatrack-1.2.0-full.nupkg",
           "browser_download_url": "https://example.test/app.nupkg",
           "size": 11
         },
@@ -103,7 +103,7 @@ void AppUpdateTest::selectsWindowsVelopackAssets() {
     QVERIFY(release.has_value());
     QVERIFY(selectWindowsUpdateAsset(&*release, true));
     QCOMPARE(release->assetName,
-             QStringLiteral("io.github.tobi.omatrack-1.2.0-win-full.nupkg"));
+             QStringLiteral("io.github.tobi.omatrack-1.2.0-full.nupkg"));
     QVERIFY(selectWindowsUpdateAsset(&*release, false));
     QCOMPARE(release->assetName,
              QStringLiteral("io.github.tobi.omatrack-win-Setup.exe"));

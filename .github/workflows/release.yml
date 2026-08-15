@@ -366,7 +366,7 @@ jobs:
           if (-not (Get-ChildItem velopack-out -Filter *-win-Setup.exe)) {
             throw "Velopack Setup.exe was not produced"
           }
-          if (-not (Get-ChildItem velopack-out -Filter *-win-full.nupkg)) {
+          if (-not (Get-ChildItem velopack-out -Filter *-full.nupkg)) {
             throw "Velopack full nupkg was not produced"
           }
       - uses: actions/upload-artifact@v7
@@ -374,7 +374,7 @@ jobs:
           name: release-windows
           path: |
             velopack-out/*-win-Setup.exe
-            velopack-out/*-win-full.nupkg
+            velopack-out/*-full.nupkg
             velopack-out/releases.win.json
           if-no-files-found: error
 
@@ -398,7 +398,7 @@ jobs:
           installables=(
             Omatrack-*-linux-x86_64.AppImage
             io.github.tobi.omatrack-win-Setup.exe
-            io.github.tobi.omatrack-*-win-full.nupkg
+            io.github.tobi.omatrack-*-full.nupkg
             Omatrack-*-macOS-arm64.dmg
           )
           test "${#installables[@]}" -eq 4
@@ -407,7 +407,7 @@ jobs:
           # download and then refuse to install.
           grep -E '^[0-9a-f]{64}  Omatrack-.+-linux-x86_64\.AppImage$' \
             SHA256SUMS.txt
-          grep -E '^[0-9a-f]{64}  io.github.tobi.omatrack-.+-win-full\.nupkg$' \
+          grep -E '^[0-9a-f]{64}  io.github.tobi.omatrack-.+-full\.nupkg$' \
             SHA256SUMS.txt
           grep -E '^[0-9a-f]{64}  io.github.tobi.omatrack-win-Setup\.exe$' \
             SHA256SUMS.txt

@@ -74,7 +74,7 @@ std::optional<GithubRelease> parseGithubRelease(const QByteArray& body) {
     static const QRegularExpression windowsZipName(
         QStringLiteral("^Omatrack-.+-windows-x86_64\\.zip$"));
     static const QRegularExpression windowsNupkgName(
-        QStringLiteral("^io\\.github\\.tobi\\.omatrack-.+-win-full\\.nupkg$"));
+        QStringLiteral("^io\\.github\\.tobi\\.omatrack-.+-full\\.nupkg$"));
     static const QRegularExpression windowsSetupName(
         QStringLiteral("^io\\.github\\.tobi\\.omatrack-win-Setup\\.exe$"));
     static const QRegularExpression macDmgName(
