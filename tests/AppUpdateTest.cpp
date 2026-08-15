@@ -232,7 +232,9 @@ void AppUpdateTest::hashesAndReplacesAppImage() {
     QCOMPARE(replaced.readAll(), QByteArrayLiteral("NEW-BYTES"));
     QVERIFY(!QFile::exists(incoming));
     QVERIFY(!QFile::exists(current + QStringLiteral(".old")));
+#ifdef Q_OS_UNIX
     QVERIFY(QFile::permissions(current) & QFile::ExeOwner);
+#endif
 }
 
 void AppUpdateTest::restoreOriginalWhenInstallRenameFails() {

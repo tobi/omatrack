@@ -20,15 +20,17 @@ class RecordingSidecarTest : public QObject {
 
 private slots:
     void namesHiddenCompanionFromTheVideo() {
-        QCOMPARE(omatrack::nativeCompanionPath(
-                     QStringLiteral("/cache/event/run.mp4")),
-                 QStringLiteral("/cache/event/.run.mp4.telemetry"));
-        QCOMPARE(omatrack::nativeCompanionPath(
-                     QStringLiteral("/cache/event/run.pds")),
-                 QStringLiteral("/cache/event/.run.pds.telemetry"));
-        QCOMPARE(omatrack::nativeCompanionPath(
-                     QStringLiteral("/cache/event/run.telemetry")),
-                 QStringLiteral("/cache/event/run.telemetry"));
+        const QString video = QStringLiteral("/cache/event/run.mp4");
+        QCOMPARE(omatrack::nativeCompanionPath(video),
+                 QFileInfo(video).dir().filePath(
+                     QStringLiteral(".run.mp4.telemetry")));
+        const QString pds = QStringLiteral("/cache/event/run.pds");
+        QCOMPARE(omatrack::nativeCompanionPath(pds),
+                 QFileInfo(pds).dir().filePath(
+                     QStringLiteral(".run.pds.telemetry")));
+        const QString telemetry = QStringLiteral("/cache/event/run.telemetry");
+        QCOMPARE(omatrack::nativeCompanionPath(telemetry),
+                 QFileInfo(telemetry).absoluteFilePath());
         QCOMPARE(omatrack::nativeCompanionRelativePath(
                      QStringLiteral("event/run.mp4")),
                  QStringLiteral("event/.run.mp4.telemetry"));
