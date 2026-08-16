@@ -45,10 +45,7 @@ std::optional<RecordingSidecar> readRecordingSidecar(const QString& videoPath,
         result.supported = QFileInfo(companion).isFile();
         return result;
     }
-    if (!QFileInfo(companion).isFile()) {
-        qCInfo(lcIo).noquote() << "sidecar miss" << displayPath(videoPath);
-        return std::nullopt;
-    }
+    if (!QFileInfo(companion).isFile()) return std::nullopt;
     RecordingSidecar result;
     result.path = companion;
     result.videoPath = QFileInfo(videoPath).absoluteFilePath();

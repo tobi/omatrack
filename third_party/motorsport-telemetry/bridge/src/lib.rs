@@ -57,6 +57,37 @@ pub struct BridgeFile {
     names: Vec<CString>,
     units: Vec<CString>,
     source_laps: Vec<OmatrackSourceLap>,
+    sidecar: SidecarTables,
+}
+
+struct SidecarTables {
+    is_extension: u8,
+    group_visible: u8,
+    utc_start_ns: i64,
+    duration_ns: u64,
+    name: CString,
+    timezone: CString,
+    chrome: Vec<OwnedChrome>,
+    spans: Vec<OwnedSpan>,
+    channel_visible: Vec<u8>,
+}
+
+struct OwnedChrome {
+    kind: u8,
+    text: CString,
+    label: CString,
+    value: CString,
+}
+
+struct OwnedSpan {
+    start_ns: u64,
+    end_ns: u64,
+    visible: u8,
+    name: CString,
+    title: CString,
+    subtitle: CString,
+    color: CString,
+    meta: Vec<(CString, CString)>,
 }
 
 /// Stable C representation of one reliable format-neutral lap.
@@ -70,6 +101,52 @@ pub struct OmatrackSourceLap {
     pub complete: u8,
 }
 
+/// MTX / catalog placement for an open handle.
+///
+/// `utc_start_ns` is `-1` when the source has no Unix-epoch stamp at `t = 0`.
+/// String pointers are owned by the handle and stay valid until
+/// `omatrack_close`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct OmatrackSidecarInfo {
+    pub is_extension: u8,
+    pub group_visible: u8,
+    pub utc_start_ns: i64,
+    pub duration_ns: u64,
+    pub name: *const c_char,
+    pub timezone: *const c_char,
+}
+
+/// One right-aligned header chrome element.
+///
+/// `kind` is `0` for description text and `1` for a fact pill. String
+/// pointers are owned by the handle.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct OmatrackSidecarChrome {
+    pub kind: u8,
+    pub text: *const c_char,
+    pub label: *const c_char,
+    pub value: *const c_char,
+}
+
+/// One MTX span on the sidecar's file-relative timeline.
+///
+/// String pointers are owned by the handle. Hover fields come from
+/// `omatrack_span_meta`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct OmatrackSpan {
+    pub start_ns: u64,
+    pub end_ns: u64,
+    pub visible: u8,
+    pub name: *const c_char,
+    pub title: *const c_char,
+    pub subtitle: *const c_char,
+    pub color: *const c_char,
+    pub meta_count: usize,
+}
+
 fn as_file<'a>(handle: *mut c_void) -> Option<&'a BridgeFile> {
     if handle.is_null() {
         None
@@ -79,6 +156,11 @@ fn as_file<'a>(handle: *mut c_void) -> Option<&'a BridgeFile> {
 }
 
 fn parse_path(open_path: &Path, index_only: bool) -> Result<Box<dyn TelemetrySource>, String> {
+    if telemetry_format::is_jsonl_path(open_path) {
+        return telemetry_format::JsonlRecording::open(open_path)
+            .map(|source| Box::new(source) as Box<dyn TelemetrySource>)
+            .map_err(|error| error.to_string());
+    }
     let ext = open_path
         .extension()
         .and_then(|value| value.to_str())
@@ -196,12 +278,128 @@ fn build_handle(src: Box<dyn TelemetrySource>, derive_laps: bool) -> Box<BridgeF
         complete: u8::from(lap.complete),
     })
     .collect();
+    let sidecar = if telemetry_format::is_jsonl_path(std::path::Path::new(src.path())) {
+        sidecar_tables(src.as_ref())
+    } else {
+        SidecarTables {
+            utc_start_ns: src
+                .utc_start_ns()
+                .and_then(|value| i64::try_from(value).ok())
+                .unwrap_or(-1),
+            timezone: cstring(&src.timezone()),
+            duration_ns: src
+                .channels()
+                .iter()
+                .map(|channel| channel.duration_ns)
+                .max()
+                .unwrap_or(0),
+            ..SidecarTables::default()
+        }
+    };
     Box::new(BridgeFile {
         src,
         names,
         units,
         source_laps,
+        sidecar,
     })
+}
+
+impl Default for SidecarTables {
+    fn default() -> Self {
+        Self {
+            is_extension: 0,
+            group_visible: 1,
+            utc_start_ns: -1,
+            duration_ns: 0,
+            name: CString::default(),
+            timezone: CString::default(),
+            chrome: Vec::new(),
+            spans: Vec::new(),
+            channel_visible: Vec::new(),
+        }
+    }
+}
+
+fn cstring(value: &str) -> CString {
+    CString::new(value).unwrap_or_default()
+}
+
+fn sidecar_tables(src: &dyn TelemetrySource) -> SidecarTables {
+    let utc = src
+        .utc_start_ns()
+        .and_then(|value| i64::try_from(value).ok())
+        .unwrap_or(-1);
+    let mut tables = SidecarTables {
+        utc_start_ns: utc,
+        timezone: cstring(&src.timezone()),
+        duration_ns: src
+            .channels()
+            .iter()
+            .map(|channel| channel.duration_ns)
+            .max()
+            .unwrap_or(0),
+        channel_visible: vec![1; src.channels().len()],
+        ..SidecarTables::default()
+    };
+    let Ok(jsonl) = telemetry_format::JsonlRecording::open(src.path()) else {
+        return tables;
+    };
+    tables.duration_ns = jsonl.duration_ns();
+    tables.is_extension = u8::from(jsonl.is_extension());
+    if let Some(header) = jsonl.sidecar() {
+        tables.name = cstring(&header.name);
+        tables.group_visible = u8::from(header.visible);
+        tables.timezone = cstring(&header.timezone);
+        tables.utc_start_ns = i64::try_from(header.utc_start_ns).unwrap_or(-1);
+        tables.chrome = header
+            .right
+            .iter()
+            .map(|chrome| match chrome {
+                telemetry_format::HeaderChrome::Text(text) => OwnedChrome {
+                    kind: 0,
+                    text: cstring(text),
+                    label: CString::default(),
+                    value: CString::default(),
+                },
+                telemetry_format::HeaderChrome::Pill { label, value } => OwnedChrome {
+                    kind: 1,
+                    text: CString::default(),
+                    label: cstring(label),
+                    value: cstring(value),
+                },
+            })
+            .collect();
+    }
+    tables.channel_visible = jsonl
+        .channel_visible()
+        .iter()
+        .map(|visible| u8::from(*visible))
+        .collect();
+    if tables.channel_visible.len() < src.channels().len() {
+        tables
+            .channel_visible
+            .resize(src.channels().len(), 1);
+    }
+    tables.spans = jsonl
+        .spans()
+        .iter()
+        .map(|span| OwnedSpan {
+            start_ns: span.start_ns,
+            end_ns: span.end_ns,
+            visible: u8::from(span.visible),
+            name: cstring(&span.name),
+            title: cstring(&span.primary.title),
+            subtitle: cstring(&span.primary.subtitle),
+            color: cstring(&span.color),
+            meta: span
+                .meta
+                .iter()
+                .map(|(key, value)| (cstring(key), cstring(value)))
+                .collect(),
+        })
+        .collect();
+    tables
 }
 
 // ── handling ─────────────────────────────────────────────────────────
@@ -332,6 +530,8 @@ pub unsafe extern "C" fn omatrack_format(handle: *mut c_void) -> *const c_char {
                 static LD: &[u8] = b"ld\0";
                 static VBO: &[u8] = b"vbo\0";
                 static TELEMETRY: &[u8] = b"telemetry\0";
+                static JSONL: &[u8] = b"jsonl\0";
+                static MTX: &[u8] = b"mtx\0";
                 let fmt = f.src.format();
                 let bytes: &[u8] = match fmt {
                     "aimd" => AIMD,
@@ -339,6 +539,9 @@ pub unsafe extern "C" fn omatrack_format(handle: *mut c_void) -> *const c_char {
                     "ld" | "motec" => LD,
                     "vbo" => VBO,
                     "telemetry" => TELEMETRY,
+                    "jsonl" if f.sidecar.is_extension != 0 => MTX,
+                    "jsonl" => JSONL,
+                    _ if f.sidecar.is_extension != 0 => MTX,
                     _ => b"unknown\0",
                 };
                 bytes.as_ptr() as *const c_char
@@ -905,6 +1108,235 @@ pub unsafe extern "C" fn omatrack_video_frame_at(
             return 0;
         };
         *out = frame;
+        1
+    })
+}
+
+/// True when `path` is an MTJ/MTX JSONL document (plain or zstd).
+///
+/// # Safety
+/// `path` must be NULL or a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_is_jsonl_path(path: *const c_char) -> c_int {
+    ffi_guard(stringify!(omatrack_is_jsonl_path), 0, || {
+        if path.is_null() {
+            return 0;
+        }
+        match unsafe { CStr::from_ptr(path) }.to_str() {
+            Ok(value) => i32::from(telemetry_format::is_jsonl_path(Path::new(value))),
+            Err(_) => 0,
+        }
+    })
+}
+
+/// True when `path` names an MTX sidecar (`.ext.jsonl` / `.mtx.jsonl`,
+/// including zstd).
+///
+/// # Safety
+/// `path` must be NULL or a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_is_sidecar_path(path: *const c_char) -> c_int {
+    ffi_guard(stringify!(omatrack_is_sidecar_path), 0, || {
+        if path.is_null() {
+            return 0;
+        }
+        match unsafe { CStr::from_ptr(path) }.to_str() {
+            Ok(value) => i32::from(telemetry_format::is_jsonl_ext_path(Path::new(value))),
+            Err(_) => 0,
+        }
+    })
+}
+
+/// Copy MTX / catalog placement into `out`. Returns 1 on success.
+///
+/// # Safety
+/// `handle` must be NULL or a live `omatrack_open` handle, and `out` must
+/// point to writable `OmatrackSidecarInfo` storage.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_sidecar_info(
+    handle: *mut c_void,
+    out: *mut OmatrackSidecarInfo,
+) -> c_int {
+    ffi_guard(stringify!(omatrack_sidecar_info), 0, || {
+        let Some(file) = as_file(handle) else {
+            return 0;
+        };
+        if out.is_null() {
+            return 0;
+        }
+        *out = OmatrackSidecarInfo {
+            is_extension: file.sidecar.is_extension,
+            group_visible: file.sidecar.group_visible,
+            utc_start_ns: file.sidecar.utc_start_ns,
+            duration_ns: file.sidecar.duration_ns,
+            name: file.sidecar.name.as_ptr(),
+            timezone: file.sidecar.timezone.as_ptr(),
+        };
+        1
+    })
+}
+
+/// Unix-epoch nanoseconds at file `t = 0`, or 0 when unknown.
+///
+/// # Safety
+/// `handle` must be NULL or a live `omatrack_open` handle, and `out` must
+/// point to a writable `i64`.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_utc_start_ns(
+    handle: *mut c_void,
+    out: *mut i64,
+) -> c_int {
+    ffi_guard(stringify!(omatrack_utc_start_ns), 0, || {
+        let Some(file) = as_file(handle) else {
+            return 0;
+        };
+        if out.is_null() {
+            return 0;
+        }
+        if file.sidecar.utc_start_ns < 0 {
+            return 0;
+        }
+        *out = file.sidecar.utc_start_ns;
+        1
+    })
+}
+
+/// Default visibility of sample channel `index` (`1` shown). Missing
+/// indices are visible.
+///
+/// # Safety
+/// `handle` must be NULL or a live `omatrack_open` handle.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_channel_visible(
+    handle: *mut c_void,
+    index: usize,
+) -> u8 {
+    ffi_guard(stringify!(omatrack_channel_visible), 1, || {
+        as_file(handle)
+            .and_then(|file| file.sidecar.channel_visible.get(index).copied())
+            .unwrap_or(1)
+    })
+}
+
+/// Number of right-aligned header chrome elements.
+///
+/// # Safety
+/// `handle` must be NULL or a live `omatrack_open` handle.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_sidecar_chrome_count(handle: *mut c_void) -> usize {
+    ffi_guard(stringify!(omatrack_sidecar_chrome_count), 0, || {
+        as_file(handle)
+            .map(|file| file.sidecar.chrome.len())
+            .unwrap_or(0)
+    })
+}
+
+/// Copy one chrome element into `out`. Returns 1 on success.
+///
+/// # Safety
+/// `handle` must be NULL or a live `omatrack_open` handle, and `out` must
+/// point to writable `OmatrackSidecarChrome` storage.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_sidecar_chrome(
+    handle: *mut c_void,
+    index: usize,
+    out: *mut OmatrackSidecarChrome,
+) -> c_int {
+    ffi_guard(stringify!(omatrack_sidecar_chrome), 0, || {
+        let Some(file) = as_file(handle) else {
+            return 0;
+        };
+        if out.is_null() {
+            return 0;
+        }
+        let Some(chrome) = file.sidecar.chrome.get(index) else {
+            return 0;
+        };
+        *out = OmatrackSidecarChrome {
+            kind: chrome.kind,
+            text: chrome.text.as_ptr(),
+            label: chrome.label.as_ptr(),
+            value: chrome.value.as_ptr(),
+        };
+        1
+    })
+}
+
+/// Number of MTX spans.
+///
+/// # Safety
+/// `handle` must be NULL or a live `omatrack_open` handle.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_span_count(handle: *mut c_void) -> usize {
+    ffi_guard(stringify!(omatrack_span_count), 0, || {
+        as_file(handle).map(|file| file.sidecar.spans.len()).unwrap_or(0)
+    })
+}
+
+/// Copy one span into `out`. Returns 1 on success.
+///
+/// # Safety
+/// `handle` must be NULL or a live `omatrack_open` handle, and `out` must
+/// point to writable `OmatrackSpan` storage.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_span(
+    handle: *mut c_void,
+    index: usize,
+    out: *mut OmatrackSpan,
+) -> c_int {
+    ffi_guard(stringify!(omatrack_span), 0, || {
+        let Some(file) = as_file(handle) else {
+            return 0;
+        };
+        if out.is_null() {
+            return 0;
+        }
+        let Some(span) = file.sidecar.spans.get(index) else {
+            return 0;
+        };
+        *out = OmatrackSpan {
+            start_ns: span.start_ns,
+            end_ns: span.end_ns,
+            visible: span.visible,
+            name: span.name.as_ptr(),
+            title: span.title.as_ptr(),
+            subtitle: span.subtitle.as_ptr(),
+            color: span.color.as_ptr(),
+            meta_count: span.meta.len(),
+        };
+        1
+    })
+}
+
+/// Copy one hover field of a span. `key_out` / `value_out` receive
+/// handle-owned pointers. Returns 1 on success.
+///
+/// # Safety
+/// `handle` must be NULL or a live `omatrack_open` handle. `key_out` and
+/// `value_out` must each point to a writable `*const c_char`.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_span_meta(
+    handle: *mut c_void,
+    span_index: usize,
+    meta_index: usize,
+    key_out: *mut *const c_char,
+    value_out: *mut *const c_char,
+) -> c_int {
+    ffi_guard(stringify!(omatrack_span_meta), 0, || {
+        let Some(file) = as_file(handle) else {
+            return 0;
+        };
+        if key_out.is_null() || value_out.is_null() {
+            return 0;
+        }
+        let Some(span) = file.sidecar.spans.get(span_index) else {
+            return 0;
+        };
+        let Some((key, value)) = span.meta.get(meta_index) else {
+            return 0;
+        };
+        *key_out = key.as_ptr();
+        *value_out = value.as_ptr();
         1
     })
 }

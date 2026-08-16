@@ -32,6 +32,8 @@ struct RawChannel {
     double frequencyHz = 0.0;
     /// Total duration in seconds.
     double durationSec = 0.0;
+    /// First-sample time, file-relative nanoseconds (`t0`).
+    std::uint64_t startNs = 0;
 };
 
 // ── lap ─────────────────────────────────────────────────────────────
@@ -103,6 +105,27 @@ struct SessionMeta {
 /// concepts keep the normal cross-format alias matching.
 using ChannelOverrides = std::map<std::string, std::string>;
 
+/// Right-aligned MTX group header chrome (`r` in the sidecar header).
+struct SidecarChrome {
+    enum class Kind { Text, Pill };
+    Kind kind = Kind::Text;
+    std::string text;
+    std::string label;
+    std::string value;
+};
+
+/// One MTX span (`k:"s"`): `[startNs, endNs)` on the sidecar axis.
+struct SidecarSpan {
+    std::uint64_t startNs = 0;
+    std::uint64_t endNs = 0;
+    bool visible = true;
+    std::string name;
+    std::string title;
+    std::string subtitle;
+    std::string color;
+    std::vector<std::pair<std::string, std::string>> meta;
+};
+
 // ── telemtery source ────────────────────────────────────────────────
 
 class TelemetrySource {
@@ -131,11 +154,34 @@ public:
     std::vector<Lap>& sourceLaps() { return sourceLaps_; }
     const std::vector<Lap>& sourceLaps() const { return sourceLaps_; }
 
+    /// Unix-epoch nanoseconds at file `t = 0`, or -1 when the source has no
+    /// placement stamp. Join with an MTX sidecar is
+    /// `host_file_ns = ext_file_ns + ext.utc − host.utc`.
+    std::int64_t utcStartNs() const { return utcStartNs_; }
+    /// Exclusive file-relative duration in nanoseconds.
+    std::uint64_t durationNs() const { return durationNs_; }
+    const std::string& timezone() const { return timezone_; }
+    /// True when this handle is an MTX sidecar, not a host recording.
+    bool isExtension() const { return isExtension_; }
+    const std::string& sidecarName() const { return sidecarName_; }
+    /// Header `vis`: the overlay group starts expanded when true.
+    bool groupVisible() const { return groupVisible_; }
+    const std::vector<SidecarChrome>& sidecarChrome() const {
+        return sidecarChrome_;
+    }
+    const std::vector<SidecarSpan>& spans() const { return spans_; }
+    /// Per-channel default visibility from the MTX `vis` field.
+    bool channelDefaultVisible(size_t index) const;
+
     /// Sample a channel at absolute time (seconds). Linear interpolation is
     /// the default; pass linear=false for ordinals such as gear.
     /// Returns false when out of range.
     bool sampleAt(size_t channelIdx, double timeSec, double* out,
                   bool linear = true) const;
+    /// Sample a channel at file-relative nanoseconds. Prefer this for MTX
+    /// join so the integer-ns key is not converted through a double.
+    bool sampleAtNs(size_t channelIdx, std::uint64_t timeNs, double* out,
+                    bool linear = true) const;
 
     /// Map channel concepts to channel indices (omatrack channelMappings).
     std::map<std::string, int> mapChannels(
@@ -172,7 +218,29 @@ private:
     std::optional<double> videoPresentationOffsetSec_;
     std::vector<RawChannel> channels_;
     std::vector<Lap> sourceLaps_;
+    std::int64_t utcStartNs_ = -1;
+    std::uint64_t durationNs_ = 0;
+    std::string timezone_;
+    bool isExtension_ = false;
+    bool groupVisible_ = true;
+    std::string sidecarName_;
+    std::vector<SidecarChrome> sidecarChrome_;
+    std::vector<SidecarSpan> spans_;
+    std::vector<std::uint8_t> channelVisible_;
 };
+
+/// True when `path` is an MTJ/MTX JSONL document (plain or zstd).
+bool isJsonlPath(const std::string& path);
+/// True when `path` names an MTX sidecar (`.ext.jsonl` / `.mtx.jsonl`).
+bool isJsonlExtPath(const std::string& path);
+/// Unix-epoch nanoseconds at file `t = 0` from a GPS week / iTOW sample
+/// taken at `fileTimeSec`. Returns -1 when the fix is unusable.
+std::int64_t utcStartNsFromGps(double week, double itowMs, double fileTimeSec);
+/// `ext.utc − host.utc`, or 0 when the host has no utc (`hostUtcNs < 0`).
+std::int64_t sidecarJoinShiftNs(std::int64_t hostUtcNs, std::int64_t extUtcNs);
+/// Half-open `[a0, a1)` overlaps `[b0, b1)`.
+bool nsRangesOverlap(std::int64_t a0, std::int64_t a1, std::int64_t b0,
+                     std::int64_t b1);
 
 // ── helpers exposed for CLI/tests ───────────────────────────────────
 

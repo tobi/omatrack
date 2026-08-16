@@ -60,6 +60,8 @@ const AliasTable& channelMappings() {
         {"damper_rr", {"x_rr_damper", "damper travel rr"}},
         {"gps_lat", {"fia_gpslatn", "gps latitude"}},
         {"gps_lon", {"fia_gpslonge", "gps longitude"}},
+        {"gps_week", {"gps week"}},
+        {"gps_itow", {"gps itow"}},
         {"gps_speed", {"fia_gpsvel", "gps speed"}},
         {"gps_position_accuracy", {"gps position accuracy"}},
         {"gps_speed_accuracy", {"gps speed accuracy"}},
@@ -549,6 +551,7 @@ std::unique_ptr<TelemetrySource> TelemetrySource::openImpl(
         ch.durationSec = double(omatrack_channel_duration_ns(handle, i)) / 1e9;
         uint64_t period = omatrack_chunk_period_ns(handle, i, 0);
         ch.frequencyHz = period > 0 ? 1e9 / double(period) : 0.0;
+        ch.startNs = omatrack_chunk_time_base_ns(handle, i, 0);
         uint64_t count = omatrack_channel_sample_count(handle, i);
         ch.samples.resize((size_t)count);
         if (count > 0) {
@@ -557,6 +560,86 @@ std::unique_ptr<TelemetrySource> TelemetrySource::openImpl(
             ch.samples.resize(written);
         }
         src->channels_.push_back(std::move(ch));
+    }
+    OmatrackSidecarInfo info{};
+    if (omatrack_sidecar_info(handle, &info)) {
+        src->isExtension_ = info.is_extension != 0;
+        src->groupVisible_ = info.group_visible != 0;
+        src->utcStartNs_ = info.utc_start_ns;
+        src->durationNs_ = info.duration_ns;
+        src->sidecarName_ = info.name ? info.name : "";
+        src->timezone_ = info.timezone ? info.timezone : "";
+        const size_t chromeCount = omatrack_sidecar_chrome_count(handle);
+        src->sidecarChrome_.reserve(chromeCount);
+        for (size_t index = 0; index < chromeCount; ++index) {
+            OmatrackSidecarChrome chrome{};
+            if (!omatrack_sidecar_chrome(handle, index, &chrome)) continue;
+            SidecarChrome row;
+            row.kind = chrome.kind == 1 ? SidecarChrome::Kind::Pill
+                                        : SidecarChrome::Kind::Text;
+            row.text = chrome.text ? chrome.text : "";
+            row.label = chrome.label ? chrome.label : "";
+            row.value = chrome.value ? chrome.value : "";
+            src->sidecarChrome_.push_back(std::move(row));
+        }
+        const size_t spanCount = omatrack_span_count(handle);
+        src->spans_.reserve(spanCount);
+        for (size_t index = 0; index < spanCount; ++index) {
+            OmatrackSpan span{};
+            if (!omatrack_span(handle, index, &span)) continue;
+            SidecarSpan row;
+            row.startNs = span.start_ns;
+            row.endNs = span.end_ns;
+            row.visible = span.visible != 0;
+            row.name = span.name ? span.name : "";
+            row.title = span.title ? span.title : "";
+            row.subtitle = span.subtitle ? span.subtitle : "";
+            row.color = span.color ? span.color : "";
+            row.meta.reserve(span.meta_count);
+            for (size_t meta = 0; meta < span.meta_count; ++meta) {
+                const char* key = nullptr;
+                const char* value = nullptr;
+                if (!omatrack_span_meta(handle, index, meta, &key, &value))
+                    continue;
+                row.meta.emplace_back(key ? key : "", value ? value : "");
+            }
+            src->spans_.push_back(std::move(row));
+        }
+        src->channelVisible_.resize(n);
+        for (size_t index = 0; index < n; ++index)
+            src->channelVisible_[index] = omatrack_channel_visible(handle, index);
+    }
+    if (src->durationNs_ == 0) {
+        for (const RawChannel& channel : src->channels_)
+            src->durationNs_ = std::max(
+                src->durationNs_,
+                static_cast<std::uint64_t>(
+                    std::llround(std::max(0.0, channel.durationSec) * 1e9)));
+    }
+    if (src->utcStartNs_ < 0) {
+        const auto mapping = src->mapChannels();
+        const auto weekIt = mapping.find("gps_week");
+        const auto itowIt = mapping.find("gps_itow");
+        if (weekIt != mapping.end() && itowIt != mapping.end() &&
+            weekIt->second >= 0 && itowIt->second >= 0) {
+            const RawChannel& week =
+                src->channels_[size_t(weekIt->second)];
+            const RawChannel& itow =
+                src->channels_[size_t(itowIt->second)];
+            const size_t count = std::min(week.samples.size(), itow.samples.size());
+            const double freq =
+                week.frequencyHz > 0.0 ? week.frequencyHz : itow.frequencyHz;
+            for (size_t index = 0; index < count; ++index) {
+                const double fileTime =
+                    freq > 0.0 ? double(index) / freq : 0.0;
+                const std::int64_t utc = utcStartNsFromGps(
+                    week.samples[index], itow.samples[index], fileTime);
+                if (utc >= 0) {
+                    src->utcStartNs_ = utc;
+                    break;
+                }
+            }
+        }
     }
     return src;
 }
@@ -840,6 +923,62 @@ std::string compareTelemetrySources(const TelemetrySource& left,
         out << "\n";
     }
     return out.str();
+}
+
+bool TelemetrySource::channelDefaultVisible(size_t index) const {
+    if (index >= channelVisible_.size()) return true;
+    return channelVisible_[index] != 0;
+}
+
+bool TelemetrySource::sampleAtNs(size_t channelIdx, std::uint64_t timeNs,
+                                 double* out, bool linear) const {
+    if (channelIdx >= channels_.size() || !out) return false;
+    if (handle_)
+        return omatrack_sample_at(handle_, channelIdx, timeNs, linear ? 1 : 0,
+                                  out) != 0;
+    return sampleAt(channelIdx, double(timeNs) / 1e9, out, linear);
+}
+
+bool isJsonlPath(const std::string& path) {
+    return omatrack_is_jsonl_path(path.c_str()) != 0;
+}
+
+bool isJsonlExtPath(const std::string& path) {
+    return omatrack_is_sidecar_path(path.c_str()) != 0;
+}
+
+std::int64_t utcStartNsFromGps(double week, double itowMs,
+                               double fileTimeSec) {
+    if (!std::isfinite(week) || !std::isfinite(itowMs) ||
+        !std::isfinite(fileTimeSec) || week < 0.0 || itowMs < 0.0)
+        return -1;
+    std::int64_t weekCount = std::llround(week);
+    // 10-bit week numbers wrap every 1024 weeks. A 2026 logger that only
+    // reports the low bits is in the 2048–3071 era (week 2429).
+    if (weekCount < 1024) weekCount += 2048;
+    const std::int64_t itow = std::llround(itowMs);
+    const std::int64_t fileNs = std::llround(fileTimeSec * 1e9);
+    if (itow < 0 || fileNs < 0) return -1;
+    constexpr std::int64_t kGpsEpochUnixSec = 315964800;
+    constexpr std::int64_t kLeapSeconds = 18;
+    constexpr std::int64_t kNsPerSec = 1000000000LL;
+    constexpr std::int64_t kNsPerWeek = 604800LL * kNsPerSec;
+    const std::int64_t gpsNs = weekCount * kNsPerWeek + itow * 1000000LL;
+    const std::int64_t utcNs =
+        gpsNs + kGpsEpochUnixSec * kNsPerSec - kLeapSeconds * kNsPerSec - fileNs;
+    if (utcNs < 1000000000000000000LL) return -1;
+    return utcNs;
+}
+
+std::int64_t sidecarJoinShiftNs(std::int64_t hostUtcNs,
+                                std::int64_t extUtcNs) {
+    if (hostUtcNs < 0 || extUtcNs < 0) return 0;
+    return extUtcNs - hostUtcNs;
+}
+
+bool nsRangesOverlap(std::int64_t a0, std::int64_t a1, std::int64_t b0,
+                     std::int64_t b1) {
+    return a0 < a1 && b0 < b1 && a0 < b1 && b0 < a1;
 }
 
 bool TelemetrySource::sampleAt(size_t channelIdx, double timeSec, double* out,

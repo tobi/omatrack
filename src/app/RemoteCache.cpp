@@ -878,6 +878,10 @@ QString etagFileKey(const QString& etag) {
 bool isSidecarPath(const QString& relativePath) {
     if (relativePath.startsWith(QStringLiteral(".omatrack/"))) return true;
     const QFileInfo info(relativePath);
+    const QString name = info.fileName().toLower();
+    if (name.contains(QStringLiteral(".ext.jsonl")) ||
+        name.contains(QStringLiteral(".mtx.jsonl")))
+        return true;
     if (!info.fileName().startsWith(QLatin1Char('.'))) return false;
     const QString suffix = info.suffix().toLower();
     return suffix == QStringLiteral("telemetry") ||

@@ -651,6 +651,8 @@ private slots:
         QVERIFY(isSidecarPath(QStringLiteral(".omatrack/aim-e1.mp4")));
         QVERIFY(!isSidecarPath(QStringLiteral("session.vbo")));
         QVERIFY(!isSidecarPath(QStringLiteral("session.ld")));
+        QVERIFY(isSidecarPath(QStringLiteral("race.telemetry.ext.jsonl")));
+        QVERIFY(isSidecarPath(QStringLiteral("event/race.mtx.jsonl.zstd")));
 
         gets_ = 0;
         listings_ = 0;

@@ -1375,6 +1375,102 @@ private slots:
     }
 };
 
+class SidecarJoinTest : public QObject {
+    Q_OBJECT
+private slots:
+    void shiftIsZeroWhenHostHasNoUtc() {
+        QCOMPARE(sidecarJoinShiftNs(-1, 1742040000000000000LL), 0);
+    }
+    void shiftIsExtMinusHost() {
+        QCOMPARE(sidecarJoinShiftNs(100, 140), 40);
+        QCOMPARE(sidecarJoinShiftNs(140, 100), -40);
+    }
+    void overlapIsHalfOpen() {
+        QVERIFY(nsRangesOverlap(0, 10, 5, 15));
+        QVERIFY(!nsRangesOverlap(0, 10, 10, 20));
+        QVERIFY(nsRangesOverlap(0, 10, 0, 10));
+        QVERIFY(!nsRangesOverlap(0, 0, 0, 10));
+    }
+    void recognizesExtNames() {
+        QVERIFY(isJsonlExtPath("Sebring.telemetry.ext.jsonl"));
+        QVERIFY(isJsonlExtPath("race.mtx.jsonl.zstd"));
+        QVERIFY(isJsonlPath("race.telemetry.jsonl"));
+        QVERIFY(!isJsonlExtPath("race.telemetry"));
+        QVERIFY(!isJsonlPath("race.pds"));
+    }
+    void gpsWeekAndItowBecomeUtcAtT0() {
+        // Week 2429 + 493904000 ms − 18 s leap = 2026-07-31 17:11:26 UTC.
+        QCOMPARE(utcStartNsFromGps(2429.0, 493904000.0, 0.0),
+                 1785517886000000000LL);
+        QCOMPARE(utcStartNsFromGps(2429.0, 493904000.0, 2.0),
+                 1785517884000000000LL);
+        QCOMPARE(utcStartNsFromGps(-1.0, 1.0, 0.0), -1);
+    }
+};
+
+class JsonlSidecarTest : public QObject {
+    Q_OBJECT
+private slots:
+    void opensMtxHeaderAndSpans() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path =
+            directory.filePath(QStringLiteral("race.telemetry.ext.jsonl"));
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+        file.write(
+            "{\"mtx\":1,\"n\":\"Sebring 12H 2025\",\"q\":1000000,"
+            "\"dur\":12600000000000,\"vis\":1,\"utc\":1742040000000000000,"
+            "\"tz\":\"America/New_York\",\"r\":[{\"t\":\"LMP2 stints\"},"
+            "{\"p\":[\"Avg lap\",\"1:52.1\"]}]}\n"
+            "{\"k\":\"s\",\"n\":\"443-1\",\"s\":0,\"e\":5400000000000,"
+            "\"vis\":1,\"c\":\"#e11d48\",\"p\":{\"title\":\"#443\","
+            "\"sub\":\"EL · 1:52.1\"},\"m\":[[\"Laps\",\"28\"],"
+            "[\"Best\",\"1:50.332\"]]}\n"
+            "{\"n\":\"Heart Rate\",\"hz\":1,\"u\":\"bpm\",\"vis\":1,"
+            "\"v\":[80,81],\"t0\":0}\n");
+        file.close();
+
+        std::string error;
+        auto source = TelemetrySource::open(path.toStdString(), &error);
+        QVERIFY2(source, error.c_str());
+        QVERIFY(source->isExtension());
+        QCOMPARE(QString::fromStdString(source->sidecarName()),
+                 QStringLiteral("Sebring 12H 2025"));
+        QVERIFY(source->groupVisible());
+        QCOMPARE(source->utcStartNs(), 1742040000000000000LL);
+        QCOMPARE(source->timezone(), std::string("America/New_York"));
+        QCOMPARE(int(source->sidecarChrome().size()), 2);
+        QCOMPARE(source->sidecarChrome()[0].kind, SidecarChrome::Kind::Text);
+        QCOMPARE(source->sidecarChrome()[1].kind, SidecarChrome::Kind::Pill);
+        QCOMPARE(int(source->spans().size()), 1);
+        QCOMPARE(source->spans()[0].name, std::string("443-1"));
+        QCOMPARE(source->spans()[0].title, std::string("#443"));
+        QCOMPARE(int(source->channels().size()), 1);
+        QVERIFY(source->channelDefaultVisible(0));
+        double value = 0.0;
+        QVERIFY(source->sampleAtNs(0, 0, &value));
+        QCOMPARE(value, 80.0);
+    }
+
+    void refusesSidecarWithoutUtc() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path =
+            directory.filePath(QStringLiteral("bad.mtx.jsonl"));
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+        file.write(
+            "{\"mtx\":1,\"n\":\"No utc\",\"q\":1000000,\"dur\":1000000,"
+            "\"vis\":1,\"tz\":\"America/New_York\"}\n");
+        file.close();
+        std::string error;
+        auto source = TelemetrySource::open(path.toStdString(), &error);
+        QVERIFY(!source);
+        QVERIFY(error.find("utc") != std::string::npos);
+    }
+};
+
 // Run all test classes in one executable. QTEST_APPLESS_MAIN only runs one
 // class; a custom main ensures every Q_OBJECT class is executed.
 int main(int argc, char* argv[]) {
@@ -1429,6 +1525,14 @@ int main(int argc, char* argv[]) {
     }
     {
         MotecExportTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        SidecarJoinTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        JsonlSidecarTest t;
         status |= QTest::qExec(&t, argc, argv);
     }
     return status;
