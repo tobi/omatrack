@@ -53,6 +53,8 @@ Item {
     signal toggleNodeRequested(string role, string path)
 
     function hoverText(): string {
+        if (row.role === "folder")
+            return "";
         if (row.role === "day")
             return row.name;
         if (row.role !== "file")
@@ -227,11 +229,16 @@ Item {
                 row.fileActivated(row.path, row.key, row.hasSession);
         }
         onEntered: {
+            const text = row.hoverText();
+            if (text === "")
+                return;
             const point = rowMouse.mapToItem(Overlay.overlay, rowMouse.mouseX, rowMouse.mouseY);
-            row.pointerTooltipRequested(row.tooltipOwner, row.hoverText(), point.x, point.y);
+            row.pointerTooltipRequested(row.tooltipOwner, text, point.x, point.y);
         }
         onExited: row.pointerTooltipDismissed(row.tooltipOwner)
         onPositionChanged: mouse => {
+            if (row.hoverText() === "")
+                return;
             const point = rowMouse.mapToItem(Overlay.overlay, mouse.x, mouse.y);
             row.pointerTooltipMoved(row.tooltipOwner, point.x, point.y);
         }

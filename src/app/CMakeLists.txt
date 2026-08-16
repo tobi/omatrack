@@ -60,6 +60,7 @@ qt_add_qml_module(omatrack
     FileAssociationsDialog.qml
     FileBrowserPane.qml
     FileTreeDelegate.qml
+    FilterPill.qml
     PreferencesWindow.qml
     PreferencesDriversPage.qml
     PreferencesLibraryPage.qml
