@@ -857,6 +857,7 @@ ApplicationWindow {
             readonly property real mainHeight: Math.max(0, height - 2 * videoComposeHost.mainInset)
             readonly property real mainInset: videoComposeHost.composeMode === 2 || videoComposeHost.composeMode === 3 ? Math.round(Math.min(width, height) * 0.07) : 0
             readonly property real mainWidth: Math.max(0, width - 2 * videoComposeHost.mainInset)
+            readonly property real mainX: videoComposeHost.composeMode === 3 ? Math.max(0, width - videoComposeHost.mainWidth) : 0
             readonly property real pipHeight: Math.round(videoComposeHost.pipWidth * 9 / 16)
             readonly property real pipMargin: 16
             readonly property real pipWidth: Math.round(width * 0.3)
@@ -869,7 +870,7 @@ ApplicationWindow {
                 height: videoComposeHost.composeMode === 3 ? videoComposeHost.pipHeight : videoComposeHost.composeMode === 2 ? videoComposeHost.mainHeight : videoComposeHost.height
                 visible: videoComposeHost.composeMode !== 5
                 width: videoComposeHost.composeMode === 1 ? videoComposeHost.splitWidth : videoComposeHost.composeMode === 3 ? videoComposeHost.pipWidth : videoComposeHost.composeMode === 2 ? videoComposeHost.mainWidth : videoComposeHost.width
-                x: videoComposeHost.composeMode === 3 ? videoComposeHost.pipMargin : videoComposeHost.composeMode === 2 ? videoComposeHost.mainInset : 0
+                x: videoComposeHost.composeMode === 3 ? videoComposeHost.pipMargin : videoComposeHost.composeMode === 2 ? videoComposeHost.mainX : 0
                 y: videoComposeHost.composeMode === 3 ? videoComposeHost.height - videoComposeHost.pipHeight - videoComposeHost.pipMargin : videoComposeHost.composeMode === 2 ? videoComposeHost.mainInset : 0
                 z: videoComposeHost.composeMode === 3 ? 2 : 0
 
@@ -957,7 +958,7 @@ ApplicationWindow {
                 height: videoComposeHost.composeMode === 2 ? videoComposeHost.pipHeight : videoComposeHost.composeMode === 3 ? videoComposeHost.mainHeight : videoComposeHost.height
                 visible: root.dualVideo && videoComposeHost.composeMode !== 4
                 width: videoComposeHost.composeMode === 1 ? videoComposeHost.splitWidth : videoComposeHost.composeMode === 2 ? videoComposeHost.pipWidth : videoComposeHost.composeMode === 3 ? videoComposeHost.mainWidth : videoComposeHost.width
-                x: videoComposeHost.composeMode === 1 ? videoComposeHost.splitWidth + videoComposeHost.gap : videoComposeHost.composeMode === 2 ? videoComposeHost.width - videoComposeHost.pipWidth - videoComposeHost.pipMargin : videoComposeHost.composeMode === 3 ? videoComposeHost.mainInset : 0
+                x: videoComposeHost.composeMode === 1 ? videoComposeHost.splitWidth + videoComposeHost.gap : videoComposeHost.composeMode === 2 ? videoComposeHost.width - videoComposeHost.pipWidth - videoComposeHost.pipMargin : videoComposeHost.composeMode === 3 ? videoComposeHost.mainX : 0
                 y: videoComposeHost.composeMode === 2 ? videoComposeHost.height - videoComposeHost.pipHeight - videoComposeHost.pipMargin : videoComposeHost.composeMode === 3 ? videoComposeHost.mainInset : 0
                 z: videoComposeHost.composeMode === 2 ? 2 : 0
 
