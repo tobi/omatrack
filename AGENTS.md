@@ -4,7 +4,7 @@
 
 Omatrack is a native racing-telemetry workstation. Its primary target is Linux under Omarchy, built with Qt 6, Qt Quick, and Material controls. It should turn heterogeneous logger files into a coherent, driver-facing model of sessions, laps, channels, tracks, corners, and corner complexes.
 
-This is not a single-format file viewer or a generic chart demo. The product direction is a full telemetry system that can ingest every major race format through one analysis pipeline. The current parser bridge supports Pi/Cosworth `.pds`, MoTeC `.ld`, Racelogic `.vbo`, AiM `aimd` telemetry embedded in `.mp4`, and native `.telemetry`; that is the starting set, not the intended limit. Vendor files are converted once to hidden `.{filename}.telemetry` and every later open, unify, and video-sync path reads that. Motec `.ldx` is not a session. `.telemetry` is Omatrack's native recording: header first, O(1) catalog, lossless channel columns, laps, video links, and frame sync. Any problem that should be solved at load time or pre-computed belongs in that format — extend `telemetry-format` upstream, do not add a second sidecar schema in Qt.
+This is not a single-format file viewer or a generic chart demo. The product direction is a full telemetry system that can ingest every major race format through one analysis pipeline. The current parser bridge supports Pi/Cosworth `.pds`, MoTeC `.ld`, Racelogic `.vbo`, AiM `aimd` telemetry embedded in `.mp4`, native `.telemetry`, and Motorsport Telemetry JSONL (MTJ recordings and MTX sidecars). That is the starting set, not the intended limit. Vendor files are converted once to hidden `.{filename}.telemetry` and every later open, unify, and video-sync path reads that. Motec `.ldx` is not a session. MTX is an overlay, not a library session: drop or sibling-find a `.ext.jsonl` / `.mtx.jsonl`, overlap-join it onto the open host by integer nanoseconds, and show it as a collapsible folder of extra channels and spans. `.telemetry` is Omatrack's native recording: header first, O(1) catalog, lossless channel columns, laps, video links, and frame sync. Any problem that should be solved at load time or pre-computed belongs in that format — extend `telemetry-format` upstream, do not add a second sidecar schema in Qt.
 
 ## Product goal
 
@@ -682,19 +682,24 @@ Embedded libmpv playback must be verified on the native Linux/Omarchy OpenGL sce
 
 ## Current boundaries to keep explicit
 
-- The bridge dispatches `.pds`, `.ld`, `.vbo`, AiM `aimd` `.mp4`, and native
-  `.telemetry`. Motec `.ld` is ingest-only: the first open writes
-  `.{filename}.telemetry` and analysis never reopens the Motec file.
-  `.ldx` is not a library session. An ordinary MP4 without an `aimd`
-  track remains valid for standalone playback but is not a telemetry
-  session. Hidden `.{video}.telemetry` is the portable companion: later
-  clients open it instead of the video. Catalog-only `.telemetry` means
-  unsupported. Catalog v3 stores presentation offset, `video_frames.bin`,
-  and per-lap `first_video_frame`. Opening a writable older file only
-  bumps the catalog; it cannot invent frames that were never stored.
-  Recover those by rewriting from the AiM extract. `--verbose` dumps
-  AiM vs `.telemetry` GPS, main channels, laps, presentation offset,
-  and video frames so a reopen can be checked against the extract.
+- The bridge dispatches `.pds`, `.ld`, `.vbo`, AiM `aimd` `.mp4`, native
+  `.telemetry`, and JSONL (`mtj` recordings, `mtx` sidecars). Motec `.ld`
+  is ingest-only: the first open writes `.{filename}.telemetry` and
+  analysis never reopens the Motec file. `.ldx` is not a library session.
+  MTX sidecars are not library sessions either: they are overlap-joined
+  onto the open host (`host_t = ext_t + ext.utc − host.utc`; missing host
+  `utc` is a zero shift) and drawn as a collapsible folder of header
+  chrome, span tracks, and sample channels. An ordinary MP4 without an
+  `aimd` track remains valid for standalone playback but is not a
+  telemetry session. Hidden `.{video}.telemetry` is the portable
+  companion: later clients open it instead of the video. Catalog-only
+  `.telemetry` means unsupported. Catalog v3 stores presentation offset,
+  `video_frames.bin`, and per-lap `first_video_frame`. Opening a writable
+  older file only bumps the catalog; it cannot invent frames that were
+  never stored. Recover those by rewriting from the AiM extract.
+  `--verbose` dumps AiM vs `.telemetry` GPS, main channels, laps,
+  presentation offset, and video frames so a reopen can be checked
+  against the extract.
 - Session parsing is lazy. Opening a source decodes whole channel arrays, but
   `src_` is freed after `adoptLoadedLap()` creates the `UnifiedLap`; the file is
   re-opened on demand by `extraChannelData()` for the opt-in raw-channel

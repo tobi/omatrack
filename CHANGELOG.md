@@ -4,6 +4,25 @@ All notable user-facing changes are documented here.
 
 ## Unreleased
 
+- MTX JSONL sidecars (`.ext.jsonl` / `.mtx.jsonl`, plain or zstd) can be
+  dropped onto an open lap, video, or traces. If the sidecar timespan
+  overlaps the open host, it is joined by integer nanoseconds and appended
+  as a collapsible folder: header chrome, span (stint) track, and sample
+  channels with the file's default visibility. Matching sidecars are
+  found next to the open recording, in Documents, and in configured
+  library folders. Host `utc` is taken from the catalog or derived from
+  GPS week/iTOW so a weekend biometric or weather file lines up. A span
+  is a channel: one lane per `n` (a car, a sleep series, an exercise).
+  Overlay traces share the open lap/video clock and zoom; samples
+  outside that recording are dropped. Hovering a span shows its
+  metadata in a card that follows the pointer above the traces.
+  MTX is an overlay, not a library session.
+- The sidebar has a filter strip at the bottom: driver and year pills,
+  plus a track dropdown. The first pill click is exclusive; later clicks
+  add more.
+- Fullscreen pip layouts pin the large recording to the left when it is
+  the active car, and to the right when it is the reference.
+
 ## 1.2.0 — 2026-08-15
 
 - Portable Linux AppImages, Windows Velopack installs, and macOS apps
