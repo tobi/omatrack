@@ -67,6 +67,10 @@ qt_add_qml_module(omatrack
     PreferencesTrackDataPage.qml
     PreferencesUpdatesPage.qml
     SessionTreeDelegate.qml
+    SpanHoverCard.qml
+    TraceCornerRuler.qml
+    TraceLaneChrome.qml
+    TraceToolbar.qml
     TrackAssignmentDialog.qml
     ThinScrollBar.qml
     VideoMetadataDialog.qml

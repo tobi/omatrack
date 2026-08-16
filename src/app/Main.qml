@@ -698,7 +698,7 @@ ApplicationWindow {
                 color: Style.foregroundColor
                 font.bold: true
                 font.pixelSize: 16
-                text: "Drop telemetry or video to open"
+                text: "Drop telemetry, video, or sidecar"
             }
         }
     }
@@ -1562,7 +1562,7 @@ ApplicationWindow {
         id: fileDialog
 
         fileMode: Platform.FileDialog.OpenFile
-        nameFilters: ["Telemetry and video (*.pds *.PDS *.ld *.LD *.vbo *.VBO *.telemetry *.TELEMETRY *.mp4 *.MP4 *.mov *.MOV *.mkv *.MKV *.avi *.AVI *.m4v *.M4V *.webm *.WEBM)", "Telemetry (*.pds *.PDS *.ld *.LD *.vbo *.VBO *.telemetry *.TELEMETRY *.mp4 *.MP4)", "Video (*.mp4 *.MP4 *.mov *.MOV *.mkv *.MKV *.avi *.AVI *.m4v *.M4V *.webm *.WEBM)", "All files (*)"]
+        nameFilters: ["Telemetry and video (*.pds *.PDS *.ld *.LD *.vbo *.VBO *.telemetry *.TELEMETRY *.mp4 *.MP4 *.mov *.MOV *.mkv *.MKV *.avi *.AVI *.m4v *.M4V *.webm *.WEBM *.jsonl *.jsonl.zstd *.jsonl.zst)", "Telemetry (*.pds *.PDS *.ld *.LD *.vbo *.VBO *.telemetry *.TELEMETRY *.mp4 *.MP4)", "Sidecar (*.ext.jsonl *.mtx.jsonl *.jsonl *.jsonl.zstd *.jsonl.zst)", "Video (*.mp4 *.MP4 *.mov *.MOV *.mkv *.MKV *.avi *.AVI *.m4v *.M4V *.webm *.WEBM)", "All files (*)"]
         title: "Open telemetry or video"
 
         onAccepted: Store.openFile(root.toLocalPath(fileDialog.file))
@@ -1704,6 +1704,15 @@ ApplicationWindow {
         visible: root.pointerTooltipOwner !== ""
         x: root.pointerTooltipX
         y: root.pointerTooltipY
+    }
+    SpanHoverCard {
+        id: spanHoverCard
+
+        accent: trace.spanHoverColor
+        metaRows: trace.spanHoverMeta
+        subtitleText: trace.spanHoverSubtitle
+        titleText: trace.spanHoverTitle
+        visible: trace.spanHoverVisible
     }
     Menu {
         id: lapMenu
@@ -2060,14 +2069,26 @@ ApplicationWindow {
                     objectName: "tracePane"
                     visible: !root.standaloneVideoActive
 
+                    TraceToolbar {
+                        id: traceToolbar
+
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        deltaTraceVisible: root.deltaTraceVisible
+                        trace: trace
+                        z: 2
+                    }
                     TraceView {
                         id: trace
 
                         property bool confidenceBeforeHold: false
                         property bool confidenceHeld: false
 
-                        anchors.fill: parent
-                        anchors.topMargin: 24
+                        anchors.bottom: parent.bottom
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: traceToolbar.bottom
                         backgroundColor: Style.traceBackgroundColor
                         focus: true
                         objectName: "traceView"
@@ -2122,6 +2143,10 @@ ApplicationWindow {
                             cornerMenu.popup(trace, x, y);
                         }
                         onCornerRenameRequested: index => root.openCornerRename(index)
+                        onSpanHoverChanged: {
+                            if (trace.spanHoverVisible)
+                                spanHoverCard.follow(trace, trace.spanHoverX, trace.spanHoverY);
+                        }
 
                         Menu {
                             id: cornerMenu
@@ -2195,7 +2220,7 @@ ApplicationWindow {
                             MenuSeparator {
                             }
                             MenuItem {
-                                text: "Hide " + channelMenu.channelTitle
+                                text: channelMenu.channelKey.indexOf("overlay:") === 0 ? "Remove " + channelMenu.channelTitle : "Hide " + channelMenu.channelTitle
 
                                 onTriggered: trace.hideChannel(channelMenu.channelKey)
                             }
@@ -2215,82 +2240,26 @@ ApplicationWindow {
                             }
                         }
                     }
+                    TraceLaneChrome {
+                        anchors.fill: trace
+                        trace: trace
+                        z: 0.5
+                    }
                     TraceCursorOverlay {
                         anchors.fill: trace
                         objectName: "traceOverlay"
                         trace: trace
                         z: 1
                     }
-                    ToolButton {
-                        ToolTip.text: Store.comparing ? (root.deltaTraceVisible ? "Hide comparison delta-time trace" : "Show comparison delta-time trace") : "Select a comparison lap to show delta time"
-                        ToolTip.visible: hovered
-                        anchors.left: parent.left
-                        anchors.top: parent.top
-                        checked: root.deltaTraceVisible
-                        enabled: Store.comparing
-                        height: 22
-                        objectName: "deltaTraceButton"
-                        text: "Δt"
-                        width: 58
+                    TraceCornerRuler {
+                        anchors.left: trace.left
+                        anchors.leftMargin: trace.labelWidth
+                        anchors.right: trace.right
+                        anchors.top: trace.top
+                        height: trace.rulerHeight
+                        objectName: "traceCornerRuler"
+                        rulerHeight: trace.rulerHeight
                         z: 2
-
-                        onClicked: Store.setChannelVisible("delta", !root.deltaTraceVisible)
-                    }
-                    Row {
-                        // Dedicated trace toolbar; corner labels begin below it.
-                        anchors.left: parent.left
-                        anchors.leftMargin: 60
-                        anchors.top: parent.top
-                        spacing: 2
-                        z: 2
-
-                        ToolButton {
-                            ToolTip.text: "Zoom in"
-                            ToolTip.visible: hovered
-                            height: 22
-                            objectName: "zoomInButton"
-                            text: "+"
-                            width: 30
-
-                            onClicked: Store.zoomAt(Store.cursorFrac, 0.7)
-                        }
-                        ToolButton {
-                            ToolTip.text: "Zoom out"
-                            ToolTip.visible: hovered
-                            height: 22
-                            objectName: "zoomOutButton"
-                            text: "−"
-                            width: 30
-
-                            onClicked: Store.zoomAt(Store.cursorFrac, 1.4)
-                        }
-                        ToolButton {
-                            ToolTip.text: "Reset zoom"
-                            ToolTip.visible: hovered
-                            height: 22
-                            objectName: "zoomResetButton"
-                            text: "⤢"
-                            width: 30
-
-                            onClicked: Store.resetView()
-                        }
-                        ToolButton {
-                            id: confidenceButton
-
-                            ToolTip.text: "Show fastest-half session consistency heatmap (hold .)"
-                            ToolTip.visible: hovered
-                            checkable: true
-                            checked: Store.traceConfidenceMode
-                            height: 22
-                            objectName: "confidenceButton"
-                            text: "Consistency"
-                            width: 86
-
-                            onClicked: {
-                                Store.traceConfidenceMode = confidenceButton.checked;
-                                trace.forceActiveFocus();
-                            }
-                        }
                     }
                     Rectangle {
                         anchors.fill: parent

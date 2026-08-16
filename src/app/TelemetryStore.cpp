@@ -40,6 +40,7 @@
 #include <QSslError>
 #include <QStandardPaths>
 #include <QTextStream>
+#include <QTimeZone>
 #include <QThread>
 #include <QTimer>
 #include <QUrl>
@@ -791,6 +792,7 @@ bool SessionHandle::loadSummaryForIndex() {
     applyEventDriverId(source->detectDriverId());
     captureGpsLocation(*source);
     setVideoPresentationOffset(source->videoPresentationOffsetSec());
+    utcStartNs_ = source->utcStartNs();
     return true;
 }
 
@@ -820,6 +822,7 @@ bool SessionHandle::loadSummaryForOpen(QString* errorString) {
     applyEventDriverId(source->detectDriverId());
     captureGpsLocation(*source);
     setVideoPresentationOffset(source->videoPresentationOffsetSec());
+    utcStartNs_ = source->utcStartNs();
     return true;
 }
 
@@ -1124,6 +1127,31 @@ std::shared_ptr<const omatrack::UnifiedLap> SessionHandle::unifiedLap(
     return unifiedCache_.value(lapId);
 }
 
+qint64 SessionHandle::startNs() const {
+    qint64 start = 0;
+    bool any = false;
+    for (const LapEntry& lap : laps_) {
+        if (!(lap.endTime > lap.startTime)) continue;
+        const qint64 candidate = qint64(std::llround(lap.startTime * 1e9));
+        if (!any || candidate < start) {
+            start = candidate;
+            any = true;
+        }
+    }
+    return any ? start : 0;
+}
+
+qint64 SessionHandle::durationNs() const {
+    qint64 end = 0;
+    for (const LapEntry& lap : laps_) {
+        if (!(lap.endTime > lap.startTime)) continue;
+        end = std::max(end, qint64(std::llround(lap.endTime * 1e9)));
+    }
+    if (videoHud_.duration > 0.0)
+        end = std::max(end, qint64(std::llround(videoHud_.duration * 1e9)));
+    return end;
+}
+
 void SessionHandle::adoptLoadedLap(int lapId,
                                    std::unique_ptr<TelemetrySource> source,
                                    std::shared_ptr<const UnifiedLap> unified,
@@ -1136,6 +1164,7 @@ void SessionHandle::adoptLoadedLap(int lapId,
     if (const auto offset = source->videoPresentationOffsetSec())
         setVideoPresentationOffset(offset);
     captureVideoHud(*source);
+    if (source->utcStartNs() >= 0) utcStartNs_ = source->utcStartNs();
     unifiedCache_.insert(lapId, std::move(unified));
     // source (decoded raw channel arrays, ~300 MB per session) is freed when
     // it goes out of scope here. The UnifiedLap is what rendering and analysis
@@ -2212,12 +2241,8 @@ std::shared_ptr<SessionScanResult> scanLibraryLocations(
                                                   : location.name.trimmed());
 
         QSet<QString> sourcePaths;
-        QSet<QString> linkedTelemetry;
         QDirIterator it(directory, filters, QDir::Files,
                         QDirIterator::Subdirectories);
-        const RemoteConnection remote = connectionFor(location);
-        const QString cacheRoot =
-            location.isConnection() ? directory : QString();
         while (it.hasNext()) {
             it.next();
             if (it.fileName() == QStringLiteral("TRACK.yml")) {
@@ -2233,20 +2258,8 @@ std::shared_ptr<SessionScanResult> scanLibraryLocations(
                                           ? resolved.absoluteFilePath()
                                           : resolved.canonicalFilePath();
             if (ioCancelled(cancel)) break;
-            if (isVideoPath(canonical)) {
-                const auto sidecar = readRecordingSidecar(canonical, cacheRoot);
-                if (sidecar && !sidecar->telemetryPath.isEmpty()) {
-                    const QString linked =
-                        canonicalInputPath(sidecar->telemetryPath);
-                    if (!linked.isEmpty()) linkedTelemetry.insert(linked);
-                }
-            }
             sourcePaths.insert(canonical);
             uniquePaths.insert(canonical);
-        }
-        for (const QString& linked : linkedTelemetry) {
-            sourcePaths.remove(linked);
-            uniquePaths.remove(linked);
         }
         result->locationFileCounts.insert(location.id, sourcePaths.size());
 
@@ -3179,7 +3192,570 @@ void TelemetryStore::removeSessionDirectory(const QString& dirPath) {
 
 void TelemetryStore::openFile(const QString& filePath) {
     qCInfo(lcIo).noquote() << "open request" << omatrack::displayPath(filePath);
+    if (omatrack::isJsonlPath(filePath.toStdString())) {
+        attachSidecarImpl(filePath, true);
+        return;
+    }
     queueFileOpen(filePath, FileOpenRole::Automatic);
+}
+
+bool TelemetryStore::isMtxSidecarPath(const QString& filePath) const {
+    return omatrack::isJsonlExtPath(filePath.toStdString()) ||
+           omatrack::isJsonlPath(filePath.toStdString());
+}
+
+void TelemetryStore::attachSidecar(const QString& filePath) {
+    attachSidecarImpl(filePath, false);
+}
+
+namespace {
+
+QString overlayGroupId(const QString& path) {
+    const QFileInfo info(path);
+    const QString canonical = info.canonicalFilePath().isEmpty()
+                                  ? info.absoluteFilePath()
+                                  : info.canonicalFilePath();
+    return QString::number(qHash(canonical), 16);
+}
+
+QColor sidecarChannelColorFor(const QString& name) {
+    static const QColor palette[] = {
+        QColor(QStringLiteral("#7fbbb3")), QColor(QStringLiteral("#d699b6")),
+        QColor(QStringLiteral("#dbbc7f")), QColor(QStringLiteral("#83c092")),
+        QColor(QStringLiteral("#e67e80")), QColor(QStringLiteral("#e09d7f")),
+        QColor(QStringLiteral("#a7c080")),
+    };
+    return palette[qHash(name) % (sizeof(palette) / sizeof(palette[0]))];
+}
+
+const LapEntry* lapEntryFor(const SessionHandle* session, int lapId) {
+    if (!session || lapId < 0) return nullptr;
+    for (const LapEntry& lap : session->laps()) {
+        if (lap.lapId == lapId) return &lap;
+    }
+    return nullptr;
+}
+
+std::shared_ptr<std::vector<double>> resampleSidecarOntoLap(
+    const TelemetrySource& source, size_t channel, const LapEntry& lap,
+    const UnifiedLap& unified, qint64 shiftNs, qint64 clipStartNs,
+    qint64 clipEndNs) {
+    auto values = std::make_shared<std::vector<double>>(
+        unified.size(), std::numeric_limits<double>::quiet_NaN());
+    if (unified.size() == 0) return values;
+    const qint64 lapStartNs = qint64(std::llround(lap.startTime * 1e9));
+    for (size_t index = 0; index < unified.size(); ++index) {
+        const qint64 hostNs =
+            lapStartNs + qint64(std::llround(unified.time[index] * 1e9));
+        if (clipEndNs > clipStartNs &&
+            (hostNs < clipStartNs || hostNs >= clipEndNs))
+            continue;
+        const qint64 extNs = hostNs - shiftNs;
+        if (extNs < 0) continue;
+        double value = 0.0;
+        if (source.sampleAtNs(channel, quint64(extNs), &value) &&
+            std::isfinite(value))
+            (*values)[index] = value;
+    }
+    return values;
+}
+
+struct SidecarLoadResult {
+    QString path;
+    QString error;
+    bool notExtension = false;
+    OverlayGroup group;
+    QHash<QString, std::shared_ptr<std::vector<double>>> samples;
+};
+
+SidecarLoadResult loadSidecarOverlay(const QString& path, qint64 hostUtcNs,
+                                     const LapEntry* lap,
+                                     const UnifiedLap* unified) {
+    SidecarLoadResult result;
+    result.path = path;
+    std::string error;
+    auto source = TelemetrySource::open(path.toStdString(), &error);
+    if (!source) {
+        result.error = error.empty() ? QStringLiteral("Unable to read sidecar")
+                                     : QString::fromStdString(error);
+        return result;
+    }
+    if (!source->isExtension()) {
+        result.notExtension = true;
+        result.error = QStringLiteral("Not an MTX sidecar");
+        return result;
+    }
+    if (source->utcStartNs() < 1) {
+        result.error = QStringLiteral(
+            "This sidecar has no utc stamp and cannot be placed.");
+        return result;
+    }
+    OverlayGroup group;
+    group.path = QFileInfo(path).absoluteFilePath();
+    group.id = overlayGroupId(group.path);
+    group.name = QString::fromStdString(source->sidecarName());
+    if (group.name.isEmpty()) group.name = QFileInfo(path).completeBaseName();
+    group.timezone = QString::fromStdString(source->timezone());
+    group.expanded = source->groupVisible();
+    group.utcStartNs = source->utcStartNs();
+    group.durationNs = qint64(source->durationNs());
+    group.shiftNs =
+        omatrack::sidecarJoinShiftNs(hostUtcNs, source->utcStartNs());
+    for (const SidecarChrome& chrome : source->sidecarChrome()) {
+        OverlayChrome row;
+        row.kind = chrome.kind == SidecarChrome::Kind::Pill
+                       ? QStringLiteral("pill")
+                       : QStringLiteral("text");
+        row.text = QString::fromStdString(chrome.text);
+        row.label = QString::fromStdString(chrome.label);
+        row.value = QString::fromStdString(chrome.value);
+        group.chrome.append(std::move(row));
+    }
+    for (const SidecarSpan& span : source->spans()) {
+        OverlaySpan row;
+        row.startHostNs = qint64(span.startNs) + group.shiftNs;
+        row.endHostNs = qint64(span.endNs) + group.shiftNs;
+        row.visible = span.visible;
+        row.name = QString::fromStdString(span.name);
+        row.title = QString::fromStdString(span.title);
+        row.subtitle = QString::fromStdString(span.subtitle);
+        row.color = QColor(QString::fromStdString(span.color));
+        if (!row.color.isValid()) row.color = QColor(QStringLiteral("#7fbbb3"));
+        for (const auto& meta : span.meta) {
+            row.meta.append(QVariantMap{
+                {QStringLiteral("name"), QString::fromStdString(meta.first)},
+                {QStringLiteral("value"),
+                 QString::fromStdString(meta.second)}});
+        }
+        group.spans.append(std::move(row));
+    }
+    QHash<QString, int> laneIndex;
+    for (const OverlaySpan& span : group.spans) {
+        const auto existing = laneIndex.constFind(span.name);
+        if (existing != laneIndex.cend()) {
+            if (span.visible) group.spanLanes[existing.value()].visible = true;
+            continue;
+        }
+        OverlaySpanLane lane;
+        lane.name = span.name;
+        lane.key = QStringLiteral("sidecar:") + group.id +
+                   QStringLiteral(":span:") + span.name;
+        lane.visible = span.visible;
+        laneIndex.insert(span.name, group.spanLanes.size());
+        group.spanLanes.append(std::move(lane));
+    }
+    const auto& channels = source->channels();
+    for (size_t index = 0; index < channels.size(); ++index) {
+        OverlayChannel row;
+        row.name = QString::fromStdString(channels[index].name);
+        row.unit = QString::fromStdString(channels[index].unit);
+        row.key =
+            QStringLiteral("sidecar:") + group.id + QLatin1Char(':') + row.name;
+        row.defaultVisible = source->channelDefaultVisible(index);
+        row.t0HostNs = qint64(channels[index].startNs) + group.shiftNs;
+        if (channels[index].frequencyHz > 0.0)
+            row.periodNs =
+                qint64(std::llround(1e9 / channels[index].frequencyHz));
+        auto values =
+            std::make_shared<std::vector<double>>(channels[index].samples);
+        row.samples = values;
+        if (lap && unified)
+            result.samples.insert(
+                row.key, resampleSidecarOntoLap(
+                             *source, index, *lap, *unified, group.shiftNs,
+                             qint64(std::llround(lap->startTime * 1e9)),
+                             qint64(std::llround(lap->endTime * 1e9))));
+        group.channels.append(std::move(row));
+    }
+    result.group = std::move(group);
+    return result;
+}
+
+QStringList mtxNameFilters() {
+    return {
+        QStringLiteral("*.ext.jsonl"),      QStringLiteral("*.ext.jsonl.zstd"),
+        QStringLiteral("*.ext.jsonl.zst"),  QStringLiteral("*.mtx.jsonl"),
+        QStringLiteral("*.mtx.jsonl.zstd"), QStringLiteral("*.mtx.jsonl.zst")};
+}
+
+QStringList listMtxFiles(const QString& directoryPath, bool recursive) {
+    QStringList found;
+    const QDir directory(directoryPath);
+    if (directoryPath.isEmpty() || !directory.exists()) return found;
+    if (!recursive) {
+        const QStringList names = directory.entryList(
+            mtxNameFilters(), QDir::Files | QDir::Hidden | QDir::Readable,
+            QDir::Name);
+        found.reserve(names.size());
+        for (const QString& name : names)
+            found.append(directory.filePath(name));
+        return found;
+    }
+    QDirIterator iterator(directoryPath, mtxNameFilters(),
+                          QDir::Files | QDir::Hidden | QDir::Readable,
+                          QDirIterator::Subdirectories);
+    while (iterator.hasNext()) found.append(iterator.next());
+    return found;
+}
+
+QString formatWallWindow(qint64 utcNs, qint64 startRelNs, qint64 endRelNs,
+                         const QString& timezone) {
+    if (endRelNs < startRelNs) std::swap(endRelNs, startRelNs);
+    if (utcNs < 0) {
+        auto hours = [](qint64 ns) {
+            return QString::number(double(ns) / 3.6e12, 'f', 2);
+        };
+        return QStringLiteral("file-relative %1 – %2 h (no utc)")
+            .arg(hours(startRelNs), hours(endRelNs));
+    }
+    QTimeZone zone =
+        timezone.isEmpty() ? QTimeZone::UTC : QTimeZone(timezone.toUtf8());
+    if (!zone.isValid()) zone = QTimeZone::UTC;
+    const auto at = [&](qint64 relNs) {
+        return QDateTime::fromMSecsSinceEpoch((utcNs + relNs) / 1000000, zone);
+    };
+    const QDateTime from = at(startRelNs);
+    const QDateTime to = at(endRelNs);
+    const QString zoneName = QString::fromUtf8(zone.id());
+    if (from.date() == to.date())
+        return QStringLiteral("%1  %2 – %3  %4")
+            .arg(from.toString(QStringLiteral("yyyy-MM-dd")),
+                 from.toString(QStringLiteral("HH:mm")),
+                 to.toString(QStringLiteral("HH:mm")), zoneName);
+    return QStringLiteral("%1 – %2  %3")
+        .arg(from.toString(QStringLiteral("yyyy-MM-dd HH:mm")),
+             to.toString(QStringLiteral("yyyy-MM-dd HH:mm")), zoneName);
+}
+
+}  // namespace
+
+bool TelemetryStore::hostWindowNs(qint64* startNs, qint64* endNs,
+                                  qint64* utcNs) const {
+    if (!startNs || !endNs || !utcNs) return false;
+    *startNs = 0;
+    *endNs = 0;
+    *utcNs = -1;
+    if (primarySession_) {
+        *utcNs = primarySession_->utcStartNs();
+        *startNs = primarySession_->startNs();
+        *endNs = primarySession_->durationNs();
+        if (*endNs > *startNs) return true;
+    }
+    if (primaryVideoHud() && !primaryVideoHud()->empty()) {
+        *endNs = std::max(
+            *endNs, qint64(std::llround(primaryVideoHud()->duration * 1e9)));
+        if (*endNs > *startNs) return true;
+    }
+    return false;
+}
+
+bool TelemetryStore::videoClipWindowNs(qint64* startNs, qint64* endNs) const {
+    if (!startNs || !endNs) return false;
+    const SessionHandle* session = primarySession_;
+    if (!session || (session->videoHud().empty() && session->laps().isEmpty()))
+        session = compareSession_;
+    if (!session) return false;
+    *startNs = 0;
+    *endNs = session->durationNs();
+    if (session->videoHud().duration > 0.0) {
+        *endNs = qint64(std::llround(session->videoHud().duration * 1e9));
+        *startNs = 0;
+    }
+    if (*endNs <= *startNs) {
+        *startNs = session->startNs();
+        *endNs = session->durationNs();
+    }
+    return *endNs > *startNs;
+}
+
+bool TelemetryStore::adoptOverlay(
+    OverlayGroup group,
+    QHash<QString, std::shared_ptr<std::vector<double>>> samples,
+    QString* error) {
+    qint64 hostStart = 0;
+    qint64 hostEnd = 0;
+    qint64 hostUtc = -1;
+    if (!hostWindowNs(&hostStart, &hostEnd, &hostUtc)) {
+        if (error)
+            *error = QStringLiteral(
+                "Open a lap, video, or traces first, then drop the sidecar.");
+        return false;
+    }
+    const qint64 sidecarStart = group.shiftNs;
+    const qint64 sidecarEnd = group.shiftNs + group.durationNs;
+    if (!omatrack::nsRangesOverlap(hostStart, hostEnd, sidecarStart,
+                                   sidecarEnd)) {
+        if (error) {
+            QString event = primaryLabel();
+            if (primarySession_) {
+                if (!primarySession_->date().isEmpty()) {
+                    if (!event.isEmpty()) event += QStringLiteral(" · ");
+                    event += primarySession_->date();
+                }
+                const QString driver = primaryDriverName();
+                if (!driver.isEmpty()) {
+                    if (!event.isEmpty()) event += QStringLiteral(" · ");
+                    event += driver;
+                }
+            }
+            if (event.isEmpty()) event = QStringLiteral("open session");
+            const QString sidecarName = group.name.isEmpty()
+                                            ? QFileInfo(group.path).fileName()
+                                            : group.name;
+            *error =
+                QStringLiteral(
+                    "This sidecar does not overlap the open session.\n\n"
+                    "Sidecar “%1”:\n  %2\n\n"
+                    "Open session “%3”:\n  %4")
+                    .arg(sidecarName,
+                         formatWallWindow(group.utcStartNs, 0, group.durationNs,
+                                          group.timezone),
+                         event,
+                         formatWallWindow(hostUtc, hostStart, hostEnd,
+                                          group.timezone));
+        }
+        return false;
+    }
+    for (int index = 0; index < overlays_.size(); ++index) {
+        if (overlays_[index].id != group.id) continue;
+        overlays_[index] = std::move(group);
+        for (auto it = samples.cbegin(); it != samples.cend(); ++it)
+            overlayChannelCache_.insert(it.key(), it.value());
+        return true;
+    }
+    overlays_.append(std::move(group));
+    for (auto it = samples.cbegin(); it != samples.cend(); ++it)
+        overlayChannelCache_.insert(it.key(), it.value());
+    return true;
+}
+
+void TelemetryStore::attachSidecarImpl(const QString& filePath, bool fromOpen,
+                                       bool silent) {
+    const QFileInfo info(filePath);
+    if (!info.exists()) {
+        if (!silent)
+            emit operationError(
+                QStringLiteral("Unable to attach sidecar"),
+                QStringLiteral("The file no longer exists:\n%1").arg(filePath));
+        return;
+    }
+    const QString path = info.canonicalFilePath().isEmpty()
+                             ? info.absoluteFilePath()
+                             : info.canonicalFilePath();
+    if (overlayLoading_.contains(path)) return;
+    qint64 hostStart = 0;
+    qint64 hostEnd = 0;
+    qint64 hostUtc = -1;
+    const bool haveHost = hostWindowNs(&hostStart, &hostEnd, &hostUtc);
+    if (!haveHost && !fromOpen) {
+        if (!silent)
+            emit operationError(
+                QStringLiteral("Unable to attach sidecar"),
+                QStringLiteral("Open a lap, video, or traces first, then drop "
+                               "the sidecar."));
+        return;
+    }
+    overlayLoading_.insert(path);
+    const quint64 generation = ++overlayAttachGeneration_;
+    auto* watcher = new QFutureWatcher<SidecarLoadResult>(this);
+    QObject::connect(
+        watcher, &QFutureWatcher<SidecarLoadResult>::finished, this,
+        [this, watcher, path, fromOpen, silent, generation]() {
+            const SidecarLoadResult result = watcher->result();
+            watcher->deleteLater();
+            overlayLoading_.remove(path);
+            if (generation != overlayAttachGeneration_) return;
+            if (result.notExtension) {
+                if (fromOpen)
+                    queueFileOpen(path, FileOpenRole::Automatic);
+                else if (!silent)
+                    emit operationError(
+                        QStringLiteral("Unable to attach sidecar"),
+                        QStringLiteral("This JSONL file is a recording, not an "
+                                       "MTX sidecar."));
+                return;
+            }
+            if (!result.error.isEmpty()) {
+                if (!silent)
+                    emit operationError(
+                        QStringLiteral("Unable to attach sidecar"),
+                        result.error);
+                return;
+            }
+            QString error;
+            if (!adoptOverlay(result.group, result.samples, &error)) {
+                if (!silent)
+                    emit operationError(
+                        QStringLiteral("Unable to attach sidecar"), error);
+                return;
+            }
+            qCInfo(lcIo).noquote()
+                << "sidecar overlay" << omatrack::displayPath(path)
+                << result.group.name << "channels"
+                << result.group.channels.size() << "spans"
+                << result.group.spans.size();
+            emit overlaysChanged();
+            emit channelConfigChanged();
+            resampleOverlays();
+        });
+    watcher->setFuture(QtConcurrent::run([path, hostUtc]() {
+        return loadSidecarOverlay(path, hostUtc, nullptr, nullptr);
+    }));
+}
+
+void TelemetryStore::discoverSidecarSiblings() {
+    if (!primarySession_) return;
+    QSet<QString> attached;
+    for (const OverlayGroup& group : overlays_) attached.insert(group.path);
+    QStringList candidates;
+    candidates +=
+        listMtxFiles(QFileInfo(primarySession_->path()).absolutePath(), false);
+    if (primarySession_->telemetryPath() != primarySession_->path())
+        candidates += listMtxFiles(
+            QFileInfo(primarySession_->telemetryPath()).absolutePath(), false);
+    candidates += listMtxFiles(
+        QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation),
+        false);
+    for (const omatrack::LibraryLocation& location : locations_) {
+        if (!location.enabled || location.type != LocationType::Folder)
+            continue;
+        candidates += listMtxFiles(location.target, true);
+    }
+    for (const QString& candidate : candidates) {
+        const QString canonical = QFileInfo(candidate).canonicalFilePath();
+        const QString path = canonical.isEmpty()
+                                 ? QFileInfo(candidate).absoluteFilePath()
+                                 : canonical;
+        if (attached.contains(path) || overlayLoading_.contains(path)) continue;
+        if (!omatrack::isJsonlExtPath(path.toStdString()) &&
+            !omatrack::isJsonlPath(path.toStdString()))
+            continue;
+        attachSidecarImpl(path, false, true);
+        attached.insert(path);
+    }
+}
+
+void TelemetryStore::resampleOverlays() {
+    if (overlays_.isEmpty()) return;
+    const LapEntry* lap = lapEntryFor(primarySession_, primaryLap_);
+    const UnifiedLap* unified = primaryUnified();
+    if (!lap || !unified || unified->size() < 2) {
+        overlayChannelCache_.clear();
+        emit channelConfigChanged();
+        return;
+    }
+    struct Job {
+        QString path;
+        QString id;
+        qint64 shiftNs = 0;
+        QStringList keys;
+        QStringList names;
+    };
+    QVector<Job> jobs;
+    jobs.reserve(overlays_.size());
+    for (const OverlayGroup& group : overlays_) {
+        Job job;
+        job.path = group.path;
+        job.id = group.id;
+        job.shiftNs = group.shiftNs;
+        for (const OverlayChannel& channel : group.channels) {
+            job.keys.append(channel.key);
+            job.names.append(channel.name);
+        }
+        jobs.append(std::move(job));
+    }
+    const double startTime = lap->startTime;
+    const std::vector<double> times = unified->time;
+    qint64 clipStartNs = qint64(std::llround(lap->startTime * 1e9));
+    qint64 clipEndNs = qint64(std::llround(lap->endTime * 1e9));
+    qint64 videoStartNs = 0;
+    qint64 videoEndNs = 0;
+    if (videoClipWindowNs(&videoStartNs, &videoEndNs)) {
+        clipStartNs = std::max(clipStartNs, videoStartNs);
+        clipEndNs = std::min(clipEndNs, videoEndNs);
+    }
+    const quint64 generation = ++overlayResampleGeneration_;
+    auto* watcher = new QFutureWatcher<
+        QHash<QString, std::shared_ptr<std::vector<double>>>>(this);
+    QObject::connect(
+        watcher,
+        &QFutureWatcher<
+            QHash<QString, std::shared_ptr<std::vector<double>>>>::finished,
+        this, [this, watcher, generation]() {
+            auto samples = watcher->result();
+            watcher->deleteLater();
+            if (generation != overlayResampleGeneration_) return;
+            overlayChannelCache_ = std::move(samples);
+            emit channelConfigChanged();
+        });
+    watcher->setFuture(QtConcurrent::run([jobs, startTime, times, clipStartNs,
+                                          clipEndNs]() {
+        QHash<QString, std::shared_ptr<std::vector<double>>> samples;
+        LapEntry lap;
+        lap.startTime = startTime;
+        UnifiedLap unified;
+        unified.time = times;
+        for (const Job& job : jobs) {
+            std::string error;
+            auto source = TelemetrySource::open(job.path.toStdString(), &error);
+            if (!source) continue;
+            const auto& channels = source->channels();
+            for (int index = 0; index < job.names.size(); ++index) {
+                size_t channelIndex = channels.size();
+                for (size_t candidate = 0; candidate < channels.size();
+                     ++candidate) {
+                    if (QString::fromStdString(channels[candidate].name) ==
+                        job.names.at(index)) {
+                        channelIndex = candidate;
+                        break;
+                    }
+                }
+                if (channelIndex >= channels.size()) continue;
+                samples.insert(job.keys.at(index),
+                               resampleSidecarOntoLap(*source, channelIndex,
+                                                      lap, unified, job.shiftNs,
+                                                      clipStartNs, clipEndNs));
+            }
+        }
+        return samples;
+    }));
+}
+
+void TelemetryStore::removeOverlay(const QString& id) {
+    for (int index = 0; index < overlays_.size(); ++index) {
+        if (overlays_[index].id != id) continue;
+        for (const OverlayChannel& channel : overlays_[index].channels)
+            overlayChannelCache_.remove(channel.key);
+        overlays_.removeAt(index);
+        emit overlaysChanged();
+        emit channelConfigChanged();
+        return;
+    }
+}
+
+void TelemetryStore::setOverlayExpanded(const QString& id, bool expanded) {
+    for (OverlayGroup& group : overlays_) {
+        if (group.id != id) continue;
+        if (group.expanded == expanded) return;
+        group.expanded = expanded;
+        emit overlaysChanged();
+        emit channelConfigChanged();
+        return;
+    }
+}
+
+bool TelemetryStore::overlayExpanded(const QString& id) const {
+    for (const OverlayGroup& group : overlays_) {
+        if (group.id == id) return group.expanded;
+    }
+    return true;
+}
+
+const std::vector<double>* TelemetryStore::overlayChannelData(
+    const QString& key) const {
+    auto cached = overlayChannelCache_.constFind(key);
+    if (cached == overlayChannelCache_.cend()) return nullptr;
+    return cached.value().get();
 }
 
 void TelemetryStore::queueFileOpen(const QString& filePath, FileOpenRole role,
@@ -3994,6 +4570,7 @@ QVariantMap TelemetryStore::sidebarFileDetails(const QString& path) const {
         {QStringLiteral("seriesName"),
          nestedText(metadata, {QStringLiteral("series")})},
         {QStringLiteral("sessionDate"), date},
+        {QStringLiteral("track"), displayTrack(session)},
         {QStringLiteral("sessionName"), sessionName},
         {QStringLiteral("sessionStart"),
          sessionStartClock(recordedTime, modified)},
@@ -5556,6 +6133,26 @@ void TelemetryStore::setPrimary(SessionHandle* session, int lapId) {
     if (sessionChanged) setReferenceAlignment(0.0);
     cursorFrac_ = 0.0;
     loadCornersForPrimary();
+    if (sessionChanged) {
+        qint64 hostStart = 0;
+        qint64 hostEnd = 0;
+        qint64 hostUtc = -1;
+        if (session && hostWindowNs(&hostStart, &hostEnd, &hostUtc)) {
+            QVector<OverlayGroup> kept;
+            kept.reserve(overlays_.size());
+            for (OverlayGroup& group : overlays_) {
+                if (omatrack::nsRangesOverlap(hostStart, hostEnd, group.shiftNs,
+                                              group.shiftNs + group.durationNs))
+                    kept.append(std::move(group));
+            }
+            if (kept.size() != overlays_.size()) {
+                overlays_ = std::move(kept);
+                emit overlaysChanged();
+            }
+        }
+        discoverSidecarSiblings();
+    }
+    resampleOverlays();
     emit selectionChanged();
     emit cornersChanged();
     emit videoTimeChanged();
@@ -7121,6 +7718,31 @@ QString TelemetryStore::cornerNameAt(double frac) const {
 
 bool TelemetryStore::channelVisible(const QString& key) const {
     if (channelVisible_.contains(key)) return channelVisible_.value(key);
+    if (key.startsWith(QStringLiteral("sidecar:"))) {
+        for (const OverlayGroup& group : overlays_) {
+            for (const OverlayChannel& channel : group.channels) {
+                if (channel.key != key) continue;
+                const bool visible =
+                    yamlBool(YamlConfig::instance().value(
+                                 {QStringLiteral("channels"), key,
+                                  QStringLiteral("visible")}),
+                             channel.defaultVisible);
+                channelVisible_.insert(key, visible);
+                return visible;
+            }
+            for (const OverlaySpanLane& lane : group.spanLanes) {
+                if (lane.key != key) continue;
+                const bool visible =
+                    yamlBool(YamlConfig::instance().value(
+                                 {QStringLiteral("channels"), key,
+                                  QStringLiteral("visible")}),
+                             lane.visible);
+                channelVisible_.insert(key, visible);
+                return visible;
+            }
+        }
+        return false;
+    }
     if (key.startsWith(QStringLiteral("raw:"))) {
         const bool visible = yamlBool(
             YamlConfig::instance().value(
@@ -7135,7 +7757,8 @@ bool TelemetryStore::channelVisible(const QString& key) const {
 void TelemetryStore::setChannelVisible(const QString& key, bool visible) {
     if (channelVisible(key) == visible) return;
     channelVisible_[key] = visible;
-    if (key.startsWith(QStringLiteral("raw:"))) {
+    if (key.startsWith(QStringLiteral("raw:")) ||
+        key.startsWith(QStringLiteral("sidecar:"))) {
         YamlConfig& config = YamlConfig::instance();
         config.setValue(
             {QStringLiteral("channels"), key, QStringLiteral("visible")},
@@ -7241,21 +7864,50 @@ QVariantList TelemetryStore::channelSettings() const {
                                    {"source", true}});
         }
     }
+    for (const OverlayGroup& group : overlays_) {
+        for (const OverlaySpanLane& lane : group.spanLanes) {
+            out.append(QVariantMap{
+                {QStringLiteral("key"), lane.key},
+                {QStringLiteral("title"),
+                 group.name + QStringLiteral(" / ") + lane.name},
+                {QStringLiteral("unit"), QString()},
+                {QStringLiteral("visible"), channelVisible(lane.key)},
+                {QStringLiteral("color"), channelColor(lane.key)},
+                {QStringLiteral("weight"), channelWeight(lane.key)},
+                {QStringLiteral("sidecar"), true},
+                {QStringLiteral("span"), true}});
+        }
+        for (const OverlayChannel& channel : group.channels) {
+            out.append(QVariantMap{
+                {QStringLiteral("key"), channel.key},
+                {QStringLiteral("title"),
+                 group.name + QStringLiteral(" / ") + channel.name},
+                {QStringLiteral("unit"), channel.unit},
+                {QStringLiteral("visible"), channelVisible(channel.key)},
+                {QStringLiteral("color"), channelColor(channel.key)},
+                {QStringLiteral("weight"), channelWeight(channel.key)},
+                {QStringLiteral("source"), false},
+                {QStringLiteral("sidecar"), true}});
+        }
+    }
     return out;
 }
 
 QString TelemetryStore::channelColor(const QString& key) const {
     if (channelColors_.contains(key))
         return channelColors_.value(key).name(QColor::HexRgb);
-    if (key.startsWith(QStringLiteral("raw:"))) {
-        const QColor parsed(
-            YamlConfig::instance()
-                .value(
-                    {QStringLiteral("channels"), key, QStringLiteral("color")},
-                    defaultChannelColor(key).name(QColor::HexRgb))
-                .toString());
-        const QColor result =
-            parsed.isValid() ? parsed : defaultChannelColor(key);
+    if (key.startsWith(QStringLiteral("raw:")) ||
+        key.startsWith(QStringLiteral("sidecar:"))) {
+        const QColor fallback =
+            key.startsWith(QStringLiteral("sidecar:"))
+                ? sidecarChannelColorFor(key.section(QLatin1Char(':'), 2))
+                : defaultChannelColor(key);
+        const QColor parsed(YamlConfig::instance()
+                                .value({QStringLiteral("channels"), key,
+                                        QStringLiteral("color")},
+                                       fallback.name(QColor::HexRgb))
+                                .toString());
+        const QColor result = parsed.isValid() ? parsed : fallback;
         channelColors_.insert(key, result);
         return result.name(QColor::HexRgb);
     }
@@ -8023,6 +8675,11 @@ double TelemetryStore::comparisonVideoRate() const {
                                comparisonAlignmentTime_[qsizetype(low)];
     return std::clamp(compareSpan / primarySpan, 0.5, 2.0);
 }
-double TelemetryStore::sessionStartUnixTime() const { return 0.0; }
+double TelemetryStore::sessionStartUnixTime() const {
+    if (!primarySession_ || primarySession_->utcStartNs() < 0) return 0.0;
+    return double(primarySession_->utcStartNs()) / 1e9;
+}
 
-bool TelemetryStore::hasGlobalTime() const { return false; }
+bool TelemetryStore::hasGlobalTime() const {
+    return primarySession_ && primarySession_->utcStartNs() >= 0;
+}

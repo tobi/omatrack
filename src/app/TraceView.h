@@ -25,6 +25,7 @@
 #include <QFont>
 #include <QHash>
 #include <QQuickItem>
+#include <QVariantList>
 #include <QVariantMap>
 #include <QVector>
 
@@ -46,6 +47,21 @@ class TraceView : public QQuickItem {
         TelemetryStore* store READ store WRITE setStore NOTIFY storeChanged)
     Q_PROPERTY(QColor backgroundColor READ backgroundColor WRITE
                    setBackgroundColor NOTIFY backgroundColorChanged)
+    Q_PROPERTY(qreal labelWidth READ labelWidth NOTIFY labelWidthChanged)
+    Q_PROPERTY(QVariantList laneRows READ laneRows NOTIFY laneLayoutChanged)
+    Q_PROPERTY(qreal rulerHeight READ rulerHeight CONSTANT)
+    Q_PROPERTY(
+        bool spanHoverVisible READ spanHoverVisible NOTIFY spanHoverChanged)
+    Q_PROPERTY(
+        QString spanHoverTitle READ spanHoverTitle NOTIFY spanHoverChanged)
+    Q_PROPERTY(QString spanHoverSubtitle READ spanHoverSubtitle NOTIFY
+                   spanHoverChanged)
+    Q_PROPERTY(
+        QColor spanHoverColor READ spanHoverColor NOTIFY spanHoverChanged)
+    Q_PROPERTY(
+        QVariantList spanHoverMeta READ spanHoverMeta NOTIFY spanHoverChanged)
+    Q_PROPERTY(qreal spanHoverX READ spanHoverX NOTIFY spanHoverChanged)
+    Q_PROPERTY(qreal spanHoverY READ spanHoverY NOTIFY spanHoverChanged)
 
 public:
     explicit TraceView(QQuickItem* parent = nullptr);
@@ -54,6 +70,17 @@ public:
     void setStore(TelemetryStore* store);
     QColor backgroundColor() const { return backgroundColor_; }
     void setBackgroundColor(const QColor& color);
+    qreal labelWidth() const { return labelWidth_; }
+    qreal rulerHeight() const;
+    QVariantList laneRows() const;
+
+    bool spanHoverVisible() const { return spanHoverVisible_; }
+    QString spanHoverTitle() const { return spanHoverTitle_; }
+    QString spanHoverSubtitle() const { return spanHoverSubtitle_; }
+    QColor spanHoverColor() const { return spanHoverColor_; }
+    QVariantList spanHoverMeta() const { return spanHoverMeta_; }
+    qreal spanHoverX() const { return spanHoverX_; }
+    qreal spanHoverY() const { return spanHoverY_; }
 
     // Context-menu actions, driven by the QML Material menus.
     Q_INVOKABLE int addCornerAt(double fraction);
@@ -84,6 +111,8 @@ protected:
 signals:
     void storeChanged();
     void backgroundColorChanged();
+    void labelWidthChanged();
+    void laneLayoutChanged();
     void cursorChangedFromCanvas();
     void cornerEdited();
     void cornerRenameRequested(int index);
@@ -92,6 +121,7 @@ signals:
     void channelMenuRequested(const QString& key, const QString& title,
                               double weight, qreal x, qreal y);
     void overlayChanged();
+    void spanHoverChanged();
     void channelsRequested();
 
 private:
@@ -103,6 +133,7 @@ private:
     };
 
     struct ChannelSpec {
+        enum class Kind { Sample, GroupHeader, SpanTrack };
         QString key;
         QString title;
         QString unit;
@@ -111,6 +142,17 @@ private:
         bool filled = false;
         // which UnifiedLap field to read; empty = derived
         QString field;
+        Kind kind = Kind::Sample;
+        QString groupId;
+        QString spanName;
+    };
+
+    struct SpanHit {
+        QRectF rect;
+        QString title;
+        QString subtitle;
+        QColor color;
+        QVariantList meta;
     };
 
     struct CursorLane {
@@ -154,6 +196,13 @@ private:
     void buildChannel(TraceSceneBuilder& builder, const ChannelSpec& spec,
                       const QRectF& rect, const omatrack::UnifiedLap* primary,
                       const omatrack::UnifiedLap* compare);
+    void buildGroupHeader(TraceSceneBuilder& builder, const ChannelSpec& spec,
+                          const QRectF& rect);
+    void buildSpanTrack(TraceSceneBuilder& builder, const ChannelSpec& spec,
+                        const QRectF& rect);
+    const OverlayGroup* overlayGroup(const QString& id) const;
+    bool overlaySpanVisibleOnLap(const OverlaySpan& span) const;
+    double sidecarValueAt(const QString& key, double fraction) const;
     void buildConfidenceBand(TraceSceneBuilder& builder,
                              const TraceConfidenceBand* band,
                              const QRectF& rect, const ChannelRange& range);
@@ -186,12 +235,16 @@ private:
     int focusedZoneHandleAt(const QPointF& position) const;
     void updateHoveredMarker(const QPointF& position);
     void updateHoveredCorner(const QPointF& position);
+    void updateHoveredSpan(const QPointF& position);
     void updateZoneHoverCursor(const QPointF& position);
+    int groupHeaderAt(const QPointF& position) const;
+    bool primaryLapWindowNs(qint64* startNs, qint64* endNs) const;
     double fracForX(double x) const;
     int channelIndexAt(const QPointF& position) const;
     void showChannelMenu(const QPointF& position);
     void showCornerMenu(const QPointF& position);
     double laneWeightFor(const ChannelSpec& spec) const;
+    void updateLabelWidth();
     const std::vector<double>* fieldFor(const omatrack::UnifiedLap& lap,
                                         const QString& field) const;
 
@@ -204,6 +257,7 @@ private:
     double selectionEnd_ = -1.0;
     bool selecting_ = false;
 
+    double labelWidth_ = 62.0;
     TelemetryStore* store_ = nullptr;
     QColor backgroundColor_{QStringLiteral("#181d20")};
     QVector<ChannelSpec> channelSpecs_;
@@ -215,6 +269,15 @@ private:
     double lastPanFrac_ = 0.0;
     int hoveredMarker_ = -1;
     int hoveredCorner_ = -1;
+    int hoveredSpan_ = -1;
+    bool spanHoverVisible_ = false;
+    QString spanHoverTitle_;
+    QString spanHoverSubtitle_;
+    QColor spanHoverColor_;
+    QVariantList spanHoverMeta_;
+    qreal spanHoverX_ = 0;
+    qreal spanHoverY_ = 0;
+    QVector<SpanHit> spanHits_;
     double pressX_ = 0.0;
     QFont canvasFont_;
     QFont emptyStateFont_;
@@ -222,7 +285,6 @@ private:
     QFont unitFont_;
     QFont valueFont_;
     QFont markerFont_;
-    QFont zoneFont_;
     QFont pillFont_;
     friend class TraceCursorOverlay;
     QElapsedTimer cursorTimer_;

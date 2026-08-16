@@ -252,6 +252,10 @@ public:
     /// per-lap media anchors.
     void setVideoPresentationOffset(std::optional<double> offsetSec);
     const VideoHudSeries& videoHud() const { return videoHud_; }
+    qint64 utcStartNs() const { return utcStartNs_; }
+    /// Exclusive file-relative duration of the session window (laps / HUD).
+    qint64 durationNs() const;
+    qint64 startNs() const;
 
 private:
     void captureVideoHud(const omatrack::TelemetrySource& source);
@@ -283,6 +287,59 @@ private:
     double gpsLongitude_ = std::numeric_limits<double>::quiet_NaN();
     std::optional<double> videoPresentationOffsetSec_;
     VideoHudSeries videoHud_;
+    qint64 utcStartNs_ = -1;
+};
+
+// MTX overlay: one sidecar file is one folder of extra traces / spans.
+
+struct OverlayChrome {
+    QString kind;
+    QString text;
+    QString label;
+    QString value;
+};
+
+struct OverlaySpan {
+    qint64 startHostNs = 0;
+    qint64 endHostNs = 0;
+    bool visible = true;
+    QString name;
+    QString title;
+    QString subtitle;
+    QColor color;
+    QVariantList meta;
+};
+
+/// One Gantt lane: every span that shares `n` (a car, a sleep series, …).
+struct OverlaySpanLane {
+    QString key;
+    QString name;
+    bool visible = true;
+};
+
+struct OverlayChannel {
+    QString key;
+    QString name;
+    QString unit;
+    bool defaultVisible = true;
+    qint64 t0HostNs = 0;
+    qint64 periodNs = 0;
+    std::shared_ptr<std::vector<double>> samples;
+};
+
+struct OverlayGroup {
+    QString path;
+    QString id;
+    QString name;
+    QString timezone;
+    bool expanded = true;
+    QVector<OverlayChrome> chrome;
+    QVector<OverlaySpan> spans;
+    QVector<OverlaySpanLane> spanLanes;
+    QVector<OverlayChannel> channels;
+    qint64 utcStartNs = -1;
+    qint64 durationNs = 0;
+    qint64 shiftNs = 0;
 };
 
 // ── store (root model exposed to QML) ───────────────────────────────
@@ -394,6 +451,15 @@ public:
     /// Queue one telemetry source for indexing and lap loading. Ordinary video
     /// is reported through standaloneVideoRequested after background probing.
     Q_INVOKABLE void openFile(const QString& filePath);
+    /// True when `path` is an MTX sidecar name (`.ext.jsonl` / `.mtx.jsonl`).
+    Q_INVOKABLE bool isMtxSidecarPath(const QString& filePath) const;
+    /// Drop or File > Open of an MTX sidecar: overlap-join onto the open
+    /// lap / video / traces, then append as a collapsible folder.
+    Q_INVOKABLE void attachSidecar(const QString& filePath);
+    Q_INVOKABLE void removeOverlay(const QString& id);
+    Q_INVOKABLE void setOverlayExpanded(const QString& id, bool expanded);
+    Q_INVOKABLE bool overlayExpanded(const QString& id) const;
+    const QVector<OverlayGroup>& overlayGroups() const { return overlays_; }
     Q_INVOKABLE bool directoryExists(const QString& dirPath) const;
     /// The default telemetry library folder: the platform's Documents
     /// location plus `/Telemetry` (honors Windows OneDrive redirection),
@@ -595,6 +661,7 @@ public:
     const QVector<double>& deltaTrace() const;
     const std::vector<double>* extraChannelData(const QString& key,
                                                 bool reference) const;
+    const std::vector<double>* overlayChannelData(const QString& key) const;
     const TraceConfidenceBand* traceConfidenceBand(const QString& field) const;
     const std::vector<double>& traceConsistency() const {
         return traceConsistency_;
@@ -694,6 +761,7 @@ signals:
     void recentFilesChanged();
     void standaloneVideoRequested(const QUrl& source);
     void operationError(const QString& title, const QString& message);
+    void overlaysChanged();
 
 private:
     enum class FileOpenRole { Automatic, Primary, Compare };
@@ -775,6 +843,18 @@ private:
                                const QJsonObject& layout);
     void requestAtlasCenterline(const QString& trackSlug,
                                 const QJsonObject& layout);
+    void attachSidecarImpl(const QString& filePath, bool fromOpen,
+                           bool silent = false);
+    void discoverSidecarSiblings();
+    bool adoptOverlay(OverlayGroup group,
+                      QHash<QString, std::shared_ptr<std::vector<double>>>
+                          samples,
+                      QString* error);
+    bool hostWindowNs(qint64* startNs, qint64* endNs, qint64* utcNs) const;
+    /// File-relative window of the open primary video, or the reference
+    /// video when the primary has no recording clock.
+    bool videoClipWindowNs(qint64* startNs, qint64* endNs) const;
+    void resampleOverlays();
     void invalidateComparisonAlignment();
     void rebuildComparisonAlignment();
     double compareTimeForPrimaryFraction(double fraction) const;
@@ -898,6 +978,11 @@ private:
     mutable QHash<QString, std::shared_ptr<std::vector<double>>>
         extraChannelCache_;
     mutable QSet<QString> extraChannelLoading_;
+    QVector<OverlayGroup> overlays_;
+    QHash<QString, std::shared_ptr<std::vector<double>>> overlayChannelCache_;
+    QSet<QString> overlayLoading_;
+    quint64 overlayAttachGeneration_ = 0;
+    quint64 overlayResampleGeneration_ = 0;
     QHash<QString, QString> driverAliases_;
     QStringList channelOrder_;
     mutable QVector<double> deltaCache_;
