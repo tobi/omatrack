@@ -45,21 +45,17 @@ private slots:
         LapEntry e;
         QVERIFY(e.countsForBest());  // default: complete=true, pitLap=false
     }
-    void mapsTelemetryToAnchoredMediaTime() {
-        LapEntry e;
-        e.startTime = 100.0;
-        e.endTime = 220.0;
-        e.videoStartTime = 10.0;
-        e.videoEndTime = 70.0;
-        QCOMPARE(e.mediaTime(60.0, 7.0), 40.0);
-        QCOMPARE(e.telemetryTime(40.0, 7.0), 60.0);
-    }
-    void fallsBackToSharedRecordingClock() {
-        LapEntry e;
-        e.startTime = 100.0;
-        e.endTime = 220.0;
-        QCOMPARE(e.mediaTime(60.0, 7.0), 167.0);
-        QCOMPARE(e.telemetryTime(167.0, 7.0), 60.0);
+    void videoIdentityMustBeVerifiedBeforeSync() {
+        VideoIdentityResult identity;
+        QVERIFY(!identity.trusted());
+        identity.status = VideoIdentityStatus::Unverified;
+        QVERIFY(!identity.trusted());
+        identity.status = VideoIdentityStatus::Mismatch;
+        QVERIFY(!identity.trusted());
+        identity.status = VideoIdentityStatus::VerifiedHash;
+        QVERIFY(identity.trusted());
+        identity.status = VideoIdentityStatus::TrustedRemoteObject;
+        QVERIFY(identity.trusted());
     }
 };
 

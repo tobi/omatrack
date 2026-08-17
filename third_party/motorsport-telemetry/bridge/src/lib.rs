@@ -57,6 +57,7 @@ pub struct BridgeFile {
     names: Vec<CString>,
     units: Vec<CString>,
     source_laps: Vec<OmatrackSourceLap>,
+    video_names: Vec<CString>,
     sidecar: SidecarTables,
 }
 
@@ -98,7 +99,38 @@ pub struct OmatrackSourceLap {
     pub start_ns: u64,
     pub end_ns: u64,
     pub duration_ns: u64,
+    pub first_video_frame: u64,
     pub complete: u8,
+    pub has_first_video_frame: u8,
+}
+
+/// One video file linked to the open telemetry recording.
+///
+/// `filename` and the optional 32-byte `blake3` digest are owned by the
+/// handle and remain valid until `omatrack_close`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct OmatrackVideoFileRef {
+    pub filename: *const c_char,
+    pub index: u32,
+    pub blake3: *const u8,
+    pub frame_count: u64,
+    pub presentation_offset_ns: i64,
+    pub has_presentation_offset: u8,
+}
+
+/// All video linkage resolved for one file-relative telemetry timestamp.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct OmatrackVideoReference {
+    pub file_index: u32,
+    pub sync_time: f64,
+    pub presentation_time_ns: u64,
+    pub frame_index: u64,
+    pub has_file_index: u8,
+    pub has_sync_time: u8,
+    pub has_presentation_time: u8,
+    pub has_frame_index: u8,
 }
 
 /// MTX / catalog placement for an open handle.
@@ -262,6 +294,11 @@ fn build_handle(src: Box<dyn TelemetrySource>, derive_laps: bool) -> Box<BridgeF
         .iter()
         .map(|c| CString::new(c.unit.as_str()).unwrap_or_default())
         .collect::<Vec<_>>();
+    let video_names = src
+        .video_files()
+        .iter()
+        .map(|video| CString::new(video.filename.as_str()).unwrap_or_default())
+        .collect::<Vec<_>>();
     let source_laps = if derive_laps {
         read_source_metadata(src.as_ref()).laps
     } else {
@@ -275,7 +312,9 @@ fn build_handle(src: Box<dyn TelemetrySource>, derive_laps: bool) -> Box<BridgeF
         start_ns: lap.start_ns,
         end_ns: lap.end_ns,
         duration_ns: lap.duration_ns,
+        first_video_frame: lap.first_video_frame.unwrap_or(0),
         complete: u8::from(lap.complete),
+        has_first_video_frame: u8::from(lap.first_video_frame.is_some()),
     })
     .collect();
     let sidecar = if telemetry_format::is_jsonl_path(std::path::Path::new(src.path())) {
@@ -301,6 +340,7 @@ fn build_handle(src: Box<dyn TelemetrySource>, derive_laps: bool) -> Box<BridgeF
         names,
         units,
         source_laps,
+        video_names,
         sidecar,
     })
 }
@@ -347,11 +387,13 @@ fn sidecar_tables(src: &dyn TelemetrySource) -> SidecarTables {
     };
     tables.duration_ns = jsonl.duration_ns();
     tables.is_extension = u8::from(jsonl.is_extension());
-    if let Some(header) = jsonl.sidecar() {
+    if let Some(group) = jsonl.sidecar_groups().first() {
+        let header = &group.header;
         tables.name = cstring(&header.name);
         tables.group_visible = u8::from(header.visible);
         tables.timezone = cstring(&header.timezone);
         tables.utc_start_ns = i64::try_from(header.utc_start_ns).unwrap_or(-1);
+        tables.duration_ns = group.duration_ns;
         tables.chrome = header
             .right
             .iter()
@@ -377,9 +419,7 @@ fn sidecar_tables(src: &dyn TelemetrySource) -> SidecarTables {
         .map(|visible| u8::from(*visible))
         .collect();
     if tables.channel_visible.len() < src.channels().len() {
-        tables
-            .channel_visible
-            .resize(src.channels().len(), 1);
+        tables.channel_visible.resize(src.channels().len(), 1);
     }
     tables.spans = jsonl
         .spans()
@@ -395,7 +435,7 @@ fn sidecar_tables(src: &dyn TelemetrySource) -> SidecarTables {
             meta: span
                 .meta
                 .iter()
-                .map(|(key, value)| (cstring(key), cstring(value)))
+                .map(|(key, value)| (cstring(key), cstring(&value.display())))
                 .collect(),
         })
         .collect();
@@ -486,6 +526,52 @@ pub unsafe extern "C" fn omatrack_fingerprint(
             std::ptr::copy_nonoverlapping(hex.as_bytes().as_ptr(), output.cast::<u8>(), 64);
             *output.add(64) = 0;
         }
+        1
+    })
+}
+
+/// Compute the full-file BLAKE3-256 digest used by `VideoFileRef`.
+///
+/// # Safety
+/// `path` must be a valid NUL-terminated C string. `output` must point to at
+/// least 32 writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_blake3_file(path: *const c_char, output: *mut u8) -> c_int {
+    ffi_guard(stringify!(omatrack_blake3_file), 0, || {
+        if path.is_null() || output.is_null() {
+            set_error("omatrack_blake3_file: invalid path or output buffer");
+            return 0;
+        }
+        let path_str = match CStr::from_ptr(path).to_str() {
+            Ok(path) => path,
+            Err(_) => {
+                set_error("omatrack_blake3_file: path is not valid UTF-8");
+                return 0;
+            }
+        };
+        let mut file = match File::open(path_str) {
+            Ok(file) => file,
+            Err(error) => {
+                set_error(format!("omatrack_blake3_file: {error}"));
+                return 0;
+            }
+        };
+        let mut hasher = blake3::Hasher::new();
+        let mut buffer = [0u8; 1 << 16];
+        loop {
+            let count = match file.read(&mut buffer) {
+                Ok(count) => count,
+                Err(error) => {
+                    set_error(format!("omatrack_blake3_file: {error}"));
+                    return 0;
+                }
+            };
+            if count == 0 {
+                break;
+            }
+            hasher.update(&buffer[..count]);
+        }
+        std::ptr::copy_nonoverlapping(hasher.finalize().as_bytes().as_ptr(), output, 32);
         1
     })
 }
@@ -998,6 +1084,92 @@ pub unsafe extern "C" fn omatrack_sample_time_ns(
     )
 }
 
+struct LinkedVideoSource<'a> {
+    inner: &'a dyn TelemetrySource,
+    videos: Vec<motorsport_telemetry_core::VideoFileRef>,
+}
+
+impl TelemetrySource for LinkedVideoSource<'_> {
+    fn path(&self) -> &str {
+        self.inner.path()
+    }
+    fn format(&self) -> &'static str {
+        self.inner.format()
+    }
+    fn channels(&self) -> &[motorsport_telemetry_core::Channel] {
+        self.inner.channels()
+    }
+    fn decode(&self, channel: usize, chunk: usize, sample: u64) -> f64 {
+        self.inner.decode(channel, chunk, sample)
+    }
+    fn chunk_bytes(&self, channel: usize, chunk: usize) -> Option<&[u8]> {
+        self.inner.chunk_bytes(channel, chunk)
+    }
+    fn sample_affine(&self, channel: usize) -> (f64, f64) {
+        self.inner.sample_affine(channel)
+    }
+    fn absolute_time_range(&self) -> Option<motorsport_telemetry_core::AbsoluteTimeRange> {
+        self.inner.absolute_time_range()
+    }
+    fn utc_start_ns(&self) -> Option<u64> {
+        self.inner.utc_start_ns()
+    }
+    fn timezone(&self) -> String {
+        self.inner.timezone()
+    }
+    fn channel_visible(&self) -> &[bool] {
+        self.inner.channel_visible()
+    }
+    fn spans(&self) -> &[motorsport_telemetry_core::Span] {
+        self.inner.spans()
+    }
+    fn channel_labels(&self, channel: usize) -> &[motorsport_telemetry_core::ChannelLabel] {
+        self.inner.channel_labels(channel)
+    }
+    fn channel_display(&self, channel: usize) -> motorsport_telemetry_core::ChannelDisplay {
+        self.inner.channel_display(channel)
+    }
+    fn applied_passes(&self) -> &[motorsport_telemetry_core::AppliedPass] {
+        self.inner.applied_passes()
+    }
+    fn source_origin(&self) -> Option<motorsport_telemetry_core::SourceOrigin> {
+        self.inner.source_origin()
+    }
+    fn identity(&self) -> motorsport_telemetry_core::SourceIdentity {
+        self.inner.identity()
+    }
+    fn source_lap_metadata(&self) -> Option<motorsport_telemetry_core::SourceLapMetadata> {
+        self.inner.source_lap_metadata()
+    }
+    fn video_files(&self) -> &[motorsport_telemetry_core::VideoFileRef] {
+        &self.videos
+    }
+    fn video_presentation_times_ns(&self) -> Option<&[u64]> {
+        self.inner.video_presentation_times_ns()
+    }
+    fn video_frame_count(&self) -> Option<u64> {
+        self.inner.video_frame_count()
+    }
+    fn video_frame_at(&self, time_ns: u64) -> Option<u64> {
+        self.inner.video_frame_at(time_ns)
+    }
+    fn video_presentation_offset_ns(&self) -> Option<i128> {
+        self.inner.video_presentation_offset_ns()
+    }
+    fn video_presentation_time_ns(&self, time_ns: u64) -> Option<u64> {
+        self.inner.video_presentation_time_ns(time_ns)
+    }
+    fn video_reference_at(&self, time_ns: u64) -> motorsport_telemetry_core::VideoReference {
+        self.inner.video_reference_at(time_ns)
+    }
+    fn sample_time_ns(&self, channel: usize, chunk: usize, sample: u64) -> u64 {
+        self.inner.sample_time_ns(channel, chunk, sample)
+    }
+    fn sample_at(&self, channel: usize, time_ns: u64, linear: bool) -> Option<f64> {
+        self.inner.sample_at(channel, time_ns, linear)
+    }
+}
+
 /// Serialise an open handle to a native `.telemetry` recording.
 /// Returns 1 on success, 0 on error (`omatrack_last_error`).
 ///
@@ -1029,6 +1201,73 @@ pub unsafe extern "C" fn omatrack_write_telemetry(
             Ok(()) => 1,
             Err(error) => {
                 set_error(format!("omatrack_write_telemetry: {error}"));
+                0
+            }
+        }
+    })
+}
+
+/// Serialise an open single-video source while linking the recording to the
+/// caller-supplied video basename. This is for cache-private remote extracts:
+/// the extract is not the video and must never be hashed as one.
+///
+/// # Safety
+/// `handle` must be NULL or a live `omatrack_open` handle. `path` and
+/// `video_filename` must be valid NUL-terminated UTF-8 strings.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_write_telemetry_for_video(
+    handle: *mut c_void,
+    path: *const c_char,
+    video_filename: *const c_char,
+) -> c_int {
+    ffi_guard(stringify!(omatrack_write_telemetry_for_video), 0, || {
+        let Some(file) = as_file(handle) else {
+            set_error("omatrack_write_telemetry_for_video: null handle");
+            return 0;
+        };
+        if path.is_null() || video_filename.is_null() {
+            set_error("omatrack_write_telemetry_for_video: null path");
+            return 0;
+        }
+        let path_str = match CStr::from_ptr(path).to_str() {
+            Ok(path) => path,
+            Err(_) => {
+                set_error("omatrack_write_telemetry_for_video: path is not valid UTF-8");
+                return 0;
+            }
+        };
+        let filename = match CStr::from_ptr(video_filename).to_str() {
+            Ok(filename) if !filename.is_empty() => filename,
+            _ => {
+                set_error("omatrack_write_telemetry_for_video: invalid video filename");
+                return 0;
+            }
+        };
+        let mut videos = file.src.video_files().to_vec();
+        if videos.len() > 1 {
+            set_error("omatrack_write_telemetry_for_video: source links multiple videos");
+            return 0;
+        }
+        if let Some(video) = videos.first_mut() {
+            video.filename = filename.to_owned();
+            video.blake3 = None;
+        } else {
+            videos.push(motorsport_telemetry_core::VideoFileRef {
+                filename: filename.to_owned(),
+                index: 1,
+                blake3: None,
+                frame_count: file.src.video_frame_count().unwrap_or(0),
+                presentation_offset_ns: file.src.video_presentation_offset_ns(),
+            });
+        }
+        let source = LinkedVideoSource {
+            inner: file.src.as_ref(),
+            videos,
+        };
+        match telemetry_format::write_from_source(&source, path_str) {
+            Ok(()) => 1,
+            Err(error) => {
+                set_error(format!("omatrack_write_telemetry_for_video: {error}"));
                 0
             }
         }
@@ -1112,6 +1351,155 @@ pub unsafe extern "C" fn omatrack_video_frame_at(
     })
 }
 
+/// Maps file-relative telemetry time to the video's presentation timeline.
+/// Returns 1 when the source supplies an exact mapping.
+///
+/// # Safety
+/// `handle` must be NULL or a live `omatrack_open` handle, and `out` must
+/// point to a writable `u64`.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_video_presentation_time_ns(
+    handle: *mut c_void,
+    time_ns: u64,
+    out: *mut u64,
+) -> c_int {
+    ffi_guard(stringify!(omatrack_video_presentation_time_ns), 0, || {
+        let Some(file) = as_file(handle) else {
+            return 0;
+        };
+        if out.is_null() {
+            return 0;
+        }
+        let Some(time) = file.src.video_presentation_time_ns(time_ns) else {
+            return 0;
+        };
+        *out = time;
+        1
+    })
+}
+
+/// Returns all exact video linkage at a file-relative telemetry timestamp.
+///
+/// # Safety
+/// `handle` must be NULL or a live `omatrack_open` handle, and `out` must
+/// point to writable `OmatrackVideoReference` storage.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_video_reference_at(
+    handle: *mut c_void,
+    time_ns: u64,
+    out: *mut OmatrackVideoReference,
+) -> c_int {
+    ffi_guard(stringify!(omatrack_video_reference_at), 0, || {
+        let Some(file) = as_file(handle) else {
+            return 0;
+        };
+        if out.is_null() {
+            return 0;
+        }
+        let reference = file.src.video_reference_at(time_ns);
+        if reference.file_index.is_none()
+            && reference.sync_time.is_none()
+            && reference.presentation_time_ns.is_none()
+            && reference.frame_index.is_none()
+        {
+            return 0;
+        }
+        *out = OmatrackVideoReference {
+            file_index: reference.file_index.unwrap_or(0),
+            sync_time: reference.sync_time.unwrap_or(0.0),
+            presentation_time_ns: reference.presentation_time_ns.unwrap_or(0),
+            frame_index: reference.frame_index.unwrap_or(0),
+            has_file_index: u8::from(reference.file_index.is_some()),
+            has_sync_time: u8::from(reference.sync_time.is_some()),
+            has_presentation_time: u8::from(reference.presentation_time_ns.is_some()),
+            has_frame_index: u8::from(reference.frame_index.is_some()),
+        };
+        1
+    })
+}
+
+/// Returns the number of linked video files.
+///
+/// # Safety
+/// `handle` must be NULL or a live `omatrack_open` handle.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_video_file_count(handle: *mut c_void) -> usize {
+    ffi_guard(stringify!(omatrack_video_file_count), 0, || {
+        as_file(handle)
+            .map(|file| file.src.video_files().len())
+            .unwrap_or(0)
+    })
+}
+
+/// Copies one linked video's identity and timing metadata.
+///
+/// # Safety
+/// `handle` must be NULL or a live `omatrack_open` handle, and `out` must
+/// point to writable `OmatrackVideoFileRef` storage.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_video_file(
+    handle: *mut c_void,
+    index: usize,
+    out: *mut OmatrackVideoFileRef,
+) -> c_int {
+    ffi_guard(stringify!(omatrack_video_file), 0, || {
+        let Some(file) = as_file(handle) else {
+            return 0;
+        };
+        if out.is_null() {
+            return 0;
+        }
+        let Some(video) = file.src.video_files().get(index) else {
+            return 0;
+        };
+        let offset = video
+            .presentation_offset_ns
+            .and_then(|value| i64::try_from(value).ok());
+        *out = OmatrackVideoFileRef {
+            filename: file.video_names[index].as_ptr(),
+            index: video.index,
+            blake3: video
+                .blake3
+                .as_ref()
+                .map_or(std::ptr::null(), |hash| hash.as_ptr()),
+            frame_count: video.frame_count,
+            presentation_offset_ns: offset.unwrap_or(0),
+            has_presentation_offset: u8::from(offset.is_some()),
+        };
+        1
+    })
+}
+
+/// Copies presentation-order frame timestamps into `out`.
+///
+/// With `out == NULL`, returns the required element count. Otherwise copies
+/// at most `capacity` timestamps and returns the copied count.
+///
+/// # Safety
+/// `handle` must be NULL or a live `omatrack_open` handle. Non-null `out`
+/// must point to `capacity` writable `u64` values.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_video_presentation_times_ns(
+    handle: *mut c_void,
+    out: *mut u64,
+    capacity: usize,
+) -> usize {
+    ffi_guard(stringify!(omatrack_video_presentation_times_ns), 0, || {
+        let Some(file) = as_file(handle) else {
+            return 0;
+        };
+        let Some(times) = file.src.video_presentation_times_ns() else {
+            return 0;
+        };
+        if out.is_null() {
+            return times.len();
+        }
+        let count = capacity.min(times.len());
+        std::ptr::copy_nonoverlapping(times.as_ptr(), out, count);
+        count
+    })
+}
+
 /// True when `path` is an MTJ/MTX JSONL document (plain or zstd).
 ///
 /// # Safety
@@ -1182,10 +1570,7 @@ pub unsafe extern "C" fn omatrack_sidecar_info(
 /// `handle` must be NULL or a live `omatrack_open` handle, and `out` must
 /// point to a writable `i64`.
 #[no_mangle]
-pub unsafe extern "C" fn omatrack_utc_start_ns(
-    handle: *mut c_void,
-    out: *mut i64,
-) -> c_int {
+pub unsafe extern "C" fn omatrack_utc_start_ns(handle: *mut c_void, out: *mut i64) -> c_int {
     ffi_guard(stringify!(omatrack_utc_start_ns), 0, || {
         let Some(file) = as_file(handle) else {
             return 0;
@@ -1207,10 +1592,7 @@ pub unsafe extern "C" fn omatrack_utc_start_ns(
 /// # Safety
 /// `handle` must be NULL or a live `omatrack_open` handle.
 #[no_mangle]
-pub unsafe extern "C" fn omatrack_channel_visible(
-    handle: *mut c_void,
-    index: usize,
-) -> u8 {
+pub unsafe extern "C" fn omatrack_channel_visible(handle: *mut c_void, index: usize) -> u8 {
     ffi_guard(stringify!(omatrack_channel_visible), 1, || {
         as_file(handle)
             .and_then(|file| file.sidecar.channel_visible.get(index).copied())
@@ -1269,7 +1651,9 @@ pub unsafe extern "C" fn omatrack_sidecar_chrome(
 #[no_mangle]
 pub unsafe extern "C" fn omatrack_span_count(handle: *mut c_void) -> usize {
     ffi_guard(stringify!(omatrack_span_count), 0, || {
-        as_file(handle).map(|file| file.sidecar.spans.len()).unwrap_or(0)
+        as_file(handle)
+            .map(|file| file.sidecar.spans.len())
+            .unwrap_or(0)
     })
 }
 
@@ -1373,13 +1757,15 @@ pub unsafe extern "C" fn omatrack_telemetry_has_video_clock(path: *const c_char)
 mod tests {
     use super::*;
     use motorsport_telemetry_core::{
-        Channel, Chunk, LapMetadata, SampleType, SourceLapMetadata, UnitSource,
+        Channel, Chunk, LapMetadata, SampleType, SourceLapMetadata, UnitSource, VideoFileRef,
     };
 
     struct TestSource {
         channels: Vec<Channel>,
         samples: Vec<f64>,
         video_presentation_offset_ns: Option<i128>,
+        video_times: Vec<u64>,
+        videos: Vec<VideoFileRef>,
         source_laps: Option<Vec<LapMetadata>>,
     }
 
@@ -1402,6 +1788,22 @@ mod tests {
 
         fn video_presentation_offset_ns(&self) -> Option<i128> {
             self.video_presentation_offset_ns
+        }
+
+        fn video_files(&self) -> &[VideoFileRef] {
+            &self.videos
+        }
+
+        fn video_presentation_times_ns(&self) -> Option<&[u64]> {
+            (!self.video_times.is_empty()).then_some(&self.video_times)
+        }
+
+        fn video_frame_at(&self, time_ns: u64) -> Option<u64> {
+            let presentation = self.video_presentation_time_ns(time_ns)?;
+            let index = self
+                .video_times
+                .partition_point(|timestamp| *timestamp <= presentation);
+            Some(index.saturating_sub(1) as u64)
         }
 
         fn source_lap_metadata(&self) -> Option<SourceLapMetadata> {
@@ -1434,6 +1836,14 @@ mod tests {
                 channels: vec![channel],
                 samples: vec![0.0],
                 video_presentation_offset_ns: Some(101_500_000),
+                video_times: vec![101_500_000, 601_500_000, 1_101_500_000],
+                videos: vec![VideoFileRef {
+                    filename: "test.mp4".into(),
+                    index: 1,
+                    blake3: Some([0xab; 32]),
+                    frame_count: 3,
+                    presentation_offset_ns: Some(101_500_000),
+                }],
                 source_laps: Some(vec![
                     LapMetadata {
                         number: 7,
@@ -1499,6 +1909,62 @@ mod tests {
     }
 
     #[test]
+    fn complete_video_contract_is_exposed() {
+        let handle = test_handle();
+        let mut presentation = 0u64;
+        assert_eq!(
+            unsafe {
+                omatrack_video_presentation_time_ns(handle, 1_000_000_000, &mut presentation)
+            },
+            1
+        );
+        assert_eq!(presentation, 1_101_500_000);
+
+        let mut reference = OmatrackVideoReference::default();
+        assert_eq!(
+            unsafe { omatrack_video_reference_at(handle, 1_000_000_000, &mut reference) },
+            1
+        );
+        assert_eq!(reference.presentation_time_ns, presentation);
+        assert_eq!(reference.frame_index, 2);
+        assert_eq!(reference.has_presentation_time, 1);
+        assert_eq!(reference.has_frame_index, 1);
+
+        assert_eq!(unsafe { omatrack_video_file_count(handle) }, 1);
+        let mut video = OmatrackVideoFileRef {
+            filename: std::ptr::null(),
+            index: 0,
+            blake3: std::ptr::null(),
+            frame_count: 0,
+            presentation_offset_ns: 0,
+            has_presentation_offset: 0,
+        };
+        assert_eq!(unsafe { omatrack_video_file(handle, 0, &mut video) }, 1);
+        assert_eq!(
+            unsafe { CStr::from_ptr(video.filename) }.to_bytes(),
+            b"test.mp4"
+        );
+        assert_eq!(video.index, 1);
+        assert_eq!(video.frame_count, 3);
+        assert_eq!(video.presentation_offset_ns, 101_500_000);
+        assert_eq!(video.has_presentation_offset, 1);
+        assert_eq!(unsafe { *video.blake3 }, 0xab);
+
+        let count =
+            unsafe { omatrack_video_presentation_times_ns(handle, std::ptr::null_mut(), 0) };
+        assert_eq!(count, 3);
+        let mut times = [0u64; 3];
+        assert_eq!(
+            unsafe {
+                omatrack_video_presentation_times_ns(handle, times.as_mut_ptr(), times.len())
+            },
+            times.len()
+        );
+        assert_eq!(times, [101_500_000, 601_500_000, 1_101_500_000]);
+        unsafe { omatrack_close(handle) };
+    }
+
+    #[test]
     fn motec_format_and_source_laps_are_exposed() {
         let handle = test_handle();
         let format = unsafe { CStr::from_ptr(omatrack_format(handle)) };
@@ -1510,7 +1976,9 @@ mod tests {
             start_ns: 0,
             end_ns: 0,
             duration_ns: 0,
+            first_video_frame: 0,
             complete: 0,
+            has_first_video_frame: 0,
         };
         assert_eq!(unsafe { omatrack_source_lap(handle, 0, &mut lap) }, 1);
         assert_eq!(lap.number, 7);
@@ -1518,6 +1986,8 @@ mod tests {
         assert_eq!(lap.end_ns, 91_000_000_000);
         assert_eq!(lap.duration_ns, 90_000_000_000);
         assert_eq!(lap.complete, 1);
+        assert_eq!(lap.first_video_frame, 60);
+        assert_eq!(lap.has_first_video_frame, 1);
         assert_eq!(unsafe { omatrack_source_lap(handle, 2, &mut lap) }, 0);
         assert_eq!(
             unsafe { omatrack_source_lap(handle, 0, std::ptr::null_mut()) },
@@ -1552,6 +2022,8 @@ mod tests {
                 channels: vec![channel],
                 samples,
                 video_presentation_offset_ns: None,
+                video_times: Vec::new(),
+                videos: Vec::new(),
                 source_laps: None,
             }),
             true,
@@ -1563,7 +2035,9 @@ mod tests {
             start_ns: 0,
             end_ns: 0,
             duration_ns: 0,
+            first_video_frame: 0,
             complete: 0,
+            has_first_video_frame: 0,
         };
         assert_eq!(unsafe { omatrack_source_lap(handle, 1, &mut middle) }, 1);
         assert_eq!(middle.number, 2);

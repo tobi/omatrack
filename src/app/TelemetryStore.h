@@ -11,6 +11,7 @@
 
 #include <QByteArray>
 #include <QColor>
+#include "core/TelemetryEngine.h"
 #include <QObject>
 #include <QSet>
 #include <QThreadPool>
@@ -30,12 +31,6 @@
 #include <limits>
 #include <vector>
 #include <vector>
-
-namespace omatrack {
-class TelemetrySource;
-struct UnifiedLap;
-struct Lap;
-}  // namespace omatrack
 
 class SessionHandle;
 class TelemetryStore;
@@ -130,31 +125,30 @@ struct LapEntry {
     bool isComplete = true;
     /// Complete crossing-to-crossing lap whose time is a pit in/out outlier.
     bool isPitLap = false;
-    /// Recording-sidecar media anchors, in seconds on the video timeline.
-    /// Unset when both are zero; then the shared presentation clock is used.
-    double videoStartTime = 0.0;
-    double videoEndTime = 0.0;
+    /// Presentation-order frame at this lap's first telemetry sample.
+    std::optional<std::uint64_t> firstVideoFrame;
     /// Representative timed racing lap: eligible for best-lap statistics.
     bool countsForBest() const { return isComplete && !isPitLap; }
-    bool hasMediaAnchors() const {
-        return videoEndTime > videoStartTime && endTime > startTime;
-    }
-    /// Lap-relative telemetry time → media seconds.
-    double mediaTime(double relativeTime, double presentationOffset) const {
-        if (hasMediaAnchors()) {
-            const double span = endTime - startTime;
-            return videoStartTime +
-                   (relativeTime / span) * (videoEndTime - videoStartTime);
-        }
-        return startTime + relativeTime + presentationOffset;
-    }
-    /// Media seconds → lap-relative telemetry time.
-    double telemetryTime(double media, double presentationOffset) const {
-        if (hasMediaAnchors()) {
-            const double span = videoEndTime - videoStartTime;
-            return (media - videoStartTime) / span * (endTime - startTime);
-        }
-        return media - presentationOffset - startTime;
+};
+
+enum class VideoIdentityStatus {
+    NotChecked,
+    ExactSource,
+    VerifiedHash,
+    TrustedRemoteObject,
+    Unverified,
+    Mismatch,
+};
+
+struct VideoIdentityResult {
+    VideoIdentityStatus status = VideoIdentityStatus::NotChecked;
+    std::optional<std::uint32_t> fileIndex;
+    QString warning;
+
+    bool trusted() const {
+        return status == VideoIdentityStatus::ExactSource ||
+               status == VideoIdentityStatus::VerifiedHash ||
+               status == VideoIdentityStatus::TrustedRemoteObject;
     }
 };
 
@@ -201,9 +195,9 @@ public:
     void setTelemetryPath(const QString& path) { telemetryPath_ = path; }
     QString stem() const;
 
-    const omatrack::TelemetrySource* source() const { return src_.get(); }
     const QVector<LapEntry>& laps() const { return laps_; }
     std::shared_ptr<const omatrack::UnifiedLap> unifiedLap(int lapId) const;
+    void clearUnifiedCache() { unifiedCache_.clear(); }
     QString sessionKey() const;
     bool isVideo() const;
 
@@ -242,15 +236,14 @@ public:
     void adoptLoadedLap(int lapId,
                         std::unique_ptr<omatrack::TelemetrySource> source,
                         std::shared_ptr<const omatrack::UnifiedLap> unified,
-                        double driverId = 0.0, bool forceDriverId = false);
-    void clearUnifiedCache() { unifiedCache_.clear(); }
-    std::optional<double> videoPresentationOffsetSec() const {
-        return videoPresentationOffsetSec_;
-    }
-    /// File-relative telemetry + this offset is media time. Also fills
-    /// missing per-lap videoStart/videoEnd when the native recording has no
-    /// per-lap media anchors.
-    void setVideoPresentationOffset(std::optional<double> offsetSec);
+                        double driverId = 0.0, bool forceDriverId = false,
+                        const VideoIdentityResult& videoIdentity = {});
+    void setVideoClock(const omatrack::VideoClock& clock,
+                       const VideoIdentityResult& identity = {});
+    const omatrack::VideoClock& videoClock() const { return videoClock_; }
+    const VideoIdentityResult& videoIdentity() const { return videoIdentity_; }
+    std::optional<double> videoPresentationTime(double fileRelativeTime) const;
+    std::optional<double> videoTelemetryTime(double presentationTime) const;
     const VideoHudSeries& videoHud() const { return videoHud_; }
     qint64 utcStartNs() const { return utcStartNs_; }
     /// Exclusive file-relative duration of the session window (laps / HUD).
@@ -267,7 +260,7 @@ private:
     void populateLaps(const std::vector<omatrack::Lap>& detected);
     QString path_;
     QString telemetryPath_;
-    std::unique_ptr<omatrack::TelemetrySource> src_;
+    omatrack::VideoClock videoClock_;
     QVector<LapEntry> laps_;
     QHash<int, std::shared_ptr<const omatrack::UnifiedLap>> unifiedCache_;
     QString time_;
@@ -285,7 +278,7 @@ private:
     QHash<QString, QString> automaticChannelMappings_;
     double gpsLatitude_ = std::numeric_limits<double>::quiet_NaN();
     double gpsLongitude_ = std::numeric_limits<double>::quiet_NaN();
-    std::optional<double> videoPresentationOffsetSec_;
+    VideoIdentityResult videoIdentity_;
     VideoHudSeries videoHud_;
     qint64 utcStartNs_ = -1;
 };
@@ -414,6 +407,10 @@ class TelemetryStore : public QObject {
         QUrl compareVideoSource READ compareVideoSource NOTIFY selectionChanged)
     Q_PROPERTY(
         double compareVideoTime READ compareVideoTime NOTIFY videoTimeChanged)
+    Q_PROPERTY(QString primaryVideoSyncWarning READ primaryVideoSyncWarning
+                   NOTIFY selectionChanged)
+    Q_PROPERTY(QString compareVideoSyncWarning READ compareVideoSyncWarning
+                   NOTIFY selectionChanged)
     /// One line about the recording being fetched for offline use, empty when
     /// none is. Gigabytes take minutes, so this is the only honest way to show
     /// that something is happening.
@@ -712,6 +709,8 @@ public:
     // coordinate.
     QUrl compareVideoSource() const;
     double compareVideoTime() const;
+    QString primaryVideoSyncWarning() const;
+    QString compareVideoSyncWarning() const;
     double comparisonVideoRate() const;
     /// True when the primary cursor sits inside a corner range. The reference
     /// video holds 1× here so a turn is never time-warped.
@@ -846,10 +845,10 @@ private:
     void attachSidecarImpl(const QString& filePath, bool fromOpen,
                            bool silent = false);
     void discoverSidecarSiblings();
-    bool adoptOverlay(OverlayGroup group,
-                      QHash<QString, std::shared_ptr<std::vector<double>>>
-                          samples,
-                      QString* error);
+    bool adoptOverlay(
+        OverlayGroup group,
+        QHash<QString, std::shared_ptr<std::vector<double>>> samples,
+        QString* error);
     bool hostWindowNs(qint64* startNs, qint64* endNs, qint64* utcNs) const;
     /// File-relative window of the open primary video, or the reference
     /// video when the primary has no recording clock.

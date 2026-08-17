@@ -692,15 +692,37 @@ SessionHandle::SessionHandle(const QString& path,
     applyCachedMetadata(cachedMetadata);
 }
 
-void SessionHandle::setVideoPresentationOffset(
-    std::optional<double> offsetSec) {
-    if (!offsetSec || !std::isfinite(*offsetSec)) return;
-    videoPresentationOffsetSec_ = offsetSec;
-    for (LapEntry& lap : laps_) {
-        if (lap.hasMediaAnchors() || !(lap.endTime > lap.startTime)) continue;
-        lap.videoStartTime = lap.startTime + *offsetSec;
-        lap.videoEndTime = lap.endTime + *offsetSec;
-    }
+void SessionHandle::setVideoClock(const VideoClock& clock,
+                                  const VideoIdentityResult& identity) {
+    videoClock_ = clock;
+    if (identity.status != VideoIdentityStatus::NotChecked)
+        videoIdentity_ = identity;
+}
+
+std::optional<double> SessionHandle::videoPresentationTime(
+    double fileRelativeTime) const {
+    if (!videoIdentity_.trusted() || !std::isfinite(fileRelativeTime) ||
+        fileRelativeTime < 0.0)
+        return std::nullopt;
+    const auto nanoseconds =
+        std::uint64_t(std::llround(fileRelativeTime * 1e9));
+    const auto presentation =
+        videoClock_.presentationTimeNs(nanoseconds, videoIdentity_.fileIndex);
+    if (!presentation) return std::nullopt;
+    return double(*presentation) / 1e9;
+}
+
+std::optional<double> SessionHandle::videoTelemetryTime(
+    double presentationTime) const {
+    if (!videoIdentity_.trusted() || !std::isfinite(presentationTime) ||
+        presentationTime < 0.0)
+        return std::nullopt;
+    const auto nanoseconds =
+        std::uint64_t(std::llround(presentationTime * 1e9));
+    const auto telemetry =
+        videoClock_.telemetryTimeNs(nanoseconds, videoIdentity_.fileIndex);
+    if (!telemetry) return std::nullopt;
+    return double(*telemetry) / 1e9;
 }
 
 SessionHandle::~SessionHandle() = default;
@@ -725,6 +747,7 @@ void SessionHandle::populateLaps(const std::vector<Lap>& detected) {
         entry.endTime = lap.endTime;
         entry.timeMs = lap.timeMs;
         entry.isComplete = lap.complete;
+        entry.firstVideoFrame = lap.firstVideoFrame;
         const int sequentialNumber = lap.complete ? ++lapNumber : lapNumber;
         entry.label = lap.complete
                           ? QStringLiteral("L%1").arg(
@@ -791,7 +814,7 @@ bool SessionHandle::loadSummaryForIndex() {
     populateLaps(source->detectLaps());
     applyEventDriverId(source->detectDriverId());
     captureGpsLocation(*source);
-    setVideoPresentationOffset(source->videoPresentationOffsetSec());
+    setVideoClock(source->videoClock());
     utcStartNs_ = source->utcStartNs();
     return true;
 }
@@ -821,7 +844,7 @@ bool SessionHandle::loadSummaryForOpen(QString* errorString) {
     populateLaps(source->detectLaps());
     applyEventDriverId(source->detectDriverId());
     captureGpsLocation(*source);
-    setVideoPresentationOffset(source->videoPresentationOffsetSec());
+    setVideoClock(source->videoClock());
     utcStartNs_ = source->utcStartNs();
     return true;
 }
@@ -925,9 +948,9 @@ void SessionHandle::captureGpsLocation(const TelemetrySource& source) {
 }
 
 void SessionHandle::applyCachedMetadata(const QJsonObject& metadata) {
-    // Version 10 preserves numeric driver codes without integer coercion and
-    // retains source units and representative values for the channel browser.
-    if (metadata.value(QStringLiteral("version")).toInt() != 10) return;
+    // Version 11 removes inferred media anchors. Video timing is loaded only
+    // from the source's persisted frame table and presentation offsets.
+    if (metadata.value(QStringLiteral("version")).toInt() != 11) return;
     time_ = metadata.value(QStringLiteral("time")).toString(time_);
     driverId_ = metadata.value(QStringLiteral("driverId")).toString(driverId_);
     track_ = metadata.value(QStringLiteral("track")).toString(track_);
@@ -982,24 +1005,13 @@ void SessionHandle::applyCachedMetadata(const QJsonObject& metadata) {
         lap.isFastest = object.value(QStringLiteral("fastest")).toBool();
         lap.isComplete = object.value(QStringLiteral("complete")).toBool(true);
         lap.isPitLap = object.value(QStringLiteral("pit")).toBool();
-        if (object.contains(QStringLiteral("videoStart")))
-            lap.videoStartTime =
-                object.value(QStringLiteral("videoStart")).toDouble();
-        else if (object.contains(QStringLiteral("videoStartTime")))
-            lap.videoStartTime =
-                object.value(QStringLiteral("videoStartTime")).toDouble();
-        if (object.contains(QStringLiteral("videoEnd")))
-            lap.videoEndTime =
-                object.value(QStringLiteral("videoEnd")).toDouble();
-        else if (object.contains(QStringLiteral("videoEndTime")))
-            lap.videoEndTime =
-                object.value(QStringLiteral("videoEndTime")).toDouble();
+        if (object.contains(QStringLiteral("firstVideoFrame"))) {
+            const double frame =
+                object.value(QStringLiteral("firstVideoFrame")).toDouble(-1);
+            if (frame >= 0.0) lap.firstVideoFrame = std::uint64_t(frame);
+        }
         laps_.append(lap);
     }
-    if (metadata.contains(QStringLiteral("videoPresentationOffset")))
-        setVideoPresentationOffset(
-            metadata.value(QStringLiteral("videoPresentationOffset"))
-                .toDouble());
     summaryLoaded_ = true;
 }
 
@@ -1017,10 +1029,9 @@ QJsonObject SessionHandle::metadataForCache() const {
             {QStringLiteral("complete"), lap.isComplete},
             {QStringLiteral("pit"), lap.isPitLap},
         };
-        if (lap.hasMediaAnchors()) {
-            object.insert(QStringLiteral("videoStart"), lap.videoStartTime);
-            object.insert(QStringLiteral("videoEnd"), lap.videoEndTime);
-        }
+        if (lap.firstVideoFrame)
+            object.insert(QStringLiteral("firstVideoFrame"),
+                          double(*lap.firstVideoFrame));
         laps.append(object);
     }
     QJsonArray sourceChannels;
@@ -1040,7 +1051,7 @@ QJsonObject SessionHandle::metadataForCache() const {
          it != automaticChannelMappings_.cend(); ++it)
         automaticMappings.insert(it.key(), it.value());
     QJsonObject cached{
-        {QStringLiteral("version"), 10},
+        {QStringLiteral("version"), 11},
         {QStringLiteral("time"), time_},
         {QStringLiteral("driverId"), driverId_},
         {QStringLiteral("track"), track_},
@@ -1057,9 +1068,6 @@ QJsonObject SessionHandle::metadataForCache() const {
         {QStringLiteral("automaticChannelMappings"), automaticMappings},
         {QStringLiteral("laps"), laps},
     };
-    if (videoPresentationOffsetSec_)
-        cached.insert(QStringLiteral("videoPresentationOffset"),
-                      *videoPresentationOffsetSec_);
     return cached;
 }
 
@@ -1155,20 +1163,20 @@ qint64 SessionHandle::durationNs() const {
 void SessionHandle::adoptLoadedLap(int lapId,
                                    std::unique_ptr<TelemetrySource> source,
                                    std::shared_ptr<const UnifiedLap> unified,
-                                   double driverId, bool forceDriverId) {
+                                   double driverId, bool forceDriverId,
+                                   const VideoIdentityResult& videoIdentity) {
     if (!source || !unified || unified->size() == 0) return;
     applyEventDriverId(driverId > 0 ? driverId : source->detectDriverId(),
                        forceDriverId);
     if (!hasGpsLocation()) captureGpsLocation(*source);
     captureSourceChannels(*source);
-    if (const auto offset = source->videoPresentationOffsetSec())
-        setVideoPresentationOffset(offset);
+    setVideoClock(source->videoClock(), videoIdentity);
     captureVideoHud(*source);
     if (source->utcStartNs() >= 0) utcStartNs_ = source->utcStartNs();
     unifiedCache_.insert(lapId, std::move(unified));
-    // source (decoded raw channel arrays, ~300 MB per session) is freed when
-    // it goes out of scope here. The UnifiedLap is what rendering and analysis
-    // use; extraChannelData() re-opens the file on demand for raw channels.
+    // Decoded raw channel arrays are released here. `videoClock_` retains only
+    // the compact persisted frame table and file identities needed by player
+    // sync; extraChannelData() re-opens opt-in raw channels on demand.
 }
 
 struct SessionScanResult {
@@ -1302,6 +1310,7 @@ struct SessionLapLoadResult {
     std::shared_ptr<const UnifiedLap> unified;
     double driverId = 0.0;
     bool forceDriverId = false;
+    VideoIdentityResult videoIdentity;
     QString error;
 };
 struct CornerConsistencyLoadResult {
@@ -1677,8 +1686,8 @@ bool materializeStubSession(const RemoteConnection& connection,
         if (error) *error = QString::fromStdString(convertError);
         return false;
     }
-    handle->setVideoPresentationOffset(source->videoPresentationOffsetSec());
-    if (!source->writeTelemetry(companion.toStdString(), &convertError)) {
+    if (!source->writeTelemetry(companion.toStdString(), &convertError,
+                                QFileInfo(path).fileName().toStdString())) {
         if (error) *error = QString::fromStdString(convertError);
         return false;
     }
@@ -1687,7 +1696,7 @@ bool materializeStubSession(const RemoteConnection& connection,
                            << omatrack::displayPath(companion)
                            << omatrack::formatBytes(QFileInfo(companion).size())
                            << "offset"
-                           << handle->videoPresentationOffsetSec().value_or(0.0)
+                           << source->videoPresentationOffsetSec().value_or(0.0)
                            << "s";
     logAimdVsTelemetry(extract, companion);
     publishTelemetryCompanion(connection, path);
@@ -1855,20 +1864,95 @@ void mergeChannelSample(FolderChannelSample* sample,
     }
 }
 
+VideoIdentityResult verifyVideoIdentity(const TelemetrySource& source,
+                                        const QString& parserPath,
+                                        const QString& videoPath,
+                                        bool trustedRemote) {
+    VideoIdentityResult result;
+    if (!isVideoPath(videoPath)) return result;
+
+    const VideoClock& clock = source.videoClock();
+    if (!clock.valid()) {
+        result.status = VideoIdentityStatus::Unverified;
+        result.warning =
+            QStringLiteral("The recording has no complete video frame clock.");
+        return result;
+    }
+
+    const QFileInfo parserInfo(parserPath);
+    const QFileInfo videoInfo(videoPath);
+    if (videoInfo.size() > 0 &&
+        parserInfo.canonicalFilePath() == videoInfo.canonicalFilePath()) {
+        result.status = VideoIdentityStatus::ExactSource;
+        if (!clock.files.empty()) result.fileIndex = clock.files.front().index;
+        return result;
+    }
+
+    const QString basename = videoInfo.fileName();
+    const auto linked = std::find_if(
+        clock.files.cbegin(), clock.files.cend(),
+        [&basename](const VideoFileReference& file) {
+            return QString::fromStdString(file.filename)
+                       .compare(basename, Qt::CaseInsensitive) == 0;
+        });
+    if (linked == clock.files.cend()) {
+        result.status = VideoIdentityStatus::Mismatch;
+        result.warning =
+            QStringLiteral("The telemetry links a different video file.");
+        return result;
+    }
+    result.fileIndex = linked->index;
+
+    // The connection index binds this cache path and its companion to the
+    // same remote object version. Hashing a multi-gigabyte recording would
+    // require an explicit offline fetch, so the ETag/object generation is the
+    // remote identity contract even after that object is pinned locally.
+    if (trustedRemote) {
+        result.status = VideoIdentityStatus::TrustedRemoteObject;
+        return result;
+    }
+    if (!linked->blake3) {
+        result.status = VideoIdentityStatus::Unverified;
+        result.warning =
+            QStringLiteral("The telemetry has no video identity hash.");
+        return result;
+    }
+    const auto actual = blake3File(videoPath.toStdString());
+    if (!actual) {
+        result.status = VideoIdentityStatus::Unverified;
+        result.warning =
+            QStringLiteral("The video identity could not be verified.");
+        return result;
+    }
+    if (*actual != *linked->blake3) {
+        result.status = VideoIdentityStatus::Mismatch;
+        result.warning =
+            QStringLiteral("The video was changed after telemetry conversion.");
+        return result;
+    }
+    result.status = VideoIdentityStatus::VerifiedHash;
+    return result;
+}
+
 std::shared_ptr<SessionLapLoadResult> loadSessionLap(
-    const QString& path, const QString& sessionKey, const LapEntry& lap,
-    const QVariantMap& metadata = {}) {
+    const QString& parserPath, const QString& recordingPath,
+    const QString& sessionKey, const LapEntry& lap,
+    const QVariantMap& metadata = {}, bool verifyVideo = false,
+    bool trustedRemote = false) {
     auto result = std::make_shared<SessionLapLoadResult>();
     result->sessionKey = sessionKey;
     result->lapId = lap.lapId;
     std::string error;
-    result->source = TelemetrySource::open(path.toStdString(), &error);
+    result->source = TelemetrySource::open(parserPath.toStdString(), &error);
     if (!result->source) {
         result->error = error.empty()
                             ? QStringLiteral("Unable to open telemetry source")
                             : QString::fromStdString(error);
         return result;
     }
+    if (verifyVideo)
+        result->videoIdentity = verifyVideoIdentity(
+            *result->source, parserPath, recordingPath, trustedRemote);
     const ChannelOverrides overrides = channelOverrides(metadata);
     result->driverId = result->source->detectDriverId(overrides);
     result->forceDriverId = overrides.find("driver_id") != overrides.end();
@@ -2393,8 +2477,11 @@ std::shared_ptr<FileOpenResult> openIndexedFile(
     qCInfo(lcIo).noquote() << "open" << displayPath(path) << "parser"
                            << displayPath(parser) << "lap" << lap->lapId
                            << lap->timeText;
-    result->lap = loadSessionLap(indexed.handle->telemetryPath(),
-                                 indexed.handle->sessionKey(), *lap, metadata);
+    const bool trustedRemote =
+        remote && !cachedObjectEtag(*remote, indexed.handle->path()).isEmpty();
+    result->lap = loadSessionLap(
+        indexed.handle->telemetryPath(), indexed.handle->path(),
+        indexed.handle->sessionKey(), *lap, metadata, true, trustedRemote);
     if (!result->lap->error.isEmpty()) result->error = result->lap->error;
     result->handle = std::move(indexed.handle);
     return result;
@@ -3874,7 +3961,7 @@ void TelemetryStore::startNextFileOpen() {
                 session->adoptLoadedLap(
                     result->lap->lapId, std::move(result->lap->source),
                     std::move(result->lap->unified), result->lap->driverId,
-                    result->lap->forceDriverId);
+                    result->lap->forceDriverId, result->lap->videoIdentity);
                 if (added) emit sessionsChanged();
                 int selectedLap = result->lap->lapId;
                 if (wantedLap >= 0 && wantedLap != selectedLap) {
@@ -6024,58 +6111,68 @@ void TelemetryStore::requestLapLoad(SessionHandle* session, int lapId,
     const LapEntry lap = *wanted;
     const QVariantMap metadata =
         recordingMetadataForPath(path, recordingMetadata_);
+    const bool verifyVideo =
+        session->isVideo() &&
+        session->videoIdentity().status == VideoIdentityStatus::NotChecked;
+    const LibraryLocation* remoteLocation = connectionHolding(path);
+    const bool trustedRemote =
+        remoteLocation &&
+        !cachedObjectEtag(connectionFor(*remoteLocation), path).isEmpty();
     auto* watcher =
         new QFutureWatcher<std::shared_ptr<SessionLapLoadResult>>(this);
-    connect(
-        watcher,
-        &QFutureWatcher<std::shared_ptr<SessionLapLoadResult>>::finished, this,
-        [this, watcher, compare, generation]() {
-            std::shared_ptr<SessionLapLoadResult> result = watcher->result();
-            watcher->deleteLater();
-            const quint64 currentGeneration =
-                compare ? compareLoadGeneration_ : primaryLoadGeneration_;
-            if (generation != currentGeneration) {
-                resumeSidebarMetadataQueue();
-                return;
-            }
+    connect(watcher,
+            &QFutureWatcher<std::shared_ptr<SessionLapLoadResult>>::finished,
+            this, [this, watcher, compare, generation]() {
+                std::shared_ptr<SessionLapLoadResult> result =
+                    watcher->result();
+                watcher->deleteLater();
+                const quint64 currentGeneration =
+                    compare ? compareLoadGeneration_ : primaryLoadGeneration_;
+                if (generation != currentGeneration) {
+                    resumeSidebarMetadataQueue();
+                    return;
+                }
 
-            SessionHandle* session = findSession(result->sessionKey);
-            if (!session || !result->error.isEmpty() || !result->source ||
-                !result->unified) {
-                qWarning() << "Unable to load lap" << result->sessionKey
-                           << result->lapId << result->error;
-                if (compare)
+                SessionHandle* session = findSession(result->sessionKey);
+                if (!session || !result->error.isEmpty() || !result->source ||
+                    !result->unified) {
+                    qWarning() << "Unable to load lap" << result->sessionKey
+                               << result->lapId << result->error;
+                    if (compare)
+                        setCompareLapLoading(false);
+                    else
+                        setPrimaryLapLoading(false);
+                    emit operationError(
+                        QStringLiteral("Unable to load lap"),
+                        result->error.isEmpty()
+                            ? QStringLiteral(
+                                  "The selected lap could not be loaded.")
+                            : result->error);
+                    resumeSidebarMetadataQueue();
+                    return;
+                }
+                session->adoptLoadedLap(
+                    result->lapId, std::move(result->source),
+                    std::move(result->unified), result->driverId,
+                    result->forceDriverId, result->videoIdentity);
+                if (session->isVideo()) rememberRecentFile(session->path());
+                if (compare) {
+                    setCompare(session, result->lapId);
                     setCompareLapLoading(false);
-                else
+                } else {
+                    setPrimary(session, result->lapId);
                     setPrimaryLapLoading(false);
-                emit operationError(
-                    QStringLiteral("Unable to load lap"),
-                    result->error.isEmpty()
-                        ? QStringLiteral(
-                              "The selected lap could not be loaded.")
-                        : result->error);
+                }
                 resumeSidebarMetadataQueue();
-                return;
-            }
-            session->adoptLoadedLap(result->lapId, std::move(result->source),
-                                    std::move(result->unified),
-                                    result->driverId, result->forceDriverId);
-            if (session->isVideo()) rememberRecentFile(session->path());
-            if (compare) {
-                setCompare(session, result->lapId);
-                setCompareLapLoading(false);
-            } else {
-                setPrimary(session, result->lapId);
-                setPrimaryLapLoading(false);
-            }
-            resumeSidebarMetadataQueue();
-        });
+            });
     qCInfo(lcIo).noquote() << "unify parse" << omatrack::displayPath(path)
                            << "parser" << omatrack::displayPath(parserPath)
                            << "lap" << lapId;
     watcher->setFuture(
-        QtConcurrent::run([parserPath, sessionKey, lap, metadata]() {
-            return loadSessionLap(parserPath, sessionKey, lap, metadata);
+        QtConcurrent::run([parserPath, path, sessionKey, lap, metadata,
+                           verifyVideo, trustedRemote]() {
+            return loadSessionLap(parserPath, path, sessionKey, lap, metadata,
+                                  verifyVideo, trustedRemote);
         }));
 }
 
@@ -6089,10 +6186,8 @@ static void logSelectedLap(const char* role, const SessionHandle* session,
     for (const LapEntry& lap : session->laps()) {
         if (lap.lapId != lapId) continue;
         lapText = QStringLiteral("L%1 %2").arg(lap.lapId).arg(lap.timeText);
-        if (lap.hasMediaAnchors())
-            lapText += QStringLiteral(" media=%1–%2s")
-                           .arg(lap.videoStartTime, 0, 'f', 3)
-                           .arg(lap.videoEndTime, 0, 'f', 3);
+        if (lap.firstVideoFrame)
+            lapText += QStringLiteral(" frame=%1").arg(*lap.firstVideoFrame);
         break;
     }
     const auto unified = session->unifiedLap(lapId);
@@ -6107,8 +6202,11 @@ static void logSelectedLap(const char* role, const SessionHandle* session,
                        .arg(unified->gear.empty() ? "no" : "yes")
                        .arg(unified->gpsLat.empty() ? "no" : "yes");
     }
-    if (const auto offset = session->videoPresentationOffsetSec())
-        details += QStringLiteral(" video-offset=%1s").arg(*offset, 0, 'f', 6);
+    if (session->videoClock().presentationOffsetNs)
+        details +=
+            QStringLiteral(" video-offset=%1s")
+                .arg(double(*session->videoClock().presentationOffsetNs) / 1e9,
+                     0, 'f', 6);
     qCInfo(lcIo).noquote() << role << "library"
                            << omatrack::displayPath(session->path()) << "parser"
                            << omatrack::displayPath(session->telemetryPath())
@@ -6241,8 +6339,8 @@ void TelemetryStore::prefetchLap(const QString& sessionKey, int lapId) {
                     result->forceDriverId);
             });
     watcher->setFuture(
-        QtConcurrent::run([parserPath, sessionKey, lap, metadata]() {
-            return loadSessionLap(parserPath, sessionKey, lap, metadata);
+        QtConcurrent::run([parserPath, path, sessionKey, lap, metadata]() {
+            return loadSessionLap(parserPath, path, sessionKey, lap, metadata);
         }));
 }
 
@@ -6448,10 +6546,10 @@ void TelemetryStore::setCursorFromVideoTime(double mediaTime) {
     if (!unified || unified->time.size() < 2) return;
     for (const LapEntry& lap : primarySession_->laps()) {
         if (lap.lapId != primaryLap_) continue;
-        const double presentationOffset =
-            primarySession_->videoPresentationOffsetSec().value_or(0.0);
-        const double relativeTime =
-            lap.telemetryTime(mediaTime, presentationOffset);
+        const auto absoluteTime =
+            primarySession_->videoTelemetryTime(mediaTime);
+        if (!absoluteTime) return;
+        const double relativeTime = *absoluteTime - lap.startTime;
         double fraction = 0.0;
         const bool wasAtEnd = cursorFrac_ >= 0.999;
         if (relativeTime >= unified->time.back()) {
@@ -7262,10 +7360,10 @@ void TelemetryStore::prefetchNeighbourLaps() {
                 // a selection change.
                 if (session == primarySession_) emit viewChanged();
             });
-        watcher->setFuture(
-            QtConcurrent::run([parserPath, sessionKey, lap, metadata]() {
-                return loadSessionLap(parserPath, sessionKey, lap, metadata);
-            }));
+        watcher->setFuture(QtConcurrent::run([parserPath, path, sessionKey, lap,
+                                              metadata]() {
+            return loadSessionLap(parserPath, path, sessionKey, lap, metadata);
+        }));
     }
 }
 
@@ -8082,9 +8180,10 @@ double TelemetryStore::primaryFractionForVideoTime(double mediaTime) const {
         return std::numeric_limits<double>::quiet_NaN();
     for (const LapEntry& lap : primarySession_->laps()) {
         if (lap.lapId != primaryLap_) continue;
-        const double relativeTime = lap.telemetryTime(
-            mediaTime,
-            primarySession_->videoPresentationOffsetSec().value_or(0.0));
+        const auto absoluteTime =
+            primarySession_->videoTelemetryTime(mediaTime);
+        if (!absoluteTime) return std::numeric_limits<double>::quiet_NaN();
+        const double relativeTime = *absoluteTime - lap.startTime;
         if (relativeTime < unified->time.front() ||
             relativeTime > unified->time.back())
             return std::numeric_limits<double>::quiet_NaN();
@@ -8475,6 +8574,16 @@ QUrl TelemetryStore::primaryVideoSource() const {
     return videoSourceFor(primarySession_->path());
 }
 
+QString TelemetryStore::primaryVideoSyncWarning() const {
+    return primarySession_ ? primarySession_->videoIdentity().warning
+                           : QString();
+}
+
+QString TelemetryStore::compareVideoSyncWarning() const {
+    return compareSession_ ? compareSession_->videoIdentity().warning
+                           : QString();
+}
+
 QString TelemetryStore::localPathForVideoSource(const QUrl& source) const {
     if (source.isLocalFile()) return source.toLocalFile();
     const auto known =
@@ -8496,10 +8605,11 @@ double TelemetryStore::primaryVideoTime() const {
         unified->time[low] +
         (unified->time[high] - unified->time[low]) * (position - double(low));
     for (const LapEntry& lap : primarySession_->laps()) {
-        if (lap.lapId == primaryLap_)
-            return lap.mediaTime(
-                relativeTime,
-                primarySession_->videoPresentationOffsetSec().value_or(0.0));
+        if (lap.lapId == primaryLap_) {
+            const auto media = primarySession_->videoPresentationTime(
+                lap.startTime + relativeTime);
+            return media.value_or(0.0);
+        }
     }
     return 0.0;
 }
@@ -8601,10 +8711,11 @@ double TelemetryStore::compareVideoTimeAtFraction(double fraction) const {
     const double relativeTime = compareTimeForPrimaryFraction(fraction);
     if (relativeTime < 0.0) return 0.0;
     for (const LapEntry& lap : compareSession_->laps()) {
-        if (lap.lapId == compareLap_)
-            return lap.mediaTime(
-                relativeTime,
-                compareSession_->videoPresentationOffsetSec().value_or(0.0));
+        if (lap.lapId == compareLap_) {
+            const auto media = compareSession_->videoPresentationTime(
+                lap.startTime + relativeTime);
+            return media.value_or(0.0);
+        }
     }
     return 0.0;
 }

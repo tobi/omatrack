@@ -578,6 +578,58 @@ private slots:
 };
 
 // ────────────────────────────────────────────────────────────────────
+// VideoClock presentation mapping
+// ────────────────────────────────────────────────────────────────────
+
+class VideoClockTest : public QObject {
+    Q_OBJECT
+private slots:
+    void mapsPositiveAndNegativePresentationOffsets() {
+        VideoClock positive;
+        positive.presentationOffsetNs = 100'000'000;
+        QCOMPARE(positive.presentationTimeNs(400'000'000),
+                 std::optional<std::uint64_t>(500'000'000));
+        QCOMPARE(positive.telemetryTimeNs(500'000'000),
+                 std::optional<std::uint64_t>(400'000'000));
+
+        VideoClock negative;
+        negative.presentationOffsetNs = -100'000'000;
+        QCOMPARE(negative.presentationTimeNs(400'000'000),
+                 std::optional<std::uint64_t>(300'000'000));
+        QCOMPARE(negative.telemetryTimeNs(300'000'000),
+                 std::optional<std::uint64_t>(400'000'000));
+    }
+    void picksLastPresentedFrameAtOrBeforeTime() {
+        VideoClock clock;
+        clock.presentationOffsetNs = 100'000'000;
+        clock.presentationTimesNs = {100'000'000, 140'000'000, 220'000'000,
+                                     300'000'000};
+        QCOMPARE(clock.frameAt(60'000'000), std::optional<std::uint64_t>(1));
+        QCOMPARE(clock.frameAt(119'000'000), std::optional<std::uint64_t>(1));
+        QCOMPARE(clock.frameAt(120'000'000), std::optional<std::uint64_t>(2));
+    }
+    void appliesOffsetsPerVideoFile() {
+        VideoClock clock;
+        VideoFileReference active;
+        active.filename = "active.mp4";
+        active.presentationOffsetNs = 100'000'000;
+        active.index = 0;
+        VideoFileReference reference;
+        reference.filename = "reference.mp4";
+        reference.presentationOffsetNs = 250'000'000;
+        reference.index = 1;
+        clock.files = {active, reference};
+
+        QCOMPARE(clock.presentationTimeNs(400'000'000, 0),
+                 std::optional<std::uint64_t>(500'000'000));
+        QCOMPARE(clock.presentationTimeNs(400'000'000, 1),
+                 std::optional<std::uint64_t>(650'000'000));
+        QCOMPARE(clock.telemetryTimeNs(650'000'000, 1),
+                 std::optional<std::uint64_t>(400'000'000));
+    }
+};
+
+// ────────────────────────────────────────────────────────────────────
 // TelemetrySource with synthetic data
 // ────────────────────────────────────────────────────────────────────
 
@@ -1517,6 +1569,10 @@ int main(int argc, char* argv[]) {
     }
     {
         DominantDriverIdTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        VideoClockTest t;
         status |= QTest::qExec(&t, argc, argv);
     }
     {

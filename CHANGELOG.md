@@ -2,7 +2,7 @@
 
 All notable user-facing changes are documented here.
 
-## Unreleased
+## 1.3.0 — 2026-08-16
 
 - MTX JSONL sidecars (`.ext.jsonl` / `.mtx.jsonl`, plain or zstd) can be
   dropped onto an open lap, video, or traces. If the sidecar timespan
@@ -22,6 +22,14 @@ All notable user-facing changes are documented here.
   add more.
 - Fullscreen pip layouts pin the large recording to the left when it is
   the active car, and to the right when it is the reference.
+- Video synchronization now uses the native recording's complete clock:
+  signed per-video presentation offsets and the presentation-order frame
+  timestamp table. Local companions are matched to video by BLAKE3 and remote
+  cache entries by their synchronized object ETag before any seek or
+  playback-to-cursor mapping. Missing or mismatched identity disables sync and
+  shows a warning instead of applying timing to the wrong recording. This also
+  removes nominal-FPS frame arithmetic, so variable-frame-rate onboard video
+  follows MP4 presentation time directly.
 
 ## 1.2.0 — 2026-08-15
 

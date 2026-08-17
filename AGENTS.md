@@ -240,7 +240,28 @@ Native lap distance is accepted only when its continuity and total agree with in
 - Open MP4, MOV, MKV, AVI, M4V, and WebM video inside the main analysis workspace; an MP4 containing an AiM `aimd` track is also a telemetry session.
 - Render through libmpv's OpenGL Render API in `MpvVideoItem`; never spawn the mpv CLI or embed a foreign native window.
 - Place video in the resizable section above the traces. Playback chrome stays minimal: the top-left speaker button toggles persisted audio mute, Space toggles playback, and Left/Right skip the primary recording by 2 seconds. Store the mute preference under `video.muted` in `omatrack.yml`. Fullscreen dual-video compose is split, active-with-reference pip, reference-with-active pip, active only, or reference only (keys 1–5). In pip layouts the main recording is inset so it is not confused with a single full-frame video. `S` toggles 0.25× slow motion on the primary clock (the reference follows). The top bar shows the layout name, then driver / lap N/M / fuel for the active and reference recordings.
-- Selecting an AiM video session selects its fastest lap and pauses at the telemetry cursor. The primary recording is the clock: it always plays at 1×, each frame advances the telemetry cursor and traces, and it is never rate-corrected or sought to chase telemetry during play. An explicit cursor jump still seeks both recordings. Reaching the end of the current lap pauses, shows a short next-lap 3-2-1, then selects the next lap in the same session and resumes; the reference lap is not changed. Primary/reference video consumes the same cached track-station map as traces and delta: lap progress (monotonic distance at 50 Hz) is the station. GPS position matching is only used when that distance is unusable. The UI reports the resulting confidence. The reference hard-seeks to the mapped station on pause and after a primary jump; during play it holds 1× through corners and uses the following straight to speed up or slow down so both recordings arrive together at the next turn-in. Derive each MP4 offset from valid AiM record timestamps and track presentation times; never infer a packet clock from undocumented bytes.
+- Selecting an AiM video session selects its fastest lap and pauses at the
+  telemetry cursor. The primary recording is the clock: it always plays at
+  1×, each frame advances the telemetry cursor and traces, and it is never
+  rate-corrected or sought to chase telemetry during play. An explicit cursor
+  jump still seeks both recordings. Reaching the end of the current lap
+  pauses, shows a short next-lap 3-2-1, then selects the next lap in the same
+  session and resumes; the reference lap is not changed. Primary/reference
+  video consumes the same cached track-station map as traces and delta: lap
+  progress (monotonic distance at 50 Hz) is the station. GPS position matching
+  is only used when that distance is unusable. The UI reports the resulting
+  confidence. The reference hard-seeks to the mapped station on pause and
+  after a primary jump; during play it holds 1× through corners and uses the
+  following straight to speed up or slow down so both recordings arrive
+  together at the next turn-in. Player time is always MP4 presentation time;
+  convert to and from file-relative telemetry nanoseconds with the signed
+  per-video presentation offset persisted by `telemetry-format`. Use the
+  presentation-order frame table for frame lookup; never derive a frame from
+  nominal FPS or infer a packet clock from undocumented bytes. Before applying
+  the clock, verify that the companion describes the opened video: BLAKE3 for
+  local files, the synchronized object ETag for remote cache entries. A
+  missing or mismatched identity disables synchronization and stays visible
+  as a warning instead of silently seeking the wrong recording.
 - Treat video files as read-only. Parsing and playback must never rewrite embedded telemetry or media.
 - Qt Quick must use the OpenGL graphics API before the first window because `QQuickFramebufferObject` and libmpv share that context.
 - `OMATRACK_VIDEO=/path/to/video` first attempts to open a telemetry-bearing MP4 session, falls back to standalone playback, and is also used by the GUI acceptance harness.
@@ -458,10 +479,12 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
 - `RawChannel`: decoded physical samples, unit, sample type, frequency, and duration for one source channel.
 - `Lap`: source-session bounds and lap time.
 - `UnifiedLap`: same-rate, lap-relative arrays plus distance provenance and GPS-quality channels used by every analysis and rendering feature.
-- `SessionHandle`: owns one library identity (the video or vendor file
-  shown in the tree) and opens `.{filename}.telemetry` as the parser path.
-  Unified laps stay in memory. Presentation offset and frame sync come
-  from the `.telemetry` catalog.
+- `SessionHandle`: owns one library identity (the video or vendor file shown
+  in the tree) and opens `.{filename}.telemetry` as the parser path. Unified
+  laps stay in memory. Its compact `VideoClock` retains the signed per-video
+  presentation offsets, presentation-order frame timestamps, linked filenames,
+  and BLAKE3 identities from the `.telemetry` catalog after decoded source
+  arrays are released.
 - `TelemetryStore`: the single Qt-facing source of truth for active/reference selection, the primary→reference track-station map, and UI state.
 - `CornerZone`: the current individual corner range. Do not stretch it to represent every Track Atlas layer; introduce explicit domain types when complexes and geometry enter the model.
 
@@ -477,7 +500,13 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
 8. Track identity and corner metadata come from Track Atlas when available; local edits are overlays, not upstream truth.
 9. Parser errors become explicit failures. No Rust panic, C++ exception, or invalid pointer crosses the ABI boundary.
 10. Optional channels and optional network data degrade gracefully; silent fabrication does not.
-11. A flattened decoded array is not a clock. Lap boundaries, resampling, raw channels, and media synchronization must preserve source chunk time bases.
+11. A flattened decoded array is not a clock. Lap boundaries, resampling, raw
+    channels, and media synchronization must preserve source chunk time bases.
+    Telemetry time is integer nanoseconds relative to the file's first sample;
+    player time is MP4 presentation time; the only conversion is
+    `presentation = telemetry + signed per-video offset`. Variable-frame-rate
+    lookup uses the catalog's presentation-order timestamp table, never
+    `seconds × nominal FPS`.
 12. QML reaches C++ only through registered types. `TelemetryStore` is the
     `Store` singleton (`QML_NAMED_ELEMENT` + `QML_SINGLETON`), the Omarchy
     palette is the `Theme` singleton, portable updates are the `Updater`
@@ -691,15 +720,16 @@ Embedded libmpv playback must be verified on the native Linux/Omarchy OpenGL sce
   `utc` is a zero shift) and drawn as a collapsible folder of header
   chrome, span tracks, and sample channels. An ordinary MP4 without an
   `aimd` track remains valid for standalone playback but is not a
-  telemetry session. Hidden `.{video}.telemetry` is the portable
-  companion: later clients open it instead of the video. Catalog-only
-  `.telemetry` means unsupported. Catalog v3 stores presentation offset,
-  `video_frames.bin`, and per-lap `first_video_frame`. Opening a writable
-  older file only bumps the catalog; it cannot invent frames that were
-  never stored. Recover those by rewriting from the AiM extract.
-  `--verbose` dumps AiM vs `.telemetry` GPS, main channels, laps,
-  presentation offset, and video frames so a reopen can be checked
-  against the extract.
+  telemetry session. Hidden `.{video}.telemetry` is the portable companion:
+  later clients open it instead of the video. Catalog-only `.telemetry` means
+  unsupported. The native catalog stores linked video
+  filenames and BLAKE3 identities, signed per-video presentation offsets, the
+  presentation-order frame timestamp table, and each lap's first video frame.
+  Opening an older writable file may bump its catalog, but it cannot invent
+  frames or identities that were never stored; recover those by rewriting from
+  the AiM extract. `--verbose` dumps AiM vs `.telemetry` GPS, main channels,
+  laps, presentation offsets, linked files, identities, and video frames so a
+  reopen can be checked against the extract.
 - Session parsing is lazy. Opening a source decodes whole channel arrays, but
   `src_` is freed after `adoptLoadedLap()` creates the `UnifiedLap`; the file is
   re-opened on demand by `extraChannelData()` for the opt-in raw-channel
@@ -751,10 +781,13 @@ Embedded libmpv playback must be verified on the native Linux/Omarchy OpenGL sce
   centerline for GPS-based corner station mapping. First-class complexes, full
   geometry rendering/modeling, and the remaining range layers are not wired
   through yet.
-- Upstream AiM parsing exposes telemetry-to-video frame lookup and the MP4
-  edit-list presentation offset. The bridge carries the checked signed-ns
-  offset into the core; primary/reference seeks add it and playback-to-cursor
-  mapping subtracts it.
+- Upstream video synchronization follows `motorsport-telemetry-rs`
+  `docs/VIDEO_SYNC.md`: file-relative integer-nanosecond telemetry time maps to
+  MP4 presentation time through a checked signed per-video offset, and frame
+  lookup uses the persisted presentation-order timestamp table. The bridge
+  copies that clock and the linked-video identity into the Qt-free core;
+  `SessionHandle` verifies the opened recording before primary/reference seeks
+  or playback-to-cursor mapping can consume it.
 - AiM GPS availability varies by recording. Preserve upstream `NaN` positions
   for no-fix intervals rather than fabricating a path; recordings with valid
   fixes provide spatially usable Road America coordinates and drive Track
@@ -763,9 +796,10 @@ Embedded libmpv playback must be verified on the native Linux/Omarchy OpenGL sce
 - The GUI is file-based post-session analysis today. Future live or database-backed work must preserve the same normalized core instead of bypassing it.
 - The app embeds one video. An `aimd` MP4 is converted once to hidden
   `.{video}.telemetry` (via a cache-private extract) and then analysed from
-  that file. Presentation offset, frame index, and video links belong in the
-  `.telemetry` catalog; if they are missing on reopen, fix
-  `telemetry-format` write/read, do not add a JSON sidecar. General
+  that file. Signed presentation offsets, the presentation-order frame table,
+  per-lap first frames, and linked-video identities belong in the `.telemetry`
+  catalog; if they are missing on reopen, fix `telemetry-format` write/read,
+  do not add a JSON sidecar or reconstruct timing from FPS. General
   user-authored associations between unrelated files and multi-video
   alignment are not implemented. Extracts are a convert-time input, not a
   share-root metadata store.

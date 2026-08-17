@@ -108,13 +108,12 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
         const double lapCursor = store_->cursorFrac();
         double cursor = lapCursor;
         if (haveHud && std::isfinite(mediaTime_) && hud->duration > 0.0) {
-            const double offset = store_->primarySession()
-                                      ? store_->primarySession()
-                                            ->videoPresentationOffsetSec()
-                                            .value_or(0.0)
-                                      : 0.0;
-            cursor =
-                std::clamp((mediaTime_ - offset) / hud->duration, 0.0, 1.0);
+            const auto telemetryTime =
+                store_->primarySession()
+                    ? store_->primarySession()->videoTelemetryTime(mediaTime_)
+                    : std::nullopt;
+            if (telemetryTime)
+                cursor = std::clamp(*telemetryTime / hud->duration, 0.0, 1.0);
         }
         const double compareCursor =
             compare ? store_->compareFractionForPrimaryFraction(std::clamp(

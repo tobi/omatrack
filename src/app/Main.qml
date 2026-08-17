@@ -930,6 +930,28 @@ ApplicationWindow {
                         color: Qt.rgba(0, 0, 0, 0.55)
                     }
                 }
+                Label {
+                    anchors.bottom: parent.bottom
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.margins: 6
+                    bottomPadding: 3
+                    color: Style.yellowColor
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: 9
+                    horizontalAlignment: Text.AlignHCenter
+                    leftPadding: 6
+                    rightPadding: 6
+                    text: Store.primaryVideoSyncWarning
+                    topPadding: 3
+                    visible: Store.primaryVideoSyncWarning !== ""
+                    width: Math.min(parent.width - 12, 440)
+                    wrapMode: Text.Wrap
+                    z: 4
+
+                    background: Rectangle {
+                        color: Qt.rgba(0, 0, 0, 0.78)
+                    }
+                }
                 Column {
                     anchors.centerIn: parent
                     spacing: 8
@@ -1060,6 +1082,28 @@ ApplicationWindow {
 
                     background: Rectangle {
                         color: Qt.rgba(0, 0, 0, 0.55)
+                    }
+                }
+                Label {
+                    anchors.bottom: parent.bottom
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.margins: 6
+                    bottomPadding: 3
+                    color: Style.yellowColor
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: 9
+                    horizontalAlignment: Text.AlignHCenter
+                    leftPadding: 6
+                    rightPadding: 6
+                    text: Store.compareVideoSyncWarning
+                    topPadding: 3
+                    visible: Store.compareVideoSyncWarning !== ""
+                    width: Math.min(parent.width - 12, 440)
+                    wrapMode: Text.Wrap
+                    z: 4
+
+                    background: Rectangle {
+                        color: Qt.rgba(0, 0, 0, 0.78)
                     }
                 }
                 Label {

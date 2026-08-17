@@ -11,6 +11,8 @@
 
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -58,6 +60,8 @@ struct Lap {
     bool complete = true;
     /// Original source lap number when the parser supplied a unique value.
     std::optional<int> sourceNumber;
+    /// Presentation-order frame at the lap start from source metadata.
+    std::optional<std::uint64_t> firstVideoFrame;
 };
 
 // ── unified 50 Hz lap ───────────────────────────────────────────────
@@ -126,6 +130,41 @@ struct SidecarSpan {
     std::vector<std::pair<std::string, std::string>> meta;
 };
 
+/// One video file linked to a telemetry recording.
+struct VideoFileReference {
+    std::string filename;
+    std::uint32_t index = 0;
+    std::optional<std::array<std::uint8_t, 32>> blake3;
+    std::uint64_t frameCount = 0;
+    std::optional<std::int64_t> presentationOffsetNs;
+};
+
+/// Exact telemetry-to-player mapping copied from the recording before the
+/// decoded source arrays are released.
+struct VideoClock {
+    std::optional<std::int64_t> presentationOffsetNs;
+    std::vector<std::uint64_t> presentationTimesNs;
+    std::vector<VideoFileReference> files;
+
+    bool valid() const {
+        return !presentationTimesNs.empty() &&
+               (presentationOffsetNs.has_value() ||
+                std::any_of(files.cbegin(), files.cend(), [](const auto& file) {
+                    return file.presentationOffsetNs.has_value();
+                }));
+    }
+    std::optional<std::uint64_t> presentationTimeNs(
+        std::uint64_t telemetryTimeNs,
+        std::optional<std::uint32_t> fileIndex = std::nullopt) const;
+    std::optional<std::uint64_t> telemetryTimeNs(
+        std::uint64_t presentationTimeNs,
+        std::optional<std::uint32_t> fileIndex = std::nullopt) const;
+    std::optional<std::uint64_t> frameAt(std::uint64_t telemetryTimeNs) const;
+};
+
+/// Full BLAKE3-256 digest used to validate a linked video identity.
+std::optional<std::array<std::uint8_t, 32>> blake3File(const std::string& path);
+
 // ── telemtery source ────────────────────────────────────────────────
 
 class TelemetrySource {
@@ -141,11 +180,12 @@ public:
 
     const std::string& path() const { return path_; }
     const std::string& formatName() const { return format_; }
+    const VideoClock& videoClock() const { return videoClock_; }
     /// Offset satisfying video presentation time = telemetry file-relative
     /// time + offset. Absent for sources without embedded-video timing.
-    std::optional<double> videoPresentationOffsetSec() const {
-        return videoPresentationOffsetSec_;
-    }
+    std::optional<double> videoPresentationOffsetSec() const;
+    /// Exact player presentation time at file-relative telemetry time.
+    std::optional<double> videoPresentationTime(double timeSec) const;
     /// Presentation-order video frame at file-relative telemetry time.
     std::optional<std::uint64_t> videoFrameAt(double timeSec) const;
 
@@ -201,8 +241,8 @@ public:
 
     /// Serialise this source to a native `.telemetry` recording. Requires a
     /// live parser handle (`open()`, not a synthetic source).
-    bool writeTelemetry(const std::string& path,
-                        std::string* error = nullptr) const;
+    bool writeTelemetry(const std::string& path, std::string* error = nullptr,
+                        const std::string& linkedVideoFilename = {}) const;
 
     // Public so tests can populate channels_ with synthetic data without
     // going through the Rust bridge. Production code uses open().
@@ -215,7 +255,7 @@ private:
     void* handle_ = nullptr;
     std::string path_;
     std::string format_;
-    std::optional<double> videoPresentationOffsetSec_;
+    VideoClock videoClock_;
     std::vector<RawChannel> channels_;
     std::vector<Lap> sourceLaps_;
     std::int64_t utcStartNs_ = -1;

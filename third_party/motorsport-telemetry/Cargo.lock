@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "aim-telemetry"
 version = "0.1.0"
-source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=f7373f29e000663c57800f0e22071ae7e09b0889#f7373f29e000663c57800f0e22071ae7e09b0889"
+source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=35e42a26920bab4bac0cde3b999660aaa2024f3c#35e42a26920bab4bac0cde3b999660aaa2024f3c"
 dependencies = [
  "memmap2",
  "motorsport-telemetry-core",
@@ -94,7 +94,7 @@ checksum = "7c74b8349d32d297c9134b8c88677813a227df8f779daa29bfc29c183fe3dca6"
 [[package]]
 name = "cosworth-telemetry"
 version = "0.1.0"
-source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=f7373f29e000663c57800f0e22071ae7e09b0889#f7373f29e000663c57800f0e22071ae7e09b0889"
+source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=35e42a26920bab4bac0cde3b999660aaa2024f3c#35e42a26920bab4bac0cde3b999660aaa2024f3c"
 dependencies = [
  "memmap2",
  "motorsport-telemetry-core",
@@ -309,7 +309,7 @@ dependencies = [
 [[package]]
 name = "motec-telemetry"
 version = "0.1.0"
-source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=f7373f29e000663c57800f0e22071ae7e09b0889#f7373f29e000663c57800f0e22071ae7e09b0889"
+source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=35e42a26920bab4bac0cde3b999660aaa2024f3c#35e42a26920bab4bac0cde3b999660aaa2024f3c"
 dependencies = [
  "memmap2",
  "motorsport-telemetry-core",
@@ -320,12 +320,12 @@ dependencies = [
 [[package]]
 name = "motorsport-telemetry-core"
 version = "0.1.0"
-source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=f7373f29e000663c57800f0e22071ae7e09b0889#f7373f29e000663c57800f0e22071ae7e09b0889"
+source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=35e42a26920bab4bac0cde3b999660aaa2024f3c#35e42a26920bab4bac0cde3b999660aaa2024f3c"
 
 [[package]]
 name = "motorsport-track-atlas"
 version = "0.1.0"
-source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=f7373f29e000663c57800f0e22071ae7e09b0889#f7373f29e000663c57800f0e22071ae7e09b0889"
+source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=35e42a26920bab4bac0cde3b999660aaa2024f3c#35e42a26920bab4bac0cde3b999660aaa2024f3c"
 dependencies = [
  "serde",
  "serde_json",
@@ -365,9 +365,9 @@ checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
 name = "portable-atomic"
-version = "1.14.0"
+version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d20d5497ef88037a52ff98267d066e7f11fcc5e99bbfbd58a42336193aacec3"
+checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
 
 [[package]]
 name = "portable-atomic-util"
@@ -414,7 +414,7 @@ checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
 [[package]]
 name = "racelogic-telemetry"
 version = "0.1.0"
-source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=f7373f29e000663c57800f0e22071ae7e09b0889#f7373f29e000663c57800f0e22071ae7e09b0889"
+source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=35e42a26920bab4bac0cde3b999660aaa2024f3c#35e42a26920bab4bac0cde3b999660aaa2024f3c"
 dependencies = [
  "memmap2",
  "motorsport-telemetry-core",
@@ -532,7 +532,7 @@ dependencies = [
 [[package]]
 name = "telemetry-format"
 version = "0.1.0"
-source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=f7373f29e000663c57800f0e22071ae7e09b0889#f7373f29e000663c57800f0e22071ae7e09b0889"
+source = "git+https://github.com/tobi/motorsport-telemetry-rs?rev=35e42a26920bab4bac0cde3b999660aaa2024f3c#35e42a26920bab4bac0cde3b999660aaa2024f3c"
 dependencies = [
  "blake3",
  "flatbuffers",

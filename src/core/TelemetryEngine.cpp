@@ -443,15 +443,83 @@ std::vector<Lap> sourceLapsFromBridge(void* handle) {
 
         const uint64_t durationNs =
             raw.duration_ns > 0 ? raw.duration_ns : raw.end_ns - raw.start_ns;
-        laps.push_back(
-            Lap{id, double(raw.start_ns) / 1e9, double(raw.end_ns) / 1e9,
-                double(durationNs) / 1e6, raw.complete != 0,
-                preservesSourceNumber ? std::optional<int>(id) : std::nullopt});
+        Lap lap{id,
+                double(raw.start_ns) / 1e9,
+                double(raw.end_ns) / 1e9,
+                double(durationNs) / 1e6,
+                raw.complete != 0,
+                preservesSourceNumber ? std::optional<int>(id) : std::nullopt};
+        if (raw.has_first_video_frame)
+            lap.firstVideoFrame = raw.first_video_frame;
+        laps.push_back(std::move(lap));
     }
     return laps;
 }
 
 }  // namespace
+
+std::optional<std::uint64_t> shiftedTime(std::uint64_t time,
+                                         std::int64_t offset) {
+    if (offset >= 0) {
+        const auto positive = std::uint64_t(offset);
+        if (time > std::numeric_limits<std::uint64_t>::max() - positive)
+            return std::nullopt;
+        return time + positive;
+    }
+    const auto magnitude = std::uint64_t(-(offset + 1)) + std::uint64_t(1);
+    if (time < magnitude) return std::nullopt;
+    return time - magnitude;
+}
+
+std::optional<std::int64_t> videoOffsetForFile(
+    const VideoClock& clock, std::optional<std::uint32_t> fileIndex) {
+    if (fileIndex) {
+        const auto file =
+            std::find_if(clock.files.cbegin(), clock.files.cend(),
+                         [fileIndex](const VideoFileReference& candidate) {
+                             return candidate.index == *fileIndex;
+                         });
+        if (file != clock.files.cend() && file->presentationOffsetNs)
+            return file->presentationOffsetNs;
+    }
+    return clock.presentationOffsetNs;
+}
+
+VideoClock videoClockFromBridge(void* handle) {
+    VideoClock clock;
+    std::int64_t offset = 0;
+    if (omatrack_video_presentation_offset_ns(handle, &offset))
+        clock.presentationOffsetNs = offset;
+
+    const size_t fileCount = omatrack_video_file_count(handle);
+    clock.files.reserve(fileCount);
+    for (size_t index = 0; index < fileCount; ++index) {
+        OmatrackVideoFileRef raw{};
+        if (!omatrack_video_file(handle, index, &raw)) continue;
+        VideoFileReference file;
+        if (raw.filename) file.filename = raw.filename;
+        file.index = raw.index;
+        if (raw.blake3) {
+            std::array<std::uint8_t, 32> hash{};
+            std::memcpy(hash.data(), raw.blake3, hash.size());
+            file.blake3 = hash;
+        }
+        file.frameCount = raw.frame_count;
+        if (raw.has_presentation_offset)
+            file.presentationOffsetNs = raw.presentation_offset_ns;
+        clock.files.push_back(std::move(file));
+    }
+
+    const size_t timeCount =
+        omatrack_video_presentation_times_ns(handle, nullptr, 0);
+    clock.presentationTimesNs.resize(timeCount);
+    if (timeCount > 0) {
+        const size_t written = omatrack_video_presentation_times_ns(
+            handle, clock.presentationTimesNs.data(), timeCount);
+        clock.presentationTimesNs.resize(written);
+    }
+    return clock;
+}
 
 // ── public helpers ──────────────────────────────────────────────────
 
@@ -504,6 +572,43 @@ SessionMeta sessionMetaFromFilename(const std::string& stem) {
     return meta;
 }
 
+std::optional<std::uint64_t> VideoClock::presentationTimeNs(
+    std::uint64_t telemetryTime, std::optional<std::uint32_t> fileIndex) const {
+    const auto offset = videoOffsetForFile(*this, fileIndex);
+    if (!offset) return std::nullopt;
+    return shiftedTime(telemetryTime, *offset);
+}
+
+std::optional<std::uint64_t> VideoClock::telemetryTimeNs(
+    std::uint64_t presentationTime,
+    std::optional<std::uint32_t> fileIndex) const {
+    const auto offset = videoOffsetForFile(*this, fileIndex);
+    if (!offset) return std::nullopt;
+    if (*offset == std::numeric_limits<std::int64_t>::min())
+        return std::nullopt;
+    return shiftedTime(presentationTime, -*offset);
+}
+
+std::optional<std::uint64_t> VideoClock::frameAt(
+    std::uint64_t telemetryTime) const {
+    if (presentationTimesNs.empty()) return std::nullopt;
+    const auto presentation = presentationTimeNs(telemetryTime);
+    if (!presentation) return std::nullopt;
+    const auto after =
+        std::upper_bound(presentationTimesNs.cbegin(),
+                         presentationTimesNs.cend(), *presentation);
+    return std::uint64_t(std::distance(presentationTimesNs.cbegin(), after) -
+                         (after == presentationTimesNs.cbegin() ? 0 : 1));
+}
+
+std::optional<std::array<std::uint8_t, 32>> blake3File(
+    const std::string& path) {
+    if (path.empty()) return std::nullopt;
+    std::array<std::uint8_t, 32> digest{};
+    if (!omatrack_blake3_file(path.c_str(), digest.data())) return std::nullopt;
+    return digest;
+}
+
 // ── TelemetrySource ─────────────────────────────────────────────────
 
 std::unique_ptr<TelemetrySource> TelemetrySource::open(const std::string& path,
@@ -533,12 +638,7 @@ std::unique_ptr<TelemetrySource> TelemetrySource::openImpl(
     const char* fmt = omatrack_format(handle);
     src->format_ = fmt ? fmt : "";
     src->sourceLaps_ = sourceLapsFromBridge(handle);
-    int64_t videoPresentationOffsetNs = 0;
-    if (omatrack_video_presentation_offset_ns(handle,
-                                              &videoPresentationOffsetNs)) {
-        src->videoPresentationOffsetSec_ =
-            double(videoPresentationOffsetNs) / 1e9;
-    }
+    src->videoClock_ = videoClockFromBridge(handle);
     size_t n = omatrack_channel_count(handle);
     src->channels_.reserve(n);
     for (size_t i = 0; i < n; ++i) {
@@ -607,7 +707,8 @@ std::unique_ptr<TelemetrySource> TelemetrySource::openImpl(
         }
         src->channelVisible_.resize(n);
         for (size_t index = 0; index < n; ++index)
-            src->channelVisible_[index] = omatrack_channel_visible(handle, index);
+            src->channelVisible_[index] =
+                omatrack_channel_visible(handle, index);
     }
     if (src->durationNs_ == 0) {
         for (const RawChannel& channel : src->channels_)
@@ -622,16 +723,14 @@ std::unique_ptr<TelemetrySource> TelemetrySource::openImpl(
         const auto itowIt = mapping.find("gps_itow");
         if (weekIt != mapping.end() && itowIt != mapping.end() &&
             weekIt->second >= 0 && itowIt->second >= 0) {
-            const RawChannel& week =
-                src->channels_[size_t(weekIt->second)];
-            const RawChannel& itow =
-                src->channels_[size_t(itowIt->second)];
-            const size_t count = std::min(week.samples.size(), itow.samples.size());
+            const RawChannel& week = src->channels_[size_t(weekIt->second)];
+            const RawChannel& itow = src->channels_[size_t(itowIt->second)];
+            const size_t count =
+                std::min(week.samples.size(), itow.samples.size());
             const double freq =
                 week.frequencyHz > 0.0 ? week.frequencyHz : itow.frequencyHz;
             for (size_t index = 0; index < count; ++index) {
-                const double fileTime =
-                    freq > 0.0 ? double(index) / freq : 0.0;
+                const double fileTime = freq > 0.0 ? double(index) / freq : 0.0;
                 const std::int64_t utc = utcStartNsFromGps(
                     week.samples[index], itow.samples[index], fileTime);
                 if (utc >= 0) {
@@ -648,8 +747,9 @@ TelemetrySource::~TelemetrySource() {
     if (handle_) omatrack_close(handle_);
 }
 
-bool TelemetrySource::writeTelemetry(const std::string& path,
-                                     std::string* error) const {
+bool TelemetrySource::writeTelemetry(
+    const std::string& path, std::string* error,
+    const std::string& linkedVideoFilename) const {
     if (error) error->clear();
     if (!handle_) {
         if (error)
@@ -660,7 +760,12 @@ bool TelemetrySource::writeTelemetry(const std::string& path,
         if (error) *error = "Native .telemetry export path is empty";
         return false;
     }
-    if (omatrack_write_telemetry(handle_, path.c_str()) != 0) return true;
+    const int written =
+        linkedVideoFilename.empty()
+            ? omatrack_write_telemetry(handle_, path.c_str())
+            : omatrack_write_telemetry_for_video(handle_, path.c_str(),
+                                                 linkedVideoFilename.c_str());
+    if (written != 0) return true;
     if (error) {
         const char* message = omatrack_last_error();
         *error = message && message[0] ? message
@@ -687,6 +792,22 @@ bool writeUnsupportedTelemetry(const std::string& path, std::string* error) {
 bool telemetryHasVideoClock(const std::string& path) {
     return !path.empty() &&
            omatrack_telemetry_has_video_clock(path.c_str()) != 0;
+}
+
+std::optional<double> TelemetrySource::videoPresentationOffsetSec() const {
+    if (!videoClock_.presentationOffsetNs) return std::nullopt;
+    return double(*videoClock_.presentationOffsetNs) / 1e9;
+}
+
+std::optional<double> TelemetrySource::videoPresentationTime(
+    double timeSec) const {
+    if (!handle_ || !std::isfinite(timeSec) || timeSec < 0.0)
+        return std::nullopt;
+    const auto timeNs = std::uint64_t(std::llround(timeSec * 1e9));
+    std::uint64_t presentationNs = 0;
+    if (!omatrack_video_presentation_time_ns(handle_, timeNs, &presentationNs))
+        return std::nullopt;
+    return double(presentationNs) / 1e9;
 }
 
 std::optional<std::uint64_t> TelemetrySource::videoFrameAt(
@@ -947,8 +1068,7 @@ bool isJsonlExtPath(const std::string& path) {
     return omatrack_is_sidecar_path(path.c_str()) != 0;
 }
 
-std::int64_t utcStartNsFromGps(double week, double itowMs,
-                               double fileTimeSec) {
+std::int64_t utcStartNsFromGps(double week, double itowMs, double fileTimeSec) {
     if (!std::isfinite(week) || !std::isfinite(itowMs) ||
         !std::isfinite(fileTimeSec) || week < 0.0 || itowMs < 0.0)
         return -1;
@@ -964,14 +1084,13 @@ std::int64_t utcStartNsFromGps(double week, double itowMs,
     constexpr std::int64_t kNsPerSec = 1000000000LL;
     constexpr std::int64_t kNsPerWeek = 604800LL * kNsPerSec;
     const std::int64_t gpsNs = weekCount * kNsPerWeek + itow * 1000000LL;
-    const std::int64_t utcNs =
-        gpsNs + kGpsEpochUnixSec * kNsPerSec - kLeapSeconds * kNsPerSec - fileNs;
+    const std::int64_t utcNs = gpsNs + kGpsEpochUnixSec * kNsPerSec -
+                               kLeapSeconds * kNsPerSec - fileNs;
     if (utcNs < 1000000000000000000LL) return -1;
     return utcNs;
 }
 
-std::int64_t sidecarJoinShiftNs(std::int64_t hostUtcNs,
-                                std::int64_t extUtcNs) {
+std::int64_t sidecarJoinShiftNs(std::int64_t hostUtcNs, std::int64_t extUtcNs) {
     if (hostUtcNs < 0 || extUtcNs < 0) return 0;
     return extUtcNs - hostUtcNs;
 }
