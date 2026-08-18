@@ -2,6 +2,33 @@
 
 All notable user-facing changes are documented here.
 
+## Unreleased
+
+- Restored telemetry-synchronized video seeking when a native recording
+  catalogs more than one linked video.
+- Added selectable reference synchronization for dual-video comparison:
+  continuous GPS variable-speed matching by default, pre-corner GPS or damper
+  matching when those inputs exist, manual damper alignment, and lap
+  percentage fallback. The same selected map now drives traces, delta,
+  readouts, and video, correcting the lap-end drift caused by speed-fused
+  distance disagreement.
+- Selecting a lap, toggling a channel, or muting video no longer writes
+  `omatrack.yml` synchronously on the UI thread; preference writes are
+  debounced and land on a worker. Track Atlas cache reads, sidecar sibling
+  discovery, `TRACK.yml` writes, and location removal moved off the UI
+  thread as well.
+- The local normalized-telemetry cache is now counted *and* evicted by the
+  configured cache limit; previously it grew without bound.
+- Cancelling a library rescan aborts an in-flight WebDAV/S3 listing, and a
+  pin/unpin can no longer be lost under a concurrent sync.
+- `omatrack-cli corners --reference` maps the reference zone through the
+  same primary→reference alignment the GUI uses, and shares the GUI's lap
+  classification.
+- Upstream `motorsport-telemetry-rs` advanced to 1.0 (`843e2c5`): AiM
+  recordings are sampled through their explicit per-sample timestamps, so
+  AiM lap boundaries and resampled values are more accurate (they can differ
+  from earlier releases by up to ~0.1 s at a lap boundary).
+
 ## 1.3.0 — 2026-08-16
 
 - MTX JSONL sidecars (`.ext.jsonl` / `.mtx.jsonl`, plain or zstd) can be
