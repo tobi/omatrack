@@ -8,7 +8,7 @@
 #include <limits>
 
 #include "TraceSceneBuilder.h"
-
+#include "TraceSnapshot.h"
 class TelemetryStore;
 
 class VideoTelemetryHud : public QQuickItem {
@@ -61,4 +61,13 @@ private:
     QString monoFontFamily_ = QStringLiteral("Geist Mono");
 
     TraceSceneBuilder builder_;
+
+    // Cached per selection (not per frame): the compare-fraction map and the
+    // brake-scale peak are stable while the cursor moves, so a cursor frame
+    bool snapshotDirty_ = true;
+    bool brakeMaxDirty_ = true;
+    TraceSnapshot snapshot_;
+    double cachedBrakeMax_ = 1.0;
+    double cachedThrottleScale_ = 1.0;
+    QVector<QPointF> convexScratch_;
 };

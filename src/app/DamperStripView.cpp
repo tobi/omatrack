@@ -2,9 +2,6 @@
 
 #include <QSGNode>
 
-#include <algorithm>
-#include <cmath>
-
 #include "TelemetryStore.h"
 
 DamperStripView::DamperStripView(QQuickItem* parent) : QQuickItem(parent) {
@@ -87,34 +84,25 @@ QSGNode* DamperStripView::updatePaintNode(QSGNode* oldNode,
         return root;
     }
 
-    // One point per pixel column: a lap of damper travel is tens of thousands
-    // of samples and the strip is a few hundred pixels wide, so submitting
-    // every sample would cost the same image for far more work.
-    const int columns = std::max(2, int(w));
-    const double last = double(values->size() - 1);
+    // The shift is a pixel offset: the whole strip slides right by shift_*w.
+    // envelopePolyline maps viewport fraction → series fraction (identity
+    // here, since the full lap is always shown) and handles both the
+    // zoomed-out min/max envelope and the zoomed-in polyline, matching what
+    // TraceView does for channel traces.
     const double offset = shift_ * w;
-
-    points_.clear();
-    points_.resize(columns);
-    for (int column = 0; column < columns; ++column) {
-        const double position = double(column) / double(columns - 1) * last;
-        const size_t index = size_t(position);
-        const size_t next = std::min(index + 1, values->size() - 1);
-        const double fraction = position - double(index);
-        const double value =
-            (*values)[index] + ((*values)[next] - (*values)[index]) * fraction;
-        const double x = double(column) / double(columns - 1) * w + offset;
-        const double y = h - (value - low) / span * h;
-        points_[column] = QPointF(x, y);
-    }
 
     // The builder has no separate opacity concept, so fold strokeOpacity into
     // the colour alpha.
     QColor stroke = color_;
     stroke.setAlphaF(color_.alphaF() * strokeOpacity_);
 
-    builder_.reserveQuads(points_.size());
-    builder_.polyline(points_.constData(), points_.size(), 1.3, stroke);
+    TraceSceneBuilder::EnvelopeStyle style;
+    style.width = 1.3;
+    style.fill = false;
+    style.color = stroke;
+    builder_.envelopePolyline(
+        *values, [](double f) { return f; }, 0.0, 1.0,
+        QRectF(offset, 0.0, w, h), low, span, style);
 
     builder_.commit(root);
     return root;

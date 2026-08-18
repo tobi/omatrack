@@ -43,6 +43,14 @@ void TraceSceneBuilder::reserveQuads(int quads) {
     indices_.reserve(indices_.size() + quads * 6);
 }
 
+qreal TraceSceneBuilder::devicePixelRatio() const {
+    return window_ ? std::max(1.0, window_->effectiveDevicePixelRatio()) : 1.0;
+}
+
+int TraceSceneBuilder::deviceColumns(const QRectF& rect) const {
+    return std::max(2, int(std::lround(rect.width() * devicePixelRatio())));
+}
+
 void TraceSceneBuilder::quad(const QPointF& a, const QPointF& b,
                              const QPointF& c, const QPointF& d,
                              const QColor& color) {
@@ -195,6 +203,172 @@ qreal TraceSceneBuilder::rotatedText(const QString& string, const QFont& font,
     return entry.size.width();
 }
 
+void TraceSceneBuilder::dashedHLine(qreal y, qreal left, qreal right,
+                                    const QColor& color, qreal dash,
+                                    qreal gap) {
+    for (qreal x = left; x < right; x += dash + gap)
+        hLine(y, x, std::min(x + dash, right), 1.0, color);
+}
+
+void TraceSceneBuilder::dashedVLine(qreal x, qreal top, qreal bottom,
+                                    const QColor& color, qreal width,
+                                    qreal dash, qreal gap) {
+    for (qreal y = top; y < bottom; y += dash + gap)
+        vLine(x, y, std::min(y + dash, bottom), width, color);
+}
+
+void TraceSceneBuilder::outline(const QRectF& rect, const QColor& color) {
+    hLine(rect.top(), rect.left(), rect.right(), 1.0, color);
+    hLine(rect.bottom(), rect.left(), rect.right(), 1.0, color);
+    vLine(rect.left(), rect.top(), rect.bottom(), 1.0, color);
+    vLine(rect.right(), rect.top(), rect.bottom(), 1.0, color);
+}
+
+void TraceSceneBuilder::strokeTriple(const QPointF* points, int count,
+                                     const QRectF& rect, const QColor& color,
+                                     bool fill, qreal width) {
+    if (!points || count < 2) return;
+    if (fill) {
+        reserveQuads(count);
+        for (int i = 1; i < count; ++i) {
+            const QPointF& from = points[i - 1];
+            const QPointF& to = points[i];
+            const qreal top = std::min(from.y(), to.y());
+            if (top >= rect.bottom()) continue;
+            fillQuad(from, to, QPointF(to.x(), rect.bottom()),
+                     QPointF(from.x(), rect.bottom()),
+                     QColor(color.red(), color.green(), color.blue(), 42));
+        }
+    }
+    // A slightly wider, dimmer stroke under the core line hides the hard
+    // quad edge that 4× MSAA alone still leaves on a steep slope.
+    polyline(points, count, width + 0.9,
+             QColor(color.red(), color.green(), color.blue(), 80));
+    polyline(points, count, width, color);
+}
+
+void TraceSceneBuilder::envelopePolyline(
+    const std::vector<double>& series,
+    const std::function<double(double)>& sourceFraction, double xStart,
+    double xSpan, const QRectF& rect, double yMin, double ySpan,
+    const EnvelopeStyle& style, double clipLow, double clipHigh) {
+    if (series.size() < 2 || rect.width() < 2.0 || xSpan <= 0.0 || ySpan <= 0.0)
+        return;
+
+    const int valueLast = int(series.size()) - 1;
+    const qreal dpr = devicePixelRatio();
+    const int columns = deviceColumns(rect);
+    const double columnWidth = rect.width() / double(columns);
+    const auto toY = [&](double value) {
+        return rect.top() + (1.0 - (value - yMin) / ySpan) * rect.height();
+    };
+
+    const double samplesPerPixel =
+        (xSpan * double(valueLast)) / std::max(1.0, rect.width() * dpr);
+
+    auto flush = [&](QVector<QPointF>& pts) {
+        strokeTriple(pts.constData(), pts.size(), rect, style.color, style.fill,
+                     style.width);
+        pts.clear();
+    };
+
+    if (samplesPerPixel < 1.25) {
+        // Polyline through interpolated sample points, one per device column.
+        pointsScratch_.clear();
+        pointsScratch_.reserve(columns);
+        for (int column = 0; column < columns; ++column) {
+            const double fraction =
+                xStart + xSpan * (double(column) + 0.5) / double(columns);
+            if (fraction < clipLow || fraction > clipHigh) {
+                flush(pointsScratch_);
+                continue;
+            }
+            const double position = sourceFraction(fraction) * valueLast;
+            const int lower =
+                std::clamp(int(std::floor(position)), 0, valueLast);
+            const int upper = std::min(lower + 1, valueLast);
+            const double value =
+                series[size_t(lower)] +
+                (series[size_t(upper)] - series[size_t(lower)]) *
+                    (position - double(lower));
+            if (!std::isfinite(value)) {
+                flush(pointsScratch_);
+                continue;
+            }
+            pointsScratch_.append(
+                QPointF(rect.left() + columnWidth * (double(column) + 0.5),
+                        std::clamp(toY(value), rect.top(), rect.bottom())));
+        }
+        flush(pointsScratch_);
+        return;
+    }
+
+    // Min/max envelope: one vertical band per device column.
+    reserveQuads(columns * (style.fill ? 2 : 1));
+    bool hasPrevious = false;
+    double previousTop = 0.0;
+    double previousBottom = 0.0;
+    for (int column = 0; column < columns; ++column) {
+        const double startFraction =
+            xStart + xSpan * double(column) / double(columns);
+        const double endFraction =
+            xStart + xSpan * double(column + 1) / double(columns);
+        const double centre = (startFraction + endFraction) * 0.5;
+        if (centre < clipLow || centre > clipHigh) {
+            hasPrevious = false;
+            continue;
+        }
+        double from = sourceFraction(startFraction) * valueLast;
+        double to = sourceFraction(endFraction) * valueLast;
+        if (to < from) std::swap(from, to);
+
+        double low = std::numeric_limits<double>::infinity();
+        double high = -std::numeric_limits<double>::infinity();
+        const int firstIndex = std::clamp(int(std::floor(from)), 0, valueLast);
+        const int lastIndex = std::clamp(int(std::ceil(to)), 0, valueLast);
+        if (lastIndex - firstIndex >= 2) {
+            for (int i = firstIndex; i <= lastIndex; ++i) {
+                const double value = series[size_t(i)];
+                if (!std::isfinite(value)) continue;
+                low = std::min(low, value);
+                high = std::max(high, value);
+            }
+        } else {
+            const int lower = firstIndex;
+            const int upper = std::min(lower + 1, valueLast);
+            const double value =
+                series[size_t(lower)] +
+                (series[size_t(upper)] - series[size_t(lower)]) *
+                    (from - double(lower));
+            if (std::isfinite(value)) low = high = value;
+        }
+        if (low > high) {
+            hasPrevious = false;
+            continue;
+        }
+
+        double top = std::clamp(toY(high), rect.top(), rect.bottom());
+        double bottom = std::clamp(toY(low), rect.top(), rect.bottom());
+        if (hasPrevious) {
+            if (bottom < previousTop) bottom = previousTop;
+            if (top > previousBottom) top = previousBottom;
+        }
+        const double x = rect.left() + columnWidth * column;
+        const qreal half = std::max(0.5 / dpr, style.width * 0.5);
+
+        if (style.fill && bottom < rect.bottom())
+            this->rect(QRectF(x, top, columnWidth, rect.bottom() - top),
+                       style.fillColor);
+        this->rect(
+            QRectF(x, top - half, columnWidth, (bottom - top) + half * 2.0),
+            style.color);
+
+        previousTop = top;
+        previousBottom = bottom;
+        hasPrevious = true;
+    }
+}
+
 void TraceSceneBuilder::commit(QSGNode* root) {
     if (!root) return;
     if (softwareFallback_) {
@@ -214,6 +388,8 @@ void TraceSceneBuilder::commit(QSGNode* root) {
             root->removeChildNode(geometryNode_);
             delete geometryNode_;
             geometryNode_ = nullptr;
+            vertexCapacity_ = 0;
+            indexCapacity_ = 0;
         }
     } else {
         if (!geometryNode_) {
@@ -226,23 +402,45 @@ void TraceSceneBuilder::commit(QSGNode* root) {
             // Geometry stays behind the text nodes appended later.
             root->prependChildNode(geometryNode_);
         }
+        // Capacity buckets: round the vertex/index counts up to the next
+        // 4096-vertex / 16384-index bucket and only reallocate the geometry
+        // buffer when the frame grows past it. The bucket is never shrunk per
+        // frame, so a cursor moving across a fixed scene reuses the same
+        // allocation. The renderer draws `used` vertices, so the unused tail
+        // is filled with degenerate (zero-index) triangles.
+        const int usedVertices = int(vertices_.size());
+        const int usedIndices = int(indices_.size());
+        auto bucket = [](int count, int step) {
+            return std::max(step, ((count + step - 1) / step) * step);
+        };
+        const int vertexBucket = bucket(usedVertices, 4096);
+        const int indexBucket = bucket(usedIndices, 16384);
         auto* geometry = geometryNode_->geometry();
-        if (!geometry || geometry->vertexCount() != vertices_.size() ||
-            geometry->indexCount() != indices_.size()) {
-            geometry =
-                new QSGGeometry(QSGGeometry::defaultAttributes_ColoredPoint2D(),
-                                int(vertices_.size()), int(indices_.size()),
-                                QSGGeometry::UnsignedIntType);
+        if (!geometry || vertexBucket > vertexCapacity_ ||
+            indexBucket > indexCapacity_) {
+            geometry = new QSGGeometry(
+                QSGGeometry::defaultAttributes_ColoredPoint2D(), vertexBucket,
+                indexBucket, QSGGeometry::UnsignedIntType);
             geometry->setDrawingMode(QSGGeometry::DrawTriangles);
             geometry->setVertexDataPattern(QSGGeometry::DynamicPattern);
             geometry->setIndexDataPattern(QSGGeometry::DynamicPattern);
             geometryNode_->setGeometry(geometry);
+            vertexCapacity_ = vertexBucket;
+            indexCapacity_ = indexBucket;
         }
-        std::memcpy(
-            geometry->vertexData(), vertices_.constData(),
-            size_t(vertices_.size()) * sizeof(QSGGeometry::ColoredPoint2D));
+        std::memcpy(geometry->vertexData(), vertices_.constData(),
+                    size_t(usedVertices) * sizeof(QSGGeometry::ColoredPoint2D));
+        // Pad the unused index tail with degenerate triangles so the GPU
+        // never reads past the frame's data: every extra index references
+        // vertex 0, producing zero-area triangles.
         std::memcpy(geometry->indexData(), indices_.constData(),
-                    size_t(indices_.size()) * sizeof(quint32));
+                    size_t(usedIndices) * sizeof(quint32));
+        if (usedIndices < indexBucket)
+            std::memset(
+                static_cast<quint32*>(geometry->indexData()) + usedIndices, 0,
+                size_t(indexBucket - usedIndices) * sizeof(quint32));
+        geometry->setIndexCount(usedIndices);
+        geometry->setVertexCount(usedVertices);
         geometryNode_->markDirty(QSGNode::DirtyGeometry);
     }
 
@@ -266,9 +464,20 @@ void TraceSceneBuilder::commit(QSGNode* root) {
     for (int i = 0; i < texts_.size(); ++i) {
         const TextQuad& quad = texts_[i];
         TextNode& node = textNodes_[i];
-        node.texture->setTexture(quad.texture);
-        node.texture->setRect(quad.rect);
-        node.texture->markDirty(QSGNode::DirtyMaterial);
+        // Only mark the texture node dirty when the texture or rect actually
+        // changed. Lane labels, units and axis ticks are immutable across
+        // frames, so a cursor move no longer re-uploads them.
+        if (node.initialised && node.lastTexture == quad.texture &&
+            node.lastRect == quad.rect) {
+            // Texture unchanged; still may need a transform update below.
+        } else {
+            node.texture->setTexture(quad.texture);
+            node.texture->setRect(quad.rect);
+            node.texture->markDirty(QSGNode::DirtyMaterial);
+            node.lastTexture = quad.texture;
+            node.lastRect = quad.rect;
+            node.initialised = true;
+        }
         QMatrix4x4 matrix;
         if (!qFuzzyIsNull(quad.rotation)) {
             const QPointF center = quad.rect.center();
@@ -290,4 +499,6 @@ void TraceSceneBuilder::releaseResources() {
     texts_.clear();
     textNodes_.clear();
     geometryNode_ = nullptr;
+    vertexCapacity_ = 0;
+    indexCapacity_ = 0;
 }

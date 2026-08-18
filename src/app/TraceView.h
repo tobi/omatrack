@@ -13,17 +13,20 @@
 //
 // Every visible lane always fits the item height: lane height is the channel's
 // weight share of the available space, so the workspace never scrolls
-// vertically. A focused corner zooms the viewport, dims the traces outside the
-// zone, and annotates the zoomed view with brake / turn-in / apex / throttle
-// markers.
+// vertically. A focused corner zooms the viewport, dims the traces outside
+// the zone, and annotates the zoomed view with brake / turn-in / apex /
+// throttle markers.
+//
+// Lane layout (channel specs, geometry, range caching) is delegated to
+// TraceLaneLayout; mouse gestures and hit-testing are delegated to
+// TraceInteraction. TraceView keeps the QQuickItem shell, the QML-facing
+// Q_PROPERTY/Q_INVOKABLE surface, and the scene-graph rendering.
 
 #pragma once
 
 #include <QtQml/qqmlregistration.h>
 #include <QColor>
-#include <QElapsedTimer>
 #include <QFont>
-#include <QHash>
 #include <QQuickItem>
 #include <QVariantList>
 #include <QVariantMap>
@@ -31,6 +34,9 @@
 
 #include "TelemetryStore.h"
 #include "TraceSceneBuilder.h"
+#include "TraceSnapshot.h"
+#include "TraceLaneLayout.h"
+#include "TraceInteraction.h"
 
 #include <vector>
 
@@ -48,6 +54,9 @@ class TraceView : public QQuickItem {
     Q_PROPERTY(QColor backgroundColor READ backgroundColor WRITE
                    setBackgroundColor NOTIFY backgroundColorChanged)
     Q_PROPERTY(qreal labelWidth READ labelWidth NOTIFY labelWidthChanged)
+    Q_PROPERTY(bool fitChannels READ fitChannels WRITE setFitChannels NOTIFY
+                   fitChannelsChanged)
+
     Q_PROPERTY(QVariantList laneRows READ laneRows NOTIFY laneLayoutChanged)
     Q_PROPERTY(qreal rulerHeight READ rulerHeight CONSTANT)
     Q_PROPERTY(
@@ -70,17 +79,22 @@ public:
     void setStore(TelemetryStore* store);
     QColor backgroundColor() const { return backgroundColor_; }
     void setBackgroundColor(const QColor& color);
-    qreal labelWidth() const { return labelWidth_; }
+    qreal labelWidth() const { return layout_.labelWidth(); }
     qreal rulerHeight() const;
-    QVariantList laneRows() const;
+    bool fitChannels() const { return layout_.fitChannels(); }
+    void setFitChannels(bool fit);
 
-    bool spanHoverVisible() const { return spanHoverVisible_; }
-    QString spanHoverTitle() const { return spanHoverTitle_; }
-    QString spanHoverSubtitle() const { return spanHoverSubtitle_; }
-    QColor spanHoverColor() const { return spanHoverColor_; }
-    QVariantList spanHoverMeta() const { return spanHoverMeta_; }
-    qreal spanHoverX() const { return spanHoverX_; }
-    qreal spanHoverY() const { return spanHoverY_; }
+    QVariantList laneRows() const { return layout_.laneRows(); }
+
+    bool spanHoverVisible() const { return interaction_.spanHoverVisible(); }
+    QString spanHoverTitle() const { return interaction_.spanHoverTitle(); }
+    QString spanHoverSubtitle() const {
+        return interaction_.spanHoverSubtitle();
+    }
+    QColor spanHoverColor() const { return interaction_.spanHoverColor(); }
+    QVariantList spanHoverMeta() const { return interaction_.spanHoverMeta(); }
+    qreal spanHoverX() const { return interaction_.spanHoverX(); }
+    qreal spanHoverY() const { return interaction_.spanHoverY(); }
 
     // Context-menu actions, driven by the QML Material menus.
     Q_INVOKABLE int addCornerAt(double fraction);
@@ -113,6 +127,8 @@ signals:
     void backgroundColorChanged();
     void labelWidthChanged();
     void laneLayoutChanged();
+    void fitChannelsChanged();
+
     void cursorChangedFromCanvas();
     void cornerEdited();
     void cornerRenameRequested(int index);
@@ -125,36 +141,6 @@ signals:
     void channelsRequested();
 
 private:
-    struct Clamp {
-        double min = 0.0;
-        double max = 1.0;
-        bool autoRange = false;
-        bool symmetric = false;
-    };
-
-    struct ChannelSpec {
-        enum class Kind { Sample, GroupHeader, SpanTrack };
-        QString key;
-        QString title;
-        QString unit;
-        QColor color;
-        Clamp clamp;
-        bool filled = false;
-        // which UnifiedLap field to read; empty = derived
-        QString field;
-        Kind kind = Kind::Sample;
-        QString groupId;
-        QString spanName;
-    };
-
-    struct SpanHit {
-        QRectF rect;
-        QString title;
-        QString subtitle;
-        QColor color;
-        QVariantList meta;
-    };
-
     struct CursorLane {
         QString field;
         QRectF rect;
@@ -164,121 +150,91 @@ private:
         bool gear = false;
     };
 
-    // One visible lane, sized as its weight share of the item height.
-    struct Lane {
-        int spec = 0;
-        double y = 0.0;
-        double height = 0.0;
-    };
-
-    // Cached vertical range of one channel across the whole lap. Only the
-    // range is cached: the vertices themselves are cheap to regenerate and
-    // depend on the viewport.
-    struct ChannelRange {
-        double min = 0.0;
-        double max = 1.0;
-        bool gear = false;
-        bool empty = true;
-    };
-
-    void rebuildChannelSpecs();
-    QVector<Lane> layoutLanes() const;
+    // ── rendering ──────────────────────────────────────────────────
     void buildScene(TraceSceneBuilder& builder);
     void buildCursorScene(TraceSceneBuilder& builder);
     void buildSelection(TraceSceneBuilder& builder);
     void buildCornerMarkerGuides(TraceSceneBuilder& builder);
     void buildCornerMarkers(TraceSceneBuilder& builder);
     void invalidateScene();
-    void invalidateRanges();
-    const ChannelRange& rangeFor(const ChannelSpec& spec,
-                                 const omatrack::UnifiedLap* primary,
-                                 const omatrack::UnifiedLap* compare);
-    void buildChannel(TraceSceneBuilder& builder, const ChannelSpec& spec,
+    void buildChannel(TraceSceneBuilder& builder,
+                      const TraceLaneLayout::ChannelSpec& spec,
                       const QRectF& rect, const omatrack::UnifiedLap* primary,
                       const omatrack::UnifiedLap* compare);
-    void buildGroupHeader(TraceSceneBuilder& builder, const ChannelSpec& spec,
+    void buildGroupHeader(TraceSceneBuilder& builder,
+                          const TraceLaneLayout::ChannelSpec& spec,
                           const QRectF& rect);
-    void buildSpanTrack(TraceSceneBuilder& builder, const ChannelSpec& spec,
+    void buildSpanTrack(TraceSceneBuilder& builder,
+                        const TraceLaneLayout::ChannelSpec& spec,
                         const QRectF& rect);
-    const OverlayGroup* overlayGroup(const QString& id) const;
-    bool overlaySpanVisibleOnLap(const OverlaySpan& span) const;
     double sidecarValueAt(const QString& key, double fraction) const;
     void buildConfidenceBand(TraceSceneBuilder& builder,
                              const TraceConfidenceBand* band,
-                             const QRectF& rect, const ChannelRange& range);
+                             const QRectF& rect,
+                             const TraceLaneLayout::ChannelRange& range);
     void buildConsistencyStrip(TraceSceneBuilder& builder, const QRectF& rect);
-    /// Emits one lap's trace for `values` into `rect`. Zoomed-out columns
-    /// carry a min/max envelope at device-pixel width. Once there is less
-    /// than one sample per device pixel the same series is a polyline
-    /// through the samples, so a slope stays a line instead of a staircase.
     void buildSeries(TraceSceneBuilder& builder,
                      const std::vector<double>* values, const QRectF& rect,
-                     const ChannelRange& range, const QColor& color, bool fill,
-                     bool alignCompare, double shift, qreal width,
-                     double clipLow = 0.0, double clipHigh = 1.0);
-    void emitSeriesStroke(TraceSceneBuilder& builder,
-                          const QVector<QPointF>& points, const QRectF& rect,
-                          const QColor& color, bool fill, qreal width);
+                     const TraceLaneLayout::ChannelRange& range,
+                     const QColor& color, bool fill, bool alignCompare,
+                     double shift, qreal width, double clipLow = 0.0,
+                     double clipHigh = 1.0);
     qreal devicePixelRatio() const;
     int deviceColumns(const QRectF& rect) const;
-    /// Masks the space outside the lap and names the lap on the other side.
     void buildOutOfLap(TraceSceneBuilder& builder, const QRectF& totalRect);
     void buildDelta(TraceSceneBuilder& builder, const QRectF& rect);
     void buildCornerZones(TraceSceneBuilder& builder, const QRectF& totalRect);
     void buildCornerFocus(TraceSceneBuilder& builder, const QRectF& totalRect);
     void buildHoveredCornerDelta(TraceSceneBuilder& builder);
-    double xForFrac(double frac) const;
-    int cornerIndexAt(const QPointF& position) const;
-    int markerIndexAt(const QPointF& position) const;
-    int focusedMarkerIndex() const;
-    // 0 = none, 1 = start edge, 2 = end edge, 3 = label-band body.
-    int focusedZoneHandleAt(const QPointF& position) const;
-    void updateHoveredMarker(const QPointF& position);
-    void updateHoveredCorner(const QPointF& position);
-    void updateHoveredSpan(const QPointF& position);
-    void updateZoneHoverCursor(const QPointF& position);
-    int groupHeaderAt(const QPointF& position) const;
-    bool primaryLapWindowNs(qint64* startNs, qint64* endNs) const;
-    double fracForX(double x) const;
-    int channelIndexAt(const QPointF& position) const;
-    void showChannelMenu(const QPointF& position);
-    void showCornerMenu(const QPointF& position);
-    double laneWeightFor(const ChannelSpec& spec) const;
-    void updateLabelWidth();
+
+    // ── layout delegation ──────────────────────────────────────────
+    void rebuildChannelSpecs() { layout_.rebuildChannelSpecs(); }
+    void invalidateRanges() { layout_.invalidateRanges(); }
+    void updateLabelWidth() { layout_.updateLabelWidth(); }
+    QVector<TraceLaneLayout::Lane> layoutLanes() const {
+        return layout_.layoutLanes();
+    }
+    const QVector<TraceLaneLayout::ChannelSpec>& channelSpecs() const {
+        return layout_.channelSpecs();
+    }
+    const TraceLaneLayout::ChannelRange& rangeFor(
+        const TraceLaneLayout::ChannelSpec& spec,
+        const omatrack::UnifiedLap* primary,
+        const omatrack::UnifiedLap* compare) {
+        return layout_.rangeFor(spec, primary, compare);
+    }
     const std::vector<double>* fieldFor(const omatrack::UnifiedLap& lap,
-                                        const QString& field) const;
+                                        const QString& field) const {
+        return layout_.fieldFor(lap, field);
+    }
+    const OverlayGroup* overlayGroup(const QString& id) const {
+        return layout_.overlayGroup(id);
+    }
+    bool overlaySpanVisibleOnLap(const OverlaySpan& span) const {
+        return layout_.overlaySpanVisibleOnLap(span);
+    }
+    bool primaryLapWindowNs(qint64* startNs, qint64* endNs) const {
+        return layout_.primaryLapWindowNs(startNs, endNs);
+    }
 
-    double deltaMaxAbs_ = 0.001;
-    QVector<CursorLane> cursorLanes_;
-    QHash<QString, ChannelRange> rangeCache_;
-    double cursorTop_ = 0.0;
-    double cursorBottom_ = 0.0;
-    double selectionStart_ = -1.0;
-    double selectionEnd_ = -1.0;
-    bool selecting_ = false;
+    // ── interaction delegation ─────────────────────────────────────
+    double xForFrac(double frac) const { return interaction_.xForFrac(frac); }
+    double fracForX(double x) const { return interaction_.fracForX(x); }
+    int hoveredMarker() const { return interaction_.hoveredMarker(); }
+    int hoveredCorner() const { return interaction_.hoveredCorner(); }
+    int focusedMarkerIndex() const {
+        return interaction_.focusedMarkerIndexValue();
+    }
+    double selectionStart() const { return interaction_.selectionStart(); }
+    double selectionEnd() const { return interaction_.selectionEnd(); }
+    double cursorTop() const { return interaction_.cursorTop(); }
+    double cursorBottom() const { return interaction_.cursorBottom(); }
+    void setCursorTop(double v) { interaction_.setCursorTop(v); }
+    void setCursorBottom(double v) { interaction_.setCursorBottom(v); }
 
-    double labelWidth_ = 62.0;
+    // ── data ───────────────────────────────────────────────────────
     TelemetryStore* store_ = nullptr;
     QColor backgroundColor_{QStringLiteral("#181d20")};
-    QVector<ChannelSpec> channelSpecs_;
-    bool dragging_ = false;
-    bool panning_ = false;
-    int dragCorner_ = -1;
-    bool dragCornerMove_ = false;
-    double dragStartFrac_ = 0.0;
-    double lastPanFrac_ = 0.0;
-    int hoveredMarker_ = -1;
-    int hoveredCorner_ = -1;
-    int hoveredSpan_ = -1;
-    bool spanHoverVisible_ = false;
-    QString spanHoverTitle_;
-    QString spanHoverSubtitle_;
-    QColor spanHoverColor_;
-    QVariantList spanHoverMeta_;
-    qreal spanHoverX_ = 0;
-    qreal spanHoverY_ = 0;
-    QVector<SpanHit> spanHits_;
-    double pressX_ = 0.0;
     QFont canvasFont_;
     QFont emptyStateFont_;
     QFont labelFont_;
@@ -286,13 +242,13 @@ private:
     QFont valueFont_;
     QFont markerFont_;
     QFont pillFont_;
-    friend class TraceCursorOverlay;
-    QElapsedTimer cursorTimer_;
+    QVector<CursorLane> cursorLanes_;
     TraceSceneBuilder builder_;
-    mutable std::vector<double> scratch_[2];
-    mutable int scratchIdx_ = 0;
+    TraceSnapshot snapshot_;
+    TraceLaneLayout layout_;
+    TraceInteraction interaction_;
+    friend class TraceCursorOverlay;
 };
-
 class TraceCursorOverlay : public QQuickItem {
     Q_OBJECT
     QML_ELEMENT

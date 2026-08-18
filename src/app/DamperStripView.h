@@ -8,9 +8,7 @@
 #pragma once
 
 #include <QColor>
-#include <QPointF>
 #include <QQuickItem>
-#include <QVector>
 #include <QtQml/qqmlregistration.h>
 
 #include "TelemetryStore.h"
@@ -69,5 +67,4 @@ private:
     qreal strokeOpacity_ = 1.0;
 
     TraceSceneBuilder builder_;
-    QVector<QPointF> points_;
 };

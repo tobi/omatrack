@@ -1,5 +1,6 @@
 #include "TraceView.h"
 
+#include "StoreModels.h"
 #include "TelemetryStore.h"
 #include "core/TelemetryEngine.h"
 
@@ -19,6 +20,11 @@
 #include <limits>
 
 using namespace omatrack;
+using ChannelSpec = TraceLaneLayout::ChannelSpec;
+using Lane = TraceLaneLayout::Lane;
+using ChannelRange = TraceLaneLayout::ChannelRange;
+using Clamp = TraceLaneLayout::Clamp;
+using SpanHit = TraceInteraction::SpanHit;
 
 namespace {
 
@@ -30,8 +36,8 @@ constexpr double kMarkerBand = 26.0;
 constexpr double kConsistencyStripHeight = 14.0;
 constexpr double kGroupHeaderHeight = 20.0;
 constexpr double kSpanTrackHeight = 14.0;
+constexpr double kStandardSampleHeight = 72.0;
 constexpr int kCursorSamplesPerStep = 1;
-constexpr qint64 kHoverFrameMs = 16;
 
 const QColor kGrid("#343f44");
 const QColor kGridStrong("#475258");
@@ -58,34 +64,11 @@ QColor mixColors(const QColor& from, const QColor& to, double amount) {
         from.alphaF() + (to.alphaF() - from.alphaF()) * factor);
 }
 
-// The scene graph has no dashed-line primitive; a dash is just a short quad.
-void dashedHLine(TraceSceneBuilder& builder, double y, double left,
-                 double right, const QColor& color) {
-    constexpr double kDash = 4.0;
-    constexpr double kGap = 4.0;
-    for (double x = left; x < right; x += kDash + kGap)
-        builder.hLine(y, x, std::min(x + kDash, right), 1.0, color);
-}
-void dashedVLine(TraceSceneBuilder& builder, double x, double top,
-                 double bottom, double dash, double gap, double width,
-                 const QColor& color) {
-    for (double y = top; y < bottom; y += dash + gap)
-        builder.vLine(x, y, std::min(y + dash, bottom), width, color);
-}
-
 QColor cornerMarkerColor(const QString& key) {
     if (key == QStringLiteral("brake")) return kRed;
     if (key == QStringLiteral("apex")) return kMagenta;
     if (key == QStringLiteral("pickup")) return kGreen;
     return kAccent;
-}
-
-void outline(TraceSceneBuilder& builder, const QRectF& rect,
-             const QColor& color) {
-    builder.hLine(rect.top(), rect.left(), rect.right(), 1.0, color);
-    builder.hLine(rect.bottom(), rect.left(), rect.right(), 1.0, color);
-    builder.vLine(rect.left(), rect.top(), rect.bottom(), 1.0, color);
-    builder.vLine(rect.right(), rect.top(), rect.bottom(), 1.0, color);
 }
 
 }  // namespace
@@ -115,6 +98,36 @@ TraceView::TraceView(QQuickItem* parent) : QQuickItem(parent) {
     setAcceptHoverEvents(true);
     setFlag(QQuickItem::ItemAcceptsInputMethod, false);
     setFocusPolicy(Qt::StrongFocus);
+
+    layout_.setLabelFont(labelFont_);
+    layout_.setUnitFont(unitFont_);
+    interaction_.setLayout(&layout_);
+    layout_.onLaneLayoutChanged = [this]() { emit laneLayoutChanged(); };
+    layout_.onLabelWidthChanged = [this]() { emit labelWidthChanged(); };
+    layout_.onInvalidateScene = [this]() { invalidateScene(); };
+
+    interaction_.onCursorChangedFromCanvas = [this]() {
+        emit cursorChangedFromCanvas();
+    };
+    interaction_.onCornerEdited = [this]() { emit cornerEdited(); };
+    interaction_.onCornerMenuRequested = [this](int idx, const QString& name,
+                                                double frac, qreal x, qreal y) {
+        emit cornerMenuRequested(idx, name, frac, x, y);
+    };
+    interaction_.onChannelMenuRequested =
+        [this](const QString& key, const QString& title, double weight, qreal x,
+               qreal y) {
+            emit channelMenuRequested(key, title, weight, x, y);
+        };
+    interaction_.onOverlayChanged = [this]() { emit overlayChanged(); };
+    interaction_.onSpanHoverChanged = [this]() { emit spanHoverChanged(); };
+    interaction_.onLaneLayoutChanged = [this]() { emit laneLayoutChanged(); };
+    interaction_.onInvalidateScene = [this]() { invalidateScene(); };
+    interaction_.onSetCursor = [this](Qt::CursorShape shape) {
+        setCursor(shape);
+    };
+    interaction_.onUnsetCursor = [this]() { unsetCursor(); };
+
     rebuildChannelSpecs();
 }
 
@@ -124,17 +137,25 @@ void TraceView::setBackgroundColor(const QColor& color) {
     update();
     emit backgroundColorChanged();
 }
+void TraceView::setFitChannels(bool fit) {
+    if (layout_.fitChannels() == fit) return;
+    layout_.setFitChannels(fit);
+    layout_.setVerticalScroll(0.0);
+    emit fitChannelsChanged();
+    emit laneLayoutChanged();
+    invalidateScene();
+}
 qreal TraceView::rulerHeight() const { return kTopPad; }
 
 void TraceView::setStore(TelemetryStore* store) {
     if (store_ == store) return;
     if (store_) disconnect(store_, nullptr, this, nullptr);
     store_ = store;
+    layout_.setStore(store);
+    interaction_.setStore(store);
     if (store_) {
         connect(store_, &TelemetryStore::selectionChanged, this, [this]() {
-            selectionStart_ = -1.0;
-            selectionEnd_ = -1.0;
-            selecting_ = false;
+            interaction_.resetSelection();
             rebuildChannelSpecs();
             invalidateRanges();
         });
@@ -147,7 +168,7 @@ void TraceView::setStore(TelemetryStore* store) {
         connect(store_, &TelemetryStore::editingCornersChanged, this,
                 &TraceView::invalidateScene);
         connect(store_, &TelemetryStore::cornerFocusChanged, this, [this]() {
-            hoveredMarker_ = -1;
+            interaction_.resetHover();
             invalidateScene();
         });
         connect(store_, &TelemetryStore::highlightedCornerMarkerChanged, this,
@@ -161,6 +182,8 @@ void TraceView::setStore(TelemetryStore* store) {
             invalidateRanges();
         });
         connect(store_, &TelemetryStore::referenceAlignmentChanged, this,
+                &TraceView::invalidateScene);
+        connect(store_, &TelemetryStore::comparisonSyncStrategyChanged, this,
                 &TraceView::invalidateScene);
         connect(store_, &TelemetryStore::traceConfidenceChanged, this,
                 [this]() {
@@ -176,290 +199,6 @@ void TraceView::invalidateScene() {
     update();
     emit overlayChanged();
 }
-
-void TraceView::invalidateRanges() {
-    rangeCache_.clear();
-    deltaMaxAbs_ = 0.0;
-    invalidateScene();
-}
-
-void TraceView::rebuildChannelSpecs() {
-    channelSpecs_.clear();
-    // ordered like omatrack: delta on top, then main channels
-    auto add = [&](const QString& key, const QString& title,
-                   const QString& unit, QColor color, Clamp clamp, bool filled,
-                   const QString& field) {
-        ChannelSpec s;
-        s.key = key;
-        s.title = title;
-        s.unit = unit;
-        s.color = color;
-        s.clamp = clamp;
-        s.filled = filled;
-        s.field = field;
-        channelSpecs_.append(s);
-    };
-    add("delta", "Δ Time", "s", QColor("#83c092"), Clamp{0, 0, true, true},
-        true, "");
-    add("speed", "Speed", "km/h", QColor("#a7c080"), Clamp{0, 0, true, false},
-        false, "speed");
-    add("throttle", "Throttle", "%", QColor("#a7c080"),
-        Clamp{0, 1, false, false}, true, "throttle");
-    add("brake", "Brake", "bar", QColor("#e67e80"), Clamp{0, 0, true, false},
-        true, "brake");
-    add("steering", "Steering", "deg", QColor("#dbbc7f"),
-        Clamp{0, 0, true, true}, false, "steering");
-    add("gear", "Gear", "", QColor("#d699b6"), Clamp{0, 7, false, false}, false,
-        "gear");
-    add("dampers", "Dampers", "mm", QColor("#7fbbb3"), Clamp{0, 0, true, true},
-        false, "damperFL");
-    add("g_long", "G Long", "g", QColor("#e09d7f"), Clamp{0, 0, true, true},
-        false, "gForceLong");
-    add("clutch", "Clutch", "%", QColor("#d3c6aa"), Clamp{0, 1, false, false},
-        true, "clutch");
-    add("driver_throttle", "Driver throttle", "%", QColor("#9da9a0"),
-        Clamp{0, 1, false, false}, false, "driverThrottle");
-    add("gps_lat", "GPS latitude", "°", QColor("#83c092"),
-        Clamp{0, 0, true, false}, false, "gpsLat");
-    add("gps_lon", "GPS longitude", "°", QColor("#e09d7f"),
-        Clamp{0, 0, true, false}, false, "gpsLon");
-    if (store_) {
-        for (const QVariant& item : store_->channelSettings()) {
-            const QVariantMap row = item.toMap();
-            if (!row.value(QStringLiteral("source")).toBool()) continue;
-            const QString key = row.value(QStringLiteral("key")).toString();
-            if (key.isEmpty()) continue;
-            QColor color(store_->channelColor(key));
-            if (!color.isValid()) color = QColor("#9da9a0");
-            add(key, row.value(QStringLiteral("title")).toString(),
-                row.value(QStringLiteral("unit")).toString(), color,
-                Clamp{0, 0, true, false}, false, key);
-        }
-        for (const OverlayGroup& group : store_->overlayGroups()) {
-            ChannelSpec header;
-            header.key = QStringLiteral("overlay:") + group.id;
-            header.title = group.name;
-            header.kind = ChannelSpec::Kind::GroupHeader;
-            header.groupId = group.id;
-            header.color = kAccent;
-            channelSpecs_.append(header);
-            for (const OverlaySpanLane& lane : group.spanLanes) {
-                ChannelSpec spans;
-                spans.key = lane.key;
-                spans.title = lane.name;
-                spans.kind = ChannelSpec::Kind::SpanTrack;
-                spans.groupId = group.id;
-                spans.spanName = lane.name;
-                spans.color = kAccent;
-                channelSpecs_.append(spans);
-            }
-            for (const OverlayChannel& channel : group.channels) {
-                QColor color(store_->channelColor(channel.key));
-                if (!color.isValid()) color = QColor("#9da9a0");
-                ChannelSpec spec;
-                spec.key = channel.key;
-                spec.title = channel.name;
-                spec.unit = channel.unit;
-                spec.color = color;
-                spec.clamp = Clamp{0, 0, true, false};
-                spec.field = channel.key;
-                spec.groupId = group.id;
-                channelSpecs_.append(spec);
-            }
-        }
-    }
-    updateLabelWidth();
-    emit laneLayoutChanged();
-}
-
-void TraceView::updateLabelWidth() {
-    QFontMetricsF titleMetrics(labelFont_);
-    QFontMetricsF unitMetrics(unitFont_);
-    double widest = kMinLabelW - 8.0;
-    for (const ChannelSpec& spec : channelSpecs_) {
-        if (spec.kind == ChannelSpec::Kind::GroupHeader) continue;
-        if (!spec.title.isEmpty())
-            widest =
-                std::max(widest, titleMetrics.horizontalAdvance(spec.title));
-        if (!spec.unit.isEmpty())
-            widest = std::max(widest, unitMetrics.horizontalAdvance(spec.unit));
-    }
-    double next = std::ceil(widest + 10.0);
-    if (width() > 200.0)
-        next = std::min(next, std::max(kMinLabelW, width() * 0.5));
-    if (std::fabs(next - labelWidth_) < 0.5) return;
-    labelWidth_ = next;
-    emit labelWidthChanged();
-}
-
-double TraceView::xForFrac(double frac) const {
-    return labelWidth() + (frac - store_->viewStart()) / store_->viewSpan() *
-                              (width() - labelWidth());
-}
-
-double TraceView::fracForX(double x) const {
-    double w = std::max(1.0, width() - labelWidth());
-    return store_->viewStart() +
-           std::clamp((x - labelWidth()) / w, 0.0, 1.0) * store_->viewSpan();
-}
-
-double TraceView::laneWeightFor(const ChannelSpec& spec) const {
-    if (spec.kind != ChannelSpec::Kind::Sample) return 0.0;
-    const double weight = std::max(0.25, store_->channelWeight(spec.key));
-    // Speed is the lane a driver reads first; it keeps a share premium.
-    const double speedBoost = spec.key == QStringLiteral("speed") ? 1.35 : 1.0;
-    return weight * speedBoost;
-}
-
-// Every visible lane is laid out as its weight share of the item height, so
-// the workspace shows all of them at once and never scrolls vertically.
-QVector<TraceView::Lane> TraceView::layoutLanes() const {
-    QVector<Lane> lanes;
-    if (!store_) return lanes;
-    const UnifiedLap* compare = store_->compareUnified();
-    double totalWeight = 0.0;
-    QSet<QString> collapsed;
-    for (const OverlayGroup& group : store_->overlayGroups()) {
-        if (!group.expanded) collapsed.insert(group.id);
-    }
-    for (int i = 0; i < channelSpecs_.size(); ++i) {
-        const ChannelSpec& spec = channelSpecs_[i];
-        if (spec.key == QStringLiteral("delta") && !compare) continue;
-        if (spec.kind == ChannelSpec::Kind::GroupHeader) {
-            // headers stay visible so a collapsed folder can be reopened
-        } else if (!spec.groupId.isEmpty() &&
-                   collapsed.contains(spec.groupId)) {
-            continue;
-        } else if (spec.kind == ChannelSpec::Kind::SpanTrack) {
-            if (!store_->channelVisible(spec.key)) continue;
-            const OverlayGroup* group = overlayGroup(spec.groupId);
-            bool any = false;
-            if (group) {
-                for (const OverlaySpan& span : group->spans) {
-                    if (span.name == spec.spanName &&
-                        overlaySpanVisibleOnLap(span)) {
-                        any = true;
-                        break;
-                    }
-                }
-            }
-            if (!any) continue;
-        } else if (spec.kind == ChannelSpec::Kind::Sample &&
-                   !store_->channelVisible(spec.key)) {
-            continue;
-        }
-        Lane lane;
-        lane.spec = i;
-        if (spec.kind == ChannelSpec::Kind::GroupHeader)
-            lane.height = kGroupHeaderHeight;
-        else if (spec.kind == ChannelSpec::Kind::SpanTrack)
-            lane.height = kSpanTrackHeight;
-        else {
-            lane.height = laneWeightFor(spec);
-            totalWeight += lane.height;
-        }
-        lanes.append(lane);
-    }
-    if (lanes.isEmpty()) return lanes;
-
-    const double consistencyHeight =
-        store_->traceConfidenceMode() ? kConsistencyStripHeight : 0.0;
-    const double available =
-        std::max(0.0, height() - kTopPad - kBottomPad - consistencyHeight);
-    double preferredFixed = 0.0;
-    for (const Lane& lane : lanes) {
-        const ChannelSpec& spec = channelSpecs_[lane.spec];
-        if (spec.kind != ChannelSpec::Kind::Sample)
-            preferredFixed += lane.height;
-    }
-    const double fixedBudget = totalWeight > 0.0 ? available * 0.35 : available;
-    const double fixedScale = preferredFixed > 0.0
-                                  ? std::min(1.0, fixedBudget / preferredFixed)
-                                  : 1.0;
-    const double weightedAvailable =
-        std::max(0.0, available - preferredFixed * fixedScale);
-
-    double y = kTopPad + consistencyHeight;
-    for (Lane& lane : lanes) {
-        const ChannelSpec& spec = channelSpecs_[lane.spec];
-        lane.y = y;
-        if (spec.kind == ChannelSpec::Kind::Sample)
-            lane.height = totalWeight > 0.0
-                              ? weightedAvailable * lane.height / totalWeight
-                              : 0.0;
-        else
-            lane.height *= fixedScale;
-        y += lane.height;
-    }
-    return lanes;
-}
-QVariantList TraceView::laneRows() const {
-    QVariantList rows;
-    for (const Lane& lane : layoutLanes()) {
-        const ChannelSpec& spec = channelSpecs_[lane.spec];
-        QString kind = QStringLiteral("sample");
-        if (spec.kind == ChannelSpec::Kind::GroupHeader)
-            kind = QStringLiteral("group");
-        else if (spec.kind == ChannelSpec::Kind::SpanTrack)
-            kind = QStringLiteral("span");
-
-        QVariantMap row{{QStringLiteral("key"), spec.key},
-                        {QStringLiteral("kind"), kind},
-                        {QStringLiteral("title"), spec.title},
-                        {QStringLiteral("unit"), spec.unit},
-                        {QStringLiteral("color"), spec.color},
-                        {QStringLiteral("y"), lane.y},
-                        {QStringLiteral("height"), lane.height}};
-        if (spec.kind == ChannelSpec::Kind::GroupHeader) {
-            if (const OverlayGroup* group = overlayGroup(spec.groupId)) {
-                QVariantList chromeRows;
-                for (const OverlayChrome& chrome : group->chrome) {
-                    chromeRows.append(
-                        QVariantMap{{QStringLiteral("kind"), chrome.kind},
-                                    {QStringLiteral("text"), chrome.text},
-                                    {QStringLiteral("label"), chrome.label},
-                                    {QStringLiteral("value"), chrome.value}});
-                }
-                row.insert(QStringLiteral("expanded"), group->expanded);
-                row.insert(QStringLiteral("chrome"), chromeRows);
-            }
-        }
-        rows.append(row);
-    }
-    return rows;
-}
-
-const std::vector<double>* TraceView::fieldFor(const UnifiedLap& lap,
-                                               const QString& field) const {
-    if (field == "speed") return &lap.speed;
-    if (field == "throttle") return &lap.throttle;
-    if (field == "driverThrottle") return &lap.driverThrottle;
-    if (field == "brake") return &lap.brake;
-    if (field == "clutch") return &lap.clutch;
-    if (field == "steering") return &lap.steering;
-    if (field == "distance") return &lap.distance;
-    if (field == "gForceLong") return &lap.gForceLong;
-    if (field == "damperFL") return &lap.damperFL;
-    if (field == "damperFR") return &lap.damperFR;
-    if (field == "damperRL") return &lap.damperRL;
-    if (field == "damperRR") return &lap.damperRR;
-    if (field == "gpsLat") return &lap.gpsLat;
-    if (field == "gpsLon") return &lap.gpsLon;
-    if (field == "gear") {
-        // gear is std::vector<int>; expose a converted copy for painting.
-        // Alternate buffers so a second fieldFor() for the compare lap can't
-        // silently alias the first lap's data.
-        int idx = scratchIdx_++;
-        auto& buf = scratch_[idx & 1];
-        buf.resize(lap.gear.size());
-        for (size_t i = 0; i < lap.gear.size(); ++i)
-            buf[i] = double(lap.gear[i]);
-        return &buf;
-    }
-    return nullptr;
-}
-
-// ── scene graph ─────────────────────────────────────────────────────
 
 QSGNode* TraceView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
     QSGNode* root = oldNode ? oldNode : new QSGNode;
@@ -481,6 +220,8 @@ void TraceView::geometryChange(const QRectF& newGeometry,
                                const QRectF& oldGeometry) {
     QQuickItem::geometryChange(newGeometry, oldGeometry);
     if (newGeometry.size() != oldGeometry.size()) {
+        layout_.setItemSize(width(), height());
+        interaction_.setItemSize(width(), height());
         updateLabelWidth();
         invalidateScene();
         emit laneLayoutChanged();
@@ -508,19 +249,24 @@ QVariantMap TraceView::benchmarkGeometry(int frames) {
 
 void TraceView::buildScene(TraceSceneBuilder& builder) {
     cursorLanes_.clear();
-    cursorTop_ = 0.0;
-    cursorBottom_ = 0.0;
+    setCursorTop(0.0);
+    setCursorBottom(0.0);
     if (width() <= 0.0 || height() <= 0.0) return;
+    if (store_) snapshot_ = store_->traceSnapshot();
+    layout_.setItemSize(width(), height());
+    interaction_.setItemSize(width(), height());
+    layout_.setSnapshot(&snapshot_);
+    interaction_.setSnapshot(&snapshot_);
     builder.rect(QRectF(0, 0, width(), height()), backgroundColor_);
 
-    const UnifiedLap* primary = store_ ? store_->primaryUnified() : nullptr;
+    const UnifiedLap* primary = snapshot_.primary;
     if (!store_ || !primary || primary->size() < 2) {
         builder.text(QStringLiteral("Select a session to begin"),
                      emptyStateFont_, kDim, QRectF(0, 0, width(), height()),
                      Qt::AlignCenter);
         return;
     }
-    const UnifiedLap* compare = store_->compareUnified();
+    const UnifiedLap* compare = snapshot_.compare;
 
     const QVector<Lane> lanes = layoutLanes();
     if (lanes.isEmpty()) return;
@@ -530,10 +276,9 @@ void TraceView::buildScene(TraceSceneBuilder& builder) {
             builder, QRectF(labelWidth(), kTopPad, width() - labelWidth(),
                             kConsistencyStripHeight));
 
-    spanHits_.clear();
-    hoveredSpan_ = -1;
+    interaction_.clearSpanHits();
     for (const Lane& lane : lanes) {
-        const ChannelSpec& spec = channelSpecs_[lane.spec];
+        const ChannelSpec& spec = channelSpecs()[lane.spec];
         const QRectF rect(labelWidth(), lane.y, width() - labelWidth(),
                           lane.height);
         if (spec.kind == ChannelSpec::Kind::GroupHeader)
@@ -596,77 +341,8 @@ void TraceView::buildScene(TraceSceneBuilder& builder) {
     buildCornerFocus(builder, traceRect);
     buildOutOfLap(builder, traceRect);
 
-    cursorTop_ = kTopPad - 3;
-    cursorBottom_ = height() - kBottomPad;
-}
-
-const TraceView::ChannelRange& TraceView::rangeFor(const ChannelSpec& spec,
-                                                   const UnifiedLap* primary,
-                                                   const UnifiedLap* compare) {
-    auto cached = rangeCache_.find(spec.key);
-    if (cached != rangeCache_.end()) return cached.value();
-
-    ChannelRange range;
-    range.min = spec.clamp.min;
-    range.max = spec.clamp.max;
-    range.gear = spec.field == QStringLiteral("gear");
-
-    const bool rawChannel = spec.field.startsWith(QStringLiteral("raw:"));
-    const bool sidecarChannel =
-        spec.field.startsWith(QStringLiteral("sidecar:"));
-    const std::vector<double>* primaryData =
-        primary ? (sidecarChannel ? store_->overlayChannelData(spec.key)
-                   : rawChannel   ? store_->extraChannelData(spec.key, false)
-                                  : fieldFor(*primary, spec.field))
-                : nullptr;
-    const std::vector<double>* compareData =
-        compare && !range.gear && !sidecarChannel
-            ? (rawChannel ? store_->extraChannelData(spec.key, true)
-                          : fieldFor(*compare, spec.field))
-            : nullptr;
-    range.empty = !primaryData || primaryData->size() < 2;
-
-    if (spec.clamp.autoRange) {
-        range.min = 1e18;
-        range.max = -1e18;
-        auto includeRange = [&](const std::vector<double>* values) {
-            if (!values) return;
-            for (double value : *values) {
-                if (!std::isfinite(value)) continue;
-                range.min = std::min(range.min, value);
-                range.max = std::max(range.max, value);
-            }
-        };
-        includeRange(primaryData);
-        includeRange(compareData);
-        if (store_->traceConfidenceMode()) {
-            if (const TraceConfidenceBand* band =
-                    store_->traceConfidenceBand(spec.field)) {
-                includeRange(&band->lower);
-                includeRange(&band->upper);
-            }
-        }
-        if (!(range.max > range.min)) {
-            range.min = 0.0;
-            range.max = 1.0;
-        }
-        if (spec.clamp.symmetric) {
-            const double magnitude =
-                std::max(std::fabs(range.min), std::fabs(range.max));
-            range.min = magnitude < 1e-6 ? -1.0 : -magnitude;
-            range.max = magnitude < 1e-6 ? 1.0 : magnitude;
-        } else {
-            const double padding = (range.max - range.min) * 0.06;
-            range.min -= padding;
-            range.max += padding;
-        }
-    }
-    if (!(range.max > range.min)) {
-        range.min = 0.0;
-        range.max = 1.0;
-    }
-    auto inserted = rangeCache_.insert(spec.key, range);
-    return inserted.value();
+    setCursorTop(kTopPad - 3);
+    setCursorBottom(height() - kBottomPad);
 }
 
 qreal TraceView::devicePixelRatio() const {
@@ -678,30 +354,6 @@ int TraceView::deviceColumns(const QRectF& rect) const {
     return std::max(2, int(std::lround(rect.width() * devicePixelRatio())));
 }
 
-void TraceView::emitSeriesStroke(TraceSceneBuilder& builder,
-                                 const QVector<QPointF>& points,
-                                 const QRectF& rect, const QColor& color,
-                                 bool fill, qreal width) {
-    if (points.size() < 2) return;
-    if (fill) {
-        const QColor fillColor = alpha(color, 42);
-        builder.reserveQuads(points.size());
-        for (int i = 1; i < points.size(); ++i) {
-            const QPointF& from = points[i - 1];
-            const QPointF& to = points[i];
-            const qreal top = std::min(from.y(), to.y());
-            if (top >= rect.bottom()) continue;
-            builder.fillQuad(from, to, QPointF(to.x(), rect.bottom()),
-                             QPointF(from.x(), rect.bottom()), fillColor);
-        }
-    }
-    // A slightly wider, dimmer stroke under the core line hides the hard
-    // quad edge that 4× MSAA alone still leaves on a steep slope.
-    builder.polyline(points.constData(), points.size(), width + 0.9,
-                     alpha(color, 80));
-    builder.polyline(points.constData(), points.size(), width, color);
-}
-
 void TraceView::buildSeries(TraceSceneBuilder& builder,
                             const std::vector<double>* values,
                             const QRectF& rect, const ChannelRange& range,
@@ -709,157 +361,24 @@ void TraceView::buildSeries(TraceSceneBuilder& builder,
                             double shift, qreal width, double clipLow,
                             double clipHigh) {
     if (!values || values->size() < 2 || rect.width() < 2.0) return;
-    const int valueLast = int(values->size()) - 1;
     const double span = std::max(1.0e-12, range.max - range.min);
     const double viewStart = store_->viewStart();
     const double viewSpan = store_->viewSpan();
-    const qreal dpr = devicePixelRatio();
-    const int columns = deviceColumns(rect);
-    const double columnWidth = rect.width() / double(columns);
-    const QColor fillColor = alpha(color, 42);
 
-    auto toY = [&](double value) {
-        return rect.top() + (1.0 - (value - range.min) / span) * rect.height();
-    };
     auto sourceFraction = [&](double fraction) {
         const double shifted = std::clamp(fraction - shift, 0.0, 1.0);
-        return alignCompare ? store_->compareFractionForPrimaryFraction(shifted)
-                            : shifted;
-    };
-    auto viewX = [&](double fraction) {
-        return rect.left() + (fraction - viewStart) / viewSpan * rect.width();
+        return alignCompare
+                   ? snapshot_.compareFractionForPrimaryFraction(shifted)
+                   : shifted;
     };
 
-    const double samplesPerPixel =
-        (viewSpan * double(valueLast)) / std::max(1.0, rect.width() * dpr);
-    if (samplesPerPixel < 1.25) {
-        QVector<QPointF> points;
-        auto flush = [&]() {
-            emitSeriesStroke(builder, points, rect, color, fill, width);
-            points.clear();
-        };
-        if (!alignCompare) {
-            const double viewLo = std::max(clipLow, viewStart);
-            const double viewHi = std::min(clipHigh, viewStart + viewSpan);
-            const int first = std::clamp(
-                int(std::floor((viewLo - shift) * double(valueLast))) - 1, 0,
-                valueLast);
-            const int last = std::clamp(
-                int(std::ceil((viewHi - shift) * double(valueLast))) + 1, 0,
-                valueLast);
-            points.reserve(last - first + 1);
-            for (int i = first; i <= last; ++i) {
-                const double viewFrac = double(i) / double(valueLast) + shift;
-                if (viewFrac < clipLow || viewFrac > clipHigh) {
-                    flush();
-                    continue;
-                }
-                const double value = (*values)[size_t(i)];
-                if (!std::isfinite(value)) {
-                    flush();
-                    continue;
-                }
-                points.append(
-                    QPointF(viewX(viewFrac),
-                            std::clamp(toY(value), rect.top(), rect.bottom())));
-            }
-        } else {
-            points.reserve(columns);
-            for (int column = 0; column < columns; ++column) {
-                const double fraction = viewStart + viewSpan *
-                                                        (double(column) + 0.5) /
-                                                        double(columns);
-                if (fraction < clipLow || fraction > clipHigh) {
-                    flush();
-                    continue;
-                }
-                const double position = sourceFraction(fraction) * valueLast;
-                const int lower =
-                    std::clamp(int(std::floor(position)), 0, valueLast);
-                const int upper = std::min(lower + 1, valueLast);
-                const double value =
-                    (*values)[size_t(lower)] +
-                    ((*values)[size_t(upper)] - (*values)[size_t(lower)]) *
-                        (position - double(lower));
-                if (!std::isfinite(value)) {
-                    flush();
-                    continue;
-                }
-                points.append(
-                    QPointF(rect.left() + columnWidth * (double(column) + 0.5),
-                            std::clamp(toY(value), rect.top(), rect.bottom())));
-            }
-        }
-        flush();
-        return;
-    }
-
-    builder.reserveQuads(columns * (fill ? 2 : 1));
-    bool hasPrevious = false;
-    double previousTop = 0.0;
-    double previousBottom = 0.0;
-    for (int column = 0; column < columns; ++column) {
-        const double startFraction =
-            viewStart + viewSpan * double(column) / double(columns);
-        const double endFraction =
-            viewStart + viewSpan * double(column + 1) / double(columns);
-        // The viewport may run past the lap: a series only owns the columns
-        // inside its own fraction window, and the clamp in sourceFraction
-        // would otherwise smear its first and last sample across the rest.
-        const double centre = (startFraction + endFraction) * 0.5;
-        if (centre < clipLow || centre > clipHigh) {
-            hasPrevious = false;
-            continue;
-        }
-        double from = sourceFraction(startFraction) * valueLast;
-        double to = sourceFraction(endFraction) * valueLast;
-        if (to < from) std::swap(from, to);
-
-        double low = std::numeric_limits<double>::infinity();
-        double high = -std::numeric_limits<double>::infinity();
-        const int firstIndex = std::clamp(int(std::floor(from)), 0, valueLast);
-        const int lastIndex = std::clamp(int(std::ceil(to)), 0, valueLast);
-        if (lastIndex - firstIndex >= 2) {
-            for (int i = firstIndex; i <= lastIndex; ++i) {
-                const double value = (*values)[size_t(i)];
-                if (!std::isfinite(value)) continue;
-                low = std::min(low, value);
-                high = std::max(high, value);
-            }
-        } else {
-            const int lower = firstIndex;
-            const int upper = std::min(lower + 1, valueLast);
-            const double value =
-                (*values)[size_t(lower)] +
-                ((*values)[size_t(upper)] - (*values)[size_t(lower)]) *
-                    (from - double(lower));
-            if (std::isfinite(value)) low = high = value;
-        }
-        if (low > high) {
-            hasPrevious = false;
-            continue;
-        }
-
-        double top = std::clamp(toY(high), rect.top(), rect.bottom());
-        double bottom = std::clamp(toY(low), rect.top(), rect.bottom());
-        if (hasPrevious) {
-            if (bottom < previousTop) bottom = previousTop;
-            if (top > previousBottom) top = previousBottom;
-        }
-        const double x = rect.left() + columnWidth * column;
-        const qreal half = std::max(0.5 / dpr, width * 0.5);
-
-        if (fill && bottom < rect.bottom())
-            builder.rect(QRectF(x, top, columnWidth, rect.bottom() - top),
-                         fillColor);
-        builder.rect(
-            QRectF(x, top - half, columnWidth, (bottom - top) + half * 2.0),
-            color);
-
-        previousTop = top;
-        previousBottom = bottom;
-        hasPrevious = true;
-    }
+    TraceSceneBuilder::EnvelopeStyle style;
+    style.width = width;
+    style.fill = fill;
+    style.color = color;
+    style.fillColor = alpha(color, 42);
+    builder.envelopePolyline(*values, sourceFraction, viewStart, viewSpan, rect,
+                             range.min, span, style, clipLow, clipHigh);
 }
 
 void TraceView::buildConfidenceBand(TraceSceneBuilder& builder,
@@ -1053,21 +572,21 @@ void TraceView::buildChannel(TraceSceneBuilder& builder,
         builder.hLine(y, dataRect.left(), dataRect.right(), 1.0, kGrid);
     }
     if (range.min < 0 && range.max > 0)
-        dashedHLine(builder, toY(0), dataRect.left(), dataRect.right(),
-                    kGridStrong);
+        builder.dashedHLine(toY(0), dataRect.left(), dataRect.right(),
+                            kGridStrong);
 
     // Whatever the viewport shows before lap start / after lap end is the
     // neighbouring lap, drawn faintly so it reads as context, not as data.
     // buildOutOfLap() masks it further and names it.
     if (store_->viewStart() < 0.0) {
-        if (const UnifiedLap* previous = store_->neighbourUnified(-1)) {
+        if (const UnifiedLap* previous = snapshot_.neighbourPrev) {
             const std::vector<double>* data = fieldFor(*previous, spec.field);
             buildSeries(builder, data, dataRect, range, alpha(traceColor, 150),
                         false, false, -1.0, 1.2, -1.0, 0.0);
         }
     }
     if (store_->viewEnd() > 1.0) {
-        if (const UnifiedLap* next = store_->neighbourUnified(1)) {
+        if (const UnifiedLap* next = snapshot_.neighbourNext) {
             const std::vector<double>* data = fieldFor(*next, spec.field);
             buildSeries(builder, data, dataRect, range, alpha(traceColor, 150),
                         false, false, 1.0, 1.2, 1.0, 2.0);
@@ -1079,7 +598,7 @@ void TraceView::buildChannel(TraceSceneBuilder& builder,
     // Keep the reference trace visually distinct from the active trace. It
     // is drawn first, so the active line still wins at exact overlap points.
     buildSeries(builder, compareData, dataRect, range, alpha(kOrange, 230),
-                false, true, store_->referenceAlignment(), 2.2);
+                false, true, 0.0, 2.2);
     buildSeries(builder, primaryData, dataRect, range, traceColor, spec.filled,
                 false, 0.0, 1.8);
 
@@ -1088,33 +607,12 @@ void TraceView::buildChannel(TraceSceneBuilder& builder,
                                        range.max, traceColor, range.gear});
 }
 
-bool TraceView::primaryLapWindowNs(qint64* startNs, qint64* endNs) const {
-    if (!startNs || !endNs || !store_ || !store_->primarySession())
-        return false;
-    const int lapId = store_->primaryLapIndex();
-    for (const LapEntry& lap : store_->primarySession()->laps()) {
-        if (lap.lapId != lapId || !(lap.endTime > lap.startTime)) continue;
-        *startNs = qint64(std::llround(lap.startTime * 1e9));
-        *endNs = qint64(std::llround(lap.endTime * 1e9));
-        return *endNs > *startNs;
-    }
-    return false;
-}
-
 void TraceView::buildGroupHeader(TraceSceneBuilder& builder,
                                  const ChannelSpec& spec, const QRectF& rect) {
     if (!overlayGroup(spec.groupId)) return;
     const QRectF band(0.0, rect.top(), width(), rect.height());
     builder.rect(band, alpha(kGridStrong, 70));
     builder.rect(QRectF(0.0, rect.top(), 3.0, rect.height()), kAccent);
-}
-
-const OverlayGroup* TraceView::overlayGroup(const QString& id) const {
-    if (!store_) return nullptr;
-    for (const OverlayGroup& group : store_->overlayGroups()) {
-        if (group.id == id) return &group;
-    }
-    return nullptr;
 }
 
 double TraceView::sidecarValueAt(const QString& key, double fraction) const {
@@ -1137,7 +635,7 @@ double TraceView::sidecarValueAt(const QString& key, double fraction) const {
     qint64 lapEndNs = 0;
     if (!primaryLapWindowNs(&lapStartNs, &lapEndNs))
         return std::numeric_limits<double>::quiet_NaN();
-    const UnifiedLap* primary = store_->primaryUnified();
+    const UnifiedLap* primary = snapshot_.primary;
     qint64 hostNs = lapStartNs;
     if (primary && primary->time.size() >= 2) {
         const double position =
@@ -1179,22 +677,6 @@ double TraceView::sidecarValueAt(const QString& key, double fraction) const {
     return std::numeric_limits<double>::quiet_NaN();
 }
 
-bool TraceView::overlaySpanVisibleOnLap(const OverlaySpan& span) const {
-    if (!span.visible) return false;
-    qint64 lapStartNs = 0;
-    qint64 lapEndNs = 0;
-    if (!primaryLapWindowNs(&lapStartNs, &lapEndNs)) return false;
-    qint64 clipStart = lapStartNs;
-    qint64 clipEnd = lapEndNs;
-    qint64 videoStart = 0;
-    qint64 videoEnd = 0;
-    if (store_->videoClipWindowNs(&videoStart, &videoEnd)) {
-        clipStart = std::max(clipStart, videoStart);
-        clipEnd = std::min(clipEnd, videoEnd);
-    }
-    return span.startHostNs < clipEnd && span.endHostNs > clipStart;
-}
-
 void TraceView::buildSpanTrack(TraceSceneBuilder& builder,
                                const ChannelSpec& spec, const QRectF& rect) {
     const OverlayGroup* group = overlayGroup(spec.groupId);
@@ -1204,11 +686,9 @@ void TraceView::buildSpanTrack(TraceSceneBuilder& builder,
     if (!primaryLapWindowNs(&lapStartNs, &lapEndNs)) return;
     qint64 clipStart = lapStartNs;
     qint64 clipEnd = lapEndNs;
-    qint64 videoStart = 0;
-    qint64 videoEnd = 0;
-    if (store_->videoClipWindowNs(&videoStart, &videoEnd)) {
-        clipStart = std::max(clipStart, videoStart);
-        clipEnd = std::min(clipEnd, videoEnd);
+    if (snapshot_.videoClipValid) {
+        clipStart = std::max(clipStart, snapshot_.videoClipStartNs);
+        clipEnd = std::min(clipEnd, snapshot_.videoClipEndNs);
     }
     if (clipEnd <= clipStart) return;
     const double lapSpan = double(lapEndNs - lapStartNs);
@@ -1229,7 +709,7 @@ void TraceView::buildSpanTrack(TraceSceneBuilder& builder,
         if (right - left < 1.0) continue;
         const QRectF bar(left, dataRect.top(), right - left, dataRect.height());
         builder.rect(bar, alpha(span.color, 200));
-        outline(builder, bar, alpha(span.color, 240));
+        builder.outline(bar, alpha(span.color, 240));
         const QString title = span.title.isEmpty() ? span.name : span.title;
         if (dataRect.height() >= 12.0 && bar.width() > 36.0 &&
             !title.isEmpty()) {
@@ -1248,20 +728,21 @@ void TraceView::buildSpanTrack(TraceSceneBuilder& builder,
         hit.subtitle = span.subtitle;
         hit.color = span.color;
         hit.meta = span.meta;
-        spanHits_.append(std::move(hit));
+        interaction_.addSpanHit(std::move(hit));
     }
 }
 
 void TraceView::buildDelta(TraceSceneBuilder& builder, const QRectF& rect) {
     if (!store_->comparing()) return;
-    const QVector<double>& delta = store_->deltaTrace();
+    const QVector<double>& delta = *snapshot_.deltaTrace;
     const int n = delta.size();
     if (n < 2) return;
 
-    if (deltaMaxAbs_ <= 0.0) {
-        deltaMaxAbs_ = 0.001;
+    if (layout_.deltaMaxAbsRef() <= 0.0) {
+        layout_.deltaMaxAbsRef() = 0.001;
         for (double value : delta)
-            deltaMaxAbs_ = std::max(deltaMaxAbs_, std::fabs(value));
+            layout_.deltaMaxAbsRef() =
+                std::max(layout_.deltaMaxAbsRef(), std::fabs(value));
     }
 
     const int last = n - 1;
@@ -1273,9 +754,9 @@ void TraceView::buildDelta(TraceSceneBuilder& builder, const QRectF& rect) {
     const double samplesPerPixel =
         (viewSpan * double(last)) / std::max(1.0, rect.width() * dpr);
     auto toY = [&](double value) {
-        return rect.top() +
-               (1.0 - (value + deltaMaxAbs_) / (2.0 * deltaMaxAbs_)) *
-                   rect.height();
+        return rect.top() + (1.0 - (value + layout_.deltaMaxAbsRef()) /
+                                       (2.0 * layout_.deltaMaxAbsRef())) *
+                                rect.height();
     };
     const double zeroY = std::clamp(toY(0.0), rect.top(), rect.bottom());
 
@@ -1304,10 +785,8 @@ void TraceView::buildDelta(TraceSceneBuilder& builder, const QRectF& rect) {
                 builder.fillQuad(from, to, QPointF(to.x(), zeroY),
                                  QPointF(from.x(), zeroY), band);
             }
-            builder.polyline(points.constData(), points.size(), 1.8 + 0.9,
-                             alpha(kForeground, 80));
-            builder.polyline(points.constData(), points.size(), 1.8,
-                             kForeground);
+            builder.strokeTriple(points.constData(), points.size(), rect,
+                                 kForeground, false, 1.8);
         }
     } else {
         builder.reserveQuads(columns * 2);
@@ -1348,10 +827,10 @@ void TraceView::buildDelta(TraceSceneBuilder& builder, const QRectF& rect) {
         }
     }
 
-    dashedHLine(builder, zeroY, rect.left(), rect.right(), kGridStrong);
+    builder.dashedHLine(zeroY, rect.left(), rect.right(), kGridStrong);
     builder.text(QString("Δ +%1 / -%2")
-                     .arg(deltaMaxAbs_, 0, 'f', 3)
-                     .arg(deltaMaxAbs_, 0, 'f', 3),
+                     .arg(layout_.deltaMaxAbsRef(), 0, 'f', 3)
+                     .arg(layout_.deltaMaxAbsRef(), 0, 'f', 3),
                  canvasFont_, kAccent,
                  QRectF(rect.left(), rect.top() + 2, rect.width() - 8, 14),
                  Qt::AlignRight | Qt::AlignVCenter);
@@ -1359,9 +838,9 @@ void TraceView::buildDelta(TraceSceneBuilder& builder, const QRectF& rect) {
 
 void TraceView::buildCornerZones(TraceSceneBuilder& builder,
                                  const QRectF& totalRect) {
-    if (!store_ || store_->corners().isEmpty()) return;
+    if (!store_ || snapshot_.corners->isEmpty()) return;
     const bool editing = store_->editingCorners();
-    const auto& corners = store_->corners();
+    const auto& corners = *snapshot_.corners;
     for (const CornerZone& corner : corners) {
         const double x1 = xForFrac(corner.start);
         const double x2 = xForFrac(corner.end);
@@ -1400,8 +879,8 @@ void TraceView::buildCornerFocus(TraceSceneBuilder& builder,
                                  const QRectF& totalRect) {
     if (!store_) return;
     const int focused = store_->focusedCorner();
-    if (focused < 0 || focused >= store_->corners().size()) return;
-    const CornerZone& corner = store_->corners()[focused];
+    if (focused < 0 || focused >= snapshot_.corners->size()) return;
+    const CornerZone& corner = (*snapshot_.corners)[focused];
     const double x1 =
         std::clamp(xForFrac(corner.start), totalRect.left(), totalRect.right());
     const double x2 =
@@ -1468,15 +947,20 @@ void TraceView::buildOutOfLap(TraceSceneBuilder& builder,
 }
 
 void TraceView::buildCursorScene(TraceSceneBuilder& builder) {
-    if (!store_ || cursorLanes_.isEmpty()) return;
-    const UnifiedLap* primary = store_->primaryUnified();
+    // The cursor path reuses the snapshot captured at the last static build:
+    // its compare-fraction map and lap pointers are stable while the cursor
+    // moves, so a cursor frame never allocates the std::function. Only the
+    // cursor position is read fresh.
+    if (!snapshot_.primary && store_) snapshot_ = store_->traceSnapshot();
+    const UnifiedLap* primary = snapshot_.primary;
     if (!primary) return;
-    const UnifiedLap* compare = store_->compareUnified();
+    const UnifiedLap* compare = snapshot_.compare;
     const double fraction = store_->cursorFrac();
     const double cursorX = xForFrac(fraction);
 
     buildSelection(builder);
-    builder.vLine(cursorX, cursorTop_, cursorBottom_, 1.0, alpha(kAccent, 190));
+    builder.vLine(cursorX, cursorTop(), cursorBottom(), 1.0,
+                  alpha(kAccent, 190));
 
     for (const CursorLane& lane : cursorLanes_) {
         const bool sidecar = lane.field.startsWith(QStringLiteral("sidecar:"));
@@ -1547,8 +1031,7 @@ void TraceView::buildCursorScene(TraceSceneBuilder& builder) {
                     : fieldFor(*compare, lane.field);
             if (!compareData || compareData->empty()) continue;
             const double compareFraction =
-                store_->compareFractionForPrimaryFraction(std::clamp(
-                    fraction - store_->referenceAlignment(), 0.0, 1.0));
+                snapshot_.compareFractionForPrimaryFraction(fraction);
             const int compareSample = std::min(
                 int(compareData->size()) - 1,
                 int(compareFraction * double(compareData->size() - 1)));
@@ -1563,19 +1046,23 @@ void TraceView::buildCursorScene(TraceSceneBuilder& builder) {
 }
 
 void TraceView::buildSelection(TraceSceneBuilder& builder) {
-    if (!store_ || selectionStart_ < 0.0 || selectionEnd_ < 0.0) return;
-    const UnifiedLap* primary = store_->primaryUnified();
+    if (!store_ || interaction_.selectionStart() < 0.0 ||
+        interaction_.selectionEnd() < 0.0)
+        return;
+    const UnifiedLap* primary = snapshot_.primary;
     if (!primary || primary->time.size() < 2) return;
 
-    const double lo = std::min(selectionStart_, selectionEnd_);
-    const double hi = std::max(selectionStart_, selectionEnd_);
+    const double lo =
+        std::min(interaction_.selectionStart(), interaction_.selectionEnd());
+    const double hi =
+        std::max(interaction_.selectionStart(), interaction_.selectionEnd());
     const double x0 = xForFrac(lo);
     const double x1 = xForFrac(hi);
-    const QRectF selectionRect(x0, cursorTop_, std::max(1.0, x1 - x0),
-                               std::max(1.0, cursorBottom_ - cursorTop_));
+    const QRectF selectionRect(x0, cursorTop(), std::max(1.0, x1 - x0),
+                               std::max(1.0, cursorBottom() - cursorTop()));
 
     builder.rect(selectionRect, alpha(kAccent, 24));
-    outline(builder, selectionRect, alpha(kAccent, 150));
+    builder.outline(selectionRect, alpha(kAccent, 150));
 
     auto sampleStd = [](const std::vector<double>& values, double fraction) {
         const double position =
@@ -1591,7 +1078,7 @@ void TraceView::buildSelection(TraceSceneBuilder& builder) {
 
     QString label = QString("t %1s").arg(primaryTime, 0, 'f', 3);
     QColor labelColor = kForeground;
-    const QVector<double>& delta = store_->deltaTrace();
+    const QVector<double>& delta = *snapshot_.deltaTrace;
     if (store_->comparing() && delta.size() > 1) {
         const int deltaLast = int(delta.size()) - 1;
         auto sampleDelta = [&](double fraction) {
@@ -1617,20 +1104,21 @@ void TraceView::buildSelection(TraceSceneBuilder& builder) {
     qreal labelX = x1 + 6;
     if (labelX + pillWidth > width()) labelX = x0 - pillWidth - 6;
     labelX = std::clamp(labelX, 2.0, std::max(2.0, width() - pillWidth - 2));
-    const QRectF pill(labelX, cursorTop_ + 6, pillWidth, pillHeight);
+    const QRectF pill(labelX, cursorTop() + 6, pillWidth, pillHeight);
     builder.rect(pill, alpha(backgroundColor_, 238));
-    outline(builder, pill, alpha(labelColor, 170));
+    builder.outline(pill, alpha(labelColor, 170));
     builder.text(label, pillFont_, labelColor, pill, Qt::AlignCenter);
 }
 
 void TraceView::buildHoveredCornerDelta(TraceSceneBuilder& builder) {
-    if (!store_ || !store_->comparing() || hoveredCorner_ < 0) return;
-    const auto& corners = store_->corners();
-    if (hoveredCorner_ >= corners.size()) return;
-    const QVector<double>& delta = store_->deltaTrace();
+    if (!store_ || !store_->comparing() || interaction_.hoveredCorner() < 0)
+        return;
+    const auto& corners = *snapshot_.corners;
+    if (interaction_.hoveredCorner() >= corners.size()) return;
+    const QVector<double>& delta = *snapshot_.deltaTrace;
     if (delta.size() < 2) return;
 
-    const CornerZone& corner = corners[hoveredCorner_];
+    const CornerZone& corner = corners[interaction_.hoveredCorner()];
     const int last = int(delta.size()) - 1;
     auto sampleDelta = [&](double fraction) {
         const double position = std::clamp(fraction, 0.0, 1.0) * double(last);
@@ -1661,7 +1149,7 @@ void TraceView::buildHoveredCornerDelta(TraceSceneBuilder& builder) {
                       bandH - 2.0);
     if (pill.width() < 4.0) return;
     builder.rect(pill, alpha(backgroundColor_, 235));
-    outline(builder, pill, alpha(color, 170));
+    builder.outline(pill, alpha(color, 170));
     builder.text(label, markerFont_, color, pill, Qt::AlignCenter);
 }
 
@@ -1671,7 +1159,7 @@ void TraceView::buildCornerMarkers(TraceSceneBuilder& builder) {
     if (!store_ || store_->focusedCorner() < 0) return;
     const int highlighted = focusedMarkerIndex();
     if (highlighted < 0) return;
-    const QVector<CornerMarker>& markers = store_->cornerMarkers();
+    const QVector<CornerMarker>& markers = *snapshot_.markers;
     if (highlighted >= markers.size()) return;
 
     const CornerMarker& marker = markers[highlighted];
@@ -1681,7 +1169,7 @@ void TraceView::buildCornerMarkers(TraceSceneBuilder& builder) {
     auto paintMarker = [&](double fraction, int fade) {
         const double x = xForFrac(fraction);
         if (x < labelWidth() || x > width()) return;
-        dashedVLine(builder, x, top, bottom, 6.0, 4.0, 1.5, alpha(color, fade));
+        builder.dashedVLine(x, top, bottom, alpha(color, fade), 1.5, 6.0, 4.0);
         builder.vLine(x, bottom - 10.0, bottom, 2.0, alpha(color, fade));
     };
     paintMarker(marker.fraction, 220);
@@ -1697,7 +1185,7 @@ void TraceView::buildCornerMarkers(TraceSceneBuilder& builder) {
                 size.height() + 4);
     if (pill.right() > width()) pill.moveRight(x - 4);
     builder.rect(pill, alpha(backgroundColor_, 235));
-    outline(builder, pill, alpha(color, 190));
+    builder.outline(pill, alpha(color, 190));
     builder.text(marker.label, markerFont_, color, pill, Qt::AlignCenter);
 }
 // Focused-corner events sit behind the channel geometry as dim dashed guides.
@@ -1705,188 +1193,25 @@ void TraceView::buildCornerMarkers(TraceSceneBuilder& builder) {
 // easy to track across every lane without obscuring a trace.
 void TraceView::buildCornerMarkerGuides(TraceSceneBuilder& builder) {
     if (!store_ || store_->focusedCorner() < 0) return;
-    const QVector<CornerMarker>& markers = store_->cornerMarkers();
+    const QVector<CornerMarker>& markers = *snapshot_.markers;
     const double bottom = height() - kBottomPad;
     for (const CornerMarker& marker : markers) {
         const double x = xForFrac(marker.fraction);
         if (x < labelWidth() || x > width()) continue;
         const QColor color = cornerMarkerColor(marker.key);
-        dashedVLine(builder, x, 2.0, bottom, 5.0, 4.0, 1.0, alpha(color, 105));
+        builder.dashedVLine(x, 2.0, bottom, alpha(color, 105), 1.0, 5.0, 4.0);
 
         if (marker.referenceFraction < 0.0) continue;
         const double referenceX = xForFrac(marker.referenceFraction);
         if (referenceX < labelWidth() || referenceX > width() ||
             std::fabs(referenceX - x) < 0.5)
             continue;
-        dashedVLine(builder, referenceX, 2.0, bottom, 2.0, 5.0, 1.0,
-                    alpha(color, 70));
+        builder.dashedVLine(referenceX, 2.0, bottom, alpha(color, 70), 1.0, 2.0,
+                            5.0);
     }
 }
 
 // ── hit testing ─────────────────────────────────────────────────────
-
-int TraceView::cornerIndexAt(const QPointF& position) const {
-    if (!store_ || store_->corners().isEmpty() || position.y() > kTopPad)
-        return -1;
-    const double fraction = fracForX(position.x());
-    for (int i = 0; i < store_->corners().size(); ++i) {
-        const CornerZone& corner = store_->corners()[i];
-        if (corner.start <= fraction && fraction <= corner.end) return i;
-    }
-    return -1;
-}
-
-int TraceView::channelIndexAt(const QPointF& position) const {
-    for (const Lane& lane : layoutLanes())
-        if (position.y() >= lane.y && position.y() < lane.y + lane.height)
-            return lane.spec;
-    return -1;
-}
-
-// Corner markers live in a shallow band along the bottom of the trace area.
-int TraceView::markerIndexAt(const QPointF& position) const {
-    if (!store_ || store_->focusedCorner() < 0) return -1;
-    if (position.y() < cursorBottom_ - kMarkerBand ||
-        position.y() > cursorBottom_)
-        return -1;
-    const QVector<CornerMarker>& markers = store_->cornerMarkers();
-    int best = -1;
-    double bestDistance = 9.0;
-    for (int i = 0; i < markers.size(); ++i) {
-        const double distance =
-            std::fabs(position.x() - xForFrac(markers[i].fraction));
-        if (distance < bestDistance) {
-            bestDistance = distance;
-            best = i;
-        }
-    }
-    return best;
-}
-
-int TraceView::focusedMarkerIndex() const {
-    if (!store_ || store_->focusedCorner() < 0) return -1;
-    if (hoveredMarker_ >= 0) return hoveredMarker_;
-    const QString key = store_->highlightedCornerMarker();
-    if (key.isEmpty()) return -1;
-    const QVector<CornerMarker>& markers = store_->cornerMarkers();
-    for (int i = 0; i < markers.size(); ++i)
-        if (markers[i].key == key) return i;
-    return -1;
-}
-
-int TraceView::focusedZoneHandleAt(const QPointF& position) const {
-    if (!store_ || store_->focusedCorner() < 0) return 0;
-    const int focused = store_->focusedCorner();
-    if (focused >= store_->corners().size()) return 0;
-    const CornerZone& corner = store_->corners()[focused];
-    const double x = position.x();
-    const double x1 = xForFrac(corner.start);
-    const double x2 = xForFrac(corner.end);
-    constexpr double kEdge = 8.0;
-    if (std::fabs(x - x1) <= kEdge) return 1;
-    if (std::fabs(x - x2) <= kEdge) return 2;
-    if (position.y() <= kTopPad && x >= x1 && x <= x2) return 3;
-    return 0;
-}
-
-void TraceView::updateZoneHoverCursor(const QPointF& position) {
-    if (dragging_ || panning_ || selecting_) return;
-    switch (focusedZoneHandleAt(position)) {
-        case 1:
-        case 2: setCursor(Qt::SizeHorCursor); return;
-        case 3: setCursor(Qt::OpenHandCursor); return;
-        default: break;
-    }
-    unsetCursor();
-}
-
-// Shared by the hover and the button-held move paths so a marker opens up
-// whichever way the pointer arrives over it.
-void TraceView::updateHoveredMarker(const QPointF& position) {
-    const int marker = markerIndexAt(position);
-    if (marker == hoveredMarker_) return;
-    hoveredMarker_ = marker;
-    emit overlayChanged();
-}
-
-void TraceView::updateHoveredCorner(const QPointF& position) {
-    const int index = cornerIndexAt(position);
-    if (index == hoveredCorner_) return;
-    hoveredCorner_ = index;
-    emit overlayChanged();
-}
-
-void TraceView::updateHoveredSpan(const QPointF& position) {
-    spanHoverX_ = position.x();
-    spanHoverY_ = position.y();
-    int index = -1;
-    for (int i = 0; i < spanHits_.size(); ++i) {
-        if (spanHits_.at(i).rect.contains(position)) {
-            index = i;
-            break;
-        }
-    }
-    if (index == hoveredSpan_) {
-        if (spanHoverVisible_) emit spanHoverChanged();
-        return;
-    }
-    hoveredSpan_ = index;
-    if (index < 0 || index >= spanHits_.size()) {
-        spanHoverVisible_ = false;
-        spanHoverTitle_.clear();
-        spanHoverSubtitle_.clear();
-        spanHoverMeta_.clear();
-    } else {
-        const SpanHit& hit = spanHits_.at(index);
-        spanHoverVisible_ = true;
-        spanHoverTitle_ = hit.title;
-        spanHoverSubtitle_ = hit.subtitle;
-        spanHoverColor_ = hit.color;
-        spanHoverMeta_ = hit.meta;
-    }
-    emit spanHoverChanged();
-}
-
-// Menus are Material popups owned by QML: this is a QGuiApplication, so a
-// QWidget-based QMenu cannot be constructed here.
-void TraceView::showCornerMenu(const QPointF& position) {
-    if (!store_) return;
-    const double fraction = fracForX(position.x());
-    int cornerIndex = -1;
-    for (int index = 0; index < store_->corners().size(); ++index) {
-        const CornerZone& corner = store_->corners()[index];
-        if (corner.start <= fraction && fraction <= corner.end) {
-            cornerIndex = index;
-            break;
-        }
-    }
-    emit cornerMenuRequested(
-        cornerIndex,
-        cornerIndex >= 0 ? store_->corners()[cornerIndex].name : QString(),
-        fraction, position.x(), position.y());
-}
-
-void TraceView::showChannelMenu(const QPointF& position) {
-    const int index = channelIndexAt(position);
-    if (index < 0 || index >= channelSpecs_.size()) return;
-    const ChannelSpec& spec = channelSpecs_[index];
-    const QString title =
-        spec.kind == ChannelSpec::Kind::GroupHeader ? spec.title : spec.title;
-    emit channelMenuRequested(spec.key, title, store_->channelWeight(spec.key),
-                              position.x(), position.y());
-}
-
-int TraceView::groupHeaderAt(const QPointF& position) const {
-    for (const Lane& lane : layoutLanes()) {
-        if (position.y() < lane.y || position.y() >= lane.y + lane.height)
-            continue;
-        if (lane.spec < 0 || lane.spec >= channelSpecs_.size()) return -1;
-        if (channelSpecs_[lane.spec].kind == ChannelSpec::Kind::GroupHeader)
-            return lane.spec;
-        return -1;
-    }
-    return -1;
-}
 
 int TraceView::addCornerAt(double fraction) {
     if (!store_) return -1;
@@ -1906,7 +1231,7 @@ void TraceView::hideChannel(const QString& key) {
 
 void TraceView::showAllStandardChannels() {
     if (!store_) return;
-    for (const ChannelSpec& channel : channelSpecs_)
+    for (const ChannelSpec& channel : channelSpecs())
         if (channel.kind == ChannelSpec::Kind::Sample &&
             !channel.key.startsWith(QStringLiteral("raw:")) &&
             !channel.key.startsWith(QStringLiteral("sidecar:")))
@@ -1915,243 +1240,36 @@ void TraceView::showAllStandardChannels() {
 
 // ── interaction ─────────────────────────────────────────────────────
 
-// Double-click is the escape hatch out of any zoom, including corner focus.
 void TraceView::mouseDoubleClickEvent(QMouseEvent* event) {
-    if (!store_ || !store_->primaryUnified()) return;
-    panning_ = false;
-    selecting_ = false;
-    selectionStart_ = -1.0;
-    selectionEnd_ = -1.0;
-    store_->resetView();
-    unsetCursor();
-    emit overlayChanged();
-    event->accept();
+    interaction_.mouseDoubleClickEvent(event);
 }
 
 void TraceView::mousePressEvent(QMouseEvent* event) {
-    if (!store_ || !store_->primaryUnified()) return;
-    const double x = event->position().x();
-    const double fraction = fracForX(x);
-    if (event->button() == Qt::RightButton) {
-        if (store_->editingCorners() || event->position().y() < kTopPad)
-            showCornerMenu(event->position());
-        else
-            showChannelMenu(event->position());
-        event->accept();
-        return;
-    }
-
-    // Middle-drag pans, so left-drag is free to select a range.
-    if (event->button() == Qt::MiddleButton) {
-        panning_ = true;
-        lastPanFrac_ = fraction;
-        setCursor(Qt::ClosedHandCursor);
-        event->accept();
-        return;
-    }
-
-    if (event->button() != Qt::LeftButton) return;
-
-    const int header = groupHeaderAt(event->position());
-    if (header >= 0 && header < channelSpecs_.size()) {
-        const QString groupId = channelSpecs_[header].groupId;
-        store_->setOverlayExpanded(groupId, !store_->overlayExpanded(groupId));
-        event->accept();
-        return;
-    }
-
-    // A focused corner window can be slid or resized without entering
-    // the global corner-edit mode: edges stretch it, the label band moves it.
-    const int focusHandle = focusedZoneHandleAt(event->position());
-    if (focusHandle > 0) {
-        dragCorner_ = store_->focusedCorner();
-        dragCornerMove_ = focusHandle == 3;
-        dragStartFrac_ = dragCornerMove_
-                             ? fraction - store_->corners()[dragCorner_].start
-                             : 0.0;
-        dragging_ = true;
-        setCursor(dragCornerMove_ ? Qt::ClosedHandCursor : Qt::SizeHorCursor);
-        event->accept();
-        return;
-    }
-
-    // Clicking a corner in the ruler zooms the workspace onto it.
-    const int cornerIndex = cornerIndexAt(event->position());
-    if (cornerIndex >= 0) {
-        store_->focusCorner(cornerIndex);
-        event->accept();
-        return;
-    }
-
-    // Corner editing takes precedence over selection.
-    if (store_->editingCorners() && !store_->corners().isEmpty()) {
-        for (int i = 0; i < store_->corners().size(); ++i) {
-            const CornerZone& corner = store_->corners()[i];
-            const double x1 = xForFrac(corner.start);
-            const double x2 = xForFrac(corner.end);
-            if (std::fabs(x - x1) < 5 || std::fabs(x - x2) < 5) {
-                dragCorner_ = i;
-                dragCornerMove_ = false;
-                dragging_ = true;
-                break;
-            }
-            if (corner.start <= fraction && fraction <= corner.end) {
-                dragCorner_ = i;
-                dragCornerMove_ = true;
-                dragStartFrac_ = fraction - corner.start;
-                dragging_ = true;
-                break;
-            }
-        }
-        if (dragging_) {
-            setCursor(Qt::SizeHorCursor);
-            event->accept();
-            return;
-        }
-    }
-
-    pressX_ = x;
-    selecting_ = true;
-    selectionStart_ = fraction;
-    selectionEnd_ = fraction;
-    store_->setCursorFrac(fraction);
-    emit cursorChangedFromCanvas();
-    setCursor(Qt::CrossCursor);
-    emit overlayChanged();
-    event->accept();
+    interaction_.mousePressEvent(event);
 }
 
 void TraceView::mouseMoveEvent(QMouseEvent* event) {
-    if (!store_) return;
-    const double x = event->position().x();
-    if (dragging_ && dragCorner_ >= 0) {
-        const double fraction = fracForX(x);
-        const auto& corners = store_->corners();
-        if (dragCorner_ >= corners.size()) {
-            dragging_ = false;
-            return;
-        }
-        const double start = corners[dragCorner_].start;
-        const double end = corners[dragCorner_].end;
-        if (!dragCornerMove_) {
-            const double dx1 = std::fabs(x - xForFrac(start));
-            const double dx2 = std::fabs(x - xForFrac(end));
-            if (dx1 < dx2)
-                store_->updateCorner(dragCorner_, qBound(0.0, fraction, end),
-                                     end);
-            else
-                store_->updateCorner(dragCorner_, start,
-                                     qBound(start, fraction, 1.0));
-        } else {
-            const double width = end - start;
-            const double nextStart =
-                qBound(0.0, fraction - dragStartFrac_, 1.0 - width);
-            store_->updateCorner(dragCorner_, nextStart, nextStart + width);
-        }
-        emit cornerEdited();
-        return;
-    }
-    if (selecting_) {
-        selectionEnd_ = fracForX(x);
-        store_->setCursorFrac(selectionEnd_);
-        emit cursorChangedFromCanvas();
-        emit overlayChanged();
-        return;
-    }
-    if (panning_) {
-        const double fraction = fracForX(x);
-        store_->pan(lastPanFrac_ - fraction);
-        lastPanFrac_ = fraction;
-        return;
-    }
-    updateHoveredMarker(event->position());
+    interaction_.mouseMoveEvent(event);
 }
 
 void TraceView::mouseReleaseEvent(QMouseEvent* event) {
-    if (dragging_ && dragCorner_ >= 0 && store_) store_->saveCorners();
-    dragging_ = false;
-    panning_ = false;
-    dragCorner_ = -1;
-    if (selecting_) {
-        selecting_ = false;
-        // A click, not a drag: no range worth keeping on screen.
-        if (std::fabs(event->position().x() - pressX_) < 3.0) {
-            selectionStart_ = -1.0;
-            selectionEnd_ = -1.0;
-        }
-    }
-    unsetCursor();
-    emit overlayChanged();
+    interaction_.mouseReleaseEvent(event);
 }
 
 void TraceView::wheelEvent(QWheelEvent* event) {
-    if (!store_ || !store_->primaryUnified()) return;
-    double delta = event->angleDelta().y();
-    if (delta == 0.0) delta = event->pixelDelta().y();
-    if (delta == 0.0) return;
-    // Every lane is on screen, so the wheel has one job: zoom.
-    const double anchor = fracForX(event->position().x());
-    store_->zoomAt(anchor, std::pow(0.8, delta / 120.0));
-    event->accept();
+    interaction_.wheelEvent(event);
 }
 
 void TraceView::keyPressEvent(QKeyEvent* event) {
-    if (!store_) return;
-    int steps = 0;
-    switch (event->key()) {
-        case Qt::Key_Left: steps = -kCursorSamplesPerStep; break;
-        case Qt::Key_Right: steps = kCursorSamplesPerStep; break;
-        case Qt::Key_Escape:
-            event->accept();
-            store_->clearCornerFocus();
-            return;
-        case Qt::Key_Home:
-            event->accept();
-            store_->jumpToFraction(0.0);
-            return;
-        case Qt::Key_End:
-            event->accept();
-            store_->jumpToFraction(1.0);
-            return;
-        default: QQuickItem::keyPressEvent(event); return;
-    }
-    store_->moveCursorSteps(steps);
-    emit cursorChangedFromCanvas();
-    event->accept();
+    if (!interaction_.keyPressEvent(event)) QQuickItem::keyPressEvent(event);
 }
 
 void TraceView::hoverMoveEvent(QHoverEvent* event) {
-    if (!store_ || !store_->primaryUnified()) return;
-    updateZoneHoverCursor(event->position());
-    updateHoveredCorner(event->position());
-    updateHoveredSpan(event->position());
-    if (cursorTimer_.isValid() && cursorTimer_.elapsed() < kHoverFrameMs) {
-        event->accept();
-        return;
-    }
-    cursorTimer_.restart();
-    updateHoveredMarker(event->position());
-    if (selecting_) {
-        selectionEnd_ = fracForX(event->position().x());
-        emit overlayChanged();
-    }
-    event->accept();
+    interaction_.hoverMoveEvent(event);
 }
 
 void TraceView::hoverLeaveEvent(QHoverEvent* event) {
-    if (hoveredMarker_ >= 0 || hoveredCorner_ >= 0 || hoveredSpan_ >= 0 ||
-        spanHoverVisible_) {
-        hoveredMarker_ = -1;
-        hoveredCorner_ = -1;
-        hoveredSpan_ = -1;
-        spanHoverVisible_ = false;
-        spanHoverTitle_.clear();
-        spanHoverSubtitle_.clear();
-        spanHoverMeta_.clear();
-        emit overlayChanged();
-        emit spanHoverChanged();
-    }
-    if (!dragging_ && !panning_ && !selecting_) unsetCursor();
+    interaction_.hoverLeaveEvent(event);
     QQuickItem::hoverLeaveEvent(event);
 }
 

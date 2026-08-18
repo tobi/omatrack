@@ -62,15 +62,30 @@ void VideoTelemetryHud::setStore(TelemetryStore* store) {
     if (store_) disconnect(store_, nullptr, this, nullptr);
     store_ = store;
     if (store_) {
+        // Cursor movement only retraces, never rebuilds the cached
+        // compare-fraction map / brake peak, so it must not dirty the snapshot.
         connect(store_, &TelemetryStore::cursorFracChanged, this,
                 [this]() { update(); });
-        connect(store_, &TelemetryStore::selectionChanged, this,
-                [this]() { update(); });
+        connect(store_, &TelemetryStore::selectionChanged, this, [this]() {
+            snapshotDirty_ = true;
+            update();
+        });
         connect(store_, &TelemetryStore::referenceAlignmentChanged, this,
-                [this]() { update(); });
-        connect(store_, &TelemetryStore::lapLoadingChanged, this,
-                [this]() { update(); });
+                [this]() {
+                    snapshotDirty_ = true;
+                    update();
+                });
+        connect(store_, &TelemetryStore::comparisonSyncStrategyChanged, this,
+                [this]() {
+                    snapshotDirty_ = true;
+                    update();
+                });
+        connect(store_, &TelemetryStore::lapLoadingChanged, this, [this]() {
+            snapshotDirty_ = true;
+            update();
+        });
     }
+    snapshotDirty_ = true;
     update();
     emit storeChanged();
 }
@@ -92,6 +107,12 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
         return root;
     }
 
+    if (snapshotDirty_) {
+        snapshot_ = store_->traceSnapshot();
+        snapshotDirty_ = false;
+        brakeMaxDirty_ = true;
+    }
+
     const VideoHudSeries* hud = store_->primaryVideoHud();
     const omatrack::UnifiedLap* primary = store_->primaryUnified();
     const bool haveHud = hud && !hud->empty();
@@ -104,7 +125,7 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
             return QRectF(r.x() * s, r.y() * s, r.width() * s, r.height() * s);
         };
 
-        const omatrack::UnifiedLap* compare = store_->compareUnified();
+        const omatrack::UnifiedLap* compare = snapshot_.compare;
         const double lapCursor = store_->cursorFrac();
         double cursor = lapCursor;
         if (haveHud && std::isfinite(mediaTime_) && hud->duration > 0.0) {
@@ -116,8 +137,7 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
                 cursor = std::clamp(*telemetryTime / hud->duration, 0.0, 1.0);
         }
         const double compareCursor =
-            compare ? store_->compareFractionForPrimaryFraction(std::clamp(
-                          lapCursor - store_->referenceAlignment(), 0.0, 1.0))
+            compare ? snapshot_.compareFractionForPrimaryFraction(lapCursor)
                     : 0.0;
 
         constexpr qreal bandTop = 35.0;
@@ -157,30 +177,11 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
         constexpr double currentMarkerFraction = 0.86;
         constexpr double kWindowFrac = 0.10;
 
-        const auto tracePoints = [&](const std::vector<double>& values,
-                                     double maximum, bool reference) {
-            QVector<QPointF> pts;
-            if (values.size() < 2 || !primary || primary->size() < 2)
-                return pts;
-            constexpr int points = 180;
-            pts.reserve(points);
-            for (int i = 0; i < points; ++i) {
-                const double local = double(i) / double(points - 1);
-                const double primaryFrac = std::clamp(
-                    lapCursor + (local - currentMarkerFraction) * kWindowFrac,
-                    0.0, 1.0);
-                const double fraction =
-                    reference
-                        ? store_->compareFractionForPrimaryFraction(std::clamp(
-                              primaryFrac - store_->referenceAlignment(), 0.0,
-                              1.0))
-                        : primaryFrac;
-                const double value =
-                    std::clamp(sample(values, fraction) / maximum, 0.0, 1.0);
-                pts.append(P(graph.left() + local * graph.width(),
-                             graph.bottom() - value * graph.height()));
-            }
-            return pts;
+        const auto finiteMax = [](const std::vector<double>& values) {
+            double peak = 0.0;
+            for (double value : values)
+                if (std::isfinite(value)) peak = std::max(peak, value);
+            return peak;
         };
 
         const bool haveLap = primary && primary->size() >= 2;
@@ -204,38 +205,56 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
         };
         const double nowFrac = haveLap ? lapCursor : cursor;
 
-        const auto finiteMax = [](const std::vector<double>& values) {
-            double peak = 0.0;
-            for (double value : values)
-                if (std::isfinite(value)) peak = std::max(peak, value);
-            return peak;
+        // Brake scale and throttle scale are scans over full arrays; cache
+        // them per selection (refreshed when the snapshot is) rather than
+        // every frame.
+        if (brakeMaxDirty_) {
+            cachedBrakeMax_ =
+                std::max({1.0, finiteMax(primaryBrake),
+                          compare ? finiteMax(compare->brake) : 0.0});
+            cachedThrottleScale_ =
+                finiteMax(primaryThrottle) > 1.5 ? 100.0 : 1.0;
+            brakeMaxDirty_ = false;
+        }
+        const double brakeMax = cachedBrakeMax_;
+        const double throttleScale = cachedThrottleScale_;
+
+        // The strip is a window of track progress, not time. X is lap
+        // fraction around the current station so both cars answer "what
+        // was the pedal here?" and a slower sector cannot stretch one
+        // trace past the other.
+        const double windowStart =
+            lapCursor - currentMarkerFraction * kWindowFrac;
+        const QRectF graphRect = R(graph);
+        const auto drawTrace = [&](const std::vector<double>& values,
+                                   double maximum, bool reference, qreal width,
+                                   const QColor& color) {
+            if (values.size() < 2 || !primary || primary->size() < 2 ||
+                maximum <= 0.0)
+                return;
+            auto sourceFraction = [&](double viewportFrac) -> double {
+                const double pf = std::clamp(viewportFrac, 0.0, 1.0);
+                return reference
+                           ? snapshot_.compareFractionForPrimaryFraction(pf)
+                           : pf;
+            };
+            TraceSceneBuilder::EnvelopeStyle style;
+            style.width = width;
+            style.color = color;
+            builder_.envelopePolyline(values, sourceFraction, windowStart,
+                                      kWindowFrac, graphRect, 0.0, maximum,
+                                      style, 0.0, 1.0);
         };
-        const double brakeMax =
-            std::max({1.0, finiteMax(primaryBrake),
-                      compare ? finiteMax(compare->brake) : 0.0});
 
         if (compare) {
-            const auto throttlePts = tracePoints(compare->throttle, 1.0, true);
-            if (throttlePts.size() >= 2)
-                builder_.polyline(throttlePts.constData(), throttlePts.size(),
-                                  1.5 * s, withAlpha(throttleColor_, 150));
-            const auto brakePts = tracePoints(compare->brake, brakeMax, true);
-            if (brakePts.size() >= 2)
-                builder_.polyline(brakePts.constData(), brakePts.size(),
-                                  1.5 * s, withAlpha(brakeColor_, 150));
+            drawTrace(compare->throttle, 1.0, true, 1.5 * s,
+                      withAlpha(throttleColor_, 150));
+            drawTrace(compare->brake, brakeMax, true, 1.5 * s,
+                      withAlpha(brakeColor_, 150));
         }
-        const double throttleScale =
-            finiteMax(primaryThrottle) > 1.5 ? 100.0 : 1.0;
-        const auto primaryThrottlePts =
-            tracePoints(primaryThrottle, throttleScale, false);
-        if (primaryThrottlePts.size() >= 2)
-            builder_.polyline(primaryThrottlePts.constData(),
-                              primaryThrottlePts.size(), 2.5 * s,
-                              throttleColor_);
-        const auto primaryBrakePts = tracePoints(primaryBrake, brakeMax, false);
-        if (primaryBrakePts.size() >= 2)
-            builder_.polyline(primaryBrakePts.constData(),
-                              primaryBrakePts.size(), 2.5 * s, brakeColor_);
+        drawTrace(primaryThrottle, throttleScale, false, 2.5 * s,
+                  throttleColor_);
+        drawTrace(primaryBrake, brakeMax, false, 2.5 * s, brakeColor_);
 
         // Current-position marker (vertical rule).
         const qreal currentMarkerX =
@@ -312,13 +331,13 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
             const QPointF outer = dialCenterPx + radial * (dialRadius * s);
             const QPointF inner = dialCenterPx + radial * (innerRadius * s);
             const qreal half = 0.5 * tangentWidth * s;
-            QVector<QPointF> verts;
-            verts.reserve(4);
-            verts.append(outer + tangent * half);
-            verts.append(outer - tangent * half);
-            verts.append(inner - tangent * half);
-            verts.append(inner + tangent * half);
-            fillConvex(verts, color);
+            convexScratch_.clear();
+            convexScratch_.reserve(4);
+            convexScratch_.append(outer + tangent * half);
+            convexScratch_.append(outer - tangent * half);
+            convexScratch_.append(inner - tangent * half);
+            convexScratch_.append(inner + tangent * half);
+            fillConvex(convexScratch_, color);
         };
 
         const double primarySteering = sample(primarySteer, nowFrac);
@@ -352,24 +371,24 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
             constexpr qreal triangleCenterY = 89.0;
             constexpr qreal triangleHalfWidth = 5.0;
             constexpr qreal triangleHalfHeight = 4.5;
-            QVector<QPointF> tri;
-            tri.reserve(3);
+            convexScratch_.clear();
+            convexScratch_.reserve(3);
             if (gearDelta > 0) {
-                tri.append(
+                convexScratch_.append(
                     P(triangleCenterX, triangleCenterY - triangleHalfHeight));
-                tri.append(P(triangleCenterX + triangleHalfWidth,
-                             triangleCenterY + triangleHalfHeight));
-                tri.append(P(triangleCenterX - triangleHalfWidth,
-                             triangleCenterY + triangleHalfHeight));
+                convexScratch_.append(P(triangleCenterX + triangleHalfWidth,
+                                        triangleCenterY + triangleHalfHeight));
+                convexScratch_.append(P(triangleCenterX - triangleHalfWidth,
+                                        triangleCenterY + triangleHalfHeight));
             } else {
-                tri.append(P(triangleCenterX - triangleHalfWidth,
-                             triangleCenterY - triangleHalfHeight));
-                tri.append(P(triangleCenterX + triangleHalfWidth,
-                             triangleCenterY - triangleHalfHeight));
-                tri.append(
+                convexScratch_.append(P(triangleCenterX - triangleHalfWidth,
+                                        triangleCenterY - triangleHalfHeight));
+                convexScratch_.append(P(triangleCenterX + triangleHalfWidth,
+                                        triangleCenterY - triangleHalfHeight));
+                convexScratch_.append(
                     P(triangleCenterX, triangleCenterY + triangleHalfHeight));
             }
-            fillConvex(tri, gearColor);
+            fillConvex(convexScratch_, gearColor);
         }
 
         {
