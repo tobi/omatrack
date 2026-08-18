@@ -2,11 +2,16 @@
 # usable without a QGuiApplication.
 
 add_library(omatrack_core STATIC
+  ComparisonAlignment.cpp
+  ComparisonAlignment.h
   CornerAnalysis.cpp
   CornerAnalysis.h
+  MonotonicSeries.h
   TelemetryEngine.cpp
   TelemetryEngine.h
-  TelemetryEngineInternal.h)
+  TelemetryEngineInternal.h
+  TrackAtlasSpatial.cpp
+  TrackAtlasSpatial.h)
 
 target_include_directories(omatrack_core
   PUBLIC ${CMAKE_SOURCE_DIR}/src)

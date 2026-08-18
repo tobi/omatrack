@@ -88,12 +88,11 @@ target_link_libraries(sigv4-test PRIVATE
 add_test(NAME sigv4-test COMMAND sigv4-test)
 set_tests_properties(sigv4-test PROPERTIES LABELS unit)
 
-# ── Remote cache integration ───────────────────────────────────────
-# Uses local HTTP responders speaking each protocol to verify streamed
-# downloads, ETag reuse, and offline operation from the on-disk cache.
+# ── Remote normalized-cache integration ─────────────────────────────
+# Uses local protocol responders to verify listing, stub creation, and
+# content-keyed cache helpers.
 qt_add_executable(remote-cache-test RemoteCacheTest.cpp
   ${CMAKE_SOURCE_DIR}/src/app/RemoteCache.cpp
-  ${CMAKE_SOURCE_DIR}/src/app/AimRemoteIndex.cpp
   ${CMAKE_SOURCE_DIR}/src/app/VerboseLog.cpp
   ${CMAKE_SOURCE_DIR}/src/app/WebDavBackend.cpp
   ${CMAKE_SOURCE_DIR}/src/app/S3Backend.cpp
@@ -109,38 +108,6 @@ target_link_libraries(remote-cache-test PRIVATE
 add_test(NAME remote-cache-test COMMAND remote-cache-test)
 set_tests_properties(remote-cache-test PROPERTIES LABELS unit)
 
-# ── AiM remote extract (parse/pack, no network) ─────────────────────
-qt_add_executable(aim-remote-index-test AimRemoteIndexTest.cpp
-  ${CMAKE_SOURCE_DIR}/src/app/AimRemoteIndex.cpp
-  ${CMAKE_SOURCE_DIR}/src/app/RemoteCache.cpp
-  ${CMAKE_SOURCE_DIR}/src/app/VerboseLog.cpp
-  ${CMAKE_SOURCE_DIR}/src/app/WebDavBackend.cpp
-  ${CMAKE_SOURCE_DIR}/src/app/S3Backend.cpp
-  ${CMAKE_SOURCE_DIR}/src/app/SigV4.cpp
-  ${CMAKE_SOURCE_DIR}/src/app/LibraryLocation.cpp)
-target_include_directories(aim-remote-index-test PRIVATE
-  ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(aim-remote-index-test PRIVATE
-  Qt6::Test
-  Qt6::Core
-  Qt6::Network
-  omatrack_warnings)
-add_test(NAME aim-remote-index-test COMMAND aim-remote-index-test)
-set_tests_properties(aim-remote-index-test PROPERTIES LABELS unit)
-
-# ── Portable recording sidecars ─────────────────────────────────────
-qt_add_executable(recording-sidecar-test RecordingSidecarTest.cpp
-  ${CMAKE_SOURCE_DIR}/src/app/RecordingSidecar.cpp
-  ${CMAKE_SOURCE_DIR}/src/app/VerboseLog.cpp)
-target_include_directories(recording-sidecar-test PRIVATE
-  ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(recording-sidecar-test PRIVATE
-  Qt6::Test
-  Qt6::Core
-  omatrack_warnings)
-add_test(NAME recording-sidecar-test COMMAND recording-sidecar-test)
-set_tests_properties(recording-sidecar-test PROPERTIES LABELS unit)
-
 # ── Attached USB telemetry volumes ──────────────────────────────────
 qt_add_executable(usb-media-test UsbMediaTest.cpp
   ${CMAKE_SOURCE_DIR}/src/app/UsbMedia.cpp)
@@ -153,9 +120,7 @@ target_link_libraries(usb-media-test PRIVATE
 add_test(NAME usb-media-test COMMAND usb-media-test)
 set_tests_properties(usb-media-test PROPERTIES LABELS unit)
 
-# ── Omarchy theme bridge test ──
-# Exercises the atomic directory replacement used by `omarchy theme set` and
-# verifies that the QML-facing color map changes without restarting the app.
+# ── Omarchy theme bridge test ───────────────────────────────────────
 qt_add_executable(omarchy-theme-test OmarchyThemeTest.cpp
   ${CMAKE_SOURCE_DIR}/src/app/OmarchyTheme.cpp)
 target_include_directories(omarchy-theme-test PRIVATE
@@ -167,6 +132,7 @@ target_link_libraries(omarchy-theme-test PRIVATE
   omatrack_warnings)
 add_test(NAME omarchy-theme-test COMMAND omarchy-theme-test)
 set_tests_properties(omarchy-theme-test PROPERTIES LABELS unit)
+
 
 # ── alignment-test ──────────────────────────────────────────────────
 # Drives the pure comparison-alignment helper (computeComparisonAlignment)

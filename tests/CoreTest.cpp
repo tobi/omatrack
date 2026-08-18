@@ -5,6 +5,7 @@
 // channel-matching helpers, and TelemetrySource methods with synthetic data.
 
 #include "core/TelemetryEngine.h"
+#include "core/MonotonicSeries.h"
 #include "core/TelemetryEngineInternal.h"
 
 #include <QtTest>
@@ -620,6 +621,15 @@ private slots:
         reference.index = 1;
         clock.files = {active, reference};
 
+        const VideoFileReference* activeFile = clock.fileNamed("active.mp4");
+        const VideoFileReference* referenceFile =
+            clock.fileNamed("reference.mp4");
+        QVERIFY(activeFile != nullptr);
+        QVERIFY(referenceFile != nullptr);
+        QCOMPARE(activeFile->index, std::uint32_t(0));
+        QCOMPARE(referenceFile->index, std::uint32_t(1));
+        QVERIFY(clock.fileNamed("missing.mp4") == nullptr);
+
         QCOMPARE(clock.presentationTimeNs(400'000'000, 0),
                  std::optional<std::uint64_t>(500'000'000));
         QCOMPARE(clock.presentationTimeNs(400'000'000, 1),
@@ -1033,6 +1043,22 @@ private slots:
         src.channels() = {speed};
         QCOMPARE(src.unifyLap(0.0, 1.0).speed[25], 250.0);
     }
+    void unifyLapIgnoresImpossibleSpeedSamples() {
+        TelemetrySource src;
+        RawChannel speed;
+        speed.name = "Speed";
+        speed.unit = "km/h";
+        speed.samples = {100.0, 10000.0, 100.0};
+        speed.frequencyHz = 2.0;
+        speed.durationSec = 1.0;
+        src.channels() = {speed};
+
+        const UnifiedLap lap = src.unifyLap(0.0, 1.0);
+        for (double value : lap.speed) QVERIFY(value <= 500.0);
+        for (double value : lap.distance) QVERIFY(std::isfinite(value));
+        QVERIFY(lap.speed[25] <= 500.0);
+    }
+
 
     void unifyLapConvertsMilesPerHour() {
         TelemetrySource src;
@@ -1523,6 +1549,99 @@ private slots:
     }
 };
 
+// ────────────────────────────────────────────────────────────────────
+// MonotonicSeries — interpolation helpers
+// ────────────────────────────────────────────────────────────────────
+
+class MonotonicSeriesTest : public QObject {
+    Q_OBJECT
+private slots:
+    void viewAtEndpoints() {
+        const std::vector<double> x{0.0, 1.0, 2.0, 3.0};
+        const std::vector<double> y{10.0, 20.0, 30.0, 40.0};
+        MonotonicView view{x.data(), y.data(), x.size()};
+        QCOMPARE(view.at(0.0), 10.0);
+        QCOMPARE(view.at(3.0), 40.0);
+        QCOMPARE(view.at(-1.0), 10.0);
+        QCOMPARE(view.at(5.0), 40.0);
+    }
+
+    void viewAtMidpoint() {
+        const std::vector<double> x{0.0, 1.0, 2.0, 3.0};
+        const std::vector<double> y{10.0, 20.0, 30.0, 40.0};
+        MonotonicView view{x.data(), y.data(), x.size()};
+        QCOMPARE(view.at(0.5), 15.0);
+        QCOMPARE(view.at(1.5), 25.0);
+        QCOMPARE(view.at(2.25), 32.5);
+    }
+
+    void viewInvert() {
+        const std::vector<double> x{0.0, 1.0, 2.0, 3.0};
+        const std::vector<double> y{10.0, 20.0, 30.0, 40.0};
+        MonotonicView view{x.data(), y.data(), x.size()};
+        QVERIFY(std::abs(view.invert(15.0) - 0.5) < 1e-9);
+        QVERIFY(std::abs(view.invert(25.0) - 1.5) < 1e-9);
+        QVERIFY(std::abs(view.invert(35.0) - 2.5) < 1e-9);
+        QCOMPARE(view.invert(5.0), 0.0);
+        QCOMPARE(view.invert(45.0), 3.0);
+    }
+
+    void viewLowerIndex() {
+        const std::vector<double> x{0.0, 1.0, 2.0, 3.0};
+        const std::vector<double> y{10.0, 20.0, 30.0, 40.0};
+        MonotonicView view{x.data(), y.data(), x.size()};
+        QCOMPARE(view.lowerIndex(0.0), size_t(0));
+        QCOMPARE(view.lowerIndex(1.5), size_t(2));
+        QCOMPARE(view.lowerIndex(3.0), size_t(3));
+        QCOMPARE(view.lowerIndex(5.0), size_t(3));
+    }
+
+    void freeInterpolate() {
+        const std::vector<double> x{0.0, 10.0, 20.0};
+        const std::vector<double> y{0.0, 100.0, 200.0};
+        QCOMPARE(interpolate(x, y, 5.0), 50.0);
+        QCOMPARE(interpolate(x, y, 0.0), 0.0);
+        QCOMPARE(interpolate(x, y, 20.0), 200.0);
+    }
+
+    void interpolateFractionUniform() {
+        const std::vector<double> y{0.0, 10.0, 20.0, 30.0};
+        QCOMPARE(interpolateFraction(y, 0.0), 0.0);
+        QCOMPARE(interpolateFraction(y, 1.0), 30.0);
+        QVERIFY(std::abs(interpolateFraction(y, 0.5) - 15.0) < 1e-9);
+        QVERIFY(std::abs(interpolateFraction(y, 0.25) - 7.5) < 1e-9);
+    }
+
+    void interpolateFractionClamps() {
+        const std::vector<double> y{0.0, 10.0, 20.0};
+        QCOMPARE(interpolateFraction(y, -0.5), 0.0);
+        QCOMPARE(interpolateFraction(y, 1.5), 20.0);
+    }
+
+    void interpolateFractionDegenerate() {
+        std::vector<double> empty;
+        QCOMPARE(interpolateFraction(empty, 0.5), 0.0);
+        const std::vector<double> single{42.0};
+        QCOMPARE(interpolateFraction(single, 0.5), 42.0);
+    }
+
+    void invertFractionRoundTrip() {
+        const std::vector<double> y{0.0, 10.0, 20.0, 30.0};
+        for (double f : {0.1, 0.25, 0.5, 0.75, 0.9}) {
+            const double value = interpolateFraction(y, f);
+            const double back = invertFraction(y, value);
+            QVERIFY(std::abs(back - f) < 1e-9);
+        }
+    }
+
+    void invertFractionDegenerate() {
+        std::vector<double> empty;
+        QCOMPARE(invertFraction(empty, 5.0), 0.0);
+        const std::vector<double> flat{5.0, 5.0, 5.0};
+        QCOMPARE(invertFraction(flat, 5.0), 0.0);
+    }
+};
+
 // Run all test classes in one executable. QTEST_APPLESS_MAIN only runs one
 // class; a custom main ensures every Q_OBJECT class is executed.
 int main(int argc, char* argv[]) {
@@ -1589,6 +1708,10 @@ int main(int argc, char* argv[]) {
     }
     {
         JsonlSidecarTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        MonotonicSeriesTest t;
         status |= QTest::qExec(&t, argc, argv);
     }
     return status;

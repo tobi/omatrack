@@ -24,6 +24,11 @@ namespace detail {
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr int kDefaultSampleRate = 50;
+// Physical sanity bounds protect the normalized model from corrupt logger
+// samples. A single invalid speed can turn the distance axis into an
+// astronomical value and make downstream geometry allocate without bound.
+constexpr double kMaximumSpeedKmh = 500.0;
+constexpr double kMaximumGpsSpeedMps = kMaximumSpeedKmh / 3.6;
 
 // ── channel mapping (port of MoTecParser.channelMappings) ───────────
 
@@ -572,6 +577,16 @@ SessionMeta sessionMetaFromFilename(const std::string& stem) {
     return meta;
 }
 
+const VideoFileReference* VideoClock::fileNamed(
+    const std::string& filename) const {
+    const auto file =
+        std::find_if(files.cbegin(), files.cend(),
+                     [&filename](const VideoFileReference& candidate) {
+                         return candidate.filename == filename;
+                     });
+    return file == files.cend() ? nullptr : &*file;
+}
+
 std::optional<std::uint64_t> VideoClock::presentationTimeNs(
     std::uint64_t telemetryTime, std::optional<std::uint32_t> fileIndex) const {
     const auto offset = videoOffsetForFile(*this, fileIndex);
@@ -653,11 +668,13 @@ std::unique_ptr<TelemetrySource> TelemetrySource::openImpl(
         ch.frequencyHz = period > 0 ? 1e9 / double(period) : 0.0;
         ch.startNs = omatrack_chunk_time_base_ns(handle, i, 0);
         uint64_t count = omatrack_channel_sample_count(handle, i);
-        ch.samples.resize((size_t)count);
-        if (count > 0) {
+        ch.sampleCount = count;
+        if (!indexOnly && count > 0) {
+            ch.samples.resize((size_t)count);
             size_t written = omatrack_channel_decode_all(
                 handle, i, ch.samples.data(), (size_t)count);
             ch.samples.resize(written);
+            ch.sampleCount = written;
         }
         src->channels_.push_back(std::move(ch));
     }
@@ -723,6 +740,8 @@ std::unique_ptr<TelemetrySource> TelemetrySource::openImpl(
         const auto itowIt = mapping.find("gps_itow");
         if (weekIt != mapping.end() && itowIt != mapping.end() &&
             weekIt->second >= 0 && itowIt->second >= 0) {
+            src->ensureDecoded(size_t(weekIt->second));
+            src->ensureDecoded(size_t(itowIt->second));
             const RawChannel& week = src->channels_[size_t(weekIt->second)];
             const RawChannel& itow = src->channels_[size_t(itowIt->second)];
             const size_t count =
@@ -1100,6 +1119,18 @@ bool nsRangesOverlap(std::int64_t a0, std::int64_t a1, std::int64_t b0,
     return a0 < a1 && b0 < b1 && a0 < b1 && b0 < a1;
 }
 
+void TelemetrySource::ensureDecoded(size_t channelIdx) const {
+    if (channelIdx >= channels_.size() || !handle_) return;
+    RawChannel& channel = channels_[channelIdx];
+    if (!channel.samples.empty()) return;
+    if (channel.sampleCount == 0) return;
+    channel.samples.resize(size_t(channel.sampleCount));
+    size_t written =
+        omatrack_channel_decode_all(handle_, channelIdx, channel.samples.data(),
+                                    size_t(channel.sampleCount));
+    channel.samples.resize(written);
+    channel.sampleCount = written;
+}
 bool TelemetrySource::sampleAt(size_t channelIdx, double timeSec, double* out,
                                bool linear) const {
     if (channelIdx >= channels_.size() || !out || !std::isfinite(timeSec) ||
@@ -1142,7 +1173,7 @@ std::map<std::string, int> TelemetrySource::mapChannels(
         if (overrideIt != overrides.end()) {
             bool matched = false;
             for (size_t c = 0; c < channels_.size(); ++c) {
-                if (!channels_[c].samples.empty() &&
+                if (channels_[c].hasSamples() &&
                     channels_[c].name == overrideIt->second) {
                     mapping[fieldName] = int(c);
                     matched = true;
@@ -1153,7 +1184,7 @@ std::map<std::string, int> TelemetrySource::mapChannels(
             const std::string wanted = normalizeChannelName(overrideIt->second);
             if (wanted.empty()) continue;
             for (size_t c = 0; c < channels_.size(); ++c) {
-                if (!channels_[c].samples.empty() &&
+                if (channels_[c].hasSamples() &&
                     normalizedChannels[c] == wanted) {
                     mapping[fieldName] = int(c);
                     break;
@@ -1168,7 +1199,7 @@ std::map<std::string, int> TelemetrySource::mapChannels(
         int bestScore = std::numeric_limits<int>::min();
         int best = -1;
         for (size_t c = 0; c < channels_.size(); ++c) {
-            if (channels_[c].samples.empty()) continue;
+            if (!channels_[c].hasSamples()) continue;
             for (size_t a = 0; a < aliases.size(); ++a) {
                 const int score = scoreNormalizedChannelMatch(
                     normalizedChannels[c], normalizedAliases[a], int(a));
@@ -1190,17 +1221,30 @@ double TelemetrySource::detectDriverId(
     if (driver == mapping.end() || driver->second < 0 ||
         driver->second >= int(channels_.size()))
         return 0.0;
+    ensureDecoded(size_t(driver->second));
     const RawChannel& channel = channels_[size_t(driver->second)];
     return dominantDriverId(channel.samples, channel.sampleTypeCode);
 }
 
+void classifyLaps(std::vector<Lap>& laps) {
+    std::vector<double> timed;
+    for (const Lap& lap : laps)
+        if (lap.complete && std::isfinite(lap.timeMs) && lap.timeMs > 0.0)
+            timed.push_back(lap.timeMs);
+    if (timed.size() >= 3) {
+        std::sort(timed.begin(), timed.end());
+        const double limit = timed[timed.size() / 2] * 1.35;
+        for (Lap& lap : laps)
+            if (lap.complete && lap.timeMs > limit) lap.isPitLap = true;
+    }
+}
 std::vector<Lap> TelemetrySource::detectLaps() const {
     // Exact normalized match first, then contains fallback for longer aliases.
     auto firstId = [&](const std::vector<std::string>& aliases) -> int {
         for (auto& alias : aliases) {
             std::string nAlias = normalizeChannelName(alias);
             for (size_t i = 0; i < channels_.size(); ++i) {
-                if (channels_[i].samples.empty()) continue;
+                if (!channels_[i].hasSamples()) continue;
                 if (normalizeChannelName(channels_[i].name) == nAlias)
                     return int(i);
             }
@@ -1209,7 +1253,7 @@ std::vector<Lap> TelemetrySource::detectLaps() const {
             std::string nAlias = normalizeChannelName(alias);
             if (nAlias.size() < 4) continue;
             for (size_t i = 0; i < channels_.size(); ++i) {
-                if (channels_[i].samples.empty()) continue;
+                if (!channels_[i].hasSamples()) continue;
                 if (normalizeChannelName(channels_[i].name).find(nAlias) !=
                     std::string::npos)
                     return int(i);
@@ -1221,9 +1265,7 @@ std::vector<Lap> TelemetrySource::detectLaps() const {
     auto series = [&](int id) -> std::pair<std::vector<double>, int> {
         if (id < 0 || id >= int(channels_.size())) return {};
         const RawChannel& channel = channels_[id];
-        if (channel.samples.empty() || channel.frequencyHz <= 0.0 ||
-            channel.durationSec <= 0.0)
-            return {};
+        if (!channel.hasSamples() || channel.durationSec <= 0.0) return {};
         const int frequency =
             std::max(1, int(std::lround(channel.frequencyHz)));
         const size_t count =
@@ -1293,148 +1335,6 @@ std::vector<Lap> TelemetrySource::detectLaps() const {
     if (!lapNumberIsAuthority && !lapDistance.empty())
         laps = pdsApplyLapDistanceCoverage(laps, lapDistance,
                                            std::max(1, distanceFreq));
-    return laps;
-}
-
-std::vector<Lap> detectLapsLightweight(const std::string& path,
-                                       double* driverId) {
-    const auto closeBridge = [](void* handle) {
-        if (handle) omatrack_close(handle);
-    };
-    std::unique_ptr<void, decltype(closeBridge)> bridge(
-        omatrack_open(path.c_str()), closeBridge);
-    if (!bridge) return {};
-    void* handle = bridge.get();
-    const std::vector<Lap> sourceLaps = sourceLapsFromBridge(handle);
-
-    const size_t channelCount = omatrack_channel_count(handle);
-    auto firstId = [&](const std::vector<std::string>& aliases) -> int {
-        for (const std::string& alias : aliases) {
-            const std::string normalizedAlias = normalizeChannelName(alias);
-            for (size_t i = 0; i < channelCount; ++i) {
-                const char* name = omatrack_channel_name(handle, i);
-                if (name && normalizeChannelName(name) == normalizedAlias)
-                    return int(i);
-            }
-        }
-        for (const std::string& alias : aliases) {
-            const std::string normalizedAlias = normalizeChannelName(alias);
-            if (normalizedAlias.size() < 4) continue;
-            for (size_t i = 0; i < channelCount; ++i) {
-                const char* name = omatrack_channel_name(handle, i);
-                if (name && normalizeChannelName(name).find(normalizedAlias) !=
-                                std::string::npos)
-                    return int(i);
-            }
-        }
-        return -1;
-    };
-    auto decodeRaw = [&](int id) {
-        std::pair<std::vector<double>, int> result;
-        if (id < 0) return result;
-        const uint64_t count =
-            omatrack_channel_sample_count(handle, size_t(id));
-        result.first.resize(size_t(count));
-        if (count > 0) {
-            const size_t written = omatrack_channel_decode_all(
-                handle, size_t(id), result.first.data(), size_t(count));
-            result.first.resize(written);
-        }
-        const uint64_t period = omatrack_chunk_period_ns(handle, size_t(id), 0);
-        result.second =
-            period > 0 ? std::max(1, int(std::lround(1e9 / period))) : 1;
-        return result;
-    };
-    auto sampleRegular = [&](int id) {
-        std::pair<std::vector<double>, int> result;
-        if (id < 0) return result;
-        const uint64_t period = omatrack_chunk_period_ns(handle, size_t(id), 0);
-        result.second =
-            period > 0 ? std::max(1, int(std::lround(1e9 / period))) : 1;
-        const double duration =
-            double(omatrack_channel_duration_ns(handle, size_t(id))) / 1e9;
-        const size_t count =
-            size_t(std::ceil(duration * double(result.second)));
-        result.first.assign(count, 0.0);
-        bool sampled = false;
-        double lastValue = 0.0;
-        for (size_t index = 0; index < count; ++index) {
-            double value = 0.0;
-            const uint64_t timeNs = uint64_t(
-                std::llround(double(index) * 1e9 / double(result.second)));
-            if (omatrack_sample_at(handle, size_t(id), timeNs, 1, &value)) {
-                if (!sampled)
-                    std::fill(result.first.begin(),
-                              result.first.begin() + index, value);
-                sampled = true;
-                lastValue = value;
-            } else if (sampled) {
-                value = lastValue;
-            }
-            result.first[index] = value;
-        }
-        if (!sampled) result.first.clear();
-        return result;
-    };
-
-    const int beaconId =
-        firstId({"lap_beacon_trig", "laptrigger", "lap_beacon"});
-    const int lapNumberId = firstId({"lap number"});
-    const int lapDistanceId =
-        firstId({"lap distance corrected", "lap distance"});
-    const int lapTimeId = firstId({"lap time"});
-    const int previousLapTimeId = firstId({"previous lap time", "previous lt"});
-    const int driverIdChannel = firstId(driverIdAliases());
-
-    auto [driverValues, driverFreq] = decodeRaw(driverIdChannel);
-    (void)driverFreq;
-    if (driverId) {
-        const uint32_t sampleTypeCode =
-            driverIdChannel >= 0
-                ? omatrack_channel_type_code(handle, size_t(driverIdChannel))
-                : 0;
-        const double detected = dominantDriverId(driverValues, sampleTypeCode);
-        if (detected > 0.0) *driverId = detected;
-    }
-    auto [beacon, beaconFreq] = sampleRegular(beaconId);
-    auto [lapNumber, numberFreq] = sampleRegular(lapNumberId);
-    auto [lapDistance, distanceFreq] = sampleRegular(lapDistanceId);
-    auto [lapTime, timeFreq] = sampleRegular(lapTimeId);
-    auto [previousLapTime, previousFreq] = sampleRegular(previousLapTimeId);
-
-    if (!sourceLaps.empty()) {
-        std::vector<Lap> laps = sourceLaps;
-        markShortCrossingsIncomplete(laps);
-        if (!lapDistance.empty())
-            laps = pdsApplyLapDistanceCoverage(laps, lapDistance,
-                                               std::max(1, distanceFreq));
-        return laps;
-    }
-
-    double maxDuration = 0.0;
-    for (size_t i = 0; i < channelCount; ++i)
-        maxDuration = std::max(
-            maxDuration, double(omatrack_channel_duration_ns(handle, i)) / 1e9);
-
-    const std::vector<double> beaconSplits =
-        pdsBeaconSplits(beacon, beaconFreq);
-    const std::vector<double> lapNumberSplits =
-        pdsLapNumberSplits(lapNumber, numberFreq);
-    const bool lapNumberIsAuthority = lapNumberCarriesState(lapNumber);
-    const std::vector<double> splits =
-        selectLapSplits(beaconSplits, lapNumberSplits, lapNumberIsAuthority,
-                        pdsLapTimeSplits(lapTime, timeFreq),
-                        pdsDistanceSplits(lapDistance, distanceFreq));
-
-    std::vector<Lap> laps = buildLapsFromSplits(splits, maxDuration);
-    if (!previousLapTime.empty())
-        laps = pdsApplyPreviousLapTimes(laps, previousLapTime,
-                                        std::max(1, previousFreq),
-                                        !lapNumberIsAuthority);
-    if (!lapNumberIsAuthority && !lapDistance.empty())
-        laps = pdsApplyLapDistanceCoverage(laps, lapDistance,
-                                           std::max(1, distanceFreq));
-
     return laps;
 }
 
@@ -1579,9 +1479,12 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime,
     for (int i = 0; i < nSamples; ++i) {
         unified.time.push_back(double(i) * dt);
 
-        // speed → km/h
-        unified.speed.push_back(hasSpeed ? get("speed", i) * wheelSpeedFactor
-                                         : 0.0);
+        // speed → km/h. Bad logger payloads must not poison the distance
+        // integration; carry the last sane value through an outlier.
+        double speed = hasSpeed ? get("speed", i) * wheelSpeedFactor : 0.0;
+        if (!std::isfinite(speed) || speed < 0.0 || speed > kMaximumSpeedKmh)
+            speed = unified.speed.empty() ? 0.0 : unified.speed.back();
+        unified.speed.push_back(speed);
 
         // driver controls → normalized ranges / physical pressure
         double th = get("throttle", i) * throttleFactor;
@@ -1627,8 +1530,11 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime,
             0.0, get("gps_position_accuracy", i) * positionAccuracyFactor));
         unified.gpsSpeedAccuracy.push_back(std::max(
             0.0, get("gps_speed_accuracy", i) * gpsSpeedAccuracyFactor));
-        gpsSpeedMps.push_back(
-            std::max(0.0, get("gps_speed", i) * gpsSpeedFactor));
+        double gpsSpeed = get("gps_speed", i) * gpsSpeedFactor;
+        if (!std::isfinite(gpsSpeed) || gpsSpeed < 0.0 ||
+            gpsSpeed > kMaximumGpsSpeedMps)
+            gpsSpeed = 0.0;
+        gpsSpeedMps.push_back(gpsSpeed);
         unified.fuel.push_back(hasFuel ? get("fuel", i) * fuelFactor : nan);
     }
 

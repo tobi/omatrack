@@ -1,19 +1,5 @@
-// Focused regression coverage for the pure comparison-alignment helper used by
-// TelemetryStore's primary/reference lap alignment (computeComparisonAlignment
-// and comparisonAlignmentConfidenceLabel).
-//
-// Synthetic omatrack::UnifiedLap inputs exercise every alignment path:
-//   - lap-progress (distance) alignment at the 50 Hz grid
-//   - speed-landmark DTW when distance is absent
-//   - sample-index fallback (absent / misaligned / too-short speed and
-//     distance)
-//   - GPS anchor refinement at ~25 Hz (valid, distributed fixes)
-//   - insufficient / invalid GPS fallback to the underlying basis
-//   - output size, range, and monotonicity invariants
-//   - basis strings, GPS anchor counts, and confidence labels
-//
-// TelemetryStore remains the QML-facing cache owner; these tests drive the
-// calculation directly so no QML/GUI or session parsing is required.
+// Focused regression coverage for the pure comparison-alignment strategies
+// shared by traces, delta, cursor readouts, and synchronized video.
 
 #include "app/ComparisonAlignment.h"
 #include "core/TelemetryEngine.h"
@@ -27,574 +13,279 @@
 namespace {
 constexpr double kPi = 3.14159265358979323846;
 
-// Deterministic synthetic lap builder. Only the fields the alignment helper
-// reads are populated (time, speed, distance, distanceSource, sampleRate,
-// gpsLat/gpsLon/gpsPositionAccuracy); everything else stays default-empty.
-omatrack::UnifiedLap makeLap(int samples, int sampleRate, bool withSpeed,
-                             bool withDistance, bool nativeDistance,
-                             bool withGps) {
+omatrack::UnifiedLap makeLap(int samples, bool gps = false,
+                             bool dampers = false) {
     omatrack::UnifiedLap lap;
-    lap.sampleRate = sampleRate;
-    lap.distanceSource = nativeDistance ? omatrack::DistanceSource::Native
-                                        : omatrack::DistanceSource::SpeedFused;
-    const double dt = 1.0 / double(sampleRate);
+    lap.sampleRate = 50;
+    lap.distanceSource = omatrack::DistanceSource::SpeedFused;
     lap.time.reserve(samples);
-    if (withSpeed) lap.speed.reserve(samples);
-    if (withDistance) lap.distance.reserve(samples);
-    if (withGps) {
+    lap.speed.reserve(samples);
+    lap.distance.reserve(samples);
+    if (gps) {
         lap.gpsLat.reserve(samples);
         lap.gpsLon.reserve(samples);
         lap.gpsPositionAccuracy.reserve(samples);
     }
+    if (dampers) {
+        lap.damperFL.reserve(samples);
+        lap.damperFR.reserve(samples);
+    }
     for (int i = 0; i < samples; ++i) {
-        lap.time.push_back(i * dt);
-        if (withSpeed)
-            lap.speed.push_back(120.0 +
-                                80.0 * std::sin(2.0 * kPi * i / samples));
-        if (withDistance)
-            lap.distance.push_back(
-                samples > 1 ? double(i) * 1000.0 / double(samples - 1) : 0.0);
-        if (withGps) {
-            // ~11 m per sample north/east: distinct enough that the nearest
-            // compare fix to primary fix i is compare fix i (distance 0), yet
-            // spread across the lap so anchors distribute over all 8 bins.
-            lap.gpsLat.push_back(40.0 + 0.0001 * i);
-            lap.gpsLon.push_back(-80.0 + 0.0001 * i);
+        const double fraction =
+            samples > 1 ? double(i) / double(samples - 1) : 0.0;
+        lap.time.push_back(i / 50.0);
+        lap.speed.push_back(145.0 + 50.0 * std::sin(6.0 * kPi * fraction));
+        lap.distance.push_back(1000.0 * fraction);
+        if (gps) {
+            lap.gpsLat.push_back(43.0 + 0.0001 * i);
+            lap.gpsLon.push_back(-88.0 + 0.00008 * i);
             lap.gpsPositionAccuracy.push_back(1.0);
+        }
+        if (dampers) {
+            const double value = std::sin(0.0017 * i * i) +
+                                 0.35 * std::sin(0.19 * i) +
+                                 0.12 * std::cos(0.047 * i);
+            lap.damperFL.push_back(value);
+            lap.damperFR.push_back(value + 0.04 * std::sin(0.31 * i));
         }
     }
     return lap;
 }
 
-bool approx(double a, double b, double eps = 1e-6) {
-    return std::abs(a - b) <= eps;
+ComparisonAlignmentOptions options(ComparisonAlignmentStrategy strategy,
+                                   std::initializer_list<double> corners = {}) {
+    ComparisonAlignmentOptions result;
+    result.strategy = strategy;
+    for (double corner : corners) result.cornerStarts.append(corner);
+    return result;
 }
 
-bool monotonicNonDecreasing(const QVector<double>& v) {
-    for (int i = 1; i < v.size(); ++i)
-        if (v[i] < v[i - 1] - 1e-9) return false;
+bool approx(double a, double b, double epsilon = 1e-6) {
+    return std::abs(a - b) <= epsilon;
+}
+
+bool monotonic(const QVector<double>& values) {
+    for (qsizetype i = 1; i < values.size(); ++i)
+        if (values[i] + 1e-9 < values[i - 1]) return false;
     return true;
 }
 
-bool withinRange(const QVector<double>& v, double lo, double hi) {
-    for (double x : v)
-        if (x < lo - 1e-9 || x > hi + 1e-9) return false;
+bool bounded(const QVector<double>& values, double low, double high) {
+    for (double value : values)
+        if (value < low - 1e-9 || value > high + 1e-9) return false;
     return true;
 }
 }  // namespace
 
-// ────────────────────────────────────────────────────────────────────
-// Speed-landmark alignment
-// ────────────────────────────────────────────────────────────────────
-
-class SpeedLandmarkAlignmentTest : public QObject {
+class StrategyTest : public QObject {
     Q_OBJECT
 private slots:
-    void identicalProfilesAlignBySpeed() {
-        const int N = 100;
-        auto primary = makeLap(N, 50, true, false, false, false);
-        auto compare = primary;  // identical speed → DTW follows the diagonal
-        const auto result = computeComparisonAlignment(primary, compare);
+    void lapPercentageIgnoresSpeedFusedDistanceDrift() {
+        constexpr int kSamples = 1000;
+        auto primary = makeLap(kSamples);
+        auto compare = primary;
+        for (int i = 0; i < kSamples; ++i) {
+            const double p = double(i) / double(kSamples - 1);
+            primary.distance[size_t(i)] =
+                1000.0 * (p - 0.05 * std::sin(kPi * p));
+            compare.distance[size_t(i)] =
+                1000.0 * (p + 0.08 * std::sin(kPi * p));
+        }
 
-        QCOMPARE(result.basis, QStringLiteral("speed landmarks"));
-        QCOMPARE(result.gpsAnchors, 0);
-        QVERIFY(result.time.size() == qsizetype(N));
-        QVERIFY(result.fraction.size() == qsizetype(N));
-        // Identity alignment maps each primary sample to the same compare time.
-        QVERIFY(approx(result.time.first(), compare.time.front()));
-        QVERIFY(approx(result.time[50], compare.time[50]));
-        QVERIFY(approx(result.time.last(), compare.time.back()));
-        QVERIFY(monotonicNonDecreasing(result.time));
-        QVERIFY(withinRange(result.time, compare.time.front(),
-                            compare.time.back()));
-        QVERIFY(withinRange(result.fraction, 0.0, 1.0));
-        QVERIFY(monotonicNonDecreasing(result.fraction));
-        QCOMPARE(
-            comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
-            QStringLiteral("MED"));
+        const auto result = computeComparisonAlignment(
+            primary, compare,
+            options(ComparisonAlignmentStrategy::LapPercentage));
+        for (int index : {100, 500, 780, 900}) {
+            const double expected = double(index) / double(kSamples - 1);
+            QVERIFY(std::abs(result.fraction[index] - expected) < 1e-6);
+        }
     }
 
-    void warpedProfileProducesContinuousMillisecondDelta() {
-        constexpr int N = 500;
-        auto primary = makeLap(N, 50, true, false, false, false);
+    void gpsContinuousCorrectsVariableTrackProgress() {
+        constexpr int kSamples = 1000;
+        auto primary = makeLap(kSamples, true);
         auto compare = primary;
-        auto profile = [](double progress) {
-            return 145.0 + 48.0 * std::sin(6.0 * kPi * progress) +
-                   17.0 * std::sin(14.0 * kPi * progress + 0.4);
+        for (int i = 0; i < kSamples; ++i) {
+            const double q = double(i) / double(kSamples - 1);
+            const double station = q + 0.04 * std::sin(kPi * q);
+            compare.gpsLat[size_t(i)] =
+                43.0 + 0.0001 * station * double(kSamples - 1);
+            compare.gpsLon[size_t(i)] =
+                -88.0 + 0.00008 * station * double(kSamples - 1);
+        }
+        const auto percentage = computeComparisonAlignment(
+            primary, compare,
+            options(ComparisonAlignmentStrategy::LapPercentage));
+        const auto gps = computeComparisonAlignment(
+            primary, compare,
+            options(ComparisonAlignmentStrategy::GpsContinuous));
+
+        const int nearFinish = 900;
+        const double primaryStation = double(nearFinish) / double(kSamples - 1);
+        auto mappedStation = [&](const ComparisonAlignmentResult& result) {
+            const double q = result.fraction[nearFinish];
+            return q + 0.04 * std::sin(kPi * q);
         };
-        for (int i = 0; i < N; ++i) {
-            const double progress = double(i) / double(N - 1);
-            primary.speed[i] = profile(progress);
-            compare.speed[i] = profile(std::clamp(
-                progress + 0.025 * std::sin(kPi * progress), 0.0, 1.0));
+        QVERIFY(std::abs(mappedStation(percentage) - primaryStation) > 0.008);
+        QVERIFY(std::abs(mappedStation(gps) - primaryStation) < 0.003);
+        QCOMPARE(gps.basis, QStringLiteral("GPS · variable speed"));
+        QVERIFY(gps.gpsAnchors >= 8);
+        QVERIFY(monotonic(gps.fraction));
+        QVERIFY(bounded(gps.fraction, 0.0, 1.0));
+    }
+
+    void preCornerGpsPinsTurnIns() {
+        constexpr int kSamples = 900;
+        constexpr int kShift = 14;
+        auto primary = makeLap(kSamples, true);
+        auto compare = primary;
+        for (int i = 0; i < kSamples; ++i) {
+            const int source = i - kShift;
+            compare.gpsLat[size_t(i)] = 43.0 + 0.0001 * source;
+            compare.gpsLon[size_t(i)] = -88.0 + 0.00008 * source;
         }
 
-        const auto result = computeComparisonAlignment(primary, compare);
-        QCOMPARE(result.basis, QStringLiteral("speed landmarks"));
-        QCOMPARE(result.time.size(), qsizetype(N));
-
-        // The bounded DTW grid must not appear in the user-facing delta as
-        // 0.1 s steps. At 50 Hz, a continuous warp changes by milliseconds
-        // between samples rather than catching up by a whole sample at once.
-        double largestDeltaStep = 0.0;
-        for (int i = 1; i < N; ++i) {
-            const double previousDelta =
-                primary.time[size_t(i - 1)] - result.time[i - 1];
-            const double delta = primary.time[size_t(i)] - result.time[i];
-            largestDeltaStep =
-                std::max(largestDeltaStep, std::abs(delta - previousDelta));
+        const auto result = computeComparisonAlignment(
+            primary, compare,
+            options(ComparisonAlignmentStrategy::PreCornerGps,
+                    {0.30, 0.55, 0.80}));
+        QCOMPARE(result.basis, QStringLiteral("GPS · pre-corner"));
+        QCOMPARE(result.gpsAnchors, 3);
+        for (double corner : {0.30, 0.55, 0.80}) {
+            const int index = qRound(corner * (kSamples - 1));
+            const double expected =
+                double(index + kShift) / double(kSamples - 1);
+            QVERIFY(std::abs(result.fraction[index] - expected) < 0.004);
         }
-        QVERIFY2(largestDeltaStep < 0.01,
-                 qPrintable(QStringLiteral("largest delta step was %1 s")
-                                .arg(largestDeltaStep, 0, 'f', 6)));
+    }
+
+    void preCornerDampersMatchLocalSignature() {
+        constexpr int kSamples = 1200;
+        constexpr int kShift = 11;
+        auto primary = makeLap(kSamples, false, true);
+        auto compare = primary;
+        for (int i = 0; i < kSamples; ++i) {
+            const int source = std::max(0, i - kShift);
+            compare.damperFL[size_t(i)] = primary.damperFL[size_t(source)];
+            compare.damperFR[size_t(i)] = primary.damperFR[size_t(source)];
+        }
+
+        const auto result = computeComparisonAlignment(
+            primary, compare,
+            options(ComparisonAlignmentStrategy::PreCornerDampers,
+                    {0.30, 0.55, 0.80}));
+        QCOMPARE(result.basis, QStringLiteral("Dampers · pre-corner"));
+        for (double corner : {0.30, 0.55, 0.80}) {
+            const int index = qRound(corner * (kSamples - 1));
+            const double expected =
+                double(index + kShift) / double(kSamples - 1);
+            QVERIFY(std::abs(result.fraction[index] - expected) < 0.006);
+        }
+    }
+
+    void manualDampersUsesPercentageUntilUserOffsetsIt() {
+        auto primary = makeLap(300, false, true);
+        auto compare = primary;
+        const auto result = computeComparisonAlignment(
+            primary, compare,
+            options(ComparisonAlignmentStrategy::ManualDampers));
+        QCOMPARE(result.basis, QStringLiteral("Dampers · manual"));
+        QVERIFY(approx(result.fraction[150], 150.0 / 299.0));
+    }
+
+    void unavailableStrategiesFallBackHonestly() {
+        auto primary = makeLap(300);
+        auto compare = primary;
+        const auto gps = computeComparisonAlignment(
+            primary, compare,
+            options(ComparisonAlignmentStrategy::GpsContinuous));
+        const auto dampers = computeComparisonAlignment(
+            primary, compare,
+            options(ComparisonAlignmentStrategy::PreCornerDampers, {0.5}));
+        QCOMPARE(gps.basis, QStringLiteral("Lap percentage"));
+        QCOMPARE(dampers.basis, QStringLiteral("Lap percentage"));
+        QCOMPARE(gps.gpsAnchors, 0);
     }
 };
 
-// ────────────────────────────────────────────────────────────────────
-// Progress fallback (absent / misaligned / too-short speed)
-// ────────────────────────────────────────────────────────────────────
-
-class ProgressFallbackTest : public QObject {
+class CapabilityTest : public QObject {
     Q_OBJECT
 private slots:
-    void absentSpeedWithNativeDistanceUsesValidatedDistance() {
-        const int N = 100;
-        auto primary = makeLap(N, 50, false, true, true, false);
+    void reportsOnlyDataBothLapsCarry() {
+        auto complete = makeLap(300, true, true);
+        auto missing = makeLap(300);
+        QVERIFY(comparisonGpsAlignmentAvailable(complete, complete));
+        QVERIFY(comparisonDamperAlignmentAvailable(complete, complete));
+        QVERIFY(!comparisonGpsAlignmentAvailable(complete, missing));
+        QVERIFY(!comparisonDamperAlignmentAvailable(complete, missing));
+    }
+
+    void clusteredGpsIsNotSensible() {
+        auto primary = makeLap(300, true);
         auto compare = primary;
-        const auto result = computeComparisonAlignment(primary, compare);
-
-        QCOMPARE(result.basis, QStringLiteral("validated lap distance"));
-        QCOMPARE(result.gpsAnchors, 0);
-        QVERIFY(result.time.size() == qsizetype(N));
-        QVERIFY(approx(result.time.first(), compare.time.front()));
-        QVERIFY(approx(result.time.last(), compare.time.back()));
-        QVERIFY(monotonicNonDecreasing(result.time));
-        QCOMPARE(
-            comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
-            QStringLiteral("MED"));
-    }
-
-    void absentSpeedWithoutDistanceUsesSampleIndex() {
-        const int N = 100;
-        auto primary = makeLap(N, 50, false, false, false, false);
-        auto compare = primary;
-        const auto result = computeComparisonAlignment(primary, compare);
-
-        QCOMPARE(result.basis, QStringLiteral("sample index"));
-        QCOMPARE(result.gpsAnchors, 0);
-        QVERIFY(result.time.size() == qsizetype(N));
-        QVERIFY(monotonicNonDecreasing(result.time));
-        QCOMPARE(
-            comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
-            QStringLiteral("LOW"));
-    }
-
-    void misalignedSpeedFallsBackToProgress() {
-        const int N = 100;
-        auto primary = makeLap(N, 50, true, false, false, false);
-        auto compare = makeLap(N, 50, true, false, false, false);
-        compare.speed.resize(50);  // 50 != 100 time samples → speed mismatch
-        const auto result = computeComparisonAlignment(primary, compare);
-
-        QCOMPARE(result.basis, QStringLiteral("sample index"));
-        QCOMPARE(result.gpsAnchors, 0);
-        QVERIFY(result.time.size() == qsizetype(N));
-        QVERIFY(monotonicNonDecreasing(result.time));
-        QCOMPARE(
-            comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
-            QStringLiteral("LOW"));
-    }
-
-    void tooShortSpeedFallsBackToProgress() {
-        const int N = 100;
-        auto primary = makeLap(N, 50, true, false, false, false);
-        primary.speed.resize(2);  // < 3 → not enough landmarks to warp
-        auto compare = makeLap(N, 50, true, false, false, false);
-        const auto result = computeComparisonAlignment(primary, compare);
-
-        QCOMPARE(result.basis, QStringLiteral("sample index"));
-        QCOMPARE(result.gpsAnchors, 0);
-        QVERIFY(result.time.size() == qsizetype(N));
-        QVERIFY(monotonicNonDecreasing(result.time));
-        QCOMPARE(
-            comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
-            QStringLiteral("LOW"));
-    }
-
-    void distanceIsPreferredOverSpeedWhenBothPresent() {
-        const int N = 100;
-        auto primary = makeLap(N, 50, true, true, true, false);
-        auto compare = primary;
-        const auto result = computeComparisonAlignment(primary, compare);
-
-        QCOMPARE(result.basis, QStringLiteral("validated lap distance"));
-        QCOMPARE(result.gpsAnchors, 0);
-        QVERIFY(approx(result.time[50], compare.time[50]));
-        QCOMPARE(
-            comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
-            QStringLiteral("MED"));
-    }
-
-    void slowerLapDeltaIsTimeAtTheSameStation() {
-        const int N = 201;
-        auto primary = makeLap(N, 50, true, true, true, false);
-        auto compare = makeLap(N, 50, true, true, true, false);
-        for (int i = 0; i < N; ++i) primary.time[size_t(i)] *= 1.1;
-
-        const auto result = computeComparisonAlignment(primary, compare);
-        QCOMPARE(result.basis, QStringLiteral("validated lap distance"));
-        QVERIFY(approx(result.time[N / 2], compare.time[N / 2], 1e-6));
-
-        const double midDelta =
-            primary.time[size_t(N / 2)] - result.time[N / 2];
-        const double endDelta = primary.time.back() - result.time.last();
-        QVERIFY(midDelta > 0.1);
-        QVERIFY(endDelta > midDelta);
-        QVERIFY(
-            approx(endDelta, primary.time.back() - compare.time.back(), 1e-6));
-    }
-
-    void identicalGpsDoesNotTurnAStepDeltaIntoARamp() {
-        // A real gain/loss is a step in Δt at the station where time was
-        // made. The old start/finish-pinned GPS overlay turned that into a
-        // lap-long climb even when both cars shared the same GPS path.
-        const int N = 201;
-        auto primary = makeLap(N, 50, true, true, true, true);
-        auto compare = makeLap(N, 50, true, true, true, true);
-        for (int i = N / 2; i < N; ++i) primary.time[size_t(i)] += 0.25;
-
-        const auto result = computeComparisonAlignment(primary, compare);
-        QCOMPARE(result.basis, QStringLiteral("validated lap distance"));
-        QCOMPARE(result.gpsAnchors, 0);
-
-        const double early = primary.time[size_t(N / 4)] - result.time[N / 4];
-        const double late =
-            primary.time[size_t(3 * N / 4)] - result.time[3 * N / 4];
-        QVERIFY2(std::abs(early -
-                          (primary.time.front() - result.time.first())) < 0.02,
-                 qPrintable(QStringLiteral("early delta %1 is a ramp, not a "
-                                           "hold")
-                                .arg(early, 0, 'f', 4)));
-        QVERIFY2(late - early > 0.2,
-                 qPrintable(QStringLiteral("late-early %1 missing the 0.25 s "
-                                           "step")
-                                .arg(late - early, 0, 'f', 4)));
-    }
-};
-
-// ────────────────────────────────────────────────────────────────────
-// GPS affine alignment
-// ────────────────────────────────────────────────────────────────────
-
-class GpsAffineAlignmentTest : public QObject {
-    Q_OBJECT
-private slots:
-    void distributedGpsRefinesSpeedLandmarks() {
-        const int N = 300;
-        constexpr int kGpsShiftSamples = 10;
-        auto primary = makeLap(N, 50, true, false, false, true);
-        auto compare = primary;
-        for (int i = 0; i < N; ++i) {
-            // The same position occurs later on the compare lap. GPS anchors
-            // must therefore apply a measurable non-zero time correction
-            // rather than merely relabeling the speed-landmark result.
-            const double shiftedIndex = double(i - kGpsShiftSamples);
-            compare.gpsLat[i] = 40.0 + 0.0001 * shiftedIndex;
-            compare.gpsLon[i] = -80.0 + 0.0001 * shiftedIndex;
-        }
-        const auto result = computeComparisonAlignment(primary, compare);
-
-        QCOMPARE(result.basis,
-                 QStringLiteral("GPS anchored · speed landmarks"));
-        QVERIFY(result.gpsAnchors >= 8);
-        QVERIFY(result.time.size() == qsizetype(N));
-        QVERIFY(result.time[N / 2] > compare.time[N / 2] + 0.1);
-        QVERIFY(monotonicNonDecreasing(result.time));
-        QVERIFY(withinRange(result.time, compare.time.front(),
-                            compare.time.back()));
-        QVERIFY(withinRange(result.fraction, 0.0, 1.0));
-        QVERIFY(monotonicNonDecreasing(result.fraction));
-        QCOMPARE(
-            comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
-            QStringLiteral("HIGH"));
-    }
-
-    void distributedGpsRefinesFallbackPath() {
-        const int N = 300;
-        auto primary = makeLap(N, 50, false, false, false, true);  // no speed
-        auto compare = primary;
-        const auto result = computeComparisonAlignment(primary, compare);
-
-        QCOMPARE(result.basis, QStringLiteral("GPS anchored · sample index"));
-        QVERIFY(result.gpsAnchors >= 8);
-        QVERIFY(result.time.size() == qsizetype(N));
-        QVERIFY(monotonicNonDecreasing(result.time));
-        QCOMPARE(
-            comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
-            QStringLiteral("HIGH"));
-    }
-};
-
-// ────────────────────────────────────────────────────────────────────
-// Insufficient / invalid GPS fallback
-// ────────────────────────────────────────────────────────────────────
-
-class GpsFallbackTest : public QObject {
-    Q_OBJECT
-private slots:
-    void invalidGpsAccuracyFallsBackToSpeedLandmarks() {
-        const int N = 300;
-        auto primary = makeLap(N, 50, true, false, false, true);
-        auto compare = primary;
-        // GPS present but every fix fails the accuracy > 0 gate.
-        for (double& acc : primary.gpsPositionAccuracy) acc = 0.0;
-        for (double& acc : compare.gpsPositionAccuracy) acc = 0.0;
-        const auto result = computeComparisonAlignment(primary, compare);
-
-        QCOMPARE(result.basis, QStringLiteral("speed landmarks"));
-        QCOMPARE(result.gpsAnchors, 0);
-        QVERIFY(result.time.size() == qsizetype(N));
-        QCOMPARE(
-            comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
-            QStringLiteral("MED"));
-    }
-
-    void clusteredGpsFallsBackToSpeedLandmarks() {
-        const int N = 300;
-        auto primary = makeLap(N, 50, true, false, false, true);
-        auto compare = primary;
-        // Only the first 25 samples carry valid GPS; at 25 Hz that is a
-        // dozen clustered anchors, still far below the distributed
-        // threshold (4 bins and 50 % coverage).
-        const int clusterEnd = 24;
         const double nan = std::numeric_limits<double>::quiet_NaN();
-        for (int i = 0; i < N; ++i) {
-            if (i > clusterEnd) {
-                primary.gpsLat[i] = nan;
-                primary.gpsLon[i] = nan;
-                primary.gpsPositionAccuracy[i] = nan;
-                compare.gpsLat[i] = nan;
-                compare.gpsLon[i] = nan;
-                compare.gpsPositionAccuracy[i] = nan;
-            }
+        for (int i = 40; i < 300; ++i) {
+            primary.gpsLat[size_t(i)] = nan;
+            primary.gpsLon[size_t(i)] = nan;
+            primary.gpsPositionAccuracy[size_t(i)] = nan;
         }
-        const auto result = computeComparisonAlignment(primary, compare);
-
-        QCOMPARE(result.basis, QStringLiteral("speed landmarks"));
-        QCOMPARE(result.gpsAnchors, 0);
-        QCOMPARE(
-            comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
-            QStringLiteral("MED"));
+        QVERIFY(!comparisonGpsAlignmentAvailable(primary, compare));
     }
 };
 
-// ────────────────────────────────────────────────────────────────────
-// Output size / range / monotonicity invariants
-// ────────────────────────────────────────────────────────────────────
-
-class AlignmentInvariantTest : public QObject {
+class AlignmentUtilityTest : public QObject {
     Q_OBJECT
 private slots:
-    void timeAndFractionRespectInvariants() {
-        // N=200 at 25 Hz produces many GPS anchors, well above the
-        // gpsDistributed >= 8 threshold.
-        const int N = 200;
-        auto primary = makeLap(N, 50, true, false, false, true);
-        auto compare = primary;
-        const auto result = computeComparisonAlignment(primary, compare);
-
-        QVERIFY(result.time.size() == qsizetype(N));
-        QVERIFY(result.fraction.size() == result.time.size());
-        QVERIFY(result.gpsAnchors >= 8);
-        QVERIFY(result.basis.contains(QStringLiteral("GPS anchored")));
-        // Time is bounded by the compare lap and non-decreasing.
-        QVERIFY(withinRange(result.time, compare.time.front(),
-                            compare.time.back()));
-        QVERIFY(monotonicNonDecreasing(result.time));
-        // Fraction is a 0-1 non-decreasing remap of time.
-        QVERIFY(withinRange(result.fraction, 0.0, 1.0));
-        QVERIFY(monotonicNonDecreasing(result.fraction));
-        QVERIFY(result.fraction.first() >= 0.0);
-        QVERIFY(result.fraction.last() <= 1.0);
-    }
-};
-
-// ────────────────────────────────────────────────────────────────────
-// Confidence label classification
-// ────────────────────────────────────────────────────────────────────
-
-class AlignmentConfidenceLabelTest : public QObject {
-    Q_OBJECT
-private slots:
-    void emptyBasisIsNone() {
+    void confidenceReflectsStrategy() {
         QCOMPARE(comparisonAlignmentConfidenceLabel(QString(), 0),
                  QStringLiteral("NONE"));
-    }
-    void gpsAnchoredWithEnoughAnchorsIsHigh() {
         QCOMPARE(comparisonAlignmentConfidenceLabel(
-                     QStringLiteral("GPS anchored · speed landmarks"), 8),
+                     QStringLiteral("GPS · variable speed"), 20),
                  QStringLiteral("HIGH"));
         QCOMPARE(comparisonAlignmentConfidenceLabel(
-                     QStringLiteral("GPS anchored · sample index"), 12),
+                     QStringLiteral("GPS · pre-corner"), 3),
                  QStringLiteral("HIGH"));
         QCOMPARE(comparisonAlignmentConfidenceLabel(
-                     QStringLiteral("GPS anchored · lap progress"), 8),
-                 QStringLiteral("HIGH"));
-    }
-    void speedLandmarksIsMedium() {
-        QCOMPARE(comparisonAlignmentConfidenceLabel(
-                     QStringLiteral("speed landmarks"), 0),
+                     QStringLiteral("Dampers · pre-corner"), 0),
                  QStringLiteral("MED"));
-    }
-    void validatedLapDistanceIsMedium() {
         QCOMPARE(comparisonAlignmentConfidenceLabel(
-                     QStringLiteral("validated lap distance"), 0),
-                 QStringLiteral("MED"));
-    }
-    void sampleIndexIsLow() {
-        QCOMPARE(comparisonAlignmentConfidenceLabel(
-                     QStringLiteral("sample index"), 0),
+                     QStringLiteral("Lap percentage"), 0),
                  QStringLiteral("LOW"));
     }
-    void lapProgressIsMedium() {
-        QCOMPARE(comparisonAlignmentConfidenceLabel(
-                     QStringLiteral("lap progress"), 0),
-                 QStringLiteral("MED"));
-    }
-    void anchorsTakePrecedenceOverBasis() {
-        // >= 8 anchors is HIGH even when the basis would otherwise classify
-        // MED.
-        QCOMPARE(comparisonAlignmentConfidenceLabel(
-                     QStringLiteral("speed landmarks"), 8),
-                 QStringLiteral("HIGH"));
-    }
-    void sevenAnchorsDoNotPromote() {
-        QCOMPARE(comparisonAlignmentConfidenceLabel(
-                     QStringLiteral("speed landmarks"), 7),
-                 QStringLiteral("MED"));
-        QCOMPARE(comparisonAlignmentConfidenceLabel(
-                     QStringLiteral("sample index"), 7),
-                 QStringLiteral("LOW"));
-    }
-    void unknownBasisIsLow() {
-        QCOMPARE(comparisonAlignmentConfidenceLabel(
-                     QStringLiteral("something else"), 0),
-                 QStringLiteral("LOW"));
-    }
-};
 
-// ────────────────────────────────────────────────────────────────────
-// Too-short laps produce empty alignment
-// ────────────────────────────────────────────────────────────────────
-
-class AlignmentFractionLookupTest : public QObject {
-    Q_OBJECT
-private slots:
-    void emptyMapIsIdentity() {
-        QVERIFY(approx(interpolateAlignmentFraction({}, 0.3), 0.3));
-        QVERIFY(approx(invertAlignmentFraction({}, 0.3), 0.3));
-        QVERIFY(approx(interpolateAlignmentFraction({0.0}, 0.8), 0.8));
-        QVERIFY(approx(invertAlignmentFraction({0.0}, 0.8), 0.8));
-    }
-    void degenerateMapIsIdentity() {
-        // A collapsed map (every primary station → lap start) used to make
-        // the overlay report the reference corner as 0 m. Treat it as
-        // "not aligned" and keep the caller's fraction.
-        const QVector<double> collapsed{0.0, 0.0, 0.0, 0.0};
+    void fractionLookupRoundTrips() {
+        QVector<double> map;
+        for (int i = 0; i < 21; ++i) map.append(double(i) / 20.0);
+        QVERIFY(approx(interpolateAlignmentFraction(map, 0.35), 0.35));
+        QVERIFY(approx(invertAlignmentFraction(map, 0.35), 0.35));
+        const QVector<double> collapsed{0.0, 0.0, 0.0};
         QVERIFY(approx(interpolateAlignmentFraction(collapsed, 0.42), 0.42));
         QVERIFY(approx(invertAlignmentFraction(collapsed, 0.42), 0.42));
     }
-    void identityMapRoundTrips() {
-        QVector<double> map;
-        for (int i = 0; i < 21; ++i) map.append(double(i) / 20.0);
-        QVERIFY(approx(interpolateAlignmentFraction(map, 0.0), 0.0));
-        QVERIFY(approx(interpolateAlignmentFraction(map, 0.35), 0.35, 1e-9));
-        QVERIFY(approx(interpolateAlignmentFraction(map, 1.0), 1.0));
-        QVERIFY(approx(invertAlignmentFraction(map, 0.0), 0.0));
-        QVERIFY(approx(invertAlignmentFraction(map, 0.35), 0.35, 1e-9));
-        QVERIFY(approx(invertAlignmentFraction(map, 1.0), 1.0));
-    }
-    void shiftedMapInverts() {
-        // Compare lap is 10% ahead of primary: primary 0.4 → compare 0.5.
-        QVector<double> map;
-        for (int i = 0; i < 11; ++i)
-            map.append(std::min(1.0, double(i) / 10.0 + 0.1));
-        QVERIFY(approx(interpolateAlignmentFraction(map, 0.4), 0.5, 1e-9));
-        QVERIFY(approx(invertAlignmentFraction(map, 0.5), 0.4, 1e-9));
-    }
-    void clampsOutOfRange() {
-        QVERIFY(approx(interpolateAlignmentFraction({}, -1.0), 0.0));
-        QVERIFY(approx(interpolateAlignmentFraction({}, 2.0), 1.0));
-        const QVector<double> map{0.0, 0.5, 1.0};
-        QVERIFY(approx(invertAlignmentFraction(map, -0.2), 0.0));
-        QVERIFY(approx(invertAlignmentFraction(map, 1.2), 1.0));
-    }
-};
 
-class TinyLapTest : public QObject {
-    Q_OBJECT
-private slots:
-    void primaryTooShortYieldsEmpty() {
-        auto primary = makeLap(1, 50, true, false, false, false);
-        auto compare = makeLap(100, 50, true, false, false, false);
+    void tinyLapProducesNoAlignment() {
+        auto primary = makeLap(1, true, true);
+        auto compare = makeLap(100, true, true);
         const auto result = computeComparisonAlignment(primary, compare);
-
         QVERIFY(result.time.isEmpty());
         QVERIFY(result.fraction.isEmpty());
         QVERIFY(result.basis.isEmpty());
-        QCOMPARE(result.gpsAnchors, 0);
-        QCOMPARE(
-            comparisonAlignmentConfidenceLabel(result.basis, result.gpsAnchors),
-            QStringLiteral("NONE"));
-    }
-
-    void compareTooShortYieldsEmpty() {
-        auto primary = makeLap(100, 50, true, false, false, false);
-        auto compare = makeLap(1, 50, true, false, false, false);
-        const auto result = computeComparisonAlignment(primary, compare);
-
-        QVERIFY(result.time.isEmpty());
-        QVERIFY(result.fraction.isEmpty());
-        QVERIFY(result.basis.isEmpty());
-        QCOMPARE(result.gpsAnchors, 0);
     }
 };
 
-// Run all test classes in one executable. QTEST_APPLESS_MAIN only runs one
-// class; a custom main ensures every Q_OBJECT class is executed.
 int main(int argc, char* argv[]) {
     int status = 0;
     {
-        SpeedLandmarkAlignmentTest t;
-        status |= QTest::qExec(&t, argc, argv);
+        StrategyTest test;
+        status |= QTest::qExec(&test, argc, argv);
     }
     {
-        ProgressFallbackTest t;
-        status |= QTest::qExec(&t, argc, argv);
+        CapabilityTest test;
+        status |= QTest::qExec(&test, argc, argv);
     }
     {
-        GpsAffineAlignmentTest t;
-        status |= QTest::qExec(&t, argc, argv);
-    }
-    {
-        GpsFallbackTest t;
-        status |= QTest::qExec(&t, argc, argv);
-    }
-    {
-        AlignmentInvariantTest t;
-        status |= QTest::qExec(&t, argc, argv);
-    }
-    {
-        AlignmentConfidenceLabelTest t;
-        status |= QTest::qExec(&t, argc, argv);
-    }
-    {
-        AlignmentFractionLookupTest t;
-        status |= QTest::qExec(&t, argc, argv);
-    }
-    {
-        TinyLapTest t;
-        status |= QTest::qExec(&t, argc, argv);
+        AlignmentUtilityTest test;
+        status |= QTest::qExec(&test, argc, argv);
     }
     return status;
 }

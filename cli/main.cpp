@@ -8,6 +8,7 @@
 // Exit code is the acceptance signal: 0 = success, non-zero = failure.
 
 #include "core/CornerAnalysis.h"
+#include "core/ComparisonAlignment.h"
 #include "core/TelemetryEngine.h"
 
 #include <algorithm>
@@ -19,23 +20,14 @@
 
 using namespace omatrack;
 
-// Representative racing lap: complete, not a pit outlier, same rule the GUI
-// uses for fastest-lap marks and default selection.
-static int fastestLapIndex(const std::vector<Lap>& laps) {
-    std::vector<double> timed;
-    for (const Lap& lap : laps)
-        if (lap.complete && std::isfinite(lap.timeMs) && lap.timeMs > 0.0)
-            timed.push_back(lap.timeMs);
-    double pitLimit = 1e18;
-    if (timed.size() >= 3) {
-        std::sort(timed.begin(), timed.end());
-        pitLimit = timed[timed.size() / 2] * 1.35;
-    }
+// Representative racing lap: complete, not a pit outlier. Uses the shared
+// core classifyLaps() so the CLI and GUI agree on what counts for best.
+static int fastestLapIndex(std::vector<Lap>& laps) {
+    classifyLaps(laps);
     int best = -1;
     double bestMs = 1e18;
     for (size_t i = 0; i < laps.size(); ++i) {
-        if (!laps[i].complete || !(laps[i].timeMs > 0.0) ||
-            laps[i].timeMs > pitLimit)
+        if (!laps[i].complete || laps[i].isPitLap || !(laps[i].timeMs > 0.0))
             continue;
         if (laps[i].timeMs < bestMs) {
             bestMs = laps[i].timeMs;
@@ -251,12 +243,22 @@ static int cmdCorners(const std::string& path, const std::string& referencePath,
         context.primaryMetrics =
             measureCorner(primary, zone.first, zone.second);
         if (!reference.time.empty()) {
-            // Same 0–1 zone on both laps. The GUI remaps through the cached
-            // track-station map; the CLI stays Qt-free, so it does not build
-            // that map and must not invent a second metre-to-fraction one.
+            // Map the reference zone through the same comparison alignment
+            // the GUI uses (lap-percentage/gps-continuous as available) so
+            // the reference corner range is aligned, not assumed identical.
             context.reference = &reference;
+            double refStart = zone.first;
+            double refEnd = zone.second;
+            const auto alignment =
+                omatrack::alignment::compute(primary, reference);
+            if (alignment.fraction.size() == primary.time.size()) {
+                refStart = omatrack::alignment::interpolateFraction(
+                    alignment.fraction, zone.first);
+                refEnd = omatrack::alignment::interpolateFraction(
+                    alignment.fraction, zone.second);
+            }
             context.referenceMetrics =
-                measureCorner(reference, zone.first, zone.second);
+                measureCorner(reference, refStart, refEnd);
         }
 
         const CornerMetrics& metrics = context.primaryMetrics;

@@ -28,8 +28,13 @@ struct RawChannel {
     std::string name;
     std::string unit;
     uint32_t sampleTypeCode = 0;
-    /// Samples in physical units, decoded across all chunks in time order.
+    /// Bridge-reported sample count. Set in openImpl even when samples are
+    /// not yet decoded (indexOnly path); use this instead of samples.empty()
+    /// to decide whether a channel carries data.
+    uint64_t sampleCount = 0;
     std::vector<double> samples;
+    /// True when the source carries data for this channel, decoded or not.
+    bool hasSamples() const { return sampleCount > 0 || !samples.empty(); }
     /// Sampling frequency in Hz (from first chunk period).
     double frequencyHz = 0.0;
     /// Total duration in seconds.
@@ -58,6 +63,9 @@ struct Lap {
     /// True when both bounds are real start/finish crossings. A leading
     /// (out) or trailing (in) fragment of the recording is not a lap.
     bool complete = true;
+    /// Complete crossing whose time is a pit in/out outlier (median * 1.35).
+    /// Set by classifyLaps(); representative laps have complete && !isPitLap.
+    bool isPitLap = false;
     /// Original source lap number when the parser supplied a unique value.
     std::optional<int> sourceNumber;
     /// Presentation-order frame at the lap start from source metadata.
@@ -145,6 +153,8 @@ struct VideoClock {
     std::optional<std::int64_t> presentationOffsetNs;
     std::vector<std::uint64_t> presentationTimesNs;
     std::vector<VideoFileReference> files;
+    /// Linked-video metadata for an exact catalog filename, or nullptr.
+    const VideoFileReference* fileNamed(const std::string& filename) const;
 
     bool valid() const {
         return !presentationTimesNs.empty() &&
@@ -191,6 +201,9 @@ public:
 
     std::vector<RawChannel>& channels() { return channels_; }
     const std::vector<RawChannel>& channels() const { return channels_; }
+    /// Decode a channel's samples on demand if not already decoded (lazy
+    /// decode for the indexOnly path). No-op when samples are populated.
+    void ensureDecoded(size_t channelIdx) const;
     std::vector<Lap>& sourceLaps() { return sourceLaps_; }
     const std::vector<Lap>& sourceLaps() const { return sourceLaps_; }
 
@@ -256,7 +269,7 @@ private:
     std::string path_;
     std::string format_;
     VideoClock videoClock_;
-    std::vector<RawChannel> channels_;
+    mutable std::vector<RawChannel> channels_;
     std::vector<Lap> sourceLaps_;
     std::int64_t utcStartNs_ = -1;
     std::uint64_t durationNs_ = 0;
@@ -308,9 +321,10 @@ SessionMeta sessionMetaFromFilename(const std::string& stem);
 /// Format a lap time in ms as "M:SS.mmm".
 std::string formatLapTime(double timeMs);
 
-/// Decode only sidebar metadata channels without loading full telemetry.
-std::vector<Lap> detectLapsLightweight(const std::string& path,
-                                       double* driverId = nullptr);
+/// Mark complete laps whose time exceeds the session median * 1.35 as pit
+/// in/out laps. A lap counts for best-lap selection when complete && !isPitLap.
+/// This is the single source of truth used by both SessionHandle and the CLI.
+void classifyLaps(std::vector<Lap>& laps);
 
 /// Port of MoTecParser.resample (srcFreq -> targetFreq, linear).
 std::vector<double> resample(const std::vector<double>& values, double srcFreq,
