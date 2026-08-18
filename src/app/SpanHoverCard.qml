@@ -8,7 +8,7 @@ import QtQuick.Layouts
 // Span metadata card. Lives on Overlay.overlay so it paints above scene-graph
 // traces, lane labels, and the cursor overlay. Follows the pointer; never
 // accepts hover, or it would steal the TraceView hit-test that drives it.
-Rectangle {
+OverlayCard {
     id: card
 
     property color accent: "transparent"
@@ -42,7 +42,9 @@ Rectangle {
 
     border.color: Style.borderColor
     border.width: 1
+    clip: false
     color: Style.darkBackgroundColor
+    dragEnabled: false
     enabled: false
     height: body.implicitHeight + 12
     parent: Overlay.overlay

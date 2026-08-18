@@ -8,15 +8,6 @@ import QtQuick.Layouts
 Pane {
     id: browser
 
-    property var _ancestorCache: ({})
-    property var driverPills: []
-    property var expandedNodes: ({})
-    property var selectedDrivers: []
-    property string selectedTrack: ""
-    property var selectedYears: []
-    property var trackPills: []
-    property var yearPills: []
-
     signal driverRenameRequested(string mappingKey, string driver)
     signal fileActivated(string path, string key, bool hasSession)
     signal fileIsolated(string key)
@@ -29,241 +20,32 @@ Pane {
     signal trackAssignmentRequested(string key)
     signal videoMetadataRequested(string path)
 
-    function appendNode(node, indent: int, query: string): void {
-        if (!browser.nodeMatches(node, query))
-            return;
-        const role = node.role || "file";
-        const children = node.children || [];
-        const expanded = query !== "" || browser.nodeExpanded(role, node.path || "");
-        treeModel.append({
-            available: node.available !== false,
-            bestTime: node.bestTime || "",
-            carClass: node.carClass || "",
-            childCount: role === "source" ? (node.fileCount || 0) : children.length,
-            driver: node.driver || "",
-            driveTime: node.driveTime || "",
-            expanded: expanded,
-            hasSession: node.hasSession === true,
-            indent: indent,
-            isVideo: node.isVideo === true,
-            key: node.key || "",
-            lapCount: node.lapCount || 0,
-            mappingKey: node.mappingKey || "",
-            modified: node.modified || "",
-            name: node.name || "",
-            path: node.path || "",
-            pinned: node.pinned === true,
-            role: role,
-            seriesName: node.seriesName || "",
-            sessionDate: node.sessionDate || "",
-            sessionName: node.sessionName || "",
-            sessionStart: node.sessionStart || "",
-            topQuartileTime: node.topQuartileTime || "",
-            track: node.track || ""
-        });
-        if (expanded)
-            browser.appendNodes(children, indent + 1, query);
-    }
-    function appendNodes(nodes, indent: int, query: string): void {
-        for (let index = 0; index < nodes.length; ++index)
-            browser.appendNode(nodes[index], indent, query);
-    }
-    function buildAncestorCache(nodes, ancestors: list<string>): void {
-        for (let index = 0; index < nodes.length; ++index) {
-            const node = nodes[index];
-            const role = node.role || "file";
-            let nextAncestors = ancestors;
-            if (role === "source" || role === "folder")
-                nextAncestors = ancestors.concat([role + ":" + (node.path || "")]);
-            if (role === "file" && node.key && nextAncestors.length > 0 && !browser._ancestorCache[node.key])
-                browser._ancestorCache[node.key] = nextAncestors;
-            const children = node.children || [];
-            if (children.length > 0)
-                browser.buildAncestorCache(children, nextAncestors);
-        }
-    }
     function clearFilters(): void {
-        browser.selectedDrivers = [];
-        browser.selectedYears = [];
-        browser.selectedTrack = "";
-        browser.rebuild();
-    }
-    function collectFacets(nodes, drivers, years, tracks): void {
-        for (let index = 0; index < nodes.length; ++index) {
-            const node = nodes[index];
-            if ((node.role || "file") === "file") {
-                const driver = (node.driver || "").trim();
-                if (driver !== "" && drivers.indexOf(driver) < 0)
-                    drivers.push(driver);
-                const year = browser.yearOf(node);
-                if (year !== "" && years.indexOf(year) < 0)
-                    years.push(year);
-                const track = (node.track || "").trim();
-                if (track !== "" && tracks.indexOf(track) < 0)
-                    tracks.push(track);
-            }
-            const children = node.children || [];
-            if (children.length > 0)
-                browser.collectFacets(children, drivers, years, tracks);
-        }
-    }
-    function driverSelected(name: string): bool {
-        return browser.selectedDrivers.indexOf(name) >= 0;
-    }
-    function filePassesFilters(node): bool {
-        if (browser.selectedDrivers.length > 0 && browser.selectedDrivers.indexOf((node.driver || "").trim()) < 0)
-            return false;
-        if (browser.selectedYears.length > 0 && browser.selectedYears.indexOf(browser.yearOf(node)) < 0)
-            return false;
-        if (browser.selectedTrack !== "" && (node.track || "").trim() !== browser.selectedTrack)
-            return false;
-        return true;
-    }
-    function filtersActive(): bool {
-        return browser.selectedDrivers.length > 0 || browser.selectedYears.length > 0 || browser.selectedTrack !== "";
-    }
-    function nodeExpanded(role: string, path: string): bool {
-        if (fileFilter.text.trim() !== "" || browser.filtersActive())
-            return true;
-        if (role === "day")
-            return true;
-        const stored = browser.expandedNodes[role + ":" + path];
-        return stored === undefined ? role === "source" || role === "pins" || role === "recent" : stored;
-    }
-    function nodeMatches(node, query: string): bool {
-        const role = node.role || "file";
-        const children = node.children || [];
-        if (role === "file") {
-            if (!browser.filePassesFilters(node))
-                return false;
-            if (query === "")
-                return true;
-            const searchable = [node.name || "", node.path || "", node.driver || "", node.sessionName || "", node.sessionStart || "", node.bestTime || "", node.carClass || "", node.seriesName || "", node.sessionDate || "", node.track || ""].join(" ").toLowerCase();
-            return searchable.includes(query);
-        }
-        for (let index = 0; index < children.length; ++index)
-            if (browser.nodeMatches(children[index], query))
-                return true;
-        return query === "" && !browser.filtersActive();
-    }
-    function rebuild(): void {
-        browser.refreshFacets();
-        const y = tree.contentY;
-        treeModel.clear();
-        browser.appendNodes(Store.fileSources(), 0, fileFilter.text.trim().toLowerCase());
-        tree.contentY = Math.min(y, Math.max(0, tree.contentHeight - tree.height));
-    }
-    function rebuildAncestorCache(): void {
-        browser._ancestorCache = ({});
-        browser.buildAncestorCache(Store.fileSources(), []);
-    }
-    function refreshFacets(): void {
-        const drivers = [];
-        const years = [];
-        const tracks = [];
-        browser.collectFacets(Store.fileSources(), drivers, years, tracks);
-        drivers.sort();
-        years.sort();
-        const newestFirst = [];
-        for (let index = years.length - 1; index >= 0; --index)
-            newestFirst.push(years[index]);
-        tracks.sort();
-        if (!browser.sameStringList(browser.driverPills, drivers))
-            browser.driverPills = drivers;
-        if (!browser.sameStringList(browser.yearPills, newestFirst))
-            browser.yearPills = newestFirst;
-        if (!browser.sameStringList(browser.trackPills, tracks))
-            browser.trackPills = tracks;
-    }
-    function revealSession(key: string): bool {
-        if (key === "" || fileFilter.text !== "")
-            return false;
-        const ancestors = browser._ancestorCache[key];
-        if (!ancestors)
-            return false;
-        let changed = false;
-        let expanded = browser.expandedNodes;
-        for (let index = 0; index < ancestors.length; ++index) {
-            if (!expanded[ancestors[index]]) {
-                if (!changed) {
-                    expanded = Object.assign({}, browser.expandedNodes);
-                    changed = true;
-                }
-                expanded[ancestors[index]] = true;
-            }
-        }
-        if (changed)
-            browser.expandedNodes = expanded;
-        return changed;
-    }
-    function sameStringList(left, right): bool {
-        if (left.length !== right.length)
-            return false;
-        for (let index = 0; index < left.length; ++index)
-            if (left[index] !== right[index])
-                return false;
-        return true;
+        fileFilter.clear();
+        filterModel.selectedDrivers = [];
+        filterModel.selectedYears = [];
+        filterModel.selectedTrack = "";
+        filterModel.selectedKind = "";
     }
     function toggleDriver(name: string): void {
-        browser.selectedDrivers = browser.togglePill(browser.selectedDrivers, name);
-        browser.rebuild();
-    }
-    function toggleNode(role: string, path: string): void {
-        const key = role + ":" + path;
-        let expanded = Object.assign({}, browser.expandedNodes);
-        expanded[key] = !browser.nodeExpanded(role, path);
-        browser.expandedNodes = expanded;
-        browser.rebuild();
-    }
-    function togglePill(current, name: string) {
+        const current = filterModel.selectedDrivers;
         const index = current.indexOf(name);
-        if (current.length === 0)
-            return [name];
-        if (index >= 0) {
-            const next = [];
-            for (let i = 0; i < current.length; ++i)
-                if (current[i] !== name)
-                    next.push(current[i]);
-            return next;
-        }
-        return current.concat([name]);
+        if (index >= 0)
+            filterModel.selectedDrivers = current.filter(item => item !== name);
+        else
+            filterModel.selectedDrivers = current.concat([name]);
     }
     function toggleYear(name: string): void {
-        browser.selectedYears = browser.togglePill(browser.selectedYears, name);
-        browser.rebuild();
+        const current = filterModel.selectedYears;
+        const index = current.indexOf(name);
+        if (index >= 0)
+            filterModel.selectedYears = current.filter(item => item !== name);
+        else
+            filterModel.selectedYears = current.concat([name]);
     }
     function updateFileMetadata(path: string, details: var): void {
-        for (let index = 0; index < treeModel.count; ++index) {
-            const row = treeModel.get(index);
-            if (row.role !== "file" || row.path !== path)
-                continue;
-            treeModel.setProperty(index, "bestTime", details.bestTime || "");
-            treeModel.setProperty(index, "carClass", details.carClass || "");
-            treeModel.setProperty(index, "driveTime", details.driveTime || "");
-            treeModel.setProperty(index, "driver", details.driver || "");
-            treeModel.setProperty(index, "hasSession", details.hasSession === true);
-            treeModel.setProperty(index, "isVideo", details.isVideo === true);
-            treeModel.setProperty(index, "key", details.key || "");
-            treeModel.setProperty(index, "lapCount", details.lapCount || 0);
-            treeModel.setProperty(index, "mappingKey", details.mappingKey || "");
-            treeModel.setProperty(index, "seriesName", details.seriesName || "");
-            treeModel.setProperty(index, "sessionDate", details.sessionDate || "");
-            treeModel.setProperty(index, "sessionName", details.sessionName || "");
-            treeModel.setProperty(index, "sessionStart", details.sessionStart || "");
-            treeModel.setProperty(index, "topQuartileTime", details.topQuartileTime || "");
-            treeModel.setProperty(index, "track", details.track || "");
-        }
-    }
-    function yearOf(node): string {
-        const day = node.sessionDayKey || "";
-        if (day.length >= 4 && day !== "unknown")
-            return day.substring(0, 4);
-        const date = node.sessionDate || "";
-        const match = date.match(/(19|20)\d{2}/);
-        return match ? match[0] : "";
-    }
-    function yearSelected(name: string): bool {
-        return browser.selectedYears.indexOf(name) >= 0;
+        // The C++ model handles metadata updates via the store's
+        // sidebarMetadataChanged signal; nothing to do here.
     }
 
     padding: 0
@@ -272,33 +54,15 @@ Pane {
         color: Style.darkBackgroundColor
     }
 
-    Component.onCompleted: {
-        browser.rebuildAncestorCache();
-        browser.rebuild();
-    }
+    LibraryFilterModel {
+        id: filterModel
 
+        sourceModel: Store.library
+    }
     Connections {
-        function onDriverMappingsChanged(): void {
-            browser.rebuild();
-        }
-        function onFilePinsChanged(): void {
-            browser.rebuild();
-        }
-        function onRecentFilesChanged(): void {
-            browser.rebuildAncestorCache();
-            browser.rebuild();
-        }
         function onSelectionChanged(): void {
-            if (browser.revealSession(Store.primarySessionKey))
-                browser.rebuild();
-        }
-        function onSessionsChanged(): void {
-            browser.rebuildAncestorCache();
-            browser.rebuild();
-        }
-        function onSidebarMetadataChanged(path: string, details: var): void {
-            browser.updateFileMetadata(path, details);
-            browser.refreshFacets();
+            if (filterModel.revealSession(Store.primarySessionKey))
+                filterModel.invalidate();
         }
 
         target: Store
@@ -309,10 +73,7 @@ Pane {
         interval: 120
         repeat: false
 
-        onTriggered: browser.rebuild()
-    }
-    ListModel {
-        id: treeModel
+        onTriggered: filterModel.filterText = fileFilter.text.trim().toLowerCase()
     }
     Menu {
         id: fileContextMenu
@@ -500,7 +261,7 @@ Pane {
 
                     Keys.onEscapePressed: {
                         fileFilter.clear();
-                        browser.rebuild();
+                        filterModel.filterText = "";
                     }
                     onTextEdited: filterTimer.restart()
                 }
@@ -515,7 +276,7 @@ Pane {
 
                     onClicked: {
                         fileFilter.clear();
-                        browser.rebuild();
+                        filterModel.filterText = "";
                     }
                 }
                 BusyIndicator {
@@ -548,7 +309,7 @@ Pane {
                 anchors.fill: parent
                 boundsBehavior: Flickable.StopAtBounds
                 clip: true
-                model: treeModel
+                model: filterModel
 
                 ScrollBar.vertical: ThinScrollBar {
                 }
@@ -585,7 +346,7 @@ Pane {
                     onPointerTooltipRequested: (owner, text, x, y) => browser.pointerTooltipRequested(owner, text, x, y)
                     onSetActiveRequested: key => browser.setActiveRequested(key)
                     onSetReferenceRequested: key => browser.setReferenceRequested(key)
-                    onToggleNodeRequested: (role, path) => browser.toggleNode(role, path)
+                    onToggleNodeRequested: (role, path) => filterModel.toggleNode(role, path)
                 }
             }
             Column {
@@ -611,7 +372,7 @@ Pane {
             Layout.fillWidth: true
             color: Style.surfaceColor
             implicitHeight: filterColumn.implicitHeight + 10
-            visible: browser.driverPills.length > 0 || browser.yearPills.length > 0 || browser.trackPills.length > 0
+            visible: Store.library.driverPills.length > 0 || Store.library.yearPills.length > 0 || Store.library.trackPills.length > 0
 
             Rectangle {
                 anchors.left: parent.left
@@ -653,7 +414,7 @@ Pane {
                         ToolTip.visible: hovered
                         font.pixelSize: 11
                         text: "×"
-                        visible: browser.selectedDrivers.length > 0 || browser.selectedYears.length > 0 || browser.selectedTrack !== ""
+                        visible: filterModel.selectedDrivers.length > 0 || filterModel.selectedYears.length > 0 || filterModel.selectedTrack !== ""
 
                         onClicked: browser.clearFilters()
                     }
@@ -661,16 +422,16 @@ Pane {
                 Flow {
                     Layout.fillWidth: true
                     spacing: 4
-                    visible: browser.driverPills.length > 0
+                    visible: Store.library.driverPills.length > 0
 
                     Repeater {
-                        model: browser.driverPills
+                        model: Store.library.driverPills
 
                         FilterPill {
                             required property string modelData
 
                             label: modelData
-                            selected: browser.driverSelected(modelData)
+                            selected: filterModel.selectedDrivers.indexOf(modelData) >= 0
 
                             onActivated: browser.toggleDriver(modelData)
                         }
@@ -679,16 +440,16 @@ Pane {
                 Flow {
                     Layout.fillWidth: true
                     spacing: 4
-                    visible: browser.yearPills.length > 0
+                    visible: Store.library.yearPills.length > 0
 
                     Repeater {
-                        model: browser.yearPills
+                        model: Store.library.yearPills
 
                         FilterPill {
                             required property string modelData
 
                             label: modelData
-                            selected: browser.yearSelected(modelData)
+                            selected: filterModel.selectedYears.indexOf(modelData) >= 0
 
                             onActivated: browser.toggleYear(modelData)
                         }
@@ -699,16 +460,15 @@ Pane {
 
                     Layout.fillWidth: true
                     Layout.preferredHeight: Style.controlHeight
-                    currentIndex: browser.selectedTrack === "" ? 0 : browser.trackPills.indexOf(browser.selectedTrack) + 1
+                    currentIndex: filterModel.selectedTrack === "" ? 0 : Store.library.trackPills.indexOf(filterModel.selectedTrack) + 1
                     font.family: Style.uiFontFamily
                     font.pixelSize: Style.smallFontSize
                     implicitHeight: Style.controlHeight
-                    model: ["All tracks"].concat(browser.trackPills)
-                    visible: browser.trackPills.length > 0
+                    model: ["All tracks"].concat(Store.library.trackPills)
+                    visible: Store.library.trackPills.length > 0
 
                     onActivated: index => {
-                        browser.selectedTrack = index <= 0 ? "" : browser.trackPills[index - 1];
-                        browser.rebuild();
+                        filterModel.selectedTrack = index <= 0 ? "" : Store.library.trackPills[index - 1];
                     }
                 }
             }

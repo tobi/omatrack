@@ -7,6 +7,7 @@
 #include <QDebug>
 #include <QFile>
 #include <QSaveFile>
+#include <QRegularExpression>
 #include <QStandardPaths>
 
 namespace omatrack {
@@ -24,15 +25,14 @@ QString legacyFilePath() {
 
 // ── emit ────────────────────────────────────────────────────────────
 
-bool emitScalar(yaml_emitter_t* emitter, const QString& text) {
+bool emitScalar(yaml_emitter_t* emitter, const QString& text,
+                yaml_scalar_style_t style = YAML_DOUBLE_QUOTED_SCALAR_STYLE) {
     const QByteArray utf8 = text.toUtf8();
     yaml_event_t event{};
-    // Quote everything: plain style would turn "01:23" or "no" into a
-    // non-string on the next load, and configuration values are user text.
     if (!yaml_scalar_event_initialize(
             &event, nullptr, nullptr,
             reinterpret_cast<yaml_char_t*>(const_cast<char*>(utf8.constData())),
-            int(utf8.size()), 0, 1, YAML_DOUBLE_QUOTED_SCALAR_STYLE))
+            int(utf8.size()), 1, 1, style))
         return false;
     return yaml_emitter_emit(emitter, &event) != 0;
 }
@@ -71,16 +71,27 @@ bool emitValue(yaml_emitter_t* emitter, const QVariant& value) {
         case QMetaType::QVariantList:
         case QMetaType::QStringList: return emitSeq(emitter, value.toList());
         case QMetaType::Bool:
-            return emitScalar(emitter, value.toBool()
-                                           ? QStringLiteral("true")
-                                           : QStringLiteral("false"));
+            return emitScalar(emitter,
+                              value.toBool() ? QStringLiteral("true")
+                                             : QStringLiteral("false"),
+                              YAML_PLAIN_SCALAR_STYLE);
+        case QMetaType::Int:
+        case QMetaType::LongLong:
+        case QMetaType::UInt:
+        case QMetaType::ULongLong:
+            return emitScalar(emitter, QString::number(value.toLongLong()),
+                              YAML_PLAIN_SCALAR_STYLE);
         case QMetaType::Double:
             return emitScalar(emitter,
-                              QString::number(value.toDouble(), 'g', 10));
+                              QString::number(value.toDouble(), 'g', 10),
+                              YAML_PLAIN_SCALAR_STYLE);
+        case QMetaType::UnknownType:
+            // Invalid/null QVariant: emit a plain null token.
+            return emitScalar(emitter, QStringLiteral("null"),
+                              YAML_PLAIN_SCALAR_STYLE);
         default: return emitScalar(emitter, value.toString());
     }
 }
-
 int writeHandler(void* data, unsigned char* buffer, size_t size) {
     auto* bytes = static_cast<QByteArray*>(data);
     bytes->append(reinterpret_cast<const char*>(buffer), qsizetype(size));
@@ -113,7 +124,41 @@ QByteArray serialize(const QVariantMap& root) {
     return ok ? bytes : QByteArray();
 }
 
-// ── parse ───────────────────────────────────────────────────────────
+// YAML 1.2 core schema resolution for a plain (unquoted) scalar. Quoted
+// scalars are always strings; only plain scalars are typed here so a
+// hand-edited `muted: false` loads as a bool and `weight: 1.5` as a double.
+QVariant resolvePlainScalar(const QByteArray& raw) {
+    const QByteArray s = raw.trimmed();
+    if (s.isEmpty() || s == "~" || s == "null" || s == "Null" || s == "NULL")
+        return QVariant();  // null
+    if (s == "true" || s == "True" || s == "TRUE") return QVariant(true);
+    if (s == "false" || s == "False" || s == "FALSE") return QVariant(false);
+    // Integer: decimal, hex (0x), octal (0o). Reject leading-zero decimals
+    // other than "0" itself so "01" stays a string (e.g. a driver code).
+    static const QRegularExpression decimal(
+        QStringLiteral("^[+-]?(?:0|[1-9][0-9]*)$"));
+    static const QRegularExpression hex(QStringLiteral("^0x[0-9a-fA-F]+$"));
+    static const QRegularExpression octal(QStringLiteral("^0o[0-7]+$"));
+    const QString text = QString::fromUtf8(s);
+    bool ok = false;
+    if (decimal.match(text).hasMatch() || hex.match(text).hasMatch() ||
+        octal.match(text).hasMatch()) {
+        const qlonglong v = text.toLongLong(&ok, 0);
+        if (ok) return QVariant(v);
+    }
+    // Floating point, including .inf/.nan core-schema forms.
+    static const QRegularExpression floating(
+        QStringLiteral("^[-+]?(?:\\.[0-9]+|[0-9]+(?:\\.[0-9]*)?)"
+                       "(?:[eE][-+]?[0-9]+)?$"));
+    static const QRegularExpression special(
+        QStringLiteral("^[-+]?\\.(?:inf|Inf|INF)$|"
+                       "^\\.(?:nan|NaN|NAN)$"));
+    if (floating.match(text).hasMatch() || special.match(text).hasMatch()) {
+        const double v = text.toDouble(&ok);
+        if (ok) return QVariant(v);
+    }
+    return QVariant(text);
+}
 
 // Recursive-descent over the libyaml event stream. Returns false on a parser
 // error so a damaged file degrades to defaults instead of partial state.
@@ -164,11 +209,16 @@ bool parseSeq(yaml_parser_t* parser, QVariantList* out) {
 
 bool parseNode(yaml_parser_t* parser, yaml_event_t* event, QVariant* out) {
     switch (event->type) {
-        case YAML_SCALAR_EVENT:
-            *out = QString::fromUtf8(
+        case YAML_SCALAR_EVENT: {
+            const QByteArray raw(
                 reinterpret_cast<const char*>(event->data.scalar.value),
                 int(event->data.scalar.length));
+            if (event->data.scalar.style == YAML_PLAIN_SCALAR_STYLE)
+                *out = resolvePlainScalar(raw);
+            else
+                *out = QString::fromUtf8(raw);
             return true;
+        }
         case YAML_MAPPING_START_EVENT: {
             QVariantMap map;
             if (!parseMap(parser, &map)) return false;
@@ -211,6 +261,51 @@ QVariantMap deserialize(const QByteArray& bytes, bool* ok) {
     return *ok ? root : QVariantMap();
 }
 
+// Pre-typed-parser config files quoted every scalar, so bool fields loaded as
+// the strings "true"/"false". Convert those leaves back to real bools once so
+// QVariant::toBool() is correct and the next save rewrites them unquoted. Runs
+// on every load but is a no-op for files already written by the typed emitter.
+bool normalizeLegacyBoolStrings(QVariant* value) {
+    if (!value->isValid()) return false;
+    if (value->typeId() == QMetaType::QVariantMap) {
+        QVariantMap map = value->toMap();
+        bool changed = false;
+        for (auto it = map.begin(); it != map.end(); ++it) {
+            QVariant child = it.value();
+            if (normalizeLegacyBoolStrings(&child)) {
+                it.value() = child;
+                changed = true;
+            }
+        }
+        if (changed) *value = map;
+        return changed;
+    }
+    if (value->typeId() == QMetaType::QVariantList) {
+        QVariantList list = value->toList();
+        bool changed = false;
+        for (int i = 0; i < list.size(); ++i) {
+            QVariant child = list[i];
+            if (normalizeLegacyBoolStrings(&child)) {
+                list[i] = child;
+                changed = true;
+            }
+        }
+        if (changed) *value = list;
+        return changed;
+    }
+    if (value->typeId() == QMetaType::QString) {
+        const QString s = value->toString();
+        if (s == QStringLiteral("true")) {
+            *value = QVariant(true);
+            return true;
+        }
+        if (s == QStringLiteral("false")) {
+            *value = QVariant(false);
+            return true;
+        }
+    }
+    return false;
+}
 }  // namespace
 
 // ── document ────────────────────────────────────────────────────────
@@ -243,16 +338,15 @@ QVariantMap YamlConfig::readDocument(const QString& path,
     return ok ? document : QVariantMap();
 }
 
-bool YamlConfig::writeDocument(const QString& path, const QVariantMap& document,
-                               QString* errorString) {
+bool YamlConfig::writeDocumentBytes(const QString& path,
+                                    const QByteArray& bytes,
+                                    QString* errorString) {
     if (errorString) errorString->clear();
-    const QByteArray bytes = serialize(document);
     if (bytes.isEmpty()) {
         if (errorString)
             *errorString = QStringLiteral("Unable to serialize YAML document");
         return false;
     }
-
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         if (errorString)
@@ -276,6 +370,10 @@ bool YamlConfig::writeDocument(const QString& path, const QVariantMap& document,
     return true;
 }
 
+bool YamlConfig::writeDocument(const QString& path, const QVariantMap& document,
+                               QString* errorString) {
+    return writeDocumentBytes(path, serialize(document), errorString);
+}
 YamlConfig::YamlConfig() { load(); }
 
 void YamlConfig::load() {
@@ -309,6 +407,11 @@ void YamlConfig::load() {
         return;
     }
     root_ = parsed;
+    QVariant rootVariant(root_);
+    if (normalizeLegacyBoolStrings(&rootVariant)) {
+        root_ = rootVariant.toMap();
+        dirty_ = true;
+    }
     if (sourcePath != currentPath) {
         // Import the pre-rename YAML document once. Future writes use only
         // Omatrack's path, leaving the legacy file untouched as a backup.
@@ -391,22 +494,36 @@ void YamlConfig::remove(const QStringList& path) {
     dirty_ = true;
 }
 
-void YamlConfig::save() {
+QByteArray YamlConfig::serializeDocument() const {
+    QByteArray bytes =
+        "# omatrack configuration. Edited by the app and by hand.\n";
+    bytes += serialize(root_);
+    return bytes;
+}
+
+bool YamlConfig::save(QString* errorString) {
+    if (errorString) errorString->clear();
     if (!writable_) {
         qWarning().noquote() << errorString_;
-        return;
+        if (errorString) *errorString = errorString_;
+        return false;
     }
-    if (!dirty_) return;
-    const QByteArray bytes = serialize(root_);
-    if (bytes.isEmpty()) return;
-    QSaveFile file(filePath());
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) return;
-    file.write("# omatrack configuration. Edited by the app and by hand.\n");
-    file.write(bytes);
-    if (file.commit()) {
-        dirty_ = false;
-        fresh_ = false;
+    if (!dirty_) return true;
+    const QByteArray bytes = serializeDocument();
+    if (bytes.isEmpty()) {
+        if (errorString)
+            *errorString = QStringLiteral("Unable to serialize omatrack.yml");
+        return false;
     }
+    QString localError;
+    if (!writeDocumentBytes(filePath(), bytes, &localError)) {
+        qWarning().noquote() << localError;
+        if (errorString) *errorString = localError;
+        return false;
+    }
+    dirty_ = false;
+    fresh_ = false;
+    return true;
 }
 
 }  // namespace omatrack

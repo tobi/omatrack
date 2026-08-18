@@ -47,14 +47,19 @@ qt_add_qml_module(omatrack
   QML_FILES
     Main.qml
     RoleDot.qml
+    RoleActionRow.qml
     ChannelBrowserPopup.qml
     ChannelMappingField.qml
     ConnectionDialog.qml
     CompactTextField.qml
     CompactButton.qml
+    CompactToolButton.qml
+    DenseTwoLineRow.qml
+    OverlayCard.qml
     Style.qml
     AppHeader.qml
     ChannelsWindow.qml
+    LapFilmstrip.qml
     CornerFocusOverlay.qml
     DriverMetadataSection.qml
     FileAssociationsDialog.qml
@@ -66,27 +71,34 @@ qt_add_qml_module(omatrack
     PreferencesLibraryPage.qml
     PreferencesTrackDataPage.qml
     PreferencesUpdatesPage.qml
+    TextInputDialog.qml
     SessionTreeDelegate.qml
     SpanHoverCard.qml
     TraceCornerRuler.qml
     TraceLaneChrome.qml
     TraceToolbar.qml
     TrackAssignmentDialog.qml
+    OperationErrorDialog.qml
     ThinScrollBar.qml
     VideoMetadataDialog.qml
     VideoTelemetryOverlay.qml
     VideoDeltaBar.qml
   SOURCES
+    AsyncJob.h
+    StoreTypes.h
+    StoreModels.h StoreModels.cpp
+    LibraryModel.h LibraryModel.cpp
     AppUpdate.h AppUpdate.cpp
     AppUpdater.h AppUpdater.cpp
-    AimRemoteIndex.h AimRemoteIndex.cpp
     DamperStripView.h DamperStripView.cpp
     MpvVideoItem.h MpvVideoItem.cpp
     OmarchyTheme.h OmarchyTheme.cpp
     ComparisonAlignment.h ComparisonAlignment.cpp
-    RecordingSidecar.h RecordingSidecar.cpp
     TrackMetadata.h TrackMetadata.cpp
     TelemetryStore.h TelemetryStore.cpp
+    OverlayManager.h OverlayManager.cpp
+    PreferencesStore.h PreferencesStore.cpp
+    TrackAtlasManager.h TrackAtlasManager.cpp
     LibraryLocation.h LibraryLocation.cpp
     RemoteCache.h RemoteCache.cpp
     WebDavBackend.cpp
@@ -97,8 +109,12 @@ qt_add_qml_module(omatrack
     TraceTextCache.h TraceTextCache.cpp
     UsbMedia.h UsbMedia.cpp
     VerboseLog.h VerboseLog.cpp
+    TraceSnapshot.h
+    TraceInteraction.h TraceInteraction.cpp
+    TraceLaneLayout.h TraceLaneLayout.cpp
     TraceView.h TraceView.cpp
     VideoTelemetryHud.h VideoTelemetryHud.cpp
+    VideoSyncController.h VideoSyncController.cpp
     YamlConfig.h YamlConfig.cpp
 )
 if(OMATRACK_ENABLE_AUTOTEST_HARNESS)

@@ -10,7 +10,7 @@ import Omatrack
 
 import QtQuick
 
-Item {
+OverlayCard {
     id: deltaBar
 
     readonly property real barHeight: 18 * deltaBar.userScale
@@ -65,13 +65,27 @@ Item {
         deltaBar.speedDelta = Store.cursorSpeedDelta();
     }
 
+    border.width: 0
+    clip: false
+    color: Qt.rgba(0, 0, 0, 0)
+    dragEnabled: !resizeHover.hovered
     height: track.height + 4 * deltaBar.userScale + readout.implicitHeight
     objectName: "videoDeltaBar"
     opacity: Number.isFinite(deltaBar.timeDelta) ? 1 : 0
+    radius: 0
     width: deltaBar.barWidth
     z: 9
 
     Component.onCompleted: deltaBar.refresh()
+    onDragBegun: {
+        deltaBar.dragOriginX = deltaBar.x;
+        deltaBar.dragOriginY = deltaBar.y;
+        deltaBar.userPositioned = true;
+    }
+    onDragMoved: (x, y) => {
+        deltaBar.x = deltaBar.clampX(deltaBar.dragOriginX + x);
+        deltaBar.y = deltaBar.clampY(deltaBar.dragOriginY + y);
+    }
 
     Binding {
         property: "x"
@@ -170,28 +184,6 @@ Item {
         font.family: Style.monoFontFamily
         font.pixelSize: Math.max(12, Math.round(22 * deltaBar.userScale))
         text: deltaBar.timeText
-    }
-    DragHandler {
-        id: moveHandler
-
-        enabled: !resizeHover.hovered
-        target: null
-
-        onActiveChanged: {
-            if (active) {
-                deltaBar.dragOriginX = deltaBar.x;
-                deltaBar.dragOriginY = deltaBar.y;
-                deltaBar.userPositioned = true;
-            }
-        }
-        onTranslationChanged: {
-            deltaBar.x = deltaBar.clampX(deltaBar.dragOriginX + translation.x);
-            deltaBar.y = deltaBar.clampY(deltaBar.dragOriginY + translation.y);
-        }
-    }
-    HoverHandler {
-        cursorShape: Qt.SizeAllCursor
-        enabled: !resizeHover.hovered
     }
     WheelHandler {
         onWheel: event => {

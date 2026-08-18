@@ -79,61 +79,21 @@ Item {
             Layout.fillWidth: true
             spacing: 0
 
-            RowLayout {
+            DenseTwoLineRow {
                 Layout.fillWidth: true
-                spacing: 4
+                detail: row.stem || row.name
+                detailColor: Style.mutedTextColor
+                detailElide: Text.ElideMiddle
+                detailLeading: "best " + (row.bestTime || "—")
+                detailLeadingColor: row.isDayBest ? Style.magentaColor : row.isDriverBest ? Style.greenColor : Style.mutedTextColor
+                detailSpacing: 5
+                showVideoIcon: row.videoSession
+                title: row.driver || "Unknown"
+                titleBold: row.activeSession
+                titleColor: row.activeSession ? Style.accentColor : row.referenceSession ? Style.orangeColor : Style.foregroundColor
+                titleSpacing: 4
+                videoIconColor: row.activeSession ? Style.accentColor : row.referenceSession ? Style.orangeColor : Style.foregroundColor
                 visible: row.role === "session"
-
-                Rectangle {
-                    Layout.preferredHeight: 11
-                    Layout.preferredWidth: 15
-                    border.color: sessionRowLabel.color
-                    border.width: 1
-                    color: "transparent"
-                    radius: 2
-                    visible: row.videoSession
-
-                    Label {
-                        anchors.centerIn: parent
-                        color: sessionRowLabel.color
-                        font.family: Style.monoFontFamily
-                        font.pixelSize: 6
-                        text: "▶"
-                    }
-                }
-                Label {
-                    id: sessionRowLabel
-
-                    Layout.fillWidth: true
-                    color: row.activeSession ? Style.accentColor : row.referenceSession ? Style.orangeColor : Style.foregroundColor
-                    elide: Text.ElideRight
-                    font.bold: row.activeSession
-                    font.family: Style.uiFontFamily
-                    font.pixelSize: 10
-                    text: row.driver || "Unknown"
-                }
-            }
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 5
-                visible: row.role === "session"
-
-                Label {
-                    Layout.minimumWidth: implicitWidth
-                    color: row.isDayBest ? Style.magentaColor : row.isDriverBest ? Style.greenColor : Style.mutedTextColor
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: 8
-                    text: "best " + (row.bestTime || "—")
-                }
-                Label {
-                    Layout.fillWidth: true
-                    Layout.minimumWidth: 0
-                    color: Style.mutedTextColor
-                    elide: Text.ElideMiddle
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: 8
-                    text: row.stem || row.name
-                }
             }
             Label {
                 Layout.fillWidth: true
@@ -146,42 +106,30 @@ Item {
                 visible: row.role !== "session"
             }
         }
-        ToolButton {
+        CompactToolButton {
             Layout.preferredHeight: 22
             Layout.preferredWidth: 22
-            ToolTip.text: "Close track"
-            ToolTip.visible: hovered
             text: "×"
+            tip: "Close track"
             visible: row.role === "track"
 
             onClicked: Store.closeTrack(row.name)
         }
     }
 
-    // Above the full-row MouseArea so the dots and the track close button take
-    // their own clicks instead of activating the row.
-    Row {
+    // Above the full-row MouseArea so the dots take their own clicks
+    // instead of activating the row.
+    RoleActionRow {
         anchors.right: parent.right
         anchors.rightMargin: 8
         anchors.verticalCenter: parent.verticalCenter
-        spacing: 8
+        primarySelected: row.activeSession
+        referenceSelected: row.referenceSession
         visible: row.role === "session"
         z: 2
 
-        RoleDot {
-            activeColor: Style.accentColor
-            selected: row.activeSession
-            tip: "Make current lap"
-
-            onActivated: row.setActiveRequested(row.key)
-        }
-        RoleDot {
-            activeColor: Style.orangeColor
-            selected: row.referenceSession
-            tip: row.referenceSession ? "Clear reference" : "Make reference lap"
-
-            onActivated: row.setReferenceRequested(row.key)
-        }
+        onPrimaryActivated: row.setActiveRequested(row.key)
+        onReferenceActivated: row.setReferenceRequested(row.key)
     }
     Menu {
         id: sessionMenu

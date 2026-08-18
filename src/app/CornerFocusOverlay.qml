@@ -13,7 +13,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-Rectangle {
+OverlayCard {
     id: overlay
 
     readonly property bool comparing: overlay.summary.hasCompare === true
@@ -121,6 +121,14 @@ Rectangle {
     }
 
     Component.onCompleted: overlay.refresh()
+    onDragBegun: {
+        overlay.dragOriginX = overlay.dragX;
+        overlay.dragOriginY = overlay.dragY;
+    }
+    onDragMoved: (x, y) => {
+        overlay.dragX = overlay.clampDragX(overlay.dragOriginX + x);
+        overlay.dragY = overlay.clampDragY(overlay.dragOriginY + y);
+    }
 
     Connections {
         function onCornerConsistencyChanged(): void {
@@ -167,24 +175,6 @@ Rectangle {
                     font.bold: true
                     font.pixelSize: Style.fontSize
                     text: overlay.summary.name || "Corner"
-
-                    DragHandler {
-                        target: null
-
-                        onActiveChanged: {
-                            if (active) {
-                                overlay.dragOriginX = overlay.dragX;
-                                overlay.dragOriginY = overlay.dragY;
-                            }
-                        }
-                        onTranslationChanged: {
-                            overlay.dragX = overlay.clampDragX(overlay.dragOriginX + translation.x);
-                            overlay.dragY = overlay.clampDragY(overlay.dragOriginY + translation.y);
-                        }
-                    }
-                    HoverHandler {
-                        cursorShape: Qt.SizeAllCursor
-                    }
                 }
                 Label {
                     Accessible.name: "Close corner"

@@ -8,40 +8,48 @@ import QtQuick.Layouts
 Item {
     id: row
 
-    readonly property bool activeFile: row.hasSession && row.key === row.activeSessionKey
+    readonly property bool activeFile: row.isPrimary
     required property string activeSessionKey
     required property bool available
-    required property string bestTime
+    required property string bestLapText
+    readonly property string bestTime: row.bestLapText
     required property string carClass
     required property int childCount
-    readonly property string detailText: (row.sessionStart || "—") + " · " + row.lapCount + (row.lapCount === 1 ? " lap" : " laps") + " · " + (row.driveTime || "—")
-    required property string driveTime
+    readonly property string detailText: (row.startTimeText || "—") + " · " + row.lapCount + (row.lapCount === 1 ? " lap" : " laps") + " · " + (row.driveTimeText || "—")
+    readonly property string driveTime: row.driveTimeText
+    required property string driveTimeText
     required property string driver
-    readonly property bool expandableRow: row.sectionRow || row.role === "folder"
+    readonly property bool expandableRow: row.sectionRow || row.kind === "folder"
     required property bool expanded
     required property bool hasSession
     required property int indent
+    required property bool isPrimary
+    required property bool isReference
     required property bool isVideo
     required property string key
+    required property string kind
     required property int lapCount
     required property string mappingKey
-    readonly property bool metadataInViewport: row.role === "file" && row.y + row.height >= ListView.view.contentY && row.y <= ListView.view.contentY + ListView.view.height
+    readonly property bool metadataInViewport: row.kind === "file" && row.y + row.height >= ListView.view.contentY && row.y <= ListView.view.contentY + ListView.view.height
     required property string modified
-    required property string name
+    readonly property string name: row.title
     required property string path
     required property bool pinned
-    readonly property bool referenceFile: row.hasSession && row.key === row.referenceSessionKey
+    readonly property bool referenceFile: row.isReference
     required property string referenceSessionKey
-    required property string role
-    readonly property bool sectionRow: row.role === "source" || row.role === "pins" || row.role === "recent"
+    readonly property string role: row.kind
+    readonly property bool sectionRow: row.kind === "source" || row.kind === "pins" || row.kind === "recent"
     required property string seriesName
     required property string sessionDate
     required property string sessionName
-    required property string sessionStart
+    readonly property string sessionStart: row.startTimeText
+    required property string startTimeText
+    required property string title
+    readonly property color titleColor: !row.available ? Style.redColor : row.activeFile ? Style.accentColor : row.referenceFile ? Style.orangeColor : Style.foregroundColor
     readonly property string titleText: row.sessionName !== "" && row.driver !== "" ? row.sessionName + " " + row.driver : row.sessionName || row.driver || "Untitled"
     readonly property string tooltipOwner: "file:" + row.path
     required property string topQuartileTime
-    readonly property bool videoFile: row.role === "file" && row.isVideo
+    readonly property bool videoFile: row.kind === "file" && row.isVideo
 
     signal contextMenuRequested(string role, string path, string key, bool hasSession, bool isVideo, string mappingKey, string driver, bool pinned)
     signal fileActivated(string path, string key, bool hasSession)
@@ -118,7 +126,7 @@ Item {
         Rectangle {
             Layout.preferredHeight: 11
             Layout.preferredWidth: 15
-            border.color: fileName.color
+            border.color: row.titleColor
             border.width: 1
             color: "transparent"
             radius: 2
@@ -126,7 +134,7 @@ Item {
 
             Label {
                 anchors.centerIn: parent
-                color: fileName.color
+                color: row.titleColor
                 font.family: Style.monoFontFamily
                 font.pixelSize: 6
                 text: "▶"
@@ -137,29 +145,26 @@ Item {
             Layout.fillWidth: true
             spacing: 0
 
-            RowLayout {
+            DenseTwoLineRow {
                 Layout.fillWidth: true
-                spacing: 6
+                detail: row.detailText
+                detailColor: !row.available ? Style.redColor : Style.mutedTextColor
+                rightColor: row.activeFile ? Style.accentColor : row.referenceFile ? Style.orangeColor : Style.foregroundColor
+                rightValue: row.bestTime || "—"
+                title: row.titleText
+                titleBold: row.activeFile
+                titleColor: row.titleColor
                 visible: row.role === "file"
 
-                Label {
-                    id: fileName
+                RoleActionRow {
+                    dotSize: 9
+                    primarySelected: row.activeFile
+                    primaryVisible: row.hasSession
+                    referenceSelected: row.referenceFile
+                    referenceVisible: row.hasSession
 
-                    Layout.fillWidth: true
-                    Layout.minimumWidth: 0
-                    color: !row.available ? Style.redColor : row.activeFile ? Style.accentColor : row.referenceFile ? Style.orangeColor : Style.foregroundColor
-                    elide: Text.ElideRight
-                    font.bold: row.activeFile
-                    font.family: Style.uiFontFamily
-                    font.pixelSize: 10
-                    text: row.titleText
-                }
-                Label {
-                    Layout.alignment: Qt.AlignRight
-                    color: row.activeFile ? Style.accentColor : row.referenceFile ? Style.orangeColor : Style.foregroundColor
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: 10
-                    text: row.bestTime || "—"
+                    onPrimaryActivated: row.setActiveRequested(row.key)
+                    onReferenceActivated: row.setReferenceRequested(row.key)
                 }
             }
             Label {
@@ -176,7 +181,7 @@ Item {
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 4
-                visible: row.role === "file" || row.role === "pins" || row.role === "recent" || row.role === "source"
+                visible: row.role === "pins" || row.role === "recent" || row.role === "source"
 
                 Label {
                     Layout.fillWidth: true
@@ -185,25 +190,17 @@ Item {
                     elide: Text.ElideRight
                     font.family: Style.monoFontFamily
                     font.pixelSize: 8
-                    text: row.role === "file" ? row.detailText : row.role === "pins" ? row.childCount + (row.childCount === 1 ? " pinned item" : " pinned items") : row.role === "recent" ? row.childCount + (row.childCount === 1 ? " recent item" : " recent items") : row.role === "source" ? (!row.available ? "Folder not found" : row.childCount + (row.childCount === 1 ? " file" : " files")) : ""
+                    text: row.role === "pins" ? row.childCount + (row.childCount === 1 ? " pinned item" : " pinned items") : row.role === "recent" ? row.childCount + (row.childCount === 1 ? " recent item" : " recent items") : row.role === "source" ? (!row.available ? "Folder not found" : row.childCount + (row.childCount === 1 ? " file" : " files")) : ""
                 }
-                RoleDot {
-                    activeColor: Style.accentColor
-                    selected: row.activeFile
-                    size: 9
-                    tip: "Make current lap"
-                    visible: row.hasSession
+                RoleActionRow {
+                    dotSize: 9
+                    primarySelected: row.activeFile
+                    primaryVisible: row.hasSession
+                    referenceSelected: row.referenceFile
+                    referenceVisible: row.hasSession
 
-                    onActivated: row.setActiveRequested(row.key)
-                }
-                RoleDot {
-                    activeColor: Style.orangeColor
-                    selected: row.referenceFile
-                    size: 9
-                    tip: row.referenceFile ? "Clear reference" : "Make reference lap"
-                    visible: row.hasSession
-
-                    onActivated: row.setReferenceRequested(row.key)
+                    onPrimaryActivated: row.setActiveRequested(row.key)
+                    onReferenceActivated: row.setReferenceRequested(row.key)
                 }
             }
         }

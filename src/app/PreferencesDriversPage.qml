@@ -11,7 +11,6 @@ Item {
     property string driverFilter: ""
     property string mappingEditKey: ""
     property string mappingEditName: ""
-    property var mappingRows: []
 
     function beginEdit(key, displayName): void {
         driversPage.mappingEditKey = key;
@@ -21,28 +20,16 @@ Item {
         driversPage.mappingEditKey = "";
         driversPage.mappingEditName = "";
     }
-    function filteredMappings(): var {
-        const query = driversPage.driverFilter.trim().toLowerCase();
-        if (query === "")
-            return driversPage.mappingRows;
-        let rows = [];
-        for (let i = 0; i < driversPage.mappingRows.length; ++i) {
-            const row = driversPage.mappingRows[i];
-            const haystack = [row.display, row.carNumber, row.carClass, row.driverId].join(" ").toLowerCase();
-            if (haystack.includes(query))
-                rows.push(row);
-        }
-        return rows;
-    }
     function refresh(): void {
-        driversPage.mappingRows = Store.driverMappings();
+        // The model auto-refreshes on driverMappingsChanged; this just
+        // re-triggers the filter in case the source model replaced rows.
+        mappingFilter.invalidate();
     }
     function saveEdit(): void {
         if (driversPage.mappingEditKey === "" || driversPage.mappingEditName.trim() === "")
             return;
         Store.setDriverMapping(driversPage.mappingEditKey, driversPage.mappingEditName);
         driversPage.cancelEdit();
-        driversPage.refresh();
     }
 
     objectName: "preferencesDriversPage"
@@ -55,9 +42,14 @@ Item {
             driversPage.cancelEdit();
     }
 
+    RowFilterModel {
+        id: mappingFilter
+
+        filterText: driversPage.driverFilter
+        sourceModel: Store.driverMappings
+    }
     Connections {
         function onDriverMappingsChanged(): void {
-            driversPage.refresh();
         }
 
         target: Store
@@ -89,7 +81,7 @@ Item {
                 color: Style.mutedTextColor
                 font.family: Style.monoFontFamily
                 font.pixelSize: Style.smallFontSize
-                text: driversPage.mappingRows.length + (driversPage.mappingRows.length === 1 ? " driver" : " drivers")
+                text: Store.driverMappings.rowCount + (Store.driverMappings.rowCount === 1 ? " driver" : " drivers")
             }
         }
         CompactTextField {
@@ -142,7 +134,7 @@ Item {
                         anchors.centerIn: parent
                         color: Style.mutedTextColor
                         horizontalAlignment: Text.AlignHCenter
-                        text: driversPage.mappingRows.length === 0 ? "No drivers indexed yet\nAdd a telemetry folder and scan the library first." : "No drivers match this filter."
+                        text: Store.driverMappings.rowCount === 0 ? "No drivers indexed yet\nAdd a telemetry folder and scan the library first." : "No drivers match this filter."
                         visible: mappingList.count === 0
                     }
                     ListView {
@@ -150,16 +142,20 @@ Item {
 
                         anchors.fill: parent
                         clip: true
-                        model: driversPage.filteredMappings()
+                        model: mappingFilter
 
                         ScrollBar.vertical: ThinScrollBar {
                         }
                         delegate: Rectangle {
                             id: mappingRow
 
-                            readonly property bool editing: driversPage.mappingEditKey === mappingRow.modelData.key
+                            required property string carClass
+                            required property string carNumber
+                            required property string display
+                            required property string driverId
+                            readonly property bool editing: driversPage.mappingEditKey === mappingRow.key
                             required property int index
-                            required property var modelData
+                            required property string key
 
                             color: mappingRow.index % 2 === 0 ? "transparent" : Qt.rgba(1, 1, 1, 0.025)
                             height: 58
@@ -180,7 +176,7 @@ Item {
                                         color: Style.accentColor
                                         elide: Text.ElideRight
                                         font.bold: true
-                                        text: mappingRow.modelData.display
+                                        text: mappingRow.display
                                         visible: !mappingRow.editing
                                     }
                                     CompactTextField {
@@ -203,7 +199,7 @@ Item {
                                         elide: Text.ElideRight
                                         font.family: Style.monoFontFamily
                                         font.pixelSize: Style.smallFontSize
-                                        text: "Car " + (mappingRow.modelData.carNumber || "—") + "  ·  " + (mappingRow.modelData.carClass || "Unknown class") + "  ·  Logger ID " + (mappingRow.modelData.driverId || "—")
+                                        text: "Car " + (mappingRow.carNumber || "—") + "  ·  " + (mappingRow.carClass || "Unknown class") + "  ·  Logger ID " + (mappingRow.driverId || "—")
                                     }
                                 }
                                 CompactButton {
@@ -214,7 +210,7 @@ Item {
                                         if (mappingRow.editing)
                                             driversPage.saveEdit();
                                         else
-                                            driversPage.beginEdit(mappingRow.modelData.key, mappingRow.modelData.display);
+                                            driversPage.beginEdit(mappingRow.key, mappingRow.display);
                                     }
                                 }
                                 CompactButton {
@@ -224,8 +220,7 @@ Item {
                                         if (mappingRow.editing) {
                                             driversPage.cancelEdit();
                                         } else {
-                                            Store.setDriverMapping(mappingRow.modelData.key, "");
-                                            driversPage.refresh();
+                                            Store.setDriverMapping(mappingRow.key, "");
                                         }
                                     }
                                 }

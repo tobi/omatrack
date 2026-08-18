@@ -7,35 +7,23 @@ import QtQuick.Controls
 Item {
     id: ruler
 
-    property var cornerRows: []
     required property real rulerHeight
     readonly property real viewSpan: Math.max(0.001, Store.viewEnd - Store.viewStart)
-
-    function refresh(): void {
-        ruler.cornerRows = Store.cornerList();
-    }
 
     clip: true
     implicitHeight: ruler.rulerHeight
 
-    Component.onCompleted: ruler.refresh()
-
-    Connections {
-        function onCornersChanged(): void {
-            ruler.refresh();
-        }
-
-        target: Store
-    }
     Repeater {
-        model: ruler.cornerRows
+        model: Store.corners
 
         delegate: Rectangle {
             id: cornerBand
 
-            required property var modelData
-            readonly property real rawLeft: (Number(cornerBand.modelData.start) - Store.viewStart) / ruler.viewSpan * ruler.width
-            readonly property real rawRight: (Number(cornerBand.modelData.end) - Store.viewStart) / ruler.viewSpan * ruler.width
+            required property real end
+            required property string name
+            readonly property real rawLeft: (cornerBand.start - Store.viewStart) / ruler.viewSpan * ruler.width
+            readonly property real rawRight: (cornerBand.end - Store.viewStart) / ruler.viewSpan * ruler.width
+            required property real start
 
             Accessible.ignored: true
             border.color: Qt.rgba(Style.magentaColor.r, Style.magentaColor.g, Style.magentaColor.b, 0.55)
@@ -56,7 +44,7 @@ Item {
                 font.bold: Store.editingCorners
                 font.family: Style.monoFontFamily
                 font.pixelSize: Style.smallFontSize
-                text: String(cornerBand.modelData.name)
+                text: cornerBand.name
                 verticalAlignment: Text.AlignVCenter
             }
         }

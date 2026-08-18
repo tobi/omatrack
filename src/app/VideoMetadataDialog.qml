@@ -570,23 +570,23 @@ Dialog {
                     visible: !metadataDialog.folderScope || metadataDialog.channelOverridesExpanded
 
                     Repeater {
-                        model: metadataDialog.channelRows
+                        model: metadataDialog.channelRows.length
 
                         delegate: ChannelMappingField {
                             id: channelField
 
                             required property int index
-                            required property var modelData
+                            readonly property var row: metadataDialog.channelRows[channelField.index] || ({})
 
-                            automaticValue: channelField.modelData.automaticValue || ""
-                            channelKey: channelField.modelData.key
-                            detail: channelField.modelData.detail
-                            expectedUnit: channelField.modelData.expectedUnit
+                            automaticValue: channelField.row.automaticValue || ""
+                            channelKey: channelField.row.key
+                            detail: channelField.row.detail
+                            expectedUnit: channelField.row.expectedUnit
                             folderScope: metadataDialog.folderScope
-                            inheritedValue: channelField.modelData.inheritedValue || ""
-                            label: channelField.modelData.label
-                            suggestions: channelField.modelData.suggestions || []
-                            value: metadataDialog.channelValues[channelField.modelData.key] || ""
+                            inheritedValue: channelField.row.inheritedValue || ""
+                            label: channelField.row.label
+                            suggestions: channelField.row.suggestions || []
+                            value: metadataDialog.channelValues[channelField.row.key] || ""
 
                             onMappingEdited: (key, value) => metadataDialog.setChannelMapping(key, value)
                         }

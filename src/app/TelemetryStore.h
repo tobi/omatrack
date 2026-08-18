@@ -7,7 +7,13 @@
 
 #pragma once
 
-#include "LibraryLocation.h"
+#include "AsyncJob.h"
+#include "LibraryModel.h"
+#include "StoreModels.h"
+// Extracted collaborators (plain QObjects owned by the store).
+class PreferencesStore;
+class TrackAtlasManager;
+class OverlayManager;
 
 #include <QByteArray>
 #include <QColor>
@@ -46,6 +52,9 @@ struct FileOpenResult;
 struct FolderChannelSample;
 struct SessionConfidenceLoadResult;
 struct SidebarMetadataResult;
+struct CornerConsistencyLoadResult;
+struct TraceSnapshot;
+enum class ComparisonAlignmentStrategy;
 
 // ── damper alignment ────────────────────────────────────────────────
 
@@ -150,6 +159,13 @@ struct VideoIdentityResult {
                status == VideoIdentityStatus::VerifiedHash ||
                status == VideoIdentityStatus::TrustedRemoteObject;
     }
+};
+
+/// Outcome of a background TRACK.yml write plus the re-read inherited
+/// metadata of the recordings beneath that folder.
+struct FolderMetadataWrite {
+    QString error;
+    QHash<QString, QVariantMap> refreshed;
 };
 
 struct SidebarPin {
@@ -343,6 +359,8 @@ class TelemetryStore : public QObject {
     QML_SINGLETON
     Q_PROPERTY(bool ready READ ready NOTIFY readyChanged)
     Q_PROPERTY(bool loading READ loading NOTIFY loadingChanged)
+    Q_PROPERTY(bool fileOpenLoading READ fileOpenLoading NOTIFY fileOpenChanged)
+    Q_PROPERTY(QString fileOpenPath READ fileOpenPath NOTIFY fileOpenChanged)
     Q_PROPERTY(bool lapLoading READ lapLoading NOTIFY lapLoadingChanged)
     Q_PROPERTY(bool traceConfidenceMode READ traceConfidenceMode WRITE
                    setTraceConfidenceMode NOTIFY traceConfidenceChanged)
@@ -426,6 +444,23 @@ class TelemetryStore : public QObject {
                    comparisonAlignmentConfidence NOTIFY selectionChanged)
     Q_PROPERTY(int comparisonGpsAnchors READ comparisonGpsAnchors NOTIFY
                    selectionChanged)
+    Q_PROPERTY(
+        QString comparisonSyncStrategy READ comparisonSyncStrategy WRITE
+            setComparisonSyncStrategy NOTIFY comparisonSyncStrategyChanged)
+    Q_PROPERTY(
+        QAbstractItemModel* comparisonSyncStrategies READ
+            comparisonSyncStrategiesModel NOTIFY comparisonSyncStrategyChanged)
+    Q_PROPERTY(
+        LapListModel* primaryLaps READ primaryLapsModel NOTIFY selectionChanged)
+    Q_PROPERTY(
+        LapListModel* compareLaps READ compareLapsModel NOTIFY selectionChanged)
+    Q_PROPERTY(QAbstractItemModel* channels READ channelsModel NOTIFY
+                   channelConfigChanged)
+    Q_PROPERTY(
+        QAbstractItemModel* corners READ cornersModel NOTIFY cornersChanged)
+    Q_PROPERTY(QAbstractItemModel* driverMappings READ driverMappingsModel
+                   NOTIFY driverMappingsChanged)
+    Q_PROPERTY(QAbstractItemModel* library READ libraryModel CONSTANT)
     Q_PROPERTY(bool videoMuted READ videoMuted WRITE setVideoMuted NOTIFY
                    videoMutedChanged)
     Q_PROPERTY(
@@ -448,6 +483,11 @@ public:
     /// Queue one telemetry source for indexing and lap loading. Ordinary video
     /// is reported through standaloneVideoRequested after background probing.
     Q_INVOKABLE void openFile(const QString& filePath);
+    /// Cancels the current background file open and drops queued opens. The
+    /// parser worker is cooperative where possible; if a vendor decoder is
+    /// already inside an uninterruptible read, its result is discarded when
+    /// it returns and the UI remains usable.
+    Q_INVOKABLE void cancelFileOpen();
     /// True when `path` is an MTX sidecar name (`.ext.jsonl` / `.mtx.jsonl`).
     Q_INVOKABLE bool isMtxSidecarPath(const QString& filePath) const;
     /// Drop or File > Open of an MTX sidecar: overlap-join onto the open
@@ -456,7 +496,11 @@ public:
     Q_INVOKABLE void removeOverlay(const QString& id);
     Q_INVOKABLE void setOverlayExpanded(const QString& id, bool expanded);
     Q_INVOKABLE bool overlayExpanded(const QString& id) const;
-    const QVector<OverlayGroup>& overlayGroups() const { return overlays_; }
+    /// Sidecars discovered in configured folders that overlap the active
+    /// session's time window. Attachments are session state, not preferences.
+    Q_INVOKABLE QVariantList sidecarLibrary() const;
+
+    const QVector<OverlayGroup>& overlayGroups() const;
     Q_INVOKABLE bool directoryExists(const QString& dirPath) const;
     /// The default telemetry library folder: the platform's Documents
     /// location plus `/Telemetry` (honors Windows OneDrive redirection),
@@ -464,12 +508,13 @@ public:
     /// missing directory.
     Q_INVOKABLE QString defaultTelemetryDirectory() const;
     Q_INVOKABLE QString configFilePath() const;
-    QStringList recentFiles() const { return recentFiles_; }
+    QStringList recentFiles() const;
     Q_INVOKABLE void removeSessionDirectory(const QString& dirPath);
     /// Enabled local folders, including the cache directories that stand in
     /// for connected servers. This is the scan input.
     Q_INVOKABLE QStringList sessionDirectories() const;
-    Q_INVOKABLE QVariantList fileSources() const;
+    /// Build the enriched file-source tree for the library model (internal).
+    QVariantList buildFileSourceTree() const;
 
     // ── Library locations ────────────────────────────────────────────────
     // One ordered list of folders and server connections. Every row carries
@@ -520,9 +565,14 @@ public:
     Q_INVOKABLE bool filePinned(const QString& role, const QString& path) const;
     Q_INVOKABLE void setFilePinned(const QString& role, const QString& path,
                                    bool pinned);
+    Q_INVOKABLE SessionInfoRow sessionInfo(const QString& sessionKey) const;
+    /// First session key in track→date→session order, or empty.
+    Q_INVOKABLE QString firstSessionKey() const;
+    /// All session keys in track→date→session order (for AutotestHarness).
+    QStringList sessionKeys() const;
+    /// All file paths in the library tree (for AutotestHarness).
+    QStringList libraryFilePaths() const;
     Q_INVOKABLE void clearSessions();
-    Q_INVOKABLE QVariantList
-    trackGroups() const;  // nested: track → dates → sessions → laps
     Q_INVOKABLE void refreshTrackAtlas();
     Q_INVOKABLE QVariantList trackAtlasChoices() const;
     Q_INVOKABLE QString
@@ -548,9 +598,11 @@ public:
     /// Next lap in recording order after the primary, or -1 at the last lap.
     Q_INVOKABLE int nextPrimaryLapId() const;
     Q_INVOKABLE QString lapLabel(const QString& sessionKey, int lapId) const;
+    Q_INVOKABLE QString lapTimeText(const QString& sessionKey, int lapId) const;
     /// Load a lap into the session cache without changing the selection.
     Q_INVOKABLE void prefetchLap(const QString& sessionKey, int lapId);
-    Q_INVOKABLE QVariantList lapsForSession(const QString& sessionKey) const;
+    Q_INVOKABLE int bestLapIdForSession(const QString& sessionKey) const;
+    QVector<LapRow> lapRowsForSession(const QString& sessionKey) const;
     Q_INVOKABLE bool traceConfidenceIncludesLap(const QString& sessionKey,
                                                 int lapId) const;
 
@@ -575,17 +627,15 @@ public:
     Q_INVOKABLE void autoGenerateCorners();
     Q_INVOKABLE void saveCorners();
     static QStringList cornerConfigPath(const QString& track);
-    static void migrateLegacyCorners(const QString& track);
-    Q_INVOKABLE QVariantList cornerList() const;
     Q_INVOKABLE void setCornerName(int index, const QString& name);
-    Q_INVOKABLE QVariantList cornerComparison() const;
+    Q_INVOKABLE QString cornerName(int index) const;
     // Corner focus: the workspace zooms onto one corner instead of opening a
     // second window. focusCorner() remembers the viewport it replaced,
     // clearCornerFocus() puts it back.
     Q_INVOKABLE void focusCorner(int index);
     Q_INVOKABLE void focusCornerAtCursor();
     Q_INVOKABLE void clearCornerFocus();
-    Q_INVOKABLE QVariantMap cornerFocusSummary() const;
+    Q_INVOKABLE CornerFocusSummary cornerFocusSummary() const;
     int focusedCorner() const { return focusedCorner_; }
     QString highlightedCornerMarker() const { return highlightedCornerMarker_; }
     Q_INVOKABLE void setHighlightedCornerMarker(const QString& key);
@@ -609,18 +659,17 @@ public:
     // ── channel config ─────────────────────────────────────────────
     Q_INVOKABLE bool channelVisible(const QString& key) const;
     Q_INVOKABLE void setChannelVisible(const QString& key, bool visible);
-    Q_INVOKABLE QVariantList channelSettings() const;
+
     Q_INVOKABLE QString channelColor(const QString& key) const;
     Q_INVOKABLE void setChannelColor(const QString& key, const QString& color);
+    Q_INVOKABLE QString channelExample(const QString& key);
     Q_INVOKABLE double channelWeight(const QString& key) const;
     Q_INVOKABLE void setChannelWeight(const QString& key, double weight);
+
     Q_INVOKABLE QStringList channelOrder() const;
 
-    // ── driver aliases / user preferences ─────────────────────────
-    Q_INVOKABLE QVariantList driverAliases() const;
-    Q_INVOKABLE void setDriverAlias(const QString& detected,
-                                    const QString& display);
-    Q_INVOKABLE QVariantList driverMappings() const;
+    // ── driver mappings / user preferences ──────────────────────────
+
     Q_INVOKABLE void setDriverMapping(const QString& key,
                                       const QString& display);
     Q_INVOKABLE QString driverDisplayName(const QString& sessionKey) const;
@@ -643,7 +692,7 @@ public:
     int compareLapIndex() const { return compareLap_; }
     const QVector<CornerZone>& corners() const { return corners_; }
     QString cornerNameAt(double frac) const;
-    Q_INVOKABLE QVariantMap cursorReadout() const;
+    Q_INVOKABLE CursorReadout cursorReadout() const;
     /// Accumulated primary−reference time at the cursor station. NaN when
     /// there is no compare lap. Negative is ahead.
     Q_INVOKABLE double cursorTimeDelta() const;
@@ -652,22 +701,27 @@ public:
     Q_INVOKABLE double cursorSpeedDelta() const;
     Q_INVOKABLE double sessionStartUnixTime() const;
     Q_INVOKABLE bool hasGlobalTime() const;
-    // Per-sample Δ-time (primary vs compare, distance-aligned; empty when no
-    // compare). Shared by the trace canvas and the cursor readout so the
-    // numeric Δ and the Δ trace never disagree. Cached until selection changes.
+    // Per-sample Δ-time (primary vs compare, alignment-mapped; empty when no
+    // compare). Shared by the trace canvas and cursor readout so the numeric Δ
     const QVector<double>& deltaTrace() const;
-    const std::vector<double>* extraChannelData(const QString& key,
-                                                bool reference) const;
+    /// Immutable per-frame view of the telemetry state the renderers need.
+    /// Publishes the private alignment/clip helpers that TraceView and
+    /// VideoTelemetryHud used to reach through `friend` declarations.
+    TraceSnapshot traceSnapshot() const;
     const std::vector<double>* overlayChannelData(const QString& key) const;
+    const std::vector<double>* extraChannelData(const QString& key,
+                                                bool reference);
     const TraceConfidenceBand* traceConfidenceBand(const QString& field) const;
     const std::vector<double>& traceConsistency() const {
         return traceConsistency_;
     }
-    bool trackAtlasReady() const { return !atlasTracks_.isEmpty(); }
-    QString trackAtlasStatus() const { return trackAtlasStatus_; }
+    bool trackAtlasReady() const;
+    QString trackAtlasStatus() const;
 
     bool ready() const { return ready_; }
     bool loading() const { return loading_; }
+    bool fileOpenLoading() const { return fileOpenLoading_; }
+    QString fileOpenPath() const { return fileOpenPath_; }
     bool lapLoading() const {
         return primaryLapLoading_ || compareLapLoading_ || fileOpenLoading_;
     }
@@ -704,7 +758,7 @@ public:
     /// URLs; the library and metadata dialogs need the local stub path.
     Q_INVOKABLE QString localPathForVideoSource(const QUrl& source) const;
     double primaryVideoTime() const;
-    // Reference-lap recording uses the same lap-progress track-station
+    // Reference-lap recording uses the same selected primary→reference
     // alignment as traces and delta, so every comparison view shares one
     // coordinate.
     QUrl compareVideoSource() const;
@@ -724,13 +778,30 @@ public:
     QString comparisonAlignmentBasis() const;
     QString comparisonAlignmentConfidence() const;
     int comparisonGpsAnchors() const;
-    bool videoMuted() const { return videoMuted_; }
+    QString comparisonSyncStrategy() const {
+        return effectiveComparisonSyncStrategy_;
+    }
+    void setComparisonSyncStrategy(const QString& strategy);
+    Q_INVOKABLE QString comparisonSyncStrategyField(const QString& field) const;
+    QAbstractItemModel* comparisonSyncStrategiesModel() const {
+        return syncStrategyModel_.get();
+    }
+    LapListModel* primaryLapsModel() const { return primaryLapsModel_.get(); }
+    LapListModel* compareLapsModel() const { return compareLapsModel_.get(); }
+    QAbstractItemModel* channelsModel() const { return channelsModel_.get(); }
+    QAbstractItemModel* cornersModel() const { return cornersModel_.get(); }
+    QAbstractItemModel* driverMappingsModel() const {
+        return driverMappingsModel_.get();
+    }
+    QAbstractItemModel* libraryModel() const { return libraryModel_.get(); }
+    bool videoMuted() const;
     void setVideoMuted(bool muted);
     QStringList sessionDirectoriesList() const { return sessionDirectories(); }
 
 signals:
     void readyChanged();
     void loadingChanged();
+    void fileOpenChanged();
     void lapLoadingChanged();
     /// Video playback has just reached the end of the primary lap.
     void primaryLapPlaybackEnded();
@@ -748,6 +819,7 @@ signals:
     void locationsChanged();
     void channelConfigChanged();
     void referenceAlignmentChanged();
+    void comparisonSyncStrategyChanged();
     void trackAtlasChanged();
     void videoTimeChanged();
     void videoMutedChanged();
@@ -761,14 +833,10 @@ signals:
     void standaloneVideoRequested(const QUrl& source);
     void operationError(const QString& title, const QString& message);
     void overlaysChanged();
+    void sidecarLibraryChanged();
 
 private:
     enum class FileOpenRole { Automatic, Primary, Compare };
-    struct PendingFileOpen {
-        QString path;
-        FileOpenRole role = FileOpenRole::Automatic;
-        int lapId = -1;
-    };
 
     SessionHandle* findSession(const QString& key) const;
     /// Records that a cached file was opened, which is what keeps it from
@@ -795,15 +863,12 @@ private:
     void queueFileOpen(const QString& filePath, FileOpenRole role,
                        int lapId = -1);
     void restoreLastSelection();
-    void startNextFileOpen();
     void pauseSidebarMetadataQueue();
-    void startNextSidebarMetadataLoad();
     void resumeSidebarMetadataQueue();
     void setPrimaryLapLoading(bool loading);
     void setCompareLapLoading(bool loading);
     void startSessionScan();
-    void finishSessionScan();
-    void loadPreferences();
+    void finishSessionScan(std::shared_ptr<SessionScanResult> result);
     int sidebarPinIndex(const QString& kind, const QString& path) const;
     void rememberRecentFile(const QString& filePath);
     QString driverDisplay(const SessionHandle* session) const;
@@ -813,16 +878,15 @@ private:
     QString resolvedTrackSlug(const SessionHandle* session) const;
     QString displayTrack(const SessionHandle* session) const;
     static QString trackAssignmentKey(const SessionHandle* session);
-    void savePreferences();
-    void loadChannelsConfig();
-    void loadLocations();
+    void schedulePreferencesSave();
+    void flushPreferences();
     int locationIndex(const QString& id) const;
-    /// Appends a folder location, returning false when the path is empty or
-    /// already configured. `requireExists` is false when importing paths the
-    /// user already configured: an unmounted drive must survive the import
-    /// and show as "Folder not found", not vanish from the library.
     bool appendFolderLocation(const QString& dirPath,
                               bool requireExists = true);
+    bool hostWindowNs(qint64* startNs, qint64* endNs, qint64* utcNs) const;
+    /// File-relative window of the open primary video, or the reference
+    /// video when the primary has no recording clock.
+    bool videoClipWindowNs(qint64* startNs, qint64* endNs) const;
 
     void loadCornersForPrimary();
     void rebuildCornerMarkers();
@@ -831,57 +895,52 @@ private:
     void invalidateTraceConfidence();
     void requestTraceConfidence();
     int neighbourLapId(int offset) const;
-    QVector<CornerZone> atlasCornersForPrimary();
-    bool parseTrackAtlas(const QByteArray& payload);
-    void loadTrackAtlasCache();
-    void updateTrackAtlas(bool force);
-    QString trackAtlasCachePath() const;
-    QString trackAtlasGeometryCachePath(const QString& trackSlug,
-                                        const QString& layoutId) const;
-    bool ensureAtlasCenterline(const QString& trackSlug,
-                               const QJsonObject& layout);
-    void requestAtlasCenterline(const QString& trackSlug,
-                                const QJsonObject& layout);
-    void attachSidecarImpl(const QString& filePath, bool fromOpen,
-                           bool silent = false);
-    void discoverSidecarSiblings();
-    bool adoptOverlay(
-        OverlayGroup group,
-        QHash<QString, std::shared_ptr<std::vector<double>>> samples,
-        QString* error);
-    bool hostWindowNs(qint64* startNs, qint64* endNs, qint64* utcNs) const;
-    /// File-relative window of the open primary video, or the reference
-    /// video when the primary has no recording clock.
-    bool videoClipWindowNs(qint64* startNs, qint64* endNs) const;
-    void resampleOverlays();
     void invalidateComparisonAlignment();
     void rebuildComparisonAlignment();
+    void invalidateExtraChannelCache();
     double compareTimeForPrimaryFraction(double fraction) const;
+    QString effectiveComparisonSyncStrategy() const;
+    static ComparisonAlignmentStrategy comparisonAlignmentStrategy(
+        const QString& strategy);
+    double comparisonPrimaryFraction(double fraction) const;
     double compareFractionForPrimaryFraction(double fraction) const;
     double primaryFractionForCompareFraction(double fraction) const;
     double primaryTimeAtFraction(double fraction) const;
     double compareVideoTimeAtFraction(double fraction) const;
     double nextCornerStartFraction() const;
-    QVector<omatrack::LibraryLocation> locations_;
+    // ── typed model refresh ────────────────────────────────────────
+    void refreshLapModels();
+    void refreshChannelsModel();
+    void refreshCornersModel();
+    void refreshDriverMappingsModel();
+    void refreshSyncStrategyModel();
+    void refreshLibraryModel();
+    QVector<LapRow> buildLapRows(SessionHandle* session) const;
+    QVector<ChannelRow> buildChannelRows() const;
+    QVector<CornerRow> buildCornerRows() const;
+    QVector<DriverMappingRow> buildDriverMappingRows() const;
+    QVector<SyncStrategyRow> buildSyncStrategyRows() const;
     /// Per-location scan outcome, keyed by location id: the status line shown
     /// in preferences and the number of telemetry files discovered.
     QHash<QString, QString> locationStatuses_;
     QHash<QString, int> locationFileCounts_;
     QVariantList fileSources_;
     QStringList discoveredFilePaths_;
-    QList<QString> sidebarMetadataQueue_;
     QSet<QString> sidebarMetadataQueued_;
     QSet<QString> sidebarMetadataLoaded_;
-    QString sidebarMetadataLoadingPath_;
     QThreadPool sidebarMetadataPool_;
     QHash<QString, QString> folderDisplayNames_;
     QHash<QString, std::shared_ptr<const FolderChannelSample>>
         folderChannelSamples_;
     QSet<QString> folderChannelSampleRequests_;
     QHash<QString, QVariantMap> fileMetadata_;
-    QVector<SidebarPin> sidebarPins_;
-    QFutureWatcher<std::shared_ptr<SessionScanResult>>* scanWatcher_ = nullptr;
-    std::shared_ptr<std::atomic<bool>> scanCancel_;
+    /// TRACK.yml writer: saveFolderMetadata() serialises on the GUI thread and
+    /// writes on a worker; the completion applies state and reports failure
+    /// through operationError.
+    AsyncJob<FolderMetadataWrite> folderMetadataJob_;
+    AsyncJob<std::shared_ptr<SessionScanResult>> scanJob_;
+    SerialJobQueue<std::shared_ptr<FileOpenResult>> fileOpenQueue_;
+    QString fileOpenPath_;
     QSet<QString> transientSessionPaths_;
     /// Offline downloads, one at a time: two concurrent transfers of tens of
     /// gigabytes finish no sooner and make the progress meaningless.
@@ -891,7 +950,6 @@ private:
     QString videoDownloadName_;
     std::shared_ptr<std::atomic<qint64>> videoDownloadReceived_;
     std::shared_ptr<std::atomic<qint64>> videoDownloadTotal_;
-    std::shared_ptr<std::atomic<bool>> videoDownloadCancelled_;
     QTimer* videoDownloadTicker_ = nullptr;
     /// The signature in force for each streamed recording, and when it was
     /// made. Reused rather than remade so the URL a player is holding stays
@@ -905,22 +963,20 @@ private:
     /// server has stopped honouring can be signed again. Keyed without the
     /// query string, which is the part a signature lives in.
     mutable QHash<QString, QString> streamedPaths_;
-    QStringList recentFiles_;
-    QHash<QString, QString> driverMappings_;
-    QHash<QString, QString> trackAssignments_;
-    QHash<QString, QVariantMap> recordingMetadata_;
     QStringList trackMetadataPaths_;
-    QString lastPrimaryKey_;
-    QString lastCompareKey_;
-    int lastPrimaryLap_ = -1;
-    int lastCompareLap_ = -1;
     std::vector<std::unique_ptr<SessionHandle>> sessions_;
     SessionHandle* primarySession_ = nullptr;
-    QList<PendingFileOpen> pendingFileOpens_;
-    quint64 primaryLoadGeneration_ = 0;
-    quint64 compareLoadGeneration_ = 0;
-    quint64 sidebarMetadataGeneration_ = 0;
-    quint64 folderChannelSampleGeneration_ = 0;
+    AsyncJob<std::shared_ptr<SessionLapLoadResult>> primaryLapJob_;
+    AsyncJob<std::shared_ptr<SessionLapLoadResult>> compareLapJob_;
+    SerialJobQueue<std::shared_ptr<SessionLapLoadResult>> lapPrefetchQueue_;
+    SerialJobQueue<std::shared_ptr<SidebarMetadataResult>>
+        sidebarMetadataQueue_;
+    AsyncJob<std::shared_ptr<FolderChannelSample>> folderChannelSampleJob_;
+    AsyncJob<std::shared_ptr<SessionConfidenceLoadResult>> traceConfidenceJob_;
+    AsyncJob<std::shared_ptr<CornerConsistencyLoadResult>>
+        cornerConsistencyJob_;
+    AsyncJob<QString> videoDownloadJob_;
+    AsyncJob<qint64> clearCacheJob_;
     SessionHandle* compareSession_ = nullptr;
     int primaryLap_ = -1;
     int compareLap_ = -1;
@@ -935,34 +991,18 @@ private:
     bool primaryLapLoading_ = false;
     bool compareLapLoading_ = false;
     bool fileOpenLoading_ = false;
-    bool sidebarMetadataQueuePaused_ = false;
-    bool videoMuted_ = false;
-    /// `cache: {limit: 20 GB}` in omatrack.yml, defaulted in
-    /// loadPreferences() so that this header needs nothing from the sync
-    /// engine. Read once at startup; a ceiling nobody normally meets is not
-    /// worth watching the file for.
-    qint64 cacheLimitBytes_ = 0;
+    QString effectiveComparisonSyncStrategy_ = QStringLiteral("lap-percentage");
     double referenceAlignment_ = 0.0;
     QSet<QString> closedTracks_;
 
     QSet<QString> neighbourPrefetch_;
-    QHash<QString, QJsonObject> atlasTracks_;
-    QHash<QString, QVector<QPointF>> atlasCenterlines_;
-    QHash<QString, QVector<QPointF>> atlasSpatialMappings_;
-    QSet<QString> atlasGeometryRequests_;
-    QString trackAtlasStatus_;
-    std::shared_ptr<std::atomic<bool>> atlasCancel_;
-    quint64 atlasGeneration_ = 0;
-    QTimer* atlasTimer_ = nullptr;
     QVector<CornerZone> corners_;
     QVector<CornerMarker> markers_;
     CornerConsistencyState cornerConsistency_;
-    quint64 cornerConsistencyGeneration_ = 0;
     QHash<QString, TraceConfidenceBand> traceConfidenceBands_;
     QSet<int> traceConfidenceLapIds_;
     std::vector<double> traceConsistency_;
     QString traceConfidenceKey_;
-    quint64 traceConfidenceGeneration_ = 0;
     int traceConfidenceLapCount_ = 0;
     bool traceConfidenceMode_ = false;
     bool traceConfidenceLoading_ = false;
@@ -971,19 +1011,11 @@ private:
     QString highlightedCornerMarker_;
     double focusReturnStart_ = 0.0;
     double focusReturnEnd_ = 1.0;
-    mutable QHash<QString, bool> channelVisible_;
-    mutable QHash<QString, QColor> channelColors_;
-    mutable QHash<QString, double> channelWeights_;
     mutable QHash<QString, std::shared_ptr<std::vector<double>>>
         extraChannelCache_;
     mutable QSet<QString> extraChannelLoading_;
-    QVector<OverlayGroup> overlays_;
-    QHash<QString, std::shared_ptr<std::vector<double>>> overlayChannelCache_;
-    QSet<QString> overlayLoading_;
-    quint64 overlayAttachGeneration_ = 0;
-    quint64 overlayResampleGeneration_ = 0;
-    QHash<QString, QString> driverAliases_;
-    QStringList channelOrder_;
+    mutable QHash<QString, AsyncJob<std::shared_ptr<std::vector<double>>>*>
+        extraChannelJobs_;
     mutable QVector<double> deltaCache_;
     mutable DamperAlignment damperAlignment_;
     mutable bool damperAlignmentValid_ = false;
@@ -992,7 +1024,17 @@ private:
     QVector<double> comparisonAlignmentFraction_;
     QString comparisonAlignmentBasis_;
     int comparisonGpsAnchors_ = 0;
-
-    friend class TraceView;
-    friend class VideoTelemetryHud;
+    // Extracted collaborators — plain QObjects owned by the store.
+    PreferencesStore* prefs_ = nullptr;
+    TrackAtlasManager* atlas_ = nullptr;
+    OverlayManager* overlays_ = nullptr;
+    // Typed list models backing the Q_PROPERTYs that replace QVariantList
+    // builders. Owned by the store; refreshed on the matching store signal.
+    std::unique_ptr<LapListModel> primaryLapsModel_;
+    std::unique_ptr<LapListModel> compareLapsModel_;
+    std::unique_ptr<ChannelListModel> channelsModel_;
+    std::unique_ptr<CornerListModel> cornersModel_;
+    std::unique_ptr<DriverMappingModel> driverMappingsModel_;
+    std::unique_ptr<SyncStrategyModel> syncStrategyModel_;
+    std::unique_ptr<LibraryModel> libraryModel_;
 };

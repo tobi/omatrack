@@ -11,7 +11,6 @@ ApplicationWindow {
     id: root
 
     property bool _lapStripDirty: true
-    property var _sessionInfoCache: ({})
     property string activeSessionKey: ""
     property string activeSessionName: ""
 
@@ -24,13 +23,9 @@ ApplicationWindow {
     property bool deltaTraceVisible: false
     property var directoryRows: []
     // Side by side only when the reference lap has its own recording and the
-    // primary video is telemetry-linked, so both can be distance-aligned.
+    // primary video is telemetry-linked, so both can share one alignment map.
     readonly property bool dualVideo: telemetryVideoActive && Store.compareVideoSource.toString() !== "" && Store.compareVideoSource.toString() !== Store.primaryVideoSource.toString()
     property var filmstripSessions: []
-    property int lapAdvanceCount: 0
-    property int lapAdvanceNextId: -1
-    property string lapAdvanceNextLabel: ""
-    property bool lapAdvanceResume: false
     // Rapid selection changes update one pending source instead of queuing
     // stale callLater closures that can reopen the previous recording.
     property url pendingVideoSource: ""
@@ -40,12 +35,6 @@ ApplicationWindow {
     property real pointerTooltipY: 0
     property string referenceSessionKey: ""
     property string referenceSessionName: ""
-    property real referenceSyncBaseRate: 1
-    property real referenceSyncError: 0
-    property real referenceSyncLastPrimary: -1
-    property real referenceSyncLastTarget: -1
-    property int referenceSyncPauseAttempts: 0
-    property string referenceSyncState: "WAIT"
     property bool sidebarVisible: true
     readonly property bool standaloneVideoActive: root.videoVisible && !root.telemetryVideoActive
     required property url startupVideo
@@ -58,7 +47,6 @@ ApplicationWindow {
     readonly property string videoFullscreenLayoutTitle: root.videoFullscreenLayout === 1 ? "SPLIT" : root.videoFullscreenLayout === 2 ? "ACTIVE + REF" : root.videoFullscreenLayout === 3 ? "REF + ACTIVE" : root.videoFullscreenLayout === 4 ? "ACTIVE" : root.videoFullscreenLayout === 5 ? "REFERENCE" : ""
     property bool videoOverlayVisible: true
     property int videoRestoreVisibility: Window.Windowed
-    property bool videoSlowMotion: false
     property bool videoVisible: false
 
     function addDir(p): void {
@@ -69,25 +57,11 @@ ApplicationWindow {
         dirField.text = "";
         root.directoryRows = Store.sessionDirectories();
     }
-    function bestLapForSession(key) {
-        const laps = key !== "" ? Store.lapsForSession(key) : [];
-        for (let i = 0; i < laps.length; ++i)
-            if (laps[i].isFastest)
-                return laps[i];
-        for (let i = 0; i < laps.length; ++i)
-            if (laps[i].countsForBest)
-                return laps[i];
-        for (let i = 0; i < laps.length; ++i)
-            if (laps[i].isComplete)
-                return laps[i];
-        return laps.length > 0 ? laps[0] : null;
+    function bestLapIdForSession(key: string): int {
+        return key !== "" ? Store.bestLapIdForSession(key) : -1;
     }
-    function cancelLapAdvance(): void {
-        lapAdvanceTimer.stop();
-        root.lapAdvanceCount = 0;
-        root.lapAdvanceNextId = -1;
-        root.lapAdvanceNextLabel = "";
-        root.lapAdvanceResume = false;
+    function comparisonSyncValue(field: string, fallback: string): string {
+        return Store.comparisonSyncStrategyField(field) || fallback;
     }
     function defaultTelemetryFolder() {
         return "file://" + Store.defaultTelemetryDirectory();
@@ -98,16 +72,6 @@ ApplicationWindow {
     function dismissPointerTooltip(owner: string): void {
         if (root.pointerTooltipOwner === owner)
             root.pointerTooltipOwner = "";
-    }
-    function finishLapAdvance(): void {
-        const sessionKey = Store.primarySessionKey;
-        const nextId = root.lapAdvanceNextId;
-        root.cancelLapAdvance();
-        if (sessionKey === "" || nextId < 0)
-            return;
-        Store.selectLap(sessionKey, nextId);
-        root.lapAdvanceResume = true;
-        root.tryResumeLapAdvance();
     }
     function formatMediaTime(seconds) {
         if (!isFinite(seconds) || seconds < 0)
@@ -121,11 +85,11 @@ ApplicationWindow {
         return hours > 0 ? hours + ":" + paddedMinutes + ":" + paddedSeconds : minutes + ":" + paddedSeconds;
     }
     function hideVideo(): void {
-        root.cancelLapAdvance();
+        videoSync.cancelLapAdvance();
         root.pendingVideoSource = "";
         if (root.videoFullscreen)
             root.videoSetFullscreen(false);
-        const reference = root.videoReference();
+        const reference = videoSync.referencePlayer;
         if (reference && reference.source.toString() !== "")
             reference.closeMedia();
         if (videoPlayer.source.toString() !== "")
@@ -134,29 +98,17 @@ ApplicationWindow {
         root.videoVisible = false;
     }
     function lapStripEntry(key, reference) {
-        const laps = Store.lapsForSession(key);
-        let fixedLapCount = 0;
-        let flexibleTimeMs = 0;
-        for (let i = 0; i < laps.length; ++i) {
-            if (!laps[i].countsForBest)
-                ++fixedLapCount;
-            else
-                flexibleTimeMs += Math.max(1, laps[i].timeMs);
-        }
+        const lapsModel = reference ? Store.compareLaps : Store.primaryLaps;
         return {
             sessionKey: key,
             driverName: Store.driverDisplayName(key),
-            bestTime: sessionInfoForKey(key)?.bestTime || "",
+            bestTime: root.sessionInfoForKey(key)?.bestLapText || "",
             reference: reference,
-            laps: laps,
-            fixedLapCount: fixedLapCount,
-            flexibleTimeMs: Math.max(1, flexibleTimeMs)
+            lapsModel: lapsModel,
+            lapsCount: lapsModel.rowCount,
+            fixedLapCount: lapsModel.fixedLapCount,
+            flexibleTimeMs: lapsModel.flexibleTimeMs
         };
-    }
-    function lockPrimaryRealtime(): void {
-        const rate = root.videoSlowMotion && root.videoFullscreen ? 0.25 : 1;
-        if (videoPlayer.loaded && videoPlayer.playbackRate !== rate)
-            videoPlayer.playbackRate = rate;
     }
     function movePointerTooltip(owner: string, x: real, y: real): void {
         if (root.pointerTooltipOwner !== owner)
@@ -165,18 +117,15 @@ ApplicationWindow {
         root.pointerTooltipY = Math.max(8, Math.min(root.height - pointerTooltip.implicitHeight - 8, y + 14));
     }
     function openCornerRename(index: int): void {
-        const zones = Store.cornerList();
-        if (index < 0 || index >= zones.length)
+        if (index < 0 || index >= Store.corners.rowCount)
             return;
         cornerRenameDialog.cornerIndex = index;
-        cornerRenameField.text = zones[index].name || "";
+        cornerRenameDialog.fieldValue = Store.cornerName(index);
         cornerRenameDialog.open();
     }
-    function openDriverRename(mappingKey, displayName) {
-        if (!mappingKey)
-            return;
+    function openDriverRename(mappingKey: string, driver: string): void {
         driverRenameDialog.mappingKey = mappingKey;
-        driverRenameField.text = displayName || "";
+        driverRenameDialog.fieldValue = driver;
         driverRenameDialog.open();
     }
     function openDroppedFiles(urls): void {
@@ -184,42 +133,10 @@ ApplicationWindow {
             Store.openFile(root.toLocalPath(urls[i]));
     }
     function openPendingVideo() {
-        const source = pendingVideoSource;
+        const source = root.pendingVideoSource;
         if (source.toString() === "" || videoPlayer.source.toString() === source.toString())
             return;
         videoPlayer.openMedia(source);
-    }
-    function primaryClockRate(): real {
-        return root.videoSlowMotion && root.videoFullscreen ? 0.25 : 1;
-    }
-    function realignPausedVideos(): void {
-        const ref = root.videoReference();
-        if (!root.dualVideo || !videoPlayer.loaded || !videoPlayer.paused || !ref || !ref.loaded)
-            return;
-
-        // Use the primary player's final stopped time as truth. The store maps
-        // that station onto the reference with its shared GPS/speed alignment.
-        Store.setCursorFromVideoTime(videoPlayer.position);
-        const target = Store.compareVideoTime;
-        root.referenceSyncPauseAttempts = 0;
-        if (target <= 0) {
-            ref.playbackRate = 1;
-            root.referenceSyncState = "NO MAP";
-            return;
-        }
-
-        ref.paused = true;
-        ref.playbackRate = 1;
-        root.referenceSyncBaseRate = 1;
-        root.referenceSyncError = target - ref.position;
-        root.referenceSyncLastPrimary = videoPlayer.position;
-        root.referenceSyncLastTarget = target;
-        root.referenceSyncPauseAttempts = 1;
-        root.referenceSyncState = "ALIGNING";
-        // A pause is an explicit synchronization checkpoint, so request an
-        // exact seek even when both reported positions are already close.
-        ref.seek(target);
-        pausedVideoAlignmentTimer.restart();
     }
     function refreshDeltaTraceVisible(): void {
         root.deltaTraceVisible = Store.channelVisible("delta");
@@ -227,19 +144,19 @@ ApplicationWindow {
     function refreshLapStrip() {
         const newActive = Store.primarySessionKey;
         const newReference = Store.compareSessionKey;
-        if (!root._lapStripDirty && newActive === activeSessionKey && newReference === referenceSessionKey)
+        if (!root._lapStripDirty && newActive === root.activeSessionKey && newReference === root.referenceSessionKey)
             return;
         root._lapStripDirty = false;
-        activeSessionKey = newActive;
-        referenceSessionKey = newReference;
-        activeSessionName = sessionNameForKey(activeSessionKey);
-        referenceSessionName = sessionNameForKey(referenceSessionKey);
+        root.activeSessionKey = newActive;
+        root.referenceSessionKey = newReference;
+        root.activeSessionName = root.sessionNameForKey(root.activeSessionKey);
+        root.referenceSessionName = root.sessionNameForKey(root.referenceSessionKey);
         let strips = [];
-        if (activeSessionKey !== "")
-            strips.push(lapStripEntry(activeSessionKey, false));
-        if (referenceSessionKey !== "" && referenceSessionKey !== activeSessionKey)
-            strips.push(lapStripEntry(referenceSessionKey, true));
-        filmstripSessions = strips;
+        if (root.activeSessionKey !== "")
+            strips.push(root.lapStripEntry(root.activeSessionKey, false));
+        if (root.referenceSessionKey !== "" && root.referenceSessionKey !== root.activeSessionKey)
+            strips.push(root.lapStripEntry(root.referenceSessionKey, true));
+        root.filmstripSessions = strips;
     }
     // A streamed recording is reached through a signature that expires, and a
     // laptop closed at the circuit and opened on the plane home wakes up
@@ -248,11 +165,7 @@ ApplicationWindow {
     // file, or a recording it never produced — the error already on screen is
     // the right answer.
     function reopenExpiredVideo(player: MpvVideoItem): void {
-        if (!player)
-            return;
-        const fresh = Store.refreshedVideoSource(player.source);
-        if (fresh.toString() !== "")
-            player.reopenMedia(fresh);
+        videoSync.reopenExpiredVideo(player);
     }
     function revealVideoControls(): void {
         if (!root.videoVisible)
@@ -260,73 +173,29 @@ ApplicationWindow {
         root.videoControlsRequested = true;
         videoControlsHideTimer.restart();
     }
-    function seekVideoRelative(seconds) {
-        if (!videoPlayer.loaded)
-            return;
-        if (root.lapAdvanceCount > 0)
-            root.cancelLapAdvance();
-        const target = Math.max(0, videoPlayer.position + seconds);
-        videoPlayer.seek(target);
-        if (root.telemetryVideoActive)
-            Store.setCursorFromVideoTime(target);
-        if (root.dualVideo)
-            root.syncReferenceVideo(true);
-        root.revealVideoControls();
-    }
-    function seekVideoToTelemetry() {
-        if (!telemetryVideoActive || !videoPlayer.loaded)
-            return;
-        root.lockPrimaryRealtime();
-        const target = Store.primaryVideoTime;
-        const error = Math.abs(videoPlayer.position - target);
-        if (videoPlayer.paused) {
-            if (error > 0.025)
-                videoPlayer.seek(target);
-            return;
-        }
-        // Playing: the primary file is the clock. Only honor an explicit
-        // cursor jump — never tug the recording back onto a telemetry sample.
-        if (error > 0.2)
-            videoPlayer.seek(target);
-    }
-    function sessionInfoForKey(key) {
+    function sessionInfoForKey(key: string): var {
         if (key === "")
             return null;
-        const cached = root._sessionInfoCache[key];
-        if (cached)
-            return cached;
-        // Cache miss: rebuild from track groups, then retry.
-        const cache = {};
-        const groups = Store.trackGroups();
-        for (let t = 0; t < groups.length; ++t) {
-            const dates = groups[t].dates;
-            for (let d = 0; d < dates.length; ++d) {
-                const sessions = dates[d].sessions;
-                for (let s = 0; s < sessions.length; ++s)
-                    cache[sessions[s].key] = sessions[s];
-            }
-        }
-        root._sessionInfoCache = cache;
-        return cache[key] || null;
+        return Store.sessionInfo(key);
     }
-    function sessionNameForKey(key) {
-        const session = root.sessionInfoForKey(key);
-        return session ? (session.driver || session.stem || "") : "";
+    function sessionNameForKey(key: string): string {
+        const info = root.sessionInfoForKey(key);
+        return info ? (info.driver || info.name || "") : "";
     }
     function setSessionActive(key) {
         if (key !== "" && key === Store.primarySessionKey)
             return;
-        const lap = bestLapForSession(key);
-        if (!lap) {
+        const lapId = root.bestLapIdForSession(key);
+        if (lapId < 0) {
             Store.clearCompare();
             Store.selectSession(key, false);
             return;
         }
-        const referenceKey = referenceSessionKey;
-        const referenceLap = bestLapForSession(referenceKey);
-        Store.selectLap(key, lap.lapId);
-        if (referenceKey !== "" && referenceKey !== key && referenceLap)
-            Store.compareLap(referenceKey, referenceLap.lapId);
+        const referenceKey = root.referenceSessionKey;
+        const referenceLapId = root.bestLapIdForSession(referenceKey);
+        Store.selectLap(key, lapId);
+        if (referenceKey !== "" && referenceKey !== key && referenceLapId >= 0)
+            Store.compareLap(referenceKey, referenceLapId);
         else
             Store.clearCompare();
     }
@@ -335,13 +204,13 @@ ApplicationWindow {
             Store.clearCompare();
             return;
         }
-        if (activeSessionKey === "" || key === activeSessionKey) {
-            useSessionAlone(key);
+        if (root.activeSessionKey === "" || key === root.activeSessionKey) {
+            root.useSessionAlone(key);
             return;
         }
-        const lap = bestLapForSession(key);
-        if (lap)
-            Store.compareLap(key, lap.lapId);
+        const lapId = root.bestLapIdForSession(key);
+        if (lapId >= 0)
+            Store.compareLap(key, lapId);
         else
             Store.selectSession(key, true);
     }
@@ -359,82 +228,13 @@ ApplicationWindow {
         root.movePointerTooltip(owner, x, y);
     }
     function showVideo(source, telemetryLinked) {
-        telemetryVideoActive = telemetryLinked === true;
-        videoVisible = true;
+        root.telemetryVideoActive = telemetryLinked === true;
+        root.videoVisible = true;
         root.revealVideoControls();
         if (root.width < 1000)
-            sidebarVisible = false;
-        pendingVideoSource = source;
+            root.sidebarVisible = false;
+        root.pendingVideoSource = source;
         Qt.callLater(root.openPendingVideo);
-    }
-    function startLapAdvance(): void {
-        if (root.lapAdvanceCount > 0)
-            return;
-        const nextId = Store.nextPrimaryLapId();
-        videoPlayer.paused = true;
-        if (nextId < 0)
-            return;
-        root.lapAdvanceNextId = nextId;
-        root.lapAdvanceNextLabel = Store.lapLabel(Store.primarySessionKey, nextId);
-        root.lapAdvanceCount = 3;
-        Store.prefetchLap(Store.primarySessionKey, nextId);
-        lapAdvanceTimer.start();
-    }
-    function syncReferenceSource(): void {
-        const ref = videoReference();
-        if (!ref)
-            return;
-        const source = Store.compareVideoSource;
-        if (source.toString() === "") {
-            if (ref.source.toString() !== "")
-                ref.closeMedia();
-            return;
-        }
-        if (ref.source.toString() !== source.toString())
-            ref.openMedia(source);
-        else
-            syncReferenceVideo(true);
-    }
-    function syncReferenceVideo(force: bool): void {
-        const ref = videoReference();
-        if (!ref || !ref.loaded) {
-            referenceSyncState = "WAIT";
-            return;
-        }
-        const target = Store.compareVideoTime;
-        if (target <= 0) {
-            ref.playbackRate = 1;
-            referenceSyncState = "NO MAP";
-            return;
-        }
-
-        const error = target - ref.position;
-        const primaryDelta = videoPlayer.position - referenceSyncLastPrimary;
-        referenceSyncError = error;
-        if (force || videoPlayer.paused || Math.abs(primaryDelta) > 0.5) {
-            // Pause, play-start, and an explicit primary jump all snap the
-            // reference onto the mapped station. Continuous play never seeks.
-            ref.playbackRate = videoPlayer.paused ? 1 : root.primaryClockRate();
-            ref.seek(target);
-            referenceSyncError = 0;
-            referenceSyncBaseRate = 1;
-            referenceSyncLastPrimary = videoPlayer.position;
-            referenceSyncLastTarget = target;
-            referenceSyncState = videoPlayer.paused ? "ALIGNING" : "LOCKED";
-            if (videoPlayer.paused)
-                pausedVideoAlignmentTimer.restart();
-            return;
-        }
-
-        referenceSyncLastPrimary = videoPlayer.position;
-        referenceSyncLastTarget = target;
-        const rate = Store.referencePlaybackRate(ref.position) * root.primaryClockRate();
-        referenceSyncBaseRate = rate;
-        ref.playbackRate = rate;
-        if (Store.cursorInCorner())
-            referenceSyncState = Math.abs(error) < 0.08 ? "CORNER" : "HOLD";
-        else
-            referenceSyncState = Math.abs(error) < 0.08 ? "LOCKED" : "STRAIGHT";
     }
     function syncTelemetryVideo() {
         const source = Store.primaryVideoSource;
@@ -442,86 +242,26 @@ ApplicationWindow {
             root.hideVideo();
             return;
         }
-        if (!telemetryVideoActive || videoPlayer.source.toString() !== source.toString()) {
-            showVideo(source, true);
+        if (!root.telemetryVideoActive || videoPlayer.source.toString() !== source.toString()) {
+            root.showVideo(source, true);
         } else {
             // Cancel any deferred open queued by an intermediate selection.
-            pendingVideoSource = source;
-            seekVideoToTelemetry();
+            root.pendingVideoSource = source;
+            videoSync.seekToTelemetry();
         }
-        syncReferenceSource();
-    }
-    function tickLapAdvance(): void {
-        if (root.lapAdvanceCount <= 1) {
-            root.finishLapAdvance();
-            return;
-        }
-        root.lapAdvanceCount = root.lapAdvanceCount - 1;
+        videoSync.syncReferenceSource();
     }
     function toLocalPath(value) {
         const text = value.toString();
         return text.startsWith("file://") ? decodeURIComponent(text.substring(7)) : text;
     }
-    function toggleVideoSlowMotion(): void {
-        if (!root.videoFullscreen || !videoPlayer.loaded)
-            return;
-        root.videoSlowMotion = !root.videoSlowMotion;
-        root.lockPrimaryRealtime();
-        if (root.dualVideo && !videoPlayer.paused)
-            root.syncReferenceVideo(false);
-        root.revealVideoControls();
-    }
-    function tryResumeLapAdvance(): void {
-        if (!root.lapAdvanceResume)
-            return;
-        if (Store.lapLoading || videoPlayer.seeking)
-            return;
-        root.lapAdvanceResume = false;
-        if (!videoPlayer.loaded)
-            return;
-        root.lockPrimaryRealtime();
-        videoPlayer.paused = false;
-        if (root.dualVideo)
-            root.syncReferenceVideo(true);
-    }
     function useSessionAlone(key) {
-        const lap = bestLapForSession(key);
+        const lapId = root.bestLapIdForSession(key);
         Store.clearCompare();
-        if (lap)
-            Store.selectLap(key, lap.lapId);
+        if (lapId >= 0)
+            Store.selectLap(key, lapId);
         else
             Store.selectSession(key, false);
-    }
-    function verifyPausedVideoAlignment(): void {
-        const ref = root.videoReference();
-        if (!root.dualVideo || !videoPlayer.paused || !ref || !ref.loaded)
-            return;
-        if (ref.seeking) {
-            pausedVideoAlignmentTimer.restart();
-            return;
-        }
-
-        // time-pos can advance once more while the pause command settles.
-        // Re-sample it before checking the reference player's exact seek.
-        Store.setCursorFromVideoTime(videoPlayer.position);
-        const target = Store.compareVideoTime;
-        if (target <= 0) {
-            root.referenceSyncState = "NO MAP";
-            return;
-        }
-        const error = target - ref.position;
-        root.referenceSyncError = error;
-        root.referenceSyncLastPrimary = videoPlayer.position;
-        root.referenceSyncLastTarget = target;
-        if (Math.abs(error) > 0.025 && root.referenceSyncPauseAttempts < 3) {
-            ++root.referenceSyncPauseAttempts;
-            root.referenceSyncState = "ALIGNING";
-            ref.seek(target);
-            pausedVideoAlignmentTimer.restart();
-            return;
-        }
-        root.referenceSyncPauseAttempts = 0;
-        root.referenceSyncState = Math.abs(error) <= 0.05 ? "LOCKED" : "BEST";
     }
     function videoFileName(source) {
         const text = source.toString();
@@ -533,28 +273,18 @@ ApplicationWindow {
         const path = text.split("?")[0];
         return decodeURIComponent(path.substring(path.lastIndexOf("/") + 1));
     }
-    // ── reference recording ─────────────────────────────────────────
-    // The primary recording is the clock: it always plays at 1× and each
-    // frame moves the telemetry cursor. The reference snaps to the mapped
-    // station on pause, then uses the next straight to arrive with it at
-    // turn-in. Corners stay at 1× so a turn is never time-warped.
-    function videoReference(): MpvVideoItem {
-        return videoReferenceLoader.player;
-    }
     function videoSetFullscreen(on) {
-        if (on === videoFullscreen)
+        if (on === root.videoFullscreen)
             return;
         if (on) {
-            videoVisible = true;
-            videoFullscreenLayout = dualVideo ? 1 : 4;
-            videoRestoreVisibility = root.visibility;
-            videoFullscreen = true;
+            root.videoVisible = true;
+            root.videoFullscreenLayout = root.dualVideo ? 1 : 4;
+            root.videoRestoreVisibility = root.visibility;
+            root.videoFullscreen = true;
             root.visibility = Window.FullScreen;
         } else {
-            videoFullscreen = false;
-            root.videoSlowMotion = false;
-            root.lockPrimaryRealtime();
-            root.visibility = videoRestoreVisibility;
+            root.videoFullscreen = false;
+            root.visibility = root.videoRestoreVisibility;
         }
     }
     function videoSourceAt(x: real, y: real): url {
@@ -582,18 +312,6 @@ ApplicationWindow {
     function videoToggleMuted() {
         if (videoPlayer.loaded)
             Store.videoMuted = !Store.videoMuted;
-    }
-    function videoTogglePaused() {
-        if (!videoPlayer.loaded)
-            return;
-        if (root.lapAdvanceCount > 0) {
-            root.cancelLapAdvance();
-            return;
-        }
-        root.lockPrimaryRealtime();
-        videoPlayer.togglePaused();
-        if (!videoPlayer.paused)
-            syncReferenceVideo(true);
     }
 
     Material.accent: Style.accentColor
@@ -662,6 +380,15 @@ ApplicationWindow {
             associationDialog.open();
     }
 
+    VideoSync {
+        id: videoSync
+
+        primaryPlayer: videoPlayer
+        referencePlayer: videoReferenceLoader.player
+        store: Store
+        telemetryVideoActive: root.telemetryVideoActive
+        videoFullscreen: root.videoFullscreen
+    }
     Shortcut {
         enabled: root.videoFullscreen || Store.focusedCorner >= 0
         sequence: "Escape"
@@ -729,28 +456,6 @@ ApplicationWindow {
 
             onTriggered: root.videoControlsRequested = false
         }
-        Timer {
-            interval: 100
-            repeat: true
-            running: root.dualVideo && videoPlayer.loaded && !videoPlayer.paused
-
-            onTriggered: root.syncReferenceVideo(false)
-        }
-        Timer {
-            id: pausedVideoAlignmentTimer
-
-            interval: 120
-
-            onTriggered: root.verifyPausedVideoAlignment()
-        }
-        Timer {
-            id: lapAdvanceTimer
-
-            interval: 500
-            repeat: true
-
-            onTriggered: root.tickLapAdvance()
-        }
         Rectangle {
             id: fullscreenChrome
 
@@ -782,7 +487,7 @@ ApplicationWindow {
                     font.family: Style.monoFontFamily
                     font.pixelSize: 10
                     text: "0.25×"
-                    visible: root.videoSlowMotion
+                    visible: videoSync.videoSlowMotion
                 }
                 Label {
                     color: Style.accentColor
@@ -882,24 +587,8 @@ ApplicationWindow {
                     objectName: "videoPlayer"
 
                     onLoadedChanged: {
-                        if (loaded && root.telemetryVideoActive) {
-                            Qt.callLater(() => {
-                                root.lockPrimaryRealtime();
-                                videoPlayer.paused = true;
-                                root.seekVideoToTelemetry();
-                            });
+                        if (loaded && root.telemetryVideoActive)
                             root.revealVideoControls();
-                        }
-                    }
-                    onPositionChanged: {
-                        if (root.telemetryVideoActive && loaded && !paused)
-                            Store.setCursorFromVideoTime(position);
-                        else if (root.dualVideo && loaded && paused && root.referenceSyncPauseAttempts > 0)
-                            pausedVideoAlignmentTimer.restart();
-                    }
-                    onSeekingChanged: {
-                        if (!seeking)
-                            root.tryResumeLapAdvance();
                     }
                     onSourceExpired: root.reopenExpiredVideo(videoPlayer)
                 }
@@ -997,47 +686,9 @@ ApplicationWindow {
                             muted: true
                             objectName: "videoPlayerReference"
 
-                            onLoadedChanged: {
-                                if (loaded)
-                                    Qt.callLater(() => {
-                                        paused = videoPlayer.paused;
-                                        if (videoPlayer.paused)
-                                            root.realignPausedVideos();
-                                        else
-                                            root.syncReferenceVideo(true);
-                                    });
-                            }
                             onSourceExpired: root.reopenExpiredVideo(this)
                         }
                     }
-
-                    onLoaded: root.syncReferenceSource()
-                }
-                Connections {
-                    function onPausedChanged(): void {
-                        const ref = videoReferenceLoader.player;
-                        if (ref && ref.paused !== videoPlayer.paused)
-                            ref.paused = videoPlayer.paused;
-                    }
-
-                    target: videoReferenceLoader.player
-                }
-                Connections {
-                    function onPausedChanged(): void {
-                        const ref = root.videoReference();
-                        if (!ref || !ref.loaded)
-                            return;
-                        ref.paused = videoPlayer.paused;
-                        if (videoPlayer.paused)
-                            root.realignPausedVideos();
-                        else {
-                            pausedVideoAlignmentTimer.stop();
-                            root.referenceSyncPauseAttempts = 0;
-                            root.syncReferenceVideo(true);
-                        }
-                    }
-
-                    target: videoPlayer
                 }
                 Rectangle {
                     anchors.fill: parent
@@ -1071,12 +722,12 @@ ApplicationWindow {
                     anchors.top: parent.top
                     anchors.topMargin: 36
                     bottomPadding: 2
-                    color: root.referenceSyncState === "LOCKED" && Store.comparisonAlignmentConfidence !== "LOW" ? Style.greenColor : Style.yellowColor
+                    color: videoSync.referenceSyncState === "LOCKED" && Store.comparisonAlignmentConfidence !== "LOW" ? Style.greenColor : Style.yellowColor
                     font.family: Style.monoFontFamily
                     font.pixelSize: 8
                     leftPadding: 4
                     rightPadding: 4
-                    text: (Store.comparisonGpsAnchors > 0 ? "GPS×" + Store.comparisonGpsAnchors : "SPEED") + " " + Store.comparisonAlignmentConfidence + " · " + root.referenceSyncState + " · " + Math.round(Math.abs(root.referenceSyncError) * 1000) + "ms" + " · ×" + (videoReferenceLoader.player !== null ? videoReferenceLoader.player.playbackRate.toFixed(2) : "1.00")
+                    text: (Store.comparisonGpsAnchors > 0 ? "GPS×" + Store.comparisonGpsAnchors : "SPEED") + " " + Store.comparisonAlignmentConfidence + " · " + videoSync.referenceSyncState + " · " + Math.round(Math.abs(videoSync.referenceSyncError) * 1000) + "ms" + " · ×" + (videoReferenceLoader.player !== null ? videoReferenceLoader.player.playbackRate.toFixed(2) : "1.00")
                     topPadding: 2
                     visible: videoReferenceLoader.player !== null
 
@@ -1136,7 +787,7 @@ ApplicationWindow {
                     return;
                 }
                 videoPane.forceActiveFocus();
-                root.videoTogglePaused();
+                videoSync.togglePaused();
                 root.revealVideoControls();
             }
             onEntered: root.revealVideoControls()
@@ -1154,6 +805,32 @@ ApplicationWindow {
                 text: "Edit video metadata…"
 
                 onTriggered: videoMetadataDialog.openForVideo(videoMetadataMenu.videoPath)
+            }
+        }
+        Menu {
+            id: referenceSyncMenu
+
+            Instantiator {
+                model: Store.comparisonSyncStrategies
+
+                delegate: MenuItem {
+                    id: referenceSyncItem
+
+                    required property string detail
+                    required property string label
+                    required property string strategyId
+
+                    ToolTip.text: referenceSyncItem.detail
+                    ToolTip.visible: referenceSyncItem.hovered
+                    checkable: true
+                    checked: Store.comparisonSyncStrategy === referenceSyncItem.strategyId
+                    text: referenceSyncItem.label
+
+                    onTriggered: Store.comparisonSyncStrategy = referenceSyncItem.strategyId
+                }
+
+                onObjectAdded: (index, object) => referenceSyncMenu.insertItem(index, object)
+                onObjectRemoved: (index, object) => referenceSyncMenu.removeItem(object)
             }
         }
         ToolButton {
@@ -1293,7 +970,7 @@ ApplicationWindow {
                         text: "−2s"
                         visible: root.standaloneVideoActive
 
-                        onClicked: root.seekVideoRelative(-2)
+                        onClicked: videoSync.seekRelative(-2)
                     }
                     ToolButton {
                         Layout.preferredWidth: 54
@@ -1305,7 +982,25 @@ ApplicationWindow {
                         text: videoPlayer.paused ? "Play" : "Pause"
 
                         onClicked: {
-                            root.videoTogglePaused();
+                            videoSync.togglePaused();
+                            root.revealVideoControls();
+                        }
+                    }
+                    ToolButton {
+                        Layout.preferredWidth: 130
+                        ToolTip.text: root.comparisonSyncValue("detail", "Reference synchronization")
+                        ToolTip.visible: hovered
+                        font.capitalization: Font.MixedCase
+                        font.pixelSize: Style.smallFontSize
+                        objectName: "referenceSyncButton"
+                        text: "Sync  " + root.comparisonSyncValue("shortLabel", "Lap %") + " ▾"
+                        visible: root.dualVideo
+
+                        onClicked: {
+                            const point = mapToItem(videoPane, 0, 0);
+                            referenceSyncMenu.x = Math.max(0, Math.min(point.x, videoPane.width - referenceSyncMenu.implicitWidth));
+                            referenceSyncMenu.y = Math.max(0, point.y - referenceSyncMenu.implicitHeight);
+                            referenceSyncMenu.open();
                             root.revealVideoControls();
                         }
                     }
@@ -1319,7 +1014,7 @@ ApplicationWindow {
                         text: "+2s"
                         visible: root.standaloneVideoActive
 
-                        onClicked: root.seekVideoRelative(2)
+                        onClicked: videoSync.seekRelative(2)
                     }
                     Row {
                         Layout.preferredHeight: 28
@@ -1409,7 +1104,7 @@ ApplicationWindow {
             anchors.centerIn: parent
             color: Style.videoControlBackgroundColor
             height: lapAdvanceColumn.implicitHeight + 20
-            opacity: root.lapAdvanceCount > 0 ? 1 : 0
+            opacity: videoSync.lapAdvanceCount > 0 ? 1 : 0
             radius: 6
             visible: opacity > 0.01
             width: Math.max(160, lapAdvanceColumn.implicitWidth + 32)
@@ -1441,8 +1136,8 @@ ApplicationWindow {
                     font.bold: true
                     font.family: Style.monoFontFamily
                     font.pixelSize: Style.fontSize + 4
-                    text: root.lapAdvanceNextLabel
-                    visible: root.lapAdvanceNextLabel !== ""
+                    text: videoSync.lapAdvanceNextLabel
+                    visible: videoSync.lapAdvanceNextLabel !== ""
                 }
                 Label {
                     anchors.horizontalCenter: parent.horizontalCenter
@@ -1450,7 +1145,7 @@ ApplicationWindow {
                     font.bold: true
                     font.family: Style.monoFontFamily
                     font.pixelSize: 42
-                    text: root.lapAdvanceCount > 0 ? String(root.lapAdvanceCount) : ""
+                    text: videoSync.lapAdvanceCount > 0 ? String(videoSync.lapAdvanceCount) : ""
                 }
             }
         }
@@ -1459,36 +1154,22 @@ ApplicationWindow {
         function onChannelConfigChanged(): void {
             root.refreshDeltaTraceVisible();
         }
-        function onLapLoadingChanged(): void {
-            root.tryResumeLapAdvance();
-        }
         function onOperationError(title: string, message: string): void {
             operationErrorDialog.errorTitle = title;
             operationErrorDialog.errorMessage = message;
             operationErrorDialog.open();
         }
-        function onPrimaryLapPlaybackEnded(): void {
-            root.startLapAdvance();
-        }
         function onSelectionChanged(): void {
-            if (root.lapAdvanceCount > 0)
-                root.cancelLapAdvance();
             root.refreshLapStrip();
             root.syncTelemetryVideo();
         }
         function onSessionsChanged(): void {
             root._lapStripDirty = true;
-            root._sessionInfoCache = ({});
             root.refreshLapStrip();
             root.directoryRows = Store.sessionDirectories();
         }
         function onStandaloneVideoRequested(source: url): void {
             root.showVideo(source, false);
-        }
-        function onVideoTimeChanged(): void {
-            const jumped = Math.abs(videoPlayer.position - Store.primaryVideoTime) > 0.2;
-            root.seekVideoToTelemetry();
-            root.syncReferenceVideo(videoPlayer.paused || jumped);
         }
 
         target: Store
@@ -1621,62 +1302,26 @@ ApplicationWindow {
 
         onAccepted: Store.openFile(root.toLocalPath(videoFileDialog.file))
     }
-    Dialog {
+    OperationErrorDialog {
         id: operationErrorDialog
 
-        property string errorMessage: ""
-        property string errorTitle: "Unable to complete operation"
-
-        closePolicy: Popup.CloseOnEscape
-        focus: true
-        modal: true
         objectName: "operationErrorDialog"
         parent: Overlay.overlay
-        standardButtons: Dialog.Ok
-        title: errorTitle
-        width: Math.min(520, root.width - 32)
-        x: Math.round((parent.width - width) / 2)
-        y: Math.round((parent.height - height) / 2)
-
-        contentItem: Label {
-            color: Style.foregroundColor
-            font.pixelSize: 11
-            text: operationErrorDialog.errorMessage
-            wrapMode: Text.Wrap
-        }
     }
-    Dialog {
+    TextInputDialog {
         id: driverRenameDialog
 
         property string mappingKey: ""
 
-        closePolicy: Popup.CloseOnEscape
-        focus: true
-        modal: true
+        fieldObjectName: "driverRenameField"
         objectName: "driverRenameDialog"
         parent: Overlay.overlay
-        standardButtons: Dialog.Save | Dialog.Cancel
+        placeholderText: "Driver name"
         title: "Rename driver"
-        width: Math.min(360, root.width - 32)
-        x: Math.round((parent.width - width) / 2)
-        y: Math.round((parent.height - height) / 2)
-
-        contentItem: CompactTextField {
-            id: driverRenameField
-
-            objectName: "driverRenameField"
-            placeholderText: "Driver name"
-
-            onAccepted: driverRenameDialog.accept()
-        }
 
         onAccepted: {
-            Store.setDriverMapping(mappingKey, driverRenameField.text);
+            Store.setDriverMapping(mappingKey, driverRenameDialog.fieldValue);
             settingsWindow.refresh();
-        }
-        onOpened: {
-            driverRenameField.forceActiveFocus();
-            driverRenameField.selectAll();
         }
     }
     FileAssociationsDialog {
@@ -1704,36 +1349,18 @@ ApplicationWindow {
         x: Math.round((parent.width - width) / 2)
         y: Math.round((parent.height - height) / 2)
     }
-    Dialog {
+    TextInputDialog {
         id: cornerRenameDialog
 
         property int cornerIndex: -1
 
-        closePolicy: Popup.CloseOnEscape
-        focus: true
-        modal: true
+        fieldObjectName: "cornerRenameField"
         objectName: "cornerRenameDialog"
         parent: Overlay.overlay
-        standardButtons: Dialog.Save | Dialog.Cancel
+        placeholderText: "Corner name"
         title: "Rename corner zone"
-        width: Math.min(360, root.width - 32)
-        x: Math.round((parent.width - width) / 2)
-        y: Math.round((parent.height - height) / 2)
 
-        contentItem: CompactTextField {
-            id: cornerRenameField
-
-            objectName: "cornerRenameField"
-            placeholderText: "Corner name"
-
-            onAccepted: cornerRenameDialog.accept()
-        }
-
-        onAccepted: Store.setCornerName(cornerIndex, cornerRenameField.text)
-        onOpened: {
-            cornerRenameField.forceActiveFocus();
-            cornerRenameField.selectAll();
-        }
+        onAccepted: Store.setCornerName(cornerIndex, cornerRenameDialog.fieldValue)
     }
     ChannelsWindow {
         id: channelsWindow
@@ -1784,167 +1411,19 @@ ApplicationWindow {
         anchors.fill: parent
         spacing: 0
 
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: visible ? root.filmstripSessions.length * 33 + 9 : 0
-            color: Style.traceBackgroundColor
-            visible: root.filmstripSessions.length > 0
+        LapFilmstrip {
+            id: lapFilmstrip
 
-            Column {
-                anchors.fill: parent
-                anchors.margins: 6
-                spacing: 3
+            sessions: root.filmstripSessions
 
-                Repeater {
-                    model: root.filmstripSessions
-
-                    delegate: Rectangle {
-                        id: sessionStrip
-
-                        required property var modelData
-                        property string selectedLapTime: {
-                            const laps = strip.laps;
-                            const key = strip.reference ? Store.compareSessionKey : Store.primarySessionKey;
-                            const idx = strip.reference ? Store.compareLapIndex : Store.primaryLapIndex;
-                            if (key === strip.sessionKey)
-                                for (let i = 0; i < laps.length; ++i)
-                                    if (laps[i].lapId === idx)
-                                        return laps[i].timeText;
-                            return strip.bestTime;
-                        }
-                        property var strip: modelData
-
-                        color: strip.reference ? Qt.tint(Style.surfaceColor, Qt.rgba(Style.orangeColor.r, Style.orangeColor.g, Style.orangeColor.b, 0.08)) : Style.surfaceColor
-                        height: 30
-                        radius: 4
-                        width: parent.width
-
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 6
-                            anchors.rightMargin: 4
-                            spacing: 5
-
-                            Label {
-                                Layout.maximumWidth: 190
-                                Layout.minimumWidth: 190
-                                Layout.preferredWidth: 190
-                                color: sessionStrip.strip.reference ? Style.orangeColor : Style.accentColor
-                                elide: Text.ElideRight
-                                font.bold: true
-                                font.family: Style.monoFontFamily
-                                font.pixelSize: 9
-                                text: (sessionStrip.strip.driverName !== "" && sessionStrip.strip.driverName !== "Unknown" ? sessionStrip.strip.driverName : "Unknown driver") + (sessionStrip.selectedLapTime !== "" ? " · " + sessionStrip.selectedLapTime : "")
-                            }
-                            ToolButton {
-                                Layout.preferredHeight: 24
-                                Layout.preferredWidth: 24
-                                ToolTip.text: sessionStrip.strip.reference ? "Remove reference session" : "Clear active session"
-                                ToolTip.visible: hovered
-                                text: "×"
-
-                                onClicked: sessionStrip.strip.reference ? Store.clearCompare() : Store.clearPrimary()
-                            }
-                            Item {
-                                Layout.preferredWidth: 7
-                            }
-                            Item {
-                                id: proportionalLapLane
-
-                                Layout.fillHeight: true
-                                Layout.fillWidth: true
-
-                                Row {
-                                    id: proportionalLapRow
-
-                                    anchors.fill: parent
-                                    spacing: 3
-
-                                    Repeater {
-                                        model: sessionStrip.strip.laps
-
-                                        delegate: Rectangle {
-                                            id: proportionalLap
-
-                                            readonly property bool confidenceLap: !sessionStrip.strip.reference && Store.traceConfidenceMode && Store.traceConfidenceIncludesLap(sessionStrip.strip.sessionKey, proportionalLap.modelData.lapId)
-                                            readonly property bool fixedWidthLap: !proportionalLap.modelData.countsForBest
-                                            readonly property real flexibleLaneWidth: Math.max(0, proportionalLapLane.width - Math.max(0, sessionStrip.strip.laps.length - 1) * proportionalLapRow.spacing - sessionStrip.strip.fixedLapCount * 30)
-                                            required property var modelData
-                                            property bool selectedLap: sessionStrip.strip.reference ? sessionStrip.strip.sessionKey === Store.compareSessionKey && proportionalLap.modelData.lapId === Store.compareLapIndex : sessionStrip.strip.sessionKey === Store.primarySessionKey && proportionalLap.modelData.lapId === Store.primaryLapIndex
-                                            readonly property string tooltipOwner: "lap:" + sessionStrip.strip.sessionKey + ":" + proportionalLap.modelData.lapId + ":" + sessionStrip.strip.reference
-
-                                            // Bound to the Row, not `parent`:
-                                            // a delegate evaluates its
-                                            // bindings before it is reparented,
-                                            // so `parent` is null on creation.
-                                            anchors.verticalCenter: proportionalLapRow.verticalCenter
-                                            border.color: sessionStrip.strip.reference ? Style.orangeColor : Style.accentColor
-                                            border.width: proportionalLap.selectedLap || proportionalLap.confidenceLap ? 1 : 0
-                                            color: proportionalLap.selectedLap ? Style.selectionColor : proportionalLap.confidenceLap ? Qt.tint(Style.traceBackgroundColor, Qt.rgba(Style.accentColor.r, Style.accentColor.g, Style.accentColor.b, 0.2)) : proportionalLapMouse.containsMouse ? Style.backgroundColor : Style.traceBackgroundColor
-                                            height: proportionalLapRow.height - 8
-                                            objectName: (sessionStrip.strip.reference ? "referenceFilmstripLap-" : "activeFilmstripLap-") + proportionalLap.modelData.lapId
-                                            radius: 3
-                                            width: proportionalLap.fixedWidthLap ? 30 : Math.max(1, proportionalLap.flexibleLaneWidth * Math.max(1, proportionalLap.modelData.timeMs) / sessionStrip.strip.flexibleTimeMs)
-
-                                            Rectangle {
-                                                anchors.bottom: parent.bottom
-                                                anchors.left: parent.left
-                                                anchors.right: parent.right
-                                                color: Style.greenColor
-                                                height: proportionalLap.modelData.isFastest ? 2 : 0
-                                            }
-                                            Label {
-                                                id: proportionalLapLabel
-
-                                                anchors.fill: parent
-                                                anchors.leftMargin: 5
-                                                anchors.rightMargin: 5
-                                                color: proportionalLap.selectedLap ? (sessionStrip.strip.reference ? Style.orangeColor : Style.accentColor) : proportionalLap.modelData.isFastest ? Style.greenColor : Style.foregroundColor
-                                                elide: Text.ElideRight
-                                                font.bold: proportionalLap.selectedLap || proportionalLap.confidenceLap
-                                                font.family: Style.monoFontFamily
-                                                font.pixelSize: 9
-                                                text: proportionalLap.fixedWidthLap ? proportionalLap.modelData.label : proportionalLap.modelData.timeText
-                                                verticalAlignment: Text.AlignVCenter
-                                            }
-                                            MouseArea {
-                                                id: proportionalLapMouse
-
-                                                acceptedButtons: Qt.LeftButton | Qt.RightButton
-                                                anchors.fill: parent
-                                                hoverEnabled: true
-
-                                                onClicked: mouse => {
-                                                    if (mouse.button === Qt.RightButton) {
-                                                        root.dismissPointerTooltip(proportionalLap.tooltipOwner);
-                                                        lapMenu.sessionKey = sessionStrip.strip.sessionKey;
-                                                        lapMenu.lapId = proportionalLap.modelData.lapId;
-                                                        lapMenu.popup(proportionalLap, mouse.x, mouse.y);
-                                                        return;
-                                                    }
-                                                    if (sessionStrip.strip.reference)
-                                                        Store.compareLap(sessionStrip.strip.sessionKey, proportionalLap.modelData.lapId);
-                                                    else
-                                                        Store.selectLap(sessionStrip.strip.sessionKey, proportionalLap.modelData.lapId);
-                                                }
-                                                onEntered: {
-                                                    const point = proportionalLapMouse.mapToItem(Overlay.overlay, proportionalLapMouse.mouseX, proportionalLapMouse.mouseY);
-                                                    root.showPointerTooltip(proportionalLap.tooltipOwner, proportionalLap.modelData.timeText + " · " + proportionalLap.modelData.label + (proportionalLap.confidenceLap ? " · Consistency cohort" : ""), point.x, point.y);
-                                                }
-                                                onExited: root.dismissPointerTooltip(proportionalLap.tooltipOwner)
-                                                onPositionChanged: mouse => {
-                                                    const point = proportionalLapMouse.mapToItem(Overlay.overlay, mouse.x, mouse.y);
-                                                    root.movePointerTooltip(proportionalLap.tooltipOwner, point.x, point.y);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            onLapMenuRequested: (sessionKey, lapId, x, y) => {
+                lapMenu.sessionKey = sessionKey;
+                lapMenu.lapId = lapId;
+                lapMenu.popup(lapFilmstrip, x, y);
             }
+            onPointerTooltipDismissed: owner => root.dismissPointerTooltip(owner)
+            onPointerTooltipMoved: (owner, x, y) => root.movePointerTooltip(owner, x, y)
+            onPointerTooltipRequested: (owner, text, x, y) => root.showPointerTooltip(owner, text, x, y)
         }
         SplitView {
             Layout.fillHeight: true
@@ -2022,21 +1501,24 @@ ApplicationWindow {
 
                     Shortcut {
                         enabled: videoPane.visible && videoPlayer.loaded
+                        objectName: "videoPauseShortcut"
                         sequence: "Space"
 
-                        onActivated: root.videoTogglePaused()
+                        onActivated: videoSync.togglePaused()
                     }
                     Shortcut {
                         enabled: videoPane.visible && videoPlayer.loaded
+                        objectName: "videoSeekBackwardShortcut"
                         sequence: "Left"
 
-                        onActivated: root.seekVideoRelative(-2)
+                        onActivated: videoSync.seekRelative(-2)
                     }
                     Shortcut {
                         enabled: videoPane.visible && videoPlayer.loaded
+                        objectName: "videoSeekForwardShortcut"
                         sequence: "Right"
 
-                        onActivated: root.seekVideoRelative(2)
+                        onActivated: videoSync.seekRelative(2)
                     }
                     Shortcut {
                         enabled: root.videoFullscreen && root.telemetryVideoActive
@@ -2090,7 +1572,7 @@ ApplicationWindow {
                         enabled: root.videoFullscreen && videoPlayer.loaded
                         sequence: "S"
 
-                        onActivated: root.toggleVideoSlowMotion()
+                        onActivated: videoSync.toggleSlowMotion()
                     }
                     // Docked home of videoStage; the stage itself is at
                     // window scope so it can move fullscreen without
@@ -2123,6 +1605,12 @@ ApplicationWindow {
                         deltaTraceVisible: root.deltaTraceVisible
                         trace: trace
                         z: 2
+
+                        onChannelsRequested: {
+                            channelsWindow.refresh();
+                            channelsWindow.show();
+                            channelsWindow.raise();
+                        }
                     }
                     TraceView {
                         id: trace
@@ -2146,12 +1634,6 @@ ApplicationWindow {
                                     trace.confidenceHeld = true;
                                     Store.traceConfidenceMode = true;
                                 }
-                                event.accepted = true;
-                            } else if (event.key === Qt.Key_C) {
-                                Store.clearCompare();
-                                event.accepted = true;
-                            } else if (event.key === Qt.Key_A) {
-                                Store.setEditingCorners(!Store.editingCorners);
                                 event.accepted = true;
                             }
                         }
@@ -2193,6 +1675,18 @@ ApplicationWindow {
                                 spanHoverCard.follow(trace, trace.spanHoverX, trace.spanHoverY);
                         }
 
+                        Shortcut {
+                            enabled: tracePane.visible
+                            sequence: "C"
+
+                            onActivated: Store.clearCompare()
+                        }
+                        Shortcut {
+                            enabled: tracePane.visible
+                            sequence: "A"
+
+                            onActivated: Store.setEditingCorners(!Store.editingCorners)
+                        }
                         Menu {
                             id: cornerMenu
 
@@ -2340,24 +1834,6 @@ ApplicationWindow {
                             }
                         }
                     }
-                    ToolButton {
-                        ToolTip.text: "Add or hide source channels"
-                        ToolTip.visible: hovered
-                        anchors.bottom: parent.bottom
-                        anchors.bottomMargin: 4
-                        anchors.left: parent.left
-                        anchors.leftMargin: 4
-                        font.family: Style.monoFontFamily
-                        font.pixelSize: 8
-                        text: "Channels…"
-                        z: 2
-
-                        onClicked: {
-                            channelsWindow.refresh();
-                            channelsWindow.show();
-                            channelsWindow.raise();
-                        }
-                    }
                     CornerFocusOverlay {
                         anchors.right: tracePane.right
                         anchors.rightMargin: 8
@@ -2375,7 +1851,7 @@ ApplicationWindow {
             Layout.preferredHeight: visible ? 64 : 0
             border.color: Style.borderColor
             color: Style.surfaceColor
-            visible: !Store.hasGpsData && Store.comparing && Store.hasDamperAlignment()
+            visible: Store.comparing && Store.comparisonSyncStrategy === "manual-dampers" && Store.hasDamperAlignment()
 
             RowLayout {
                 anchors.fill: parent

@@ -11,65 +11,96 @@ Item {
     required property bool deltaTraceVisible
     required property TraceView trace
 
+    signal channelsRequested
+
     implicitHeight: Style.iconButtonSize
 
     RowLayout {
         anchors.fill: parent
         spacing: 2
 
-        ToolButton {
+        CompactToolButton {
             Layout.fillHeight: true
+            Layout.maximumWidth: 58
+            Layout.minimumWidth: 58
             Layout.preferredWidth: 58
-            ToolTip.text: Store.comparing ? (toolbar.deltaTraceVisible ? "Hide comparison delta-time trace" : "Show comparison delta-time trace") : "Select a comparison lap to show delta time"
-            ToolTip.visible: hovered
             checked: toolbar.deltaTraceVisible
             enabled: Store.comparing
             objectName: "deltaTraceButton"
             text: "Δt"
+            tip: Store.comparing ? (toolbar.deltaTraceVisible ? "Hide comparison delta-time trace" : "Show comparison delta-time trace") : "Select a comparison lap to show delta time"
 
             onClicked: Store.setChannelVisible("delta", !toolbar.deltaTraceVisible)
         }
-        ToolButton {
+        CompactToolButton {
             Layout.fillHeight: true
+            Layout.maximumWidth: 30
+            Layout.minimumWidth: 30
             Layout.preferredWidth: 30
-            ToolTip.text: "Zoom in"
-            ToolTip.visible: hovered
             objectName: "zoomInButton"
             text: "+"
+            tip: "Zoom in"
 
             onClicked: Store.zoomAt(Store.cursorFrac, 0.7)
         }
-        ToolButton {
+        CompactToolButton {
             Layout.fillHeight: true
+            Layout.maximumWidth: 30
+            Layout.minimumWidth: 30
             Layout.preferredWidth: 30
-            ToolTip.text: "Zoom out"
-            ToolTip.visible: hovered
             objectName: "zoomOutButton"
             text: "−"
+            tip: "Zoom out"
 
             onClicked: Store.zoomAt(Store.cursorFrac, 1.4)
         }
-        ToolButton {
+        CompactToolButton {
             Layout.fillHeight: true
+            Layout.maximumWidth: 30
+            Layout.minimumWidth: 30
             Layout.preferredWidth: 30
-            ToolTip.text: "Reset zoom"
-            ToolTip.visible: hovered
             objectName: "zoomResetButton"
             text: "⤢"
+            tip: "Reset zoom"
 
             onClicked: Store.resetView()
         }
-        ToolButton {
+        CompactToolButton {
+            Layout.fillHeight: true
+            Layout.maximumWidth: 76
+            Layout.minimumWidth: 76
+            Layout.preferredWidth: 76
+            objectName: "channelsButton"
+            text: "Channels…"
+            tip: "Configure trace channels"
+
+            onClicked: toolbar.channelsRequested()
+        }
+        CompactToolButton {
+            Layout.fillHeight: true
+            Layout.maximumWidth: 48
+            Layout.minimumWidth: 48
+            Layout.preferredWidth: 48
+            checkable: true
+            checked: toolbar.trace.fitChannels
+            objectName: "fitChannelsButton"
+            text: "FIT"
+            tip: toolbar.trace.fitChannels ? "Show all traces at once" : "Use standard lane sizes and scroll vertically"
+
+            onClicked: toolbar.trace.fitChannels = checked
+        }
+        CompactToolButton {
             id: confidenceButton
 
             Layout.fillHeight: true
+            Layout.maximumWidth: 86
+            Layout.minimumWidth: 86
             Layout.preferredWidth: 86
-            ToolTip.text: "Show fastest-half session consistency heatmap (hold .)"
-            ToolTip.visible: hovered
             checkable: true
             checked: Store.traceConfidenceMode
             objectName: "confidenceButton"
             text: "Consistency"
+            tip: "Show fastest-half session consistency heatmap (hold .)"
 
             onClicked: {
                 Store.traceConfidenceMode = confidenceButton.checked;
@@ -85,9 +116,8 @@ Item {
             font.family: Style.monoFontFamily
             font.pixelSize: Style.smallFontSize
             horizontalAlignment: Text.AlignRight
-            text: Store.traceConfidenceLoading ? "FASTEST 50% · ALIGNING LAPS…" : Store.traceConfidenceLapCount >= 2 ? "FASTEST 50% · " + Store.traceConfidenceLapCount + " OTHER LAPS" : "FASTEST 50% · NEED 2 OTHER LAPS"
+            text: !Store.traceConfidenceMode ? "" : Store.traceConfidenceLoading ? "FASTEST 50% · ALIGNING LAPS…" : Store.traceConfidenceLapCount >= 2 ? "FASTEST 50% · " + Store.traceConfidenceLapCount + " OTHER LAPS" : "FASTEST 50% · NEED 2 OTHER LAPS"
             verticalAlignment: Text.AlignVCenter
-            visible: Store.traceConfidenceMode
         }
     }
 }

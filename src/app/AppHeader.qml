@@ -22,6 +22,7 @@ ToolBar {
 
     // Root-window state the tooltip text reads.
     required property bool sidebarVisible
+    property var sidecarRows: []
 
     signal addTelemetryDirectoryRequested
     signal channelsRequested
@@ -40,6 +41,9 @@ ToolBar {
     }
     function refreshRecentFiles(): void {
         appBar.recentFileRows = Store.recentFiles;
+    }
+    function refreshSidecars(): void {
+        appBar.sidecarRows = Store.sidecarLibrary();
     }
 
     Material.elevation: 2
@@ -60,6 +64,7 @@ ToolBar {
     Component.onCompleted: {
         readout.refresh();
         appBar.refreshRecentFiles();
+        appBar.refreshSidecars();
     }
 
     Connections {
@@ -72,6 +77,9 @@ ToolBar {
         function onSelectionChanged(): void {
             readout.refresh();
         }
+        function onSidecarLibraryChanged(): void {
+            appBar.refreshSidecars();
+        }
 
         target: Store
     }
@@ -81,11 +89,10 @@ ToolBar {
         anchors.rightMargin: 8
         spacing: 8
 
-        ToolButton {
-            ToolTip.text: appBar.sidebarVisible ? "Hide sidebar" : "Show sidebar"
-            ToolTip.visible: hovered
+        CompactToolButton {
             font.pixelSize: 16
             text: "☰"
+            tip: appBar.sidebarVisible ? "Hide sidebar" : "Show sidebar"
 
             onClicked: appBar.sidebarToggleRequested()
         }
@@ -110,6 +117,25 @@ ToolBar {
             Material.accent: Style.accentColor
             running: Store.lapLoading
             visible: running
+        }
+        CompactToolButton {
+            Layout.preferredWidth: 26
+            enabled: Store.fileOpenLoading
+            font.bold: true
+            font.pixelSize: 16
+            text: "×"
+            tip: "Cancel opening " + Store.fileOpenPath
+            visible: Store.fileOpenLoading
+
+            onClicked: Store.cancelFileOpen()
+        }
+        Label {
+            Layout.maximumWidth: 260
+            color: Style.mutedTextColor
+            elide: Text.ElideMiddle
+            font.pixelSize: 10
+            text: "Opening " + Store.fileOpenPath
+            visible: Store.fileOpenLoading
         }
         ColumnLayout {
             Layout.fillWidth: true
@@ -164,15 +190,14 @@ ToolBar {
                 }
             }
         }
-        ToolButton {
+        CompactToolButton {
             Layout.preferredHeight: 28
             Layout.preferredWidth: appBar.width >= 900 ? implicitWidth : 30
-            ToolTip.text: Store.primaryMetadataFolderScope ? "Edit metadata inherited by this session" : "Edit recording metadata"
-            ToolTip.visible: hovered
             display: appBar.width >= 900 ? AbstractButton.TextBesideIcon : AbstractButton.IconOnly
             icon.name: "document-properties-symbolic"
             objectName: "headerMetadataEdit"
             text: "Metadata"
+            tip: Store.primaryMetadataFolderScope ? "Edit metadata inherited by this session" : "Edit recording metadata"
             visible: Store.primaryMetadataPath !== ""
 
             onClicked: appBar.metadataRequested(Store.primaryMetadataPath, Store.primaryMetadataFolderScope)
@@ -183,21 +208,20 @@ ToolBar {
             spacing: 4
             visible: Updater.supported && Updater.enabled && Updater.available
 
-            ToolButton {
+            CompactToolButton {
                 id: updateButton
 
                 readonly property string tooltipText: Updater.busy ? Updater.status : "Omatrack " + Updater.latestVersion + " is available"
 
                 Layout.preferredHeight: 28
                 Layout.preferredWidth: 28
-                ToolTip.text: updateButton.tooltipText
-                ToolTip.visible: hovered
                 display: AbstractButton.IconOnly
                 font.pixelSize: 14
                 icon.color: Style.accentColor
                 icon.name: "software-update-available-symbolic"
                 objectName: "headerUpdate"
                 text: "↑"
+                tip: updateButton.tooltipText
 
                 onClicked: updateMenu.open()
             }
@@ -249,7 +273,7 @@ ToolBar {
                     parts.push("G" + r.gear);
                 if (r.corner)
                     parts.push(r.corner);
-                if (Store.comparing && r.delta !== undefined)
+                if (Store.comparing && r.hasDelta)
                     parts.push("Δ " + r.delta.toFixed(3) + "s");
                 readout.text = parts.join("  ·  ");
             }
@@ -262,11 +286,10 @@ ToolBar {
             horizontalAlignment: Text.AlignRight
             visible: appBar.width >= 650
         }
-        ToolButton {
-            ToolTip.text: "Actions"
-            ToolTip.visible: hovered
+        CompactToolButton {
             font.pixelSize: 14
             text: "•••"
+            tip: "Actions"
 
             onClicked: actionsMenu.open()
         }
@@ -333,6 +356,31 @@ ToolBar {
 
                 onObjectAdded: (index, object) => recentFilesMenu.insertItem(index, object)
                 onObjectRemoved: (index, object) => recentFilesMenu.removeItem(object)
+            }
+        }
+        Menu {
+            id: sidecarsMenu
+
+            enabled: appBar.sidecarRows.length > 0
+            title: "Sidecars"
+
+            Instantiator {
+                model: appBar.sidecarRows
+
+                delegate: MenuItem {
+                    id: sidecarItem
+
+                    required property var modelData
+
+                    ToolTip.text: sidecarItem.modelData.path
+                    ToolTip.visible: sidecarItem.hovered
+                    text: sidecarItem.modelData.name || sidecarItem.modelData.path
+
+                    onTriggered: Store.attachSidecar(sidecarItem.modelData.path)
+                }
+
+                onObjectAdded: (index, object) => sidecarsMenu.insertItem(index, object)
+                onObjectRemoved: (index, object) => sidecarsMenu.removeItem(object)
             }
         }
         MenuItem {

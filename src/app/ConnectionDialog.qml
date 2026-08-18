@@ -60,10 +60,11 @@ Dialog {
         if (dialog.currentType === null)
             return;
         let options = {};
-        for (let i = 0; i < extraRepeater.count; ++i) {
-            const row = extraRepeater.itemAt(i);
-            if (row !== null)
-                options[row.fieldKey] = row.fieldValue;
+        if (dialog.currentType !== null && dialog.currentType.extraFields !== undefined) {
+            for (let i = 0; i < dialog.currentType.extraFields.length; ++i) {
+                const key = dialog.currentType.extraFields[i].key;
+                options[key] = dialog.extraValues[key] !== undefined ? dialog.extraValues[key] : "";
+            }
         }
         const error = Store.saveConnection({
             id: dialog.editingId,
@@ -192,10 +193,6 @@ Dialog {
             RowLayout {
                 id: extraRow
 
-                // Read back by submit(); every one of these is optional, so a
-                // blank simply means "let the protocol work it out".
-                readonly property string fieldKey: extraRow.modelData.key
-                readonly property alias fieldValue: extraField.text
                 required property var modelData
 
                 Layout.fillWidth: true
@@ -210,9 +207,9 @@ Dialog {
 
                     Layout.fillWidth: true
                     placeholderText: extraRow.modelData.placeholder
-                    text: dialog.extraValues[extraRow.modelData.key] !== undefined ? dialog.extraValues[extraRow.modelData.key] : ""
 
                     onAccepted: dialog.submit()
+                    onTextEdited: dialog.extraValues[extraRow.modelData.key] = text
                 }
             }
         }

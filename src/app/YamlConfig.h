@@ -54,8 +54,30 @@ public:
 
     void remove(const QStringList& path);
 
-    /// Persist to disk atomically. No-op when nothing changed.
-    void save();
+    /// Persist to disk atomically. Synchronous: serialises `root_` and writes
+    /// it through `QSaveFile`, checking `write()`/`commit()`. Returns false and
+    /// fills `errorString` (and `this->errorString()`) on a commit failure. No
+    /// call (returns true) when nothing changed since the last successful save.
+    bool save(QString* errorString = nullptr);
+
+    /// Serialise the process-wide document to bytes on the calling (GUI)
+    /// thread. Cheap: no filesystem work. The bytes include the leading
+    /// comment line so they can be written verbatim by `writeDocumentBytes`.
+    QByteArray serializeDocument() const;
+
+    /// Atomically write `bytes` to `path` through `QSaveFile`, checking both
+    /// `write()` and `commit()`. Used by `save()` and the debounced async
+    /// preference writer so they share one checked write path.
+    static bool writeDocumentBytes(const QString& path, const QByteArray& bytes,
+                                   QString* errorString = nullptr);
+
+    /// Mark the document as having unsaved changes (used to retry after an
+    /// async write failure).
+    void markDirty() { dirty_ = true; }
+    /// Clear the dirty flag after a snapshot has been captured for an async
+    /// write, so changes made during the write re-mark it.
+    void clearDirty() { dirty_ = false; }
+    bool isDirty() const { return dirty_; }
 
     /// True when the file did not exist at load time (fresh install).
     bool isFresh() const { return fresh_; }
