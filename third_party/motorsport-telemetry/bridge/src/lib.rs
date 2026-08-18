@@ -1168,6 +1168,12 @@ impl TelemetrySource for LinkedVideoSource<'_> {
     fn sample_at(&self, channel: usize, time_ns: u64, linear: bool) -> Option<f64> {
         self.inner.sample_at(channel, time_ns, linear)
     }
+    fn diagnostics(&self) -> &[motorsport_telemetry_core::Diagnostic] {
+        self.inner.diagnostics()
+    }
+    fn sample_times(&self, channel: usize) -> motorsport_telemetry_core::SampleTimes<'_> {
+        self.inner.sample_times(channel)
+    }
 }
 
 /// Serialise an open handle to a native `.telemetry` recording.
