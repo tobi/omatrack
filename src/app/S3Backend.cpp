@@ -10,7 +10,6 @@
 #include "SigV4.h"
 
 #include <QDateTime>
-#include <QNetworkAccessManager>
 #include <QNetworkRequest>
 #include <QUrlQuery>
 #include <QXmlStreamReader>
@@ -314,11 +313,11 @@ RequestFactory factoryFor(const RemoteConnection& connection,
 /// unsigned probe earns, which is why this needs no credentials. Asking is
 /// far better than guessing: a signature scoped to the wrong region comes
 /// back as AuthorizationHeaderMalformed, which names nothing useful.
-QString discoverRegion(QNetworkAccessManager& manager, const QString& bucket) {
+QString discoverRegion(const QString& bucket, const IoCancel& cancel) {
     const QUrl probe(QStringLiteral("https://s3.amazonaws.com/") + bucket);
-    const HttpResponse response =
-        sendFollowing(manager, probe, "HEAD",
-                      [](const QUrl& url) { return makeRequest(url); });
+    const HttpResponse response = sendFollowing(
+        probe, "HEAD", [](const QUrl& url) { return makeRequest(url); }, {},
+        cancel);
     return QString::fromLatin1(response.headers.value("x-amz-bucket-region"));
 }
 
@@ -514,8 +513,7 @@ RemoteBackend makeS3Backend(const RemoteConnection& connection) {
                                         const QByteArray& payload) {
         signRequest(request, method, connection, *region, payload);
     };
-
-    backend.urlFor = [connection, parsed, region](const QString& relative) {
+    backend.objectUrl = [connection, parsed, region](const QString& relative) {
         if (region->isEmpty())
             *region =
                 connection.options.value(QStringLiteral("region")).trimmed();
@@ -527,16 +525,23 @@ RemoteBackend makeS3Backend(const RemoteConnection& connection) {
         return objectUrl(endpoint, parsed.bucket, parsed.prefix + relative);
     };
 
-    backend.scope = [region]() { return *region; };
+    // A presigned URL carries the signature in the query string, so a player
+    // or a range reader with no notion of AWS credentials can fetch it. The
+    // region the listing resolved is captured here so presigning later
+    // reproduces the same scope without another round trip.
+    backend.presign = [connection, region](const QUrl& url, int expirySeconds) {
+        return s3PresignedUrl(connection, *region, url, expirySeconds);
+    };
 
-    backend.list = [connection, parsed, region](QNetworkAccessManager& manager,
-                                                QVector<RemoteObject>* objects,
-                                                QString* error) {
+    backend.list = [connection, parsed, region](QVector<RemoteObject>* objects,
+                                                QString* scope, QString* error,
+                                                const IoCancel& cancel) {
         const bool custom =
             !connection.options.value(QStringLiteral("endpoint")).isEmpty();
         if (region->isEmpty() && !custom)
-            *region = discoverRegion(manager, parsed.bucket);
+            *region = discoverRegion(parsed.bucket, cancel);
         if (region->isEmpty()) *region = QStringLiteral("us-east-1");
+        if (scope) *scope = *region;
 
         const Endpoint endpoint =
             resolveEndpoint(connection, parsed.bucket, *region);
@@ -544,6 +549,10 @@ RemoteBackend makeS3Backend(const RemoteConnection& connection) {
 
         QString token;
         for (int page = 0; page < kMaximumPages; ++page) {
+            if (ioCancelled(cancel)) {
+                if (error) *error = QStringLiteral("Cancelled");
+                return false;
+            }
             QUrl listing = endpoint.origin;
             setEncodedPath(&listing,
                            endpoint.pathStyle
@@ -566,8 +575,12 @@ RemoteBackend makeS3Backend(const RemoteConnection& connection) {
             setEncodedQuery(&listing, parameters);
 
             const HttpResponse response =
-                sendFollowing(manager, listing, "GET", build);
+                sendFollowing(listing, "GET", build, {}, cancel);
             if (response.status != 200) {
+                if (ioCancelled(cancel)) {
+                    if (error) *error = QStringLiteral("Cancelled");
+                    return false;
+                }
                 // The XML document is the better explanation whenever there
                 // is one: Qt reports every 4xx as "server replied:
                 // Forbidden", which names neither the cause nor the cure.

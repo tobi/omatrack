@@ -13,7 +13,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFutureWatcher>
-#include <QNetworkAccessManager>
+#include <QPointer>
 #include <QNetworkRequest>
 #include <QProcess>
 #include <QStandardPaths>
@@ -94,22 +94,6 @@ QNetworkRequest githubRequest(const QUrl& url, const QString& version) {
     request.setRawHeader("X-GitHub-Api-Version", "2022-11-28");
     return request;
 }
-
-struct CheckResult {
-    bool ok = false;
-    bool newer = false;
-    omatrack::GithubRelease release;
-    QString sha256;
-    QString error;
-};
-
-struct InstallResult {
-    bool ok = false;
-    bool relaunchWithHelper = false;
-    QString helperPath;
-    QStringList helperArgs;
-    QString error;
-};
 
 #ifdef Q_OS_WIN
 QString powershellLiteral(const QString& path) {
@@ -243,6 +227,214 @@ bool extractMacDmg(const QString& dmg, const QString& staging, QString* error) {
 }
 #endif
 
+// ── per-platform installers ─────────────────────────────────────────
+// The shared download + checksum orchestration stays in AppUpdater::install;
+// each platform's apply() is the on-disk swap that the ~160-line lambda used
+// to inline.
+
+/// Linux: replace the running AppImage in place. The running image stays
+/// mounted; only the on-disk file changes.
+class LinuxAppImageInstaller : public omatrack::UpdateInstaller {
+public:
+    QString partPath(const QString& installPath,
+                     const QString& /*version*/) const override {
+        return installPath + QStringLiteral(".part");
+    }
+    omatrack::UpdateInstallOutcome apply(
+        const omatrack::UpdateInstallArgs& args) override {
+        omatrack::UpdateInstallOutcome outcome;
+        if (!omatrack::replaceAppImage(args.installPath, args.partPath,
+                                       &outcome.error))
+            QFile::remove(args.partPath);
+        else
+            outcome.ok = true;
+        return outcome;
+    }
+};
+
+/// Windows: Velopack nupkg, the Setup.exe a zip install migrates with, and
+/// the portable zip itself. One class, branching on the asset name the
+/// release selected.
+class WindowsVelopackInstaller : public omatrack::UpdateInstaller {
+public:
+    explicit WindowsVelopackInstaller(QString assetName)
+        : assetName_(std::move(assetName)) {}
+
+    QString partPath(const QString& /*installPath*/,
+                     const QString& version) const override {
+        const QString tempRoot =
+            QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+        if (assetName_.endsWith(QStringLiteral(".nupkg"), Qt::CaseInsensitive))
+            return QDir(tempRoot).filePath(
+                QStringLiteral("omatrack-update-%1.nupkg").arg(version));
+        if (assetName_.endsWith(QStringLiteral("Setup.exe"),
+                                Qt::CaseInsensitive))
+            return QDir(tempRoot).filePath(
+                QStringLiteral("omatrack-update-%1-setup.exe").arg(version));
+        return QDir(tempRoot).filePath(
+            QStringLiteral("omatrack-update-%1.zip").arg(version));
+    }
+
+    omatrack::UpdateInstallOutcome apply(
+        const omatrack::UpdateInstallArgs& args) override {
+        omatrack::UpdateInstallOutcome outcome;
+#ifdef Q_OS_WIN
+        if (assetName_.endsWith(QStringLiteral(".nupkg"),
+                                Qt::CaseInsensitive)) {
+            if (args.updateExe.isEmpty()) {
+                QFile::remove(args.partPath);
+                outcome.error = QStringLiteral(
+                    "This copy was not installed with the Omatrack setup. "
+                    "Download the installer from GitHub Releases.");
+                return outcome;
+            }
+            outcome.relaunchWithHelper = true;
+            outcome.helperPath = args.updateExe;
+            outcome.helperArgs = {QStringLiteral("apply"),
+                                  QStringLiteral("--waitPid"),
+                                  QString::number(args.pid),
+                                  QStringLiteral("--package"),
+                                  args.partPath,
+                                  QStringLiteral("--")};
+            outcome.helperArgs.append(args.relaunchArgs);
+            outcome.ok = true;
+            return outcome;
+        }
+        if (assetName_.endsWith(QStringLiteral("Setup.exe"),
+                                Qt::CaseInsensitive)) {
+            outcome.relaunchWithHelper = true;
+            outcome.helperPath = args.partPath;
+            outcome.ok = true;
+            return outcome;
+        }
+        // Portable zip: extract, then a cmd helper waits for this process to
+        // exit, robocopies the payload over the install, and relaunches.
+        const QString staging =
+            QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
+                .filePath(
+                    QStringLiteral("omatrack-update-%1").arg(args.version));
+        QDir(staging).removeRecursively();
+        if (!extractWindowsZip(args.partPath, staging, &outcome.error)) {
+            QFile::remove(args.partPath);
+            QDir(staging).removeRecursively();
+            return outcome;
+        }
+        const QString payload = omatrack::windowsPayloadRoot(staging);
+        if (payload.isEmpty()) {
+            QFile::remove(args.partPath);
+            QDir(staging).removeRecursively();
+            outcome.error =
+                QStringLiteral("Update archive is missing omatrack.exe");
+            return outcome;
+        }
+        const QString scriptPath =
+            QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
+                .filePath(QStringLiteral("omatrack-apply-update.cmd"));
+        QFile script(scriptPath);
+        if (!script.open(QIODevice::WriteOnly | QIODevice::Truncate |
+                         QIODevice::Text)) {
+            QFile::remove(args.partPath);
+            QDir(staging).removeRecursively();
+            outcome.error = QStringLiteral("Unable to write the apply script");
+            return outcome;
+        }
+        script.write(omatrack::windowsApplyScript(args.pid, payload,
+                                                  args.installPath,
+                                                  args.relaunchArgs, staging)
+                         .toUtf8());
+        script.close();
+        QFile::remove(args.partPath);
+        outcome.relaunchWithHelper = true;
+        outcome.helperPath = scriptPath;
+        outcome.ok = true;
+        return outcome;
+#else
+        QFile::remove(args.partPath);
+        outcome.error = QStringLiteral("Windows updates require Windows");
+        return outcome;
+#endif
+    }
+
+private:
+    QString assetName_;
+};
+
+/// macOS: mount the dmg, copy Omatrack.app out, then a bash helper waits for
+/// this process to exit, swaps the bundle via ditto, and relaunches.
+class MacDmgInstaller : public omatrack::UpdateInstaller {
+public:
+    QString partPath(const QString& /*installPath*/,
+                     const QString& version) const override {
+        return QDir(QStandardPaths::writableLocation(
+                        QStandardPaths::TempLocation))
+            .filePath(QStringLiteral("omatrack-update-%1.dmg").arg(version));
+    }
+    omatrack::UpdateInstallOutcome apply(
+        const omatrack::UpdateInstallArgs& args) override {
+        omatrack::UpdateInstallOutcome outcome;
+#ifdef Q_OS_MACOS
+        const QString staging =
+            QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
+                .filePath(
+                    QStringLiteral("omatrack-update-%1").arg(args.version));
+        QDir(staging).removeRecursively();
+        if (!extractMacDmg(args.partPath, staging, &outcome.error)) {
+            QFile::remove(args.partPath);
+            QDir(staging).removeRecursively();
+            return outcome;
+        }
+        const QString payload = omatrack::macPayloadRoot(staging);
+        if (payload.isEmpty()) {
+            QFile::remove(args.partPath);
+            QDir(staging).removeRecursively();
+            outcome.error =
+                QStringLiteral("Update disk image is missing Omatrack.app");
+            return outcome;
+        }
+        const QString scriptPath =
+            QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
+                .filePath(QStringLiteral("omatrack-apply-update.sh"));
+        QFile script(scriptPath);
+        if (!script.open(QIODevice::WriteOnly | QIODevice::Truncate |
+                         QIODevice::Text)) {
+            QFile::remove(args.partPath);
+            QDir(staging).removeRecursively();
+            outcome.error = QStringLiteral("Unable to write the apply script");
+            return outcome;
+        }
+        script.write(omatrack::macApplyScript(args.pid, payload,
+                                              args.installPath,
+                                              args.relaunchArgs, staging)
+                         .toUtf8());
+        script.close();
+        QFile::setPermissions(
+            scriptPath, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner |
+                            QFile::ReadGroup | QFile::ExeGroup |
+                            QFile::ReadOther | QFile::ExeOther);
+        QFile::remove(args.partPath);
+        outcome.relaunchWithHelper = true;
+        outcome.helperPath = scriptPath;
+        outcome.ok = true;
+        return outcome;
+#else
+        QFile::remove(args.partPath);
+        outcome.error = QStringLiteral("macOS updates require macOS");
+        return outcome;
+#endif
+    }
+};
+
+std::unique_ptr<omatrack::UpdateInstaller> installerForAsset(
+    const QString& assetName) {
+    if (assetName.endsWith(QStringLiteral(".dmg"), Qt::CaseInsensitive))
+        return std::make_unique<MacDmgInstaller>();
+    if (assetName.endsWith(QStringLiteral(".nupkg"), Qt::CaseInsensitive) ||
+        assetName.endsWith(QStringLiteral("Setup.exe"), Qt::CaseInsensitive) ||
+        assetName.endsWith(QStringLiteral(".zip"), Qt::CaseInsensitive))
+        return std::make_unique<WindowsVelopackInstaller>(assetName);
+    return std::make_unique<LinuxAppImageInstaller>();
+}
+
 }  // namespace
 
 AppUpdater::AppUpdater(QObject* parent) : QObject(parent) {
@@ -273,7 +465,15 @@ AppUpdater::AppUpdater(QObject* parent) : QObject(parent) {
 }
 
 AppUpdater::~AppUpdater() {
+    // Cancel any in-flight check/install, then wait for the worker lambdas to
+    // finish before `this` goes away. The lambdas capture `this` to post
+    // progress back via QMetaObject::invokeMethod(this, …); without waiting,
+    // a queued callback could touch this after free. Pending queued events
+    // are discarded by ~QObject, but the worker thread itself must first stop
+    // touching `this`.
     if (cancel_) cancel_->store(true);
+    if (checkFuture_.isRunning()) checkFuture_.waitForFinished();
+    if (installFuture_.isRunning()) installFuture_.waitForFinished();
 }
 
 bool AppUpdater::bannerVisible() const {
@@ -468,11 +668,10 @@ void AppUpdater::startCheck(bool force) {
                 saveState();
             });
     const bool velopack = !updateExePath_.isEmpty();
-    watcher->setFuture(QtConcurrent::run([api, cancel, version, velopack]() {
+    checkFuture_ = QtConcurrent::run([api, cancel, version, velopack]() {
         CheckResult result;
-        QNetworkAccessManager unused;
         const omatrack::HttpResponse response = omatrack::sendFollowing(
-            unused, api, "GET",
+            api, "GET",
             [version](const QUrl& hop) { return githubRequest(hop, version); },
             {}, cancel);
         if (omatrack::ioCancelled(cancel)) {
@@ -510,14 +709,15 @@ void AppUpdater::startCheck(bool force) {
         if (!result.newer || !result.release.checksumsUrl.isValid())
             return result;
         const omatrack::HttpResponse sums = omatrack::sendFollowing(
-            unused, result.release.checksumsUrl, "GET",
+            result.release.checksumsUrl, "GET",
             [version](const QUrl& hop) { return githubRequest(hop, version); },
             {}, cancel);
         if (sums.status == 200)
             result.sha256 =
                 omatrack::checksumForFile(sums.body, result.release.assetName);
         return result;
-    }));
+    });
+    watcher->setFuture(checkFuture_);
 }
 
 void AppUpdater::install() {
@@ -544,10 +744,10 @@ void AppUpdater::install() {
     const qint64 pid = QCoreApplication::applicationPid();
     const QStringList relaunchArgs = QCoreApplication::arguments().mid(1);
     QString expectedSha = sha256_;
-    auto* watcher = new QFutureWatcher<InstallResult>(this);
-    connect(watcher, &QFutureWatcher<InstallResult>::finished, this,
-            [this, watcher, generation]() {
-                const InstallResult result = watcher->result();
+    auto* watcher = new QFutureWatcher<omatrack::UpdateInstallOutcome>(this);
+    connect(watcher, &QFutureWatcher<omatrack::UpdateInstallOutcome>::finished,
+            this, [this, watcher, generation]() {
+                const omatrack::UpdateInstallOutcome result = watcher->result();
                 watcher->deleteLater();
                 if (generation != generation_) return;
                 if (!result.ok) {
@@ -591,15 +791,24 @@ void AppUpdater::install() {
                 QCoreApplication::quit();
             });
     const QString updateExe = updateExePath_;
-    watcher->setFuture(QtConcurrent::run([this, cancel, version, installPath,
-                                          release, expectedSha, pid,
-                                          relaunchArgs, updateExe]() {
-        InstallResult result;
-        QNetworkAccessManager unused;
+    std::unique_ptr<omatrack::UpdateInstaller> installer =
+        installerForAsset(release.assetName);
+    const QString partPath = installer->partPath(installPath, release.version);
+    QFile::remove(partPath);
+    // A weak guard so a progress callback queued from the worker thread can
+    // no-op once this object is gone. The destructor cancels and waits too,
+    // so the worker stops before `this` is destroyed; the guard covers any
+    // event queued in the narrow window before ~QObject drains it.
+    QPointer<AppUpdater> guard(this);
+    installFuture_ = QtConcurrent::run([guard, cancel, version, installPath,
+                                        release, expectedSha, pid, relaunchArgs,
+                                        updateExe, partPath,
+                                        installer = std::move(installer)]() {
+        omatrack::UpdateInstallOutcome result;
         QString sha = expectedSha;
         if (sha.isEmpty() && release.checksumsUrl.isValid()) {
             const omatrack::HttpResponse sums = omatrack::sendFollowing(
-                unused, release.checksumsUrl, "GET",
+                release.checksumsUrl, "GET",
                 [version](const QUrl& hop) {
                     return githubRequest(hop, version);
                 },
@@ -612,50 +821,25 @@ void AppUpdater::install() {
                 QStringLiteral("Release is missing a SHA-256 checksum");
             return result;
         }
-        const auto channel = omatrack::currentUpdateChannel();
-        const QString asset = release.assetName;
-        const bool windowsNupkg =
-            asset.endsWith(QStringLiteral(".nupkg"), Qt::CaseInsensitive);
-        const bool windowsSetup =
-            asset.endsWith(QStringLiteral("Setup.exe"), Qt::CaseInsensitive);
-        const bool windowsZip =
-            asset.endsWith(QStringLiteral(".zip"), Qt::CaseInsensitive);
-        const bool macDmg = channel == omatrack::UpdateChannel::MacDmg;
-        const QString tempRoot =
-            QStandardPaths::writableLocation(QStandardPaths::TempLocation);
-        QString partPath = installPath + QStringLiteral(".part");
-        if (windowsNupkg)
-            partPath = QDir(tempRoot).filePath(
-                QStringLiteral("omatrack-update-%1.nupkg")
-                    .arg(release.version));
-        else if (windowsSetup)
-            partPath = QDir(tempRoot).filePath(
-                QStringLiteral("omatrack-update-%1-setup.exe")
-                    .arg(release.version));
-        else if (windowsZip)
-            partPath = QDir(tempRoot).filePath(
-                QStringLiteral("omatrack-update-%1.zip").arg(release.version));
-        else if (macDmg)
-            partPath = QDir(tempRoot).filePath(
-                QStringLiteral("omatrack-update-%1.dmg").arg(release.version));
-        QFile::remove(partPath);
         const omatrack::FileDownload download = omatrack::downloadFile(
             release.assetUrl,
             [version](const QUrl& hop) { return githubRequest(hop, version); },
             partPath,
-            [this, cancel](qint64 received, qint64 total) {
+            [guard, cancel](qint64 received, qint64 total) {
                 if (omatrack::ioCancelled(cancel)) return false;
                 const double value =
                     total > 0 ? double(received) / double(total) : 0.0;
                 QMetaObject::invokeMethod(
-                    this,
-                    [this, received, total, value]() {
-                        setProgress(value);
+                    guard.data(),  // null-safe context; the functor re-checks
+                    [guard, received, total, value]() {
+                        if (!guard) return;
+                        guard->setProgress(value);
                         if (total > 0)
-                            setPhase(Phase::Downloading,
-                                     QStringLiteral("Downloading %1 of %2…")
-                                         .arg(omatrack::formatBytes(received),
-                                              omatrack::formatBytes(total)));
+                            guard->setPhase(
+                                AppUpdater::Phase::Downloading,
+                                QStringLiteral("Downloading %1 of %2…")
+                                    .arg(omatrack::formatBytes(received),
+                                         omatrack::formatBytes(total)));
                     },
                     Qt::QueuedConnection);
                 return true;
@@ -682,155 +866,18 @@ void AppUpdater::install() {
             return result;
         }
         QMetaObject::invokeMethod(
-            this,
-            [this]() {
-                setPhase(Phase::Installing, QStringLiteral("Installing…"));
-                setProgress(1.0);
+            guard.data(),
+            [guard]() {
+                if (!guard) return;
+                guard->setPhase(AppUpdater::Phase::Installing,
+                                QStringLiteral("Installing…"));
+                guard->setProgress(1.0);
             },
             Qt::QueuedConnection);
-        if (windowsNupkg) {
-#ifdef Q_OS_WIN
-            if (updateExe.isEmpty()) {
-                QFile::remove(partPath);
-                result.error = QStringLiteral(
-                    "This copy was not installed with the Omatrack setup. "
-                    "Download the installer from GitHub Releases.");
-                return result;
-            }
-            result.relaunchWithHelper = true;
-            result.helperPath = updateExe;
-            result.helperArgs = {QStringLiteral("apply"),
-                                 QStringLiteral("--waitPid"),
-                                 QString::number(pid),
-                                 QStringLiteral("--package"),
-                                 partPath,
-                                 QStringLiteral("--")};
-            result.helperArgs.append(relaunchArgs);
-            result.ok = true;
-            return result;
-#else
-            QFile::remove(partPath);
-            result.error = QStringLiteral("Windows updates require Windows");
-            return result;
-#endif
-        }
-        if (windowsSetup) {
-#ifdef Q_OS_WIN
-            result.relaunchWithHelper = true;
-            result.helperPath = partPath;
-            result.ok = true;
-            return result;
-#else
-            QFile::remove(partPath);
-            result.error = QStringLiteral("Windows updates require Windows");
-            return result;
-#endif
-        }
-        if (windowsZip) {
-#ifdef Q_OS_WIN
-            const QString staging =
-                QDir(QStandardPaths::writableLocation(
-                         QStandardPaths::TempLocation))
-                    .filePath(QStringLiteral("omatrack-update-%1")
-                                  .arg(release.version));
-            QDir(staging).removeRecursively();
-            if (!extractWindowsZip(partPath, staging, &result.error)) {
-                QFile::remove(partPath);
-                QDir(staging).removeRecursively();
-                return result;
-            }
-            const QString payload = omatrack::windowsPayloadRoot(staging);
-            if (payload.isEmpty()) {
-                QFile::remove(partPath);
-                QDir(staging).removeRecursively();
-                result.error =
-                    QStringLiteral("Update archive is missing omatrack.exe");
-                return result;
-            }
-            const QString scriptPath =
-                QDir(QStandardPaths::writableLocation(
-                         QStandardPaths::TempLocation))
-                    .filePath(QStringLiteral("omatrack-apply-update.cmd"));
-            QFile script(scriptPath);
-            if (!script.open(QIODevice::WriteOnly | QIODevice::Truncate |
-                             QIODevice::Text)) {
-                QFile::remove(partPath);
-                QDir(staging).removeRecursively();
-                result.error =
-                    QStringLiteral("Unable to write the apply script");
-                return result;
-            }
-            script.write(omatrack::windowsApplyScript(pid, payload, installPath,
-                                                      relaunchArgs, staging)
-                             .toUtf8());
-            script.close();
-            QFile::remove(partPath);
-            result.relaunchWithHelper = true;
-            result.helperPath = scriptPath;
-            result.ok = true;
-            return result;
-#else
-            QFile::remove(partPath);
-            result.error = QStringLiteral("Windows updates require Windows");
-            return result;
-#endif
-        }
-        if (macDmg) {
-#ifdef Q_OS_MACOS
-            const QString staging = QDir(tempRoot).filePath(
-                QStringLiteral("omatrack-update-%1").arg(release.version));
-            QDir(staging).removeRecursively();
-            if (!extractMacDmg(partPath, staging, &result.error)) {
-                QFile::remove(partPath);
-                QDir(staging).removeRecursively();
-                return result;
-            }
-            const QString payload = omatrack::macPayloadRoot(staging);
-            if (payload.isEmpty()) {
-                QFile::remove(partPath);
-                QDir(staging).removeRecursively();
-                result.error =
-                    QStringLiteral("Update disk image is missing Omatrack.app");
-                return result;
-            }
-            const QString scriptPath = QDir(tempRoot).filePath(
-                QStringLiteral("omatrack-apply-update.sh"));
-            QFile script(scriptPath);
-            if (!script.open(QIODevice::WriteOnly | QIODevice::Truncate |
-                             QIODevice::Text)) {
-                QFile::remove(partPath);
-                QDir(staging).removeRecursively();
-                result.error =
-                    QStringLiteral("Unable to write the apply script");
-                return result;
-            }
-            script.write(omatrack::macApplyScript(pid, payload, installPath,
-                                                  relaunchArgs, staging)
-                             .toUtf8());
-            script.close();
-            QFile::setPermissions(scriptPath,
-                                  QFile::ReadOwner | QFile::WriteOwner |
-                                      QFile::ExeOwner | QFile::ReadGroup |
-                                      QFile::ExeGroup | QFile::ReadOther |
-                                      QFile::ExeOther);
-            QFile::remove(partPath);
-            result.relaunchWithHelper = true;
-            result.helperPath = scriptPath;
-            result.ok = true;
-            return result;
-#else
-            QFile::remove(partPath);
-            result.error = QStringLiteral("macOS updates require macOS");
-            return result;
-#endif
-        }
-        if (!omatrack::replaceAppImage(installPath, partPath, &result.error)) {
-            QFile::remove(partPath);
-            return result;
-        }
-        result.ok = true;
-        return result;
-    }));
+        return installer->apply({partPath, installPath, release.version, pid,
+                                 relaunchArgs, updateExe});
+    });
+    watcher->setFuture(installFuture_);
 }
 
 void AppUpdater::adoptRelease(const omatrack::GithubRelease& release,

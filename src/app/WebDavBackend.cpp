@@ -3,7 +3,6 @@
 #include "RemoteCache.h"
 
 #include <QDir>
-#include <QNetworkAccessManager>
 #include <QNetworkRequest>
 #include <QSet>
 #include <QUrl>
@@ -128,10 +127,14 @@ bool parseResources(const QByteArray& payload, const QUrl& root,
     return true;
 }
 
-bool collectDepthOne(QNetworkAccessManager& manager,
-                     const RemoteConnection& connection, const QUrl& url,
+bool collectDepthOne(const RemoteConnection& connection, const QUrl& url,
                      const QUrl& root, int depth, QSet<QString>* visited,
-                     QVector<Resource>* resources, QString* error) {
+                     QVector<Resource>* resources, QString* error,
+                     const IoCancel& cancel) {
+    if (ioCancelled(cancel)) {
+        if (error) *error = QStringLiteral("Cancelled");
+        return false;
+    }
     if (depth > kMaximumDepth) {
         if (error)
             *error = QStringLiteral("WebDAV directory nesting is too deep");
@@ -142,8 +145,8 @@ bool collectDepthOne(QNetworkAccessManager& manager,
     visited->insert(key);
 
     const HttpResponse response =
-        sendFollowing(manager, url, "PROPFIND",
-                      propfindFactory(connection, "1"), kPropfindBody);
+        sendFollowing(url, "PROPFIND", propfindFactory(connection, "1"),
+                      kPropfindBody, cancel);
     if (response.status != 207) {
         if (error) {
             *error = response.error.isEmpty()
@@ -158,8 +161,8 @@ bool collectDepthOne(QNetworkAccessManager& manager,
     for (const Resource& resource : children) resources->append(resource);
     for (const Resource& resource : children) {
         if (!resource.collection) continue;
-        if (!collectDepthOne(manager, connection, resource.object.url, root,
-                             depth + 1, visited, resources, error))
+        if (!collectDepthOne(connection, resource.object.url, root, depth + 1,
+                             visited, resources, error, cancel))
             return false;
     }
     return true;
@@ -185,13 +188,23 @@ RemoteBackend makeWebDavBackend(const RemoteConnection& connection) {
         signRequest(request, connection);
     };
 
-    backend.urlFor = [connection](const QString& relative) {
+    backend.objectUrl = [connection](const QString& relative) {
         return normalizedRoot(connection.target).resolved(QUrl(relative));
     };
 
-    backend.list = [connection](QNetworkAccessManager& manager,
-                                QVector<RemoteObject>* objects,
-                                QString* error) {
+    // ffmpeg reads the credential straight out of the URL, so the player
+    // needs to know nothing about how this server authenticates.
+    backend.presign = [connection](const QUrl& objectUrl, int) {
+        if (connection.username.isEmpty()) return objectUrl;
+        QUrl authenticated = objectUrl;
+        authenticated.setUserName(connection.username);
+        authenticated.setPassword(connection.password);
+        return authenticated;
+    };
+
+    backend.list = [connection](QVector<RemoteObject>* objects, QString* scope,
+                                QString* error, const IoCancel& cancel) {
+        if (scope) scope->clear();  // WebDAV has no SigV4 region.
         const QUrl root = normalizedRoot(connection.target);
         QVector<Resource> resources;
 
@@ -199,16 +212,16 @@ RemoteBackend makeWebDavBackend(const RemoteConnection& connection) {
         // Plenty of servers refuse it, so fall back to walking a directory at
         // a time rather than treating the refusal as an outage.
         const HttpResponse response = sendFollowing(
-            manager, root, "PROPFIND", propfindFactory(connection, "infinity"),
-            kPropfindBody);
+            root, "PROPFIND", propfindFactory(connection, "infinity"),
+            kPropfindBody, cancel);
         if (response.status == 207) {
             if (!parseResources(response.body, root, &resources, error))
                 return false;
         } else {
             resources.clear();
             QSet<QString> visited;
-            if (!collectDepthOne(manager, connection, root, root, 0, &visited,
-                                 &resources, error))
+            if (!collectDepthOne(connection, root, root, 0, &visited,
+                                 &resources, error, cancel))
                 return false;
         }
 

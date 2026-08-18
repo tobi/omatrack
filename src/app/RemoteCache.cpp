@@ -3,7 +3,7 @@
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDateTime>
-#include <QEventLoop>
+
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
@@ -170,16 +170,12 @@ private:
 
     template <typename T>
     static T waitFor(QFuture<T> future) {
-        // A worker can block. The GUI/test thread must keep pumping: the
-        // mock HTTP server (and any UX) lives there. This is not a nested
-        // I/O loop — QNAM runs on the I/O thread.
-        QCoreApplication* app = QCoreApplication::instance();
-        if (app && QThread::currentThread() == app->thread()) {
-            while (!future.isFinished())
-                app->processEvents(QEventLoop::AllEvents, 20);
-        } else {
-            future.waitForFinished();
-        }
+        // Blocks the calling thread until the I/O thread finishes. The GUI
+        // thread must never reach here: it would freeze the loop, and a mock
+        // server on that loop would starve. Callers run the blocking engine
+        // on a QtConcurrent worker and observe the result with a
+        // QFutureWatcher.
+        future.waitForFinished();
         return future.result();
     }
 
@@ -318,24 +314,33 @@ private:
             bool abandoned = false;
         };
         auto state = std::make_shared<DownloadState>();
+        QObject::connect(reply, &QNetworkReply::readyRead, this,
+                         [reply, timeout, cancel, state, output]() {
+                             const QByteArray chunk = reply->readAll();
+                             if (output->write(chunk) != chunk.size()) {
+                                 state->writeFailed = true;
+                                 reply->abort();
+                                 return;
+                             }
+                             state->bytes += chunk.size();
+                             timeout->start(kDownloadTimeoutMs);
+                             if (ioCancelled(cancel)) {
+                                 state->abandoned = true;
+                                 reply->abort();
+                             }
+                         });
+        // Progress comes from Qt's own byte counter rather than the readyRead
+        // tally: it is the same number, reported on the same thread, without
+        // re-reading the Content-Length header on every chunk.
         QObject::connect(
-            reply, &QNetworkReply::readyRead, this,
-            [reply, timeout, progress, cancel, state, output]() {
-                const QByteArray chunk = reply->readAll();
-                if (output->write(chunk) != chunk.size()) {
-                    state->writeFailed = true;
+            reply, &QNetworkReply::downloadProgress, this,
+            [reply, progress, cancel, state](qint64 received, qint64 total) {
+                if (ioCancelled(cancel)) {
+                    state->abandoned = true;
                     reply->abort();
                     return;
                 }
-                state->bytes += chunk.size();
-                timeout->start(kDownloadTimeoutMs);
-                const QVariant declared =
-                    reply->header(QNetworkRequest::ContentLengthHeader);
-                if ((progress &&
-                     !progress(state->bytes, declared.isValid()
-                                                 ? declared.toLongLong()
-                                                 : qint64(-1))) ||
-                    ioCancelled(cancel)) {
+                if (progress && !progress(received, total)) {
                     state->abandoned = true;
                     reply->abort();
                 }
@@ -574,12 +579,50 @@ QNetworkRequest makeRequest(const QUrl& url) {
     return request;
 }
 
-HttpResponse sendFollowing(QNetworkAccessManager&, const QUrl& url,
-                           const QByteArray& method,
+HttpResponse sendFollowing(const QUrl& url, const QByteArray& method,
                            const RequestFactory& build, const QByteArray& body,
                            const IoCancel& cancel) {
     return NetworkIo::instance().send(url, method, build, body,
                                       effectiveCancel(cancel));
+}
+
+HttpResponse RemoteBackend::head(const QUrl& url,
+                                 const IoCancel& cancel) const {
+    const RequestFactory build = [this](const QUrl& hop) {
+        QNetworkRequest request = makeRequest(hop);
+        sign(request, "HEAD", {});
+        return request;
+    };
+    return sendFollowing(url, "HEAD", build, {}, cancel);
+}
+
+HttpResponse RemoteBackend::get(const QUrl& url, const IoCancel& cancel) const {
+    const RequestFactory build = [this](const QUrl& hop) {
+        QNetworkRequest request = makeRequest(hop);
+        sign(request, "GET", {});
+        return request;
+    };
+    return sendFollowing(url, "GET", build, {}, cancel);
+}
+
+QString RemoteBackend::putIfAbsent(const QUrl& url, const QByteArray& body,
+                                   const IoCancel& cancel) const {
+    const RequestFactory build = [this, body](const QUrl& hop) {
+        QNetworkRequest request = makeRequest(hop);
+        request.setHeader(QNetworkRequest::ContentTypeHeader,
+                          QStringLiteral("application/octet-stream"));
+        request.setRawHeader("If-None-Match", "*");
+        sign(request, "PUT", body);
+        return request;
+    };
+    const HttpResponse response =
+        sendFollowing(url, "PUT", build, body, cancel);
+    if (response.status == 200 || response.status == 201 ||
+        response.status == 204 || response.status == 412)
+        return {};
+    return response.error.isEmpty()
+               ? QStringLiteral("Upload returned HTTP %1").arg(response.status)
+               : response.error;
 }
 
 namespace {
@@ -689,6 +732,86 @@ QJsonArray sortedArray(const QSet<QString>& names) {
     return array;
 }
 
+/// One per-location index.json, serialised by a mutex. A sync that reads the
+/// index, talks to the server for minutes, and writes it back would otherwise
+/// lose a pin added mid-sync; the rebuild re-reads the offline set under the
+/// lock and merges it instead of overwriting it from a stale snapshot.
+class CacheIndex {
+public:
+    explicit CacheIndex(const QString& cachePath)
+        : path_(QDir(cachePath).filePath(QStringLiteral("index.json"))) {}
+
+    QJsonObject read() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return readIndex(path_);
+    }
+
+    /// The pinned-for-offline names, read under the lock.
+    QSet<QString> offlinePins() const { return offlineNames(read()); }
+
+    /// Atomically add or withdraw a pin. Returns true on success, false when
+    /// the recording is not listed or the index could not be written.
+    bool setOfflinePin(const QString& relative, bool pinned) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const QJsonObject index = readIndex(path_);
+        if (!index.value(QStringLiteral("entries"))
+                 .toObject()
+                 .contains(relative))
+            return false;
+        QSet<QString> names = offlineNames(index);
+        if (pinned == names.contains(relative)) return true;
+        if (pinned)
+            names.insert(relative);
+        else
+            names.remove(relative);
+        QJsonObject updated = index;
+        updated.insert(QStringLiteral("offline"), sortedArray(names));
+        return writeIndex(path_, updated);
+    }
+
+    /// Rebuild the entries while preserving pins added since the sync's
+    /// snapshot. `keptPins` receives the pins that survived (those whose file
+    /// the server still lists). Returns false when the write fails.
+    bool rebuild(const QJsonObject& newEntries, const QString& scope,
+                 const QString& targetUrl, QSet<QString>* keptPins = nullptr) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const QSet<QString> pinned = offlineNames(readIndex(path_));
+        QSet<QString> kept;
+        for (const QString& name : pinned)
+            if (newEntries.contains(name)) kept.insert(name);
+        const QJsonObject index{
+            {QStringLiteral("version"), 1},
+            {QStringLiteral("url"), targetUrl},
+            {QStringLiteral("offline"), sortedArray(kept)},
+            {QStringLiteral("scope"), scope},
+            {QStringLiteral("entries"), newEntries},
+            {QStringLiteral("syncedAt"),
+             QDateTime::currentDateTimeUtc().toString(Qt::ISODate)}};
+        if (keptPins) *keptPins = kept;
+        return writeIndex(path_, index);
+    }
+
+private:
+    QString path_;
+    mutable std::mutex mutex_;
+};
+
+/// One CacheIndex per cache directory, living for the process. The directory
+/// is stable per connection, so a second sync of the same server reaches the
+/// same mutex as the first.
+CacheIndex& cacheIndexFor(const QString& cachePath) {
+    static std::mutex mapMutex;
+    static QHash<QString, CacheIndex*> indices;
+    std::lock_guard<std::mutex> lock(mapMutex);
+    const auto it = indices.constFind(cachePath);
+    if (it != indices.cend()) return **it;
+    // Leaked like NetworkIo: a CacheIndex outlives any thread that could
+    // safely destroy it, and one per connection is a handful of bytes.
+    auto* index = new CacheIndex(cachePath);
+    indices.insert(cachePath, index);
+    return *index;
+}
+
 RemoteSyncResult offlineResult(RemoteSyncResult result,
                                const QVector<RemoteObject>& cached,
                                const QString& reason) {
@@ -736,7 +859,7 @@ QStringList cacheDirectories() {
 
 CacheUsage cacheUsage() {
     CacheUsage usage;
-    for (const QString& directory : cacheDirectories()) {
+    const auto countDirectory = [&usage](const QString& directory) {
         QDirIterator files(directory, QDir::Files | QDir::Hidden,
                            QDirIterator::Subdirectories);
         while (files.hasNext()) {
@@ -747,7 +870,10 @@ CacheUsage cacheUsage() {
             else
                 usage.bytes += info.size();
         }
-    }
+    };
+    for (const QString& directory : cacheDirectories())
+        countDirectory(directory);
+    countDirectory(telemetryCacheDirectory());
     return usage;
 }
 
@@ -755,6 +881,7 @@ qint64 clearCache() {
     const CacheUsage usage = cacheUsage();
     for (const QString& directory : cacheDirectories())
         QDir(directory).removeRecursively();
+    QDir(telemetryCacheDirectory()).removeRecursively();
     return usage.bytes + usage.videoBytes;
 }
 
@@ -802,16 +929,25 @@ qint64 enforceCacheBudget(qint64 limitBytes, const QSet<QString>& keepPaths) {
     };
     QVector<Candidate> candidates;
     qint64 total = 0;
-    for (const QString& directory : cacheDirectories()) {
+    // The discovery caches and the shared normalized-telemetry cache share
+    // one budget and one LRU: a remote ETag and a local BLAKE3 digest both
+    // produce a `.telemetry` under .omatrack/c, and evicting them by the same
+    // mtime rule keeps the whole cache honest. The Track Atlas snapshot lives
+    // outside this — it is a single small file refreshed on a timer, not a
+    // growing pile of laps, and evicting it would only force an immediate
+    // re-fetch.
+    QStringList directories = cacheDirectories();
+    directories.append(telemetryCacheDirectory());
+    for (const QString& directory : std::as_const(directories)) {
         QDirIterator files(directory, QDir::Files | QDir::Hidden,
                            QDirIterator::Subdirectories);
         while (files.hasNext()) {
             files.next();
             const QFileInfo info = files.fileInfo();
             // Video is off this ledger on both sides. It is only ever here
-            // because somebody pinned it for a flight, and one recording would
-            // otherwise blow the whole budget and take a season of telemetry
-            // with it.
+            // because somebody pinned it for a flight, and one recording
+            // would otherwise blow the whole budget and take a season of
+            // telemetry with it.
             if (isVideoFile(info.fileName())) continue;
             total += info.size();
             // A stub costs nothing and stands for a session that is still
@@ -874,6 +1010,18 @@ QString etagFileKey(const QString& etag) {
     if (key.isEmpty() || !localPathError(key).isEmpty()) return {};
     return key;
 }
+QString telemetryCacheDirectory() {
+    return QStandardPaths::writableLocation(
+               QStandardPaths::GenericCacheLocation) +
+           QStringLiteral("/.omatrack/c");
+}
+
+QString telemetryCachePath(const QString& key) {
+    const QString safe = etagFileKey(key);
+    if (safe.isEmpty()) return {};
+    return QDir(telemetryCacheDirectory())
+        .filePath(safe + QStringLiteral(".telemetry"));
+}
 
 bool isSidecarPath(const QString& relativePath) {
     if (relativePath.startsWith(QStringLiteral(".omatrack/"))) return true;
@@ -889,20 +1037,14 @@ bool isSidecarPath(const QString& relativePath) {
            suffix == QStringLiteral("ldx");
 }
 
-bool isPortableTelemetryCompanion(const QString& relativePath) {
-    const QFileInfo info(relativePath);
-    return info.fileName().startsWith(QLatin1Char('.')) &&
-           info.suffix().compare(QStringLiteral("telemetry"),
-                                 Qt::CaseInsensitive) == 0;
-}
-
 QString cachedObjectEtag(const RemoteConnection& connection,
                          const QString& localPath) {
     const QString cachePath = cacheDirectory(connection);
     if (cachePath.isEmpty()) return {};
     const QString relative = relativeInCache(cachePath, localPath);
     if (relative.isEmpty() || isSidecarPath(relative)) return {};
-    return readIndex(QDir(cachePath).filePath(QStringLiteral("index.json")))
+    return cacheIndexFor(cachePath)
+        .read()
         .value(QStringLiteral("entries"))
         .toObject()
         .value(relative)
@@ -910,130 +1052,89 @@ QString cachedObjectEtag(const RemoteConnection& connection,
         .value(QStringLiteral("etag"))
         .toString();
 }
-
-qint64 cachedObjectSize(const RemoteConnection& connection,
-                        const QString& localPath) {
-    const QString cachePath = cacheDirectory(connection);
-    if (cachePath.isEmpty()) return -1;
-    const QString relative = relativeInCache(cachePath, localPath);
-    if (relative.isEmpty() || isSidecarPath(relative)) return -1;
-    return readIndex(QDir(cachePath).filePath(QStringLiteral("index.json")))
-        .value(QStringLiteral("entries"))
-        .toObject()
-        .value(relative)
-        .toObject()
-        .value(QStringLiteral("size"))
-        .toVariant()
-        .toLongLong();
-}
-
 namespace {
 RemoteBackend backendFor(const RemoteConnection& connection) {
     switch (connection.type) {
         case LocationType::WebDav: return makeWebDavBackend(connection);
         case LocationType::S3:
-        case LocationType::Gcs: return makeS3Backend(connection);
+        case LocationType::Gcs:
+            // Google Cloud Storage speaks the S3 API — SigV4 with an HMAC
+            // interoperability key and ListObjectsV2 paging — so one backend
+            // covers both. This is the only switch on LocationType outside
+            // the protocol constructors themselves.
+            return makeS3Backend(connection);
         case LocationType::Folder: break;
     }
     return {};
 }
 }  // namespace
 
-QString putObject(const RemoteConnection& connection,
-                  const QString& relativePath, const QByteArray& body,
-                  const IoCancel& cancel) {
-    const QString cachePath = cacheDirectory(connection);
-    if (cachePath.isEmpty() || relativePath.isEmpty())
+QString fetchRemoteObject(const RemoteConnection& connection,
+                          const QString& relativePath,
+                          const QString& destination, const IoCancel& cancel) {
+    if (connection.type == LocationType::Folder || relativePath.isEmpty())
+        return QStringLiteral("This file is not on a server.");
+    if (!localPathError(relativePath).isEmpty())
+        return QStringLiteral("Cannot store that name as a file.");
+    if (!QDir().mkpath(QFileInfo(destination).absolutePath()))
+        return QStringLiteral("Unable to create the telemetry cache folder");
+
+    RemoteConnection signedConnection = connection;
+    const QString scope = cacheIndexFor(cacheDirectory(connection))
+                              .read()
+                              .value(QStringLiteral("scope"))
+                              .toString();
+    if (signedConnection.options.value(QStringLiteral("region")).isEmpty() &&
+        !scope.isEmpty())
+        signedConnection.options.insert(QStringLiteral("region"), scope);
+    const RemoteBackend backend = backendFor(signedConnection);
+    if (!backend.objectUrl || !backend.sign)
+        return QStringLiteral("No protocol backend");
+    const QUrl url = backend.objectUrl(relativePath);
+    if (!url.isValid()) return QStringLiteral("Invalid remote cache URL");
+    const RequestFactory get = [backend](const QUrl& hop) {
+        QNetworkRequest request = makeRequest(hop);
+        backend.sign(request, "GET", {});
+        return request;
+    };
+    const DownloadResult download =
+        downloadToFile(url, get, destination, {}, cancel);
+    if (download.status == 404) {
+        QFile::remove(destination);
+        return {};
+    }
+    if (download.status != 200 || !download.error.isEmpty()) {
+        QFile::remove(destination);
+        return download.error.isEmpty()
+                   ? QStringLiteral("Download returned HTTP %1")
+                         .arg(download.status)
+                   : download.error;
+    }
+    return {};
+}
+
+QString publishRemoteObject(const RemoteConnection& connection,
+                            const QString& relativePath, const QByteArray& body,
+                            const IoCancel& cancel) {
+    if (connection.type == LocationType::Folder || relativePath.isEmpty())
         return QStringLiteral("This file is not on a server.");
     if (!localPathError(relativePath).isEmpty())
         return QStringLiteral("Cannot store that name as a file.");
 
-    const QString localPath = QDir(cachePath).filePath(relativePath);
-    if (!QDir().mkpath(QFileInfo(localPath).absolutePath()))
-        return QStringLiteral("Unable to create a cache folder");
-
     RemoteConnection signedConnection = connection;
-    const QString scope =
-        readIndex(QDir(cachePath).filePath(QStringLiteral("index.json")))
-            .value(QStringLiteral("scope"))
-            .toString();
+    const QString scope = cacheIndexFor(cacheDirectory(connection))
+                              .read()
+                              .value(QStringLiteral("scope"))
+                              .toString();
     if (signedConnection.options.value(QStringLiteral("region")).isEmpty() &&
         !scope.isEmpty())
         signedConnection.options.insert(QStringLiteral("region"), scope);
-
     const RemoteBackend backend = backendFor(signedConnection);
-    if (!backend.urlFor || !backend.sign) {
-        if (QFileInfo(localPath).size() > 0) return {};
-        QSaveFile local(localPath);
-        if (!local.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
-            local.write(body) != body.size() || !local.commit())
-            return QStringLiteral("Unable to write the metadata cache");
-        return {};
-    }
-    const QUrl url = backend.urlFor(relativePath);
-    if (!url.isValid()) return {};
-
-    const QString contentType =
-        QFileInfo(relativePath)
-                    .suffix()
-                    .compare(QStringLiteral("json"), Qt::CaseInsensitive) == 0
-            ? QStringLiteral("application/json")
-            : QStringLiteral("application/octet-stream");
-
-    QNetworkAccessManager unused;
-    const RequestFactory put = [backend, body, contentType](const QUrl& hop) {
-        QNetworkRequest request = makeRequest(hop);
-        request.setHeader(QNetworkRequest::ContentTypeHeader, contentType);
-        request.setRawHeader("If-None-Match", "*");
-        backend.sign(request, "PUT", body);
-        return request;
-    };
-    const HttpResponse response =
-        sendFollowing(unused, url, "PUT", put, body, cancel);
-    if (response.status == 200 || response.status == 201 ||
-        response.status == 204) {
-        qCInfo(lcIo).noquote()
-            << "write put" << relativePath << omatrack::formatBytes(body.size())
-            << "HTTP" << response.status;
-        if (QFileInfo(localPath).size() > 0) return {};
-        QSaveFile local(localPath);
-        if (!local.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
-            local.write(body) != body.size() || !local.commit())
-            return QStringLiteral("Unable to write the metadata cache");
-        qCInfo(lcIo).noquote()
-            << "write cache" << omatrack::displayPath(localPath)
-            << omatrack::formatBytes(body.size());
-        return {};
-    }
-    if (response.status == 412) {
-        qCInfo(lcIo).noquote()
-            << "write exists" << relativePath << "HTTP 412 (kept server copy)";
-        if (QFileInfo(localPath).size() > 0) return {};
-        const RequestFactory get = [backend](const QUrl& hop) {
-            QNetworkRequest request = makeRequest(hop);
-            backend.sign(request, "GET", {});
-            return request;
-        };
-        const HttpResponse existing =
-            sendFollowing(unused, url, "GET", get, {}, cancel);
-        if (existing.status != 200)
-            return existing.error.isEmpty()
-                       ? QStringLiteral("Download returned HTTP %1")
-                             .arg(existing.status)
-                       : existing.error;
-        QSaveFile local(localPath);
-        if (!local.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
-            local.write(existing.body) != existing.body.size() ||
-            !local.commit())
-            return QStringLiteral("Unable to write the metadata cache");
-        qCInfo(lcIo).noquote()
-            << "write cache fetched" << omatrack::displayPath(localPath)
-            << omatrack::formatBytes(existing.body.size());
-        return {};
-    }
-    return response.error.isEmpty()
-               ? QStringLiteral("Upload returned HTTP %1").arg(response.status)
-               : response.error;
+    if (!backend.objectUrl || !backend.sign)
+        return QStringLiteral("No protocol backend");
+    const QUrl url = backend.objectUrl(relativePath);
+    if (!url.isValid()) return QStringLiteral("Invalid remote cache URL");
+    return backend.putIfAbsent(url, body, cancel);
 }
 
 QUrl streamSource(const RemoteConnection& connection,
@@ -1047,7 +1148,7 @@ QUrl streamSource(const RemoteConnection& connection,
     const QString relative = relativeInCache(cachePath, localPath);
     if (relative.isEmpty()) return {};
 
-    const QJsonObject index = readIndex(QDir(cachePath).filePath("index.json"));
+    const QJsonObject index = cacheIndexFor(cachePath).read();
     const QJsonObject entry = index.value(QStringLiteral("entries"))
                                   .toObject()
                                   .value(relative)
@@ -1057,25 +1158,18 @@ QUrl streamSource(const RemoteConnection& connection,
                    QUrl::StrictMode);
     if (!url.isValid()) return {};
 
-    switch (connection.type) {
-        case LocationType::WebDav: {
-            // ffmpeg reads the credential straight out of the URL, so the
-            // player needs to know nothing about how this server authenticates.
-            QUrl authenticated = url;
-            if (!connection.username.isEmpty()) {
-                authenticated.setUserName(connection.username);
-                authenticated.setPassword(connection.password);
-            }
-            return authenticated;
-        }
-        case LocationType::S3:
-        case LocationType::Gcs:
-            return s3PresignedUrl(
-                connection, index.value(QStringLiteral("scope")).toString(),
-                url, kStreamExpirySeconds);
-        case LocationType::Folder: break;
-    }
-    return {};
+    // The protocol decides how a credential-less client fetches the URL:
+    // SigV4 presigning for S3/GCS, credentials embedded for WebDAV. The
+    // scope the sync recorded stands in for the region a fresh signature
+    // would otherwise need a round trip to discover.
+    RemoteConnection signedConnection = connection;
+    const QString scope = index.value(QStringLiteral("scope")).toString();
+    if (signedConnection.options.value(QStringLiteral("region")).isEmpty() &&
+        !scope.isEmpty())
+        signedConnection.options.insert(QStringLiteral("region"), scope);
+    const RemoteBackend backend = backendFor(signedConnection);
+    if (!backend.presign) return {};
+    return backend.presign(url, kStreamExpirySeconds);
 }
 
 QUrl objectUrlForPath(const RemoteConnection& connection,
@@ -1084,15 +1178,15 @@ QUrl objectUrlForPath(const RemoteConnection& connection,
     if (cachePath.isEmpty()) return {};
     const QString relative = relativeInCache(cachePath, localPath);
     if (relative.isEmpty()) return {};
-    const QUrl url(
-        readIndex(QDir(cachePath).filePath(QStringLiteral("index.json")))
-            .value(QStringLiteral("entries"))
-            .toObject()
-            .value(relative)
-            .toObject()
-            .value(QStringLiteral("url"))
-            .toString(),
-        QUrl::StrictMode);
+    const QUrl url(cacheIndexFor(cachePath)
+                       .read()
+                       .value(QStringLiteral("entries"))
+                       .toObject()
+                       .value(relative)
+                       .toObject()
+                       .value(QStringLiteral("url"))
+                       .toString(),
+                   QUrl::StrictMode);
     return url.isValid() ? url : QUrl();
 }
 
@@ -1117,58 +1211,38 @@ bool getObjectRanges(const RemoteConnection& connection, const QUrl& url,
 
     RemoteConnection signedConnection = connection;
     const QString cachePath = cacheDirectory(connection);
-    const QJsonObject index =
-        readIndex(QDir(cachePath).filePath(QStringLiteral("index.json")));
-    const QString scope = index.value(QStringLiteral("scope")).toString();
-    if (signedConnection.options.value(QStringLiteral("region")).isEmpty() &&
-        !scope.isEmpty())
-        signedConnection.options.insert(QStringLiteral("region"), scope);
+    if (!cachePath.isEmpty()) {
+        const QString scope = cacheIndexFor(cachePath)
+                                  .read()
+                                  .value(QStringLiteral("scope"))
+                                  .toString();
+        if (signedConnection.options.value(QStringLiteral("region"))
+                .isEmpty() &&
+            !scope.isEmpty())
+            signedConnection.options.insert(QStringLiteral("region"), scope);
+    }
 
     const RemoteBackend backend = backendFor(signedConnection);
-    if (!backend.sign) {
+    if (!backend.presign) {
         if (error) *error = QStringLiteral("No protocol backend");
         return false;
     }
-
-    QUrl target = url;
-    std::function<QNetworkRequest(const QUrl&, const ObjectRange&)> build;
-    switch (signedConnection.type) {
-        case LocationType::WebDav:
-            build = [&backend](const QUrl& hop, const ObjectRange& range) {
-                QNetworkRequest request = makeRequest(hop);
-                request.setRawHeader(
-                    "Range",
-                    QByteArray("bytes=") + QByteArray::number(range.offset) +
-                        '-' +
-                        QByteArray::number(range.offset + range.length - 1));
-                backend.sign(request, "GET", {});
-                return request;
-            };
-            break;
-        case LocationType::S3:
-        case LocationType::Gcs:
-            // Range is deliberately not among the signed headers, so one
-            // presigned object URL can multiplex every sample request.
-            target = s3PresignedUrl(signedConnection, scope, url,
-                                    kStreamExpirySeconds);
-            build = [](const QUrl& hop, const ObjectRange& range) {
-                QNetworkRequest request = makeRequest(hop);
-                request.setRawHeader(
-                    "Range",
-                    QByteArray("bytes=") + QByteArray::number(range.offset) +
-                        '-' +
-                        QByteArray::number(range.offset + range.length - 1));
-                return request;
-            };
-            break;
-        case LocationType::Folder:
-            if (error) *error = QStringLiteral("Not a remote object");
-            return false;
-    }
+    // Range is deliberately not among the signed headers, so one presigned
+    // object URL can multiplex every sample request — the credential rides
+    // in the URL for both protocols.
+    const QUrl target = backend.presign(url, kStreamExpirySeconds);
     if (!target.isValid()) {
         if (error) *error = QStringLiteral("Unable to sign object URL");
         return false;
     }
+    const auto build = [](const QUrl& hop, const ObjectRange& range) {
+        QNetworkRequest request = makeRequest(hop);
+        request.setRawHeader(
+            "Range", QByteArray("bytes=") + QByteArray::number(range.offset) +
+                         '-' +
+                         QByteArray::number(range.offset + range.length - 1));
+        return request;
+    };
 
     return NetworkIo::instance().ranges(build, target, ranges, bodies, error,
                                         effectiveCancel(cancel));
@@ -1190,8 +1264,7 @@ bool offlineVideoPinned(const RemoteConnection& connection,
     if (cachePath.isEmpty()) return false;
     const QString relative = relativeInCache(cachePath, localPath);
     if (relative.isEmpty()) return false;
-    return offlineNames(readIndex(QDir(cachePath).filePath("index.json")))
-        .contains(relative);
+    return cacheIndexFor(cachePath).offlinePins().contains(relative);
 }
 
 QString pinOfflineVideo(const RemoteConnection& connection,
@@ -1203,20 +1276,17 @@ QString pinOfflineVideo(const RemoteConnection& connection,
     if (relative.isEmpty())
         return QStringLiteral("This recording is not in the cache.");
 
-    const QString indexPath = QDir(cachePath).filePath("index.json");
-    QJsonObject index = readIndex(indexPath);
-    if (!index.value(QStringLiteral("entries")).toObject().contains(relative))
-        return QStringLiteral("The server has not listed this recording.");
-
-    QSet<QString> names = offlineNames(index);
-    if (pinned == names.contains(relative)) return {};
-    if (pinned)
-        names.insert(relative);
-    else
-        names.remove(relative);
-    index.insert(QStringLiteral("offline"), sortedArray(names));
-    if (!writeIndex(indexPath, index))
+    CacheIndex& index = cacheIndexFor(cachePath);
+    if (!index.setOfflinePin(relative, pinned)) {
+        // Either the server has not listed this recording, or the index could
+        // not be written — both are reasons to stop rather than pretend.
+        const QJsonObject current = index.read();
+        if (!current.value(QStringLiteral("entries"))
+                 .toObject()
+                 .contains(relative))
+            return QStringLiteral("The server has not listed this recording.");
         return QStringLiteral("Unable to write the cache index.");
+    }
     // Giving the space back is the whole point of unpinning, and the stub is
     // what keeps the recording in the library and streaming afterwards.
     if (!pinned && !ensureStub(localPath))
@@ -1234,7 +1304,7 @@ QString fetchObject(const RemoteConnection& connection,
     if (relative.isEmpty())
         return QStringLiteral("This recording is not in the cache.");
 
-    const QJsonObject index = readIndex(QDir(cachePath).filePath("index.json"));
+    const QJsonObject index = cacheIndexFor(cachePath).read();
     const QJsonObject entry = index.value(QStringLiteral("entries"))
                                   .toObject()
                                   .value(relative)
@@ -1244,32 +1314,24 @@ QString fetchObject(const RemoteConnection& connection,
     if (!url.isValid())
         return QStringLiteral("The server has not listed this recording.");
 
-    QUrl target = url;
-    RequestFactory build;
-    switch (connection.type) {
-        case LocationType::WebDav: {
-            const RemoteBackend backend = makeWebDavBackend(connection);
-            build = [backend](const QUrl& hop) {
-                QNetworkRequest request = makeRequest(hop);
-                backend.sign(request, "GET", {});
-                return request;
-            };
-            break;
-        }
-        case LocationType::S3:
-        case LocationType::Gcs:
-            // A header signature is scoped to the bucket's region, which only
-            // a listing discovers. The sync wrote that scope down, so signing
-            // into the URL reproduces it here without a second round trip —
-            // and it is the same URL the player would have streamed.
-            target = s3PresignedUrl(
-                connection, index.value(QStringLiteral("scope")).toString(),
-                url, kStreamExpirySeconds);
-            build = [](const QUrl& hop) { return makeRequest(hop); };
-            break;
-        case LocationType::Folder:
-            return QStringLiteral("This recording is not on a server.");
-    }
+    // The same presigned URL the player would stream: the scope the sync
+    // recorded stands in for the region a fresh signature would otherwise
+    // need a round trip to discover, and the credential rides in the URL so
+    // the download needs no header signing.
+    RemoteConnection signedConnection = connection;
+    const QString scope = index.value(QStringLiteral("scope")).toString();
+    if (signedConnection.options.value(QStringLiteral("region")).isEmpty() &&
+        !scope.isEmpty())
+        signedConnection.options.insert(QStringLiteral("region"), scope);
+    const RemoteBackend backend = backendFor(signedConnection);
+    if (!backend.presign)
+        return QStringLiteral("This recording is not on a server.");
+    const QUrl target = backend.presign(url, kStreamExpirySeconds);
+    if (!target.isValid())
+        return QStringLiteral("The server has not listed this recording.");
+    const RequestFactory build = [](const QUrl& hop) {
+        return makeRequest(hop);
+    };
 
     qCInfo(lcIo).noquote() << "download start" << relative;
     const DownloadResult download =
@@ -1350,8 +1412,8 @@ RemoteSyncResult syncConnection(const RemoteConnection& connection,
                     ? locationId(connection.target, connection.username)
                     : connection.id;
     result.cachePath = cacheDirectory(connection);
-    const QString indexPath = QDir(result.cachePath).filePath("index.json");
-    const QJsonObject oldIndex = readIndex(indexPath);
+    CacheIndex& cacheIndex = cacheIndexFor(result.cachePath);
+    const QJsonObject oldIndex = cacheIndex.read();
     const QJsonObject oldEntries =
         oldIndex.value(QStringLiteral("entries")).toObject();
     const QSet<QString> pinned = offlineNames(oldIndex);
@@ -1372,26 +1434,15 @@ RemoteSyncResult syncConnection(const RemoteConnection& connection,
         return result;
     }
 
-    RemoteBackend backend;
-    switch (connection.type) {
-        case LocationType::WebDav:
-            backend = makeWebDavBackend(connection);
-            break;
-        case LocationType::S3:
-        case LocationType::Gcs:
-            // Google Cloud Storage speaks the S3 API — SigV4 with an HMAC
-            // interoperability key, and ListObjectsV2 paging. One backend.
-            backend = makeS3Backend(connection);
-            break;
-        case LocationType::Folder: break;
-    }
+    // backend construction only — no other code switches on the protocol.
+    const RemoteBackend backend = backendFor(connection);
 
-    QNetworkAccessManager manager;
     QVector<RemoteObject> objects;
+    QString scope;
     QString listingError;
     qCInfo(lcIo).noquote() << "sync" << locationTypeKey(connection.type)
                            << connection.name << connection.target;
-    if (!backend.list(manager, &objects, &listingError)) {
+    if (!backend.list(&objects, &scope, &listingError, cancel)) {
         result.error = listingError;
         qCInfo(lcIo).noquote()
             << "sync offline" << listingError << cached.size() << "cached";
@@ -1423,8 +1474,10 @@ RemoteSyncResult syncConnection(const RemoteConnection& connection,
             result.skipped.append(object.relativePath);
             continue;
         }
+        if (isSidecarPath(object.relativePath)) continue;
         const QJsonObject old =
             oldEntries.value(object.relativePath).toObject();
+
         const QString localPath =
             QDir(result.cachePath).filePath(object.relativePath);
         if (!QDir().mkpath(QFileInfo(localPath).absolutePath())) {
@@ -1433,82 +1486,13 @@ RemoteSyncResult syncConnection(const RemoteConnection& connection,
             return result;
         }
 
-        // Video streams instead of being downloaded. One onboard recording
-        // runs 5–30 GB against telemetry's kilobytes, so mirroring it would
-        // fill the disk to hold something mpv reads perfectly well over HTTP
-        // range requests. What lands on disk is a zero-byte stand-in, which
-        // keeps discovery, pairing, pins and recents working off a local path
-        // exactly as they do for a file that really is here.
-        if (isSidecarPath(object.relativePath)) {
-            if (!isPortableTelemetryCompanion(object.relativePath)) {
-                qCInfo(lcIo).noquote()
-                    << "cache skip leftover sidecar" << object.relativePath;
-                continue;
-            }
-            const bool unchanged =
-                QFileInfo::exists(localPath) && !object.etag.isEmpty() &&
-                object.etag == old.value(QStringLiteral("etag")).toString();
-            if (!unchanged) {
-                qCInfo(lcIo).noquote()
-                    << "cache miss sidecar" << object.relativePath
-                    << omatrack::formatBytes(object.size);
-                const RequestFactory build = [&backend](const QUrl& url) {
-                    QNetworkRequest request = makeRequest(url);
-                    backend.sign(request, "GET", {});
-                    return request;
-                };
-                const DownloadResult download =
-                    downloadToFile(object.url, build, localPath, {}, cancel);
-                if (ioCancelled(cancel)) {
-                    result.error = QStringLiteral("Cancelled");
-                    result.status = result.error;
-                    return result;
-                }
-                if (download.status != 200 || !download.error.isEmpty()) {
-                    qCInfo(lcIo).noquote()
-                        << "sidecar download failed" << object.relativePath
-                        << (download.error.isEmpty()
-                                ? QStringLiteral("HTTP %1").arg(download.status)
-                                : download.error);
-                    continue;
-                }
-                result.downloadedBytes += download.bytes;
-                qCInfo(lcIo).noquote()
-                    << "write download" << object.relativePath
-                    << omatrack::formatBytes(download.bytes);
-            } else {
-                qCInfo(lcIo).noquote()
-                    << "cache hit sidecar" << object.relativePath;
-            }
-            newEntries.insert(
-                object.relativePath,
-                QJsonObject{{QStringLiteral("etag"), object.etag},
-                            {QStringLiteral("modified"), object.modified},
-                            {QStringLiteral("size"), object.size},
-                            {QStringLiteral("url"),
-                             object.url.toString(QUrl::FullyEncoded)}});
-            continue;
-        }
         if (isVideoFile(object.relativePath)) {
-            // A recording pinned for offline use is kept exactly as it is,
-            // provided the server still offers the same one. The sync never
-            // fetches it: that transfer takes long enough to belong in a job
-            // with a progress bar rather than inside a library scan.
             const bool keep =
                 pinned.contains(object.relativePath) &&
                 QFileInfo(localPath).size() > 0 && !object.etag.isEmpty() &&
                 object.etag == old.value(QStringLiteral("etag")).toString() &&
                 object.modified ==
                     old.value(QStringLiteral("modified")).toString();
-            if (keep) {
-                qCInfo(lcIo).noquote()
-                    << "cache keep offline" << object.relativePath
-                    << omatrack::formatBytes(QFileInfo(localPath).size());
-            } else {
-                qCInfo(lcIo).noquote()
-                    << "cache stub video" << object.relativePath
-                    << omatrack::formatBytes(object.size);
-            }
             if (!keep && !ensureStub(localPath)) {
                 result.error =
                     QStringLiteral("Unable to write the cache placeholder");
@@ -1526,36 +1510,12 @@ RemoteSyncResult syncConnection(const RemoteConnection& connection,
             result.files.append(object.relativePath);
             continue;
         }
-
-        const bool unchanged =
-            QFileInfo::exists(localPath) && !object.etag.isEmpty() &&
-            object.etag == old.value(QStringLiteral("etag")).toString() &&
-            object.modified == old.value(QStringLiteral("modified")).toString();
-        if (!unchanged) {
-            qCInfo(lcIo).noquote() << "cache miss object" << object.relativePath
-                                   << omatrack::formatBytes(object.size);
-            const RequestFactory build = [&backend](const QUrl& url) {
-                QNetworkRequest request = makeRequest(url);
-                backend.sign(request, "GET", {});
-                return request;
-            };
-            const DownloadResult download =
-                downloadToFile(object.url, build, localPath, {}, cancel);
-            if (download.status != 200 || !download.error.isEmpty()) {
-                result.error = download.error.isEmpty()
-                                   ? QStringLiteral("Download returned HTTP %1")
-                                         .arg(download.status)
-                                   : download.error;
-                result.status = result.error;
-                return result;
-            }
-            result.downloadedBytes += download.bytes;
-            qCInfo(lcIo).noquote() << "write download" << object.relativePath
-                                   << omatrack::formatBytes(download.bytes);
-        } else {
-            qCInfo(lcIo).noquote() << "cache hit object" << object.relativePath;
+        if (!ensureStub(localPath)) {
+            result.error =
+                QStringLiteral("Unable to write the cache placeholder");
+            result.status = result.error;
+            return result;
         }
-
         newEntries.insert(
             object.relativePath,
             QJsonObject{{QStringLiteral("etag"), object.etag},
@@ -1572,30 +1532,19 @@ RemoteSyncResult syncConnection(const RemoteConnection& connection,
         if (!newEntries.contains(it.key()))
             QFile::remove(QDir(result.cachePath).filePath(it.key()));
 
-    // A pin for something the server dropped is a pin on nothing; everything
-    // else survives a re-sync, which is what makes "keep this for the flight"
-    // mean it.
-    QSet<QString> keptPins;
-    for (const QString& name : pinned)
-        if (newEntries.contains(name)) keptPins.insert(name);
-
-    const QJsonObject index{
-        {QStringLiteral("version"), 1},
-        {QStringLiteral("url"), connection.target},
-        {QStringLiteral("offline"), sortedArray(keptPins)},
-        // Recorded rather than rediscovered so that presigning a stream URL
-        // is arithmetic on the UI thread and not a network round trip.
-        {QStringLiteral("scope"), backend.scope ? backend.scope() : QString()},
-        {QStringLiteral("entries"), newEntries},
-        {QStringLiteral("syncedAt"),
-         QDateTime::currentDateTimeUtc().toString(Qt::ISODate)}};
-    if (!writeIndex(indexPath, index)) {
+    // Rebuild the index under the per-location lock, re-reading the offline
+    // set so a pin added while this sync was talking to the server survives
+    // rather than being overwritten by the snapshot taken at the start. A pin
+    // for something the server dropped is still a pin on nothing: rebuild
+    // intersects the current pins with the new entries.
+    if (!cacheIndex.rebuild(newEntries, scope, connection.target)) {
         result.error = QStringLiteral("Unable to write the cache index");
         result.status = result.error;
         return result;
     }
     qCInfo(lcIo).noquote() << "write cache-index"
-                           << omatrack::displayPath(indexPath)
+                           << omatrack::displayPath(
+                                  QDir(result.cachePath).filePath("index.json"))
                            << newEntries.size() << "entries"
                            << omatrack::formatBytes(result.downloadedBytes)
                            << "downloaded";

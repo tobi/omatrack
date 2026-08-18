@@ -11,7 +11,7 @@
 #include <QStringList>
 #include <QtGlobal>
 #include <QUrl>
-
+#include <memory>
 #include <optional>
 
 namespace omatrack {
@@ -115,5 +115,45 @@ QString macPayloadRoot(const QString& extracted);
 QString macApplyScript(qint64 pid, const QString& source, const QString& dest,
                        const QStringList& relaunchArgs,
                        const QString& cleanupDir = {});
+
+/// Where a release asset should land before verify, and how to apply it once
+/// verified. One concrete class per platform; the shared download + checksum
+/// orchestration stays in AppUpdater, which calls apply() only after the part
+/// file has been downloaded and its SHA-256 checked.
+struct UpdateInstallArgs {
+    /// The downloaded, verified part file.
+    QString partPath;
+    /// The current install location (AppImage, Windows install dir, .app).
+    QString installPath;
+    /// The version being installed.
+    QString version;
+    /// PID of the running process a helper script waits for.
+    qint64 pid = 0;
+    /// Args to relaunch the app with after the swap.
+    QStringList relaunchArgs;
+    /// Path to Velopack's Update.exe when present (Windows), else empty.
+    QString updateExe;
+};
+
+struct UpdateInstallOutcome {
+    bool ok = false;
+    /// True when a detached helper process performs the swap after this one
+    /// exits; `helperPath`/`helperArgs` describe how to launch it.
+    bool relaunchWithHelper = false;
+    QString helperPath;
+    QStringList helperArgs;
+    QString error;
+};
+
+class UpdateInstaller {
+public:
+    virtual ~UpdateInstaller() = default;
+    /// Where to download the asset into, given the install path and version.
+    virtual QString partPath(const QString& installPath,
+                             const QString& version) const = 0;
+    /// Apply the verified part file. On success, outcome.ok and the relaunch
+    /// fields describe how to restart.
+    virtual UpdateInstallOutcome apply(const UpdateInstallArgs& args) = 0;
+};
 
 }  // namespace omatrack

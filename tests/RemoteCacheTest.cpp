@@ -5,7 +5,6 @@
 // fallback, and the rules about which names may become files are the same code
 // whichever protocol produced the listing.
 
-#include "app/AimRemoteIndex.h"
 #include "app/RemoteCache.h"
 
 #include <QtTest>
@@ -15,17 +14,16 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QNetworkAccessManager>
 #include <QTemporaryDir>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QThread>
 #include <QTimer>
 
-#include <QCryptographicHash>
-
 #include <atomic>
+#include <chrono>
 #include <memory>
+#include <thread>
 
 using namespace omatrack;
 
@@ -37,13 +35,61 @@ private slots:
         cacheDir_ = std::make_unique<QTemporaryDir>();
         QVERIFY(cacheDir_->isValid());
         qputenv("XDG_CACHE_HOME", cacheDir_->path().toUtf8());
-        QVERIFY(server_.listen(QHostAddress::LocalHost));
+        // The mock HTTP server lives on its own thread so the main thread can
+        // block inside the engine's QFuture without starving it. The engine
+        // no longer pumps GUI-thread events while it waits.
+        serverThread_ = new QThread(this);
+        server_.moveToThread(serverThread_);
         connect(&server_, &QTcpServer::newConnection, this,
-                &RemoteCacheTest::acceptConnection);
+                &RemoteCacheTest::acceptConnection, Qt::DirectConnection);
+        serverThread_->start();
+        bool listening = false;
+        QMetaObject::invokeMethod(
+            &server_,
+            [this, &listening] {
+                listening = server_.listen(QHostAddress::LocalHost);
+                if (listening) port_ = server_.serverPort();
+            },
+            Qt::BlockingQueuedConnection);
+        QVERIFY(listening);
+    }
+    void usesSharedTelemetryCacheKeys() {
+        QCOMPARE(telemetryCacheDirectory(),
+                 cacheDir_->filePath(QStringLiteral(".omatrack/c")));
+        QCOMPARE(
+            telemetryCachePath(QStringLiteral("\"abc/1\"")),
+            cacheDir_->filePath(QStringLiteral(".omatrack/c/abc_1.telemetry")));
+        QVERIFY(telemetryCachePath(QString()).isEmpty());
+    }
+    void fetchesAndPublishesSharedRemoteCache() {
+        scenario_ = QStringLiteral("telemetry-cache");
+        const RemoteConnection connection =
+            s3Connection(QStringLiteral("s3://team-telemetry/"), scenario_);
+        QTemporaryDir destination;
+        QVERIFY(destination.isValid());
+        const QString local =
+            destination.filePath(QStringLiteral("e2.telemetry"));
+        QCOMPARE(
+            fetchRemoteObject(
+                connection, QStringLiteral(".omatrack/c/e2.telemetry"), local),
+            QString());
+        QFile fetched(local);
+        QVERIFY(fetched.open(QIODevice::ReadOnly));
+        QCOMPARE(fetched.readAll(), QByteArrayLiteral("cached-telemetry"));
+
+        lastIfNoneMatch_.clear();
+        QCOMPARE(publishRemoteObject(connection,
+                                     QStringLiteral(".omatrack/c/e3.telemetry"),
+                                     QByteArrayLiteral("generated")),
+                 QString());
+        QCOMPARE(lastIfNoneMatch_, QByteArrayLiteral("*"));
     }
 
     void cleanupTestCase() {
-        server_.close();
+        QMetaObject::invokeMethod(&server_, [this] { server_.close(); },
+                                  Qt::BlockingQueuedConnection);
+        serverThread_->quit();
+        serverThread_->wait();
         qunsetenv("XDG_CACHE_HOME");
     }
 
@@ -54,40 +100,49 @@ private slots:
         RemoteConnection connection;
         connection.name = QStringLiteral("Test server");
         connection.target = QStringLiteral("http://127.0.0.1:%1/dav/")
-                                .arg(server_.serverPort());
+                                .arg(port_);
         connection.id = locationId(connection.target, {});
 
         const RemoteSyncResult first = syncConnection(connection);
         QVERIFY2(first.success, qPrintable(first.error));
         QCOMPARE(first.files, QStringList{QStringLiteral("session.vbo")});
         QCOMPARE(propfinds_, 1);
-        QCOMPARE(gets_, 1);
+        QCOMPARE(gets_, 0);
         QFile cached(QDir(first.cachePath).filePath("session.vbo"));
         QVERIFY(cached.open(QIODevice::ReadOnly));
-        QCOMPARE(cached.readAll(), QByteArrayLiteral("telemetry"));
+        QCOMPARE(cached.readAll(), QByteArray());
 
         const RemoteSyncResult second = syncConnection(connection);
         QVERIFY2(second.success, qPrintable(second.error));
         QVERIFY(!second.fromCache);
         QCOMPARE(propfinds_, 2);
-        QCOMPARE(gets_, 1);
+        QCOMPARE(gets_, 0);
     }
 
     void servesCacheWhenServerIsOffline() {
         RemoteConnection connection;
         connection.target = QStringLiteral("http://127.0.0.1:%1/dav/")
-                                .arg(server_.serverPort());
+                                .arg(port_);
         connection.id = locationId(connection.target, {});
         const RemoteSyncResult online = syncConnection(connection);
         QVERIFY2(online.success, qPrintable(online.error));
 
-        server_.close();
+        QMetaObject::invokeMethod(&server_, [this] { server_.close(); },
+                                  Qt::BlockingQueuedConnection);
         const RemoteSyncResult offline = syncConnection(connection);
         QVERIFY(offline.success);
         QVERIFY(offline.fromCache);
         QCOMPARE(offline.files, QStringList{QStringLiteral("session.vbo")});
 
-        QVERIFY(server_.listen(QHostAddress::LocalHost));
+        bool listening = false;
+        QMetaObject::invokeMethod(
+            &server_,
+            [this, &listening] {
+                listening = server_.listen(QHostAddress::LocalHost);
+                if (listening) port_ = server_.serverPort();
+            },
+            Qt::BlockingQueuedConnection);
+        QVERIFY(listening);
     }
 
     // ── S3 ──────────────────────────────────────────────────────────
@@ -109,11 +164,11 @@ private slots:
         QCOMPARE(first.files, (QStringList{QStringLiteral("brands-hatch.vbo"),
                                            QStringLiteral("spa/lap 2.vbo")}));
         QCOMPARE(listings_, 1);
-        QCOMPARE(gets_, 2);
+        QCOMPARE(gets_, 0);
 
         QFile cached(QDir(first.cachePath).filePath("spa/lap 2.vbo"));
         QVERIFY(cached.open(QIODevice::ReadOnly));
-        QCOMPARE(cached.readAll(), QByteArrayLiteral("telemetry"));
+        QCOMPARE(cached.readAll(), QByteArray());
 
         // Signed, and signed the way GCS also accepts: nothing beyond host,
         // the payload hash, and the date is committed to.
@@ -125,7 +180,7 @@ private slots:
         const RemoteSyncResult second = syncConnection(connection);
         QVERIFY2(second.success, qPrintable(second.error));
         QCOMPARE(listings_, 2);
-        QCOMPARE(gets_, 2);
+        QCOMPARE(gets_, 0);
         QCOMPARE(second.downloadedBytes, 0);
     }
 
@@ -169,7 +224,7 @@ private slots:
         QCOMPARE(result.skipped,
                  QStringList{QStringLiteral("notes:draft.vbo")});
         QVERIFY(result.status.contains(QStringLiteral("1 unusable name")));
-        QCOMPARE(gets_, 1);
+        QCOMPARE(gets_, 0);
         QVERIFY(!QFileInfo::exists(QDir(result.cachePath).filePath("season")));
     }
 
@@ -336,7 +391,7 @@ private slots:
             QStringLiteral("s3://AKIAIOSFODNN7EXAMPLE:secret@team-telemetry/"
                            "?region=eu-west-2&scheme=http&endpoint_override="
                            "127.0.0.1:%1")
-                .arg(server_.serverPort()));
+                .arg(port_));
         QVERIFY2(split.error.isEmpty(), qPrintable(split.error));
 
         RemoteConnection connection;
@@ -373,7 +428,7 @@ private slots:
         // everything downstream is keyed on a local path.
         QCOMPARE(result.files, (QStringList{QStringLiteral("data.vbo"),
                                             QStringLiteral("onboard.mp4")}));
-        QCOMPARE(gets_, 1);
+        QCOMPARE(gets_, 0);
 
         const QString stub = QDir(result.cachePath).filePath("onboard.mp4");
         QVERIFY(QFileInfo::exists(stub));
@@ -382,7 +437,7 @@ private slots:
         const QUrl source = streamSource(connection, stub);
         QVERIFY2(source.isValid(), qPrintable(source.toString()));
         QCOMPARE(source.path(), QStringLiteral("/team-telemetry/onboard.mp4"));
-        QCOMPARE(source.port(), int(server_.serverPort()));
+        QCOMPARE(source.port(), int(port_));
         const QString query = source.query(QUrl::FullyEncoded);
         QVERIFY2(query.contains(QStringLiteral("X-Amz-Signature=")),
                  qPrintable(query));
@@ -417,7 +472,7 @@ private slots:
         const RemoteSyncResult result = syncConnection(connection);
         QVERIFY2(result.success, qPrintable(result.error));
         QCOMPARE(QFileInfo(stub).size(), 0);
-        QCOMPARE(gets_, 1);
+        QCOMPARE(gets_, 0);
     }
 
     /// WebDAV has no presigning, so the credential rides in the URL — which
@@ -426,7 +481,7 @@ private slots:
         scenario_ = QStringLiteral("video");
         RemoteConnection connection;
         connection.target = QStringLiteral("http://127.0.0.1:%1/dav/")
-                                .arg(server_.serverPort());
+                                .arg(port_);
         connection.username = QStringLiteral("driver");
         connection.password = QStringLiteral("p@ss/word");
         connection.id = locationId(connection.target + scenario_, {});
@@ -616,13 +671,13 @@ private slots:
                          QStringLiteral("budget"));
 
         QVERIFY(syncConnection(connection).success);
-        QCOMPARE(gets_, 2);
+        QCOMPARE(gets_, 0);
         const QString cache = cacheDirectory(connection);
         QVERIFY(QFile::remove(QDir(cache).filePath("brands-hatch.vbo")));
 
         const RemoteSyncResult again = syncConnection(connection);
         QVERIFY2(again.success, qPrintable(again.error));
-        QCOMPARE(gets_, 3);
+        QCOMPARE(gets_, 0);
         QVERIFY(QFileInfo::exists(QDir(cache).filePath("brands-hatch.vbo")));
         QCOMPARE(again.files.size(), 2);
     }
@@ -638,70 +693,14 @@ private slots:
         QVERIFY2(result.success, qPrintable(result.error));
         QCOMPARE(result.files, QStringList{QStringLiteral("brands-hatch.vbo")});
         QCOMPARE(listings_, 1);
-        QCOMPARE(gets_, 1);
+        QCOMPARE(gets_, 0);
     }
-
-    void downloadsRecordingSidecarsWithoutListingThemAsSources() {
-        QVERIFY(isSidecarPath(QStringLiteral(".session.mp4.telemetry")));
-        QVERIFY(isSidecarPath(QStringLiteral("event/.session.mp4.telemetry")));
-        QVERIFY(isSidecarPath(QStringLiteral(".session.mp4.json")));
-        QVERIFY(isSidecarPath(QStringLiteral("event/.session.mp4.json")));
-        QVERIFY(isSidecarPath(QStringLiteral(".session.mp4.ld")));
-        QVERIFY(isSidecarPath(QStringLiteral("event/.session.mp4.ldx")));
+    void classifiesCacheAndSourceNames() {
         QVERIFY(isSidecarPath(QStringLiteral(".omatrack/aim-e1.mp4")));
         QVERIFY(!isSidecarPath(QStringLiteral("session.vbo")));
         QVERIFY(!isSidecarPath(QStringLiteral("session.ld")));
         QVERIFY(isSidecarPath(QStringLiteral("race.telemetry.ext.jsonl")));
         QVERIFY(isSidecarPath(QStringLiteral("event/race.mtx.jsonl.zstd")));
-
-        gets_ = 0;
-        listings_ = 0;
-        lastPayloadHash_.clear();
-        scenario_ = QStringLiteral("recording-sidecar");
-        const RemoteConnection connection =
-            s3Connection(QStringLiteral("s3://team-telemetry/"),
-                         QStringLiteral("recording-sidecar"));
-
-        const RemoteSyncResult result = syncConnection(connection);
-        QVERIFY2(result.success, qPrintable(result.error));
-        QCOMPARE(result.files, QStringList{QStringLiteral("session.mp4")});
-        QVERIFY(isPortableTelemetryCompanion(
-            QStringLiteral(".session.mp4.telemetry")));
-        QVERIFY(
-            !isPortableTelemetryCompanion(QStringLiteral(".session.mp4.json")));
-        const QString sidecar =
-            QDir(result.cachePath)
-                .filePath(QStringLiteral(".session.mp4.telemetry"));
-        QVERIFY(QFileInfo::exists(sidecar));
-        QFile file(sidecar);
-        QVERIFY(file.open(QIODevice::ReadOnly));
-        QCOMPARE(file.readAll(), QByteArrayLiteral("native-companion"));
-
-        const QByteArray body = QByteArrayLiteral("updated-companion");
-        QCOMPARE(putObject(connection, QStringLiteral(".session.mp4.telemetry"),
-                           body),
-                 QString());
-        QVERIFY(!lastPayloadHash_.isEmpty());
-        QCOMPARE(
-            lastPayloadHash_,
-            QCryptographicHash::hash(body, QCryptographicHash::Sha256).toHex());
-    }
-
-    void createOnlyPutKeepsTheExistingObject() {
-        lastIfNoneMatch_.clear();
-        scenario_ = QStringLiteral("create-only");
-        const RemoteConnection connection =
-            s3Connection(QStringLiteral("s3://team-telemetry/"),
-                         QStringLiteral("create-only"));
-        const QByteArray ours = QByteArrayLiteral("new-companion");
-        QCOMPARE(putObject(connection, QStringLiteral(".session.mp4.ld"), ours),
-                 QString());
-        QCOMPARE(lastIfNoneMatch_, QByteArrayLiteral("*"));
-        const QString local = QDir(cacheDirectory(connection))
-                                  .filePath(QStringLiteral(".session.mp4.ld"));
-        QFile file(local);
-        QVERIFY(file.open(QIODevice::ReadOnly));
-        QCOMPARE(file.readAll(), QByteArrayLiteral("existing-companion"));
     }
 
     void ignoresLegacyEtagSidecarsOnTheServer() {
@@ -717,7 +716,7 @@ private slots:
         QVERIFY(!QFileInfo::exists(
             QDir(result.cachePath)
                 .filePath(QStringLiteral(".omatrack/e1.json"))));
-        QCOMPARE(gets_, 1);
+        QCOMPARE(gets_, 0);
     }
 
     void aRaisedCancelDoesNotTouchTheNetwork() {
@@ -765,36 +764,38 @@ private slots:
     }
 
     void followsARedirectAndStopsALoop() {
-        QNetworkAccessManager unused;
         const auto build = [](const QUrl& url) { return makeRequest(url); };
         const QUrl plain(QStringLiteral("http://127.0.0.1:%1/plain")
-                             .arg(server_.serverPort()));
-        const HttpResponse direct = sendFollowing(unused, plain, "GET", build);
+                             .arg(port_));
+        const HttpResponse direct = sendFollowing(plain, "GET", build);
         QCOMPARE(direct.status, 200);
         QCOMPARE(direct.body, QByteArrayLiteral("plain-body"));
 
         const QUrl bounce(QStringLiteral("http://127.0.0.1:%1/redirect")
-                              .arg(server_.serverPort()));
-        const HttpResponse followed =
-            sendFollowing(unused, bounce, "GET", build);
+                              .arg(port_));
+        const HttpResponse followed = sendFollowing(bounce, "GET", build);
         QCOMPARE(followed.status, 200);
         QCOMPARE(followed.body, QByteArrayLiteral("plain-body"));
 
         const QUrl loop(QStringLiteral("http://127.0.0.1:%1/loop")
-                            .arg(server_.serverPort()));
-        const HttpResponse looping = sendFollowing(unused, loop, "GET", build);
+                            .arg(port_));
+        const HttpResponse looping = sendFollowing(loop, "GET", build);
         QCOMPARE(looping.error, QStringLiteral("Too many redirects"));
     }
 
     void cancelAbandonsAHangingGet() {
-        QNetworkAccessManager unused;
         const auto build = [](const QUrl& url) { return makeRequest(url); };
         auto cancel = std::make_shared<std::atomic<bool>>(false);
-        QTimer::singleShot(80, this, [cancel]() { cancel->store(true); });
+        // The main thread blocks inside the engine's QFuture, so a QTimer on
+        // it would never fire. A detached thread raises the cancel the I/O
+        // thread polls for.
+        std::thread([cancel]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+            cancel->store(true);
+        }).detach();
         const HttpResponse response =
-            sendFollowing(unused,
-                          QUrl(QStringLiteral("http://127.0.0.1:%1/hang")
-                                   .arg(server_.serverPort())),
+            sendFollowing(QUrl(QStringLiteral("http://127.0.0.1:%1/hang")
+                                   .arg(port_)),
                           "GET", build, {}, cancel);
         QCOMPARE(response.error, QStringLiteral("Cancelled"));
     }
@@ -803,7 +804,7 @@ private slots:
         const RemoteConnection connection = s3Connection(
             QStringLiteral("s3://team-telemetry/"), QStringLiteral("range"));
         const QUrl url(QStringLiteral("http://127.0.0.1:%1/blob")
-                           .arg(server_.serverPort()));
+                           .arg(port_));
         QString error;
         const QByteArray slice = getObjectRange(connection, url, 10, 8, &error);
         QVERIFY2(!slice.isEmpty(), qPrintable(error));
@@ -842,59 +843,9 @@ private slots:
             QStringLiteral("s3://team-telemetry/"), QStringLiteral("range-x"));
         QVERIFY(!getObjectRanges(connection,
                                  QUrl(QStringLiteral("http://127.0.0.1:%1/blob")
-                                          .arg(server_.serverPort())),
+                                          .arg(port_)),
                                  {{0, 4}}, &bodies, &error, cancel));
         QCOMPARE(error, QStringLiteral("Cancelled"));
-    }
-
-    void materializesAnAimExtractFromRangeGets() {
-        const QByteArray mp4 = packedAimMp4();
-        QVERIFY(mp4.size() > 80);
-        aimMp4_ = mp4;
-
-        const RemoteConnection connection = s3Connection(
-            QStringLiteral("s3://team-telemetry/"), QStringLiteral("aim"));
-        const QString cache = cacheDirectory(connection);
-        QVERIFY(QDir().mkpath(cache));
-        const QString stub =
-            QDir(cache).filePath(QStringLiteral("onboard.mp4"));
-        QVERIFY(QFile(stub).open(QIODevice::WriteOnly));
-        QJsonObject entries;
-        entries.insert(
-            QStringLiteral("onboard.mp4"),
-            QJsonObject{{QStringLiteral("etag"), QStringLiteral("e-aim")},
-                        {QStringLiteral("size"), mp4.size()},
-                        {QStringLiteral("stream"), true},
-                        {QStringLiteral("url"),
-                         QStringLiteral("http://127.0.0.1:%1/aim.mp4")
-                             .arg(server_.serverPort())}});
-        QFile index(QDir(cache).filePath(QStringLiteral("index.json")));
-        QVERIFY(index.open(QIODevice::WriteOnly | QIODevice::Truncate));
-        const QByteArray json =
-            QJsonDocument(QJsonObject{{QStringLiteral("entries"), entries}})
-                .toJson();
-        QCOMPARE(index.write(json), qint64(json.size()));
-        index.close();
-
-        auto already = std::make_shared<std::atomic<bool>>(true);
-        QCOMPARE(materializeAimExtract(connection, stub,
-                                       QStringLiteral("e-aim"), already),
-                 QStringLiteral("Cancelled"));
-
-        QString error =
-            materializeAimExtract(connection, stub, QStringLiteral("e-aim"));
-        QVERIFY2(error.isEmpty(), qPrintable(error));
-        const QString extract =
-            aimExtractPath(connection, QStringLiteral("e-aim"));
-        QVERIFY(QFileInfo(extract).size() > 0);
-        QCOMPARE(telemetryOpenPath(&connection, stub), extract);
-
-        // A second call is a cache hit.
-        QCOMPARE(
-            materializeAimExtract(connection, stub, QStringLiteral("e-aim")),
-            QString());
-        QCOMPARE(materializeAimExtract(connection, stub, {}),
-                 QStringLiteral("Remote video has no ETag"));
     }
 
     /// Declared last on purpose: it deletes what every test above downloaded.
@@ -932,75 +883,6 @@ private:
         return path;
     }
 
-    static void appendBe32(QByteArray* data, quint32 value) {
-        const qsizetype offset = data->size();
-        data->resize(offset + 4);
-        (*data)[offset] = char((value >> 24U) & 0xffU);
-        (*data)[offset + 1] = char((value >> 16U) & 0xffU);
-        (*data)[offset + 2] = char((value >> 8U) & 0xffU);
-        (*data)[offset + 3] = char(value & 0xffU);
-    }
-
-    static QByteArray box(const char* type, const QByteArray& payload) {
-        QByteArray out;
-        appendBe32(&out, quint32(8 + payload.size()));
-        out.append(type, 4);
-        out.append(payload);
-        return out;
-    }
-
-    static QByteArray fullBox(const char* type, const QByteArray& payload) {
-        QByteArray body;
-        appendBe32(&body, 0);
-        body.append(payload);
-        return box(type, body);
-    }
-
-    static QByteArray packedAimMp4() {
-        QByteArray ftypPayload("isom");
-        appendBe32(&ftypPayload, 0);
-        ftypPayload.append("isom", 4);
-        const QByteArray ftyp = box("ftyp", ftypPayload);
-
-        QByteArray aimd(8, '\0');
-        aimd[7] = 1;
-        QByteArray stsdPayload;
-        appendBe32(&stsdPayload, 1);
-        stsdPayload.append(box("aimd", aimd));
-        const QByteArray stsd = fullBox("stsd", stsdPayload);
-
-        QByteArray stszPayload;
-        appendBe32(&stszPayload, 0);
-        appendBe32(&stszPayload, 2);
-        appendBe32(&stszPayload, 4);
-        appendBe32(&stszPayload, 4);
-        const QByteArray stsz = fullBox("stsz", stszPayload);
-
-        QByteArray stscPayload;
-        appendBe32(&stscPayload, 1);
-        appendBe32(&stscPayload, 1);
-        appendBe32(&stscPayload, 2);
-        appendBe32(&stscPayload, 1);
-        const QByteArray stsc = fullBox("stsc", stscPayload);
-
-        const qint64 sampleOffset = ftyp.size() + 8;
-        QByteArray stcoPayload;
-        appendBe32(&stcoPayload, 1);
-        appendBe32(&stcoPayload, quint32(sampleOffset));
-        const QByteArray stco = fullBox("stco", stcoPayload);
-
-        const QByteArray moov = box(
-            "moov",
-            box("trak", box("mdia", box("minf", box("stbl", stsd + stsz + stsc +
-                                                                stco)))));
-        QByteArray mdat;
-        appendBe32(&mdat, 16);
-        mdat.append("mdat", 4);
-        mdat.append("AIM0");
-        mdat.append("AIM1");
-        return ftyp + mdat + moov;
-    }
-
     RemoteConnection s3Connection(const QString& target,
                                   const QString& scenario) const {
         RemoteConnection connection;
@@ -1013,7 +895,7 @@ private:
         // addressing, which needs no wildcard DNS.
         connection.options.insert(
             QStringLiteral("endpoint"),
-            QStringLiteral("http://127.0.0.1:%1").arg(server_.serverPort()));
+            QStringLiteral("http://127.0.0.1:%1").arg(port_));
         connection.options.insert(QStringLiteral("region"),
                                   QStringLiteral("eu-west-2"));
         connection.id = locationId(target + scenario, {});
@@ -1024,7 +906,8 @@ private:
         while (server_.hasPendingConnections()) {
             QTcpSocket* socket = server_.nextPendingConnection();
             connect(socket, &QTcpSocket::readyRead, this,
-                    [this, socket]() { serve(socket); });
+                    [this, socket]() { serve(socket); },
+                    Qt::DirectConnection);
             connect(socket, &QTcpSocket::disconnected, socket,
                     &QObject::deleteLater);
         }
@@ -1117,7 +1000,7 @@ private:
         if (request.startsWith("PROPFIND")) {
             ++propfinds_;
             const QString root = QStringLiteral("http://127.0.0.1:%1/dav/")
-                                     .arg(server_.serverPort());
+                                     .arg(port_);
             const QString member = QStringLiteral(
                 "<response><href>%1%2</href>"
                 "<propstat><prop><getetag>\"%3\"</getetag>"
@@ -1157,7 +1040,6 @@ private:
                 status = "200 OK";
             }
         } else if (request.startsWith("PUT ")) {
-            lastPayloadHash_ = headerOf(request, "x-amz-content-sha256");
             lastIfNoneMatch_ = headerOf(request, "If-None-Match");
             payload.clear();
             status = scenario_ == QStringLiteral("create-only")
@@ -1170,21 +1052,25 @@ private:
         } else if (pathOnly == "/redirect") {
             ++gets_;
             extraHeaders = "Location: http://127.0.0.1:" +
-                           QByteArray::number(server_.serverPort()) +
+                           QByteArray::number(port_) +
                            "/plain\r\n";
             status = "302 Found";
         } else if (pathOnly == "/loop") {
             extraHeaders = "Location: http://127.0.0.1:" +
-                           QByteArray::number(server_.serverPort()) +
+                           QByteArray::number(port_) +
                            "/loop\r\n";
             status = "302 Found";
         } else if (pathOnly == "/hang") {
             ++gets_;
             return;
-        } else if (pathOnly == "/blob" || pathOnly == "/aim.mp4") {
+        } else if (target.startsWith(
+                       "/team-telemetry/.omatrack/c/e2.telemetry")) {
             ++gets_;
-            const QByteArray data =
-                pathOnly == "/aim.mp4" ? aimMp4_ : blobPayload();
+            payload = QByteArrayLiteral("cached-telemetry");
+            status = "200 OK";
+        } else if (pathOnly == "/blob") {
+            ++gets_;
+            const QByteArray data = blobPayload();
             QByteArray range = headerOf(request, "Range");
             lastRange_ = range;
             qint64 start = 0;
@@ -1206,19 +1092,6 @@ private:
                 payload = data;
                 status = "200 OK";
             }
-        } else if (target.startsWith("/team-telemetry/.session.mp4.ld")) {
-            ++gets_;
-            payload = QByteArrayLiteral("existing-companion");
-            status = "200 OK";
-        } else if (target.startsWith("/team-telemetry/.session.mp4.json")) {
-            ++gets_;
-            payload = QByteArrayLiteral("{\"supported\":true}");
-            status = "200 OK";
-        } else if (target.startsWith(
-                       "/team-telemetry/.session.mp4.telemetry")) {
-            ++gets_;
-            payload = QByteArrayLiteral("native-companion");
-            status = "200 OK";
         } else if (target.startsWith("/team-telemetry/")) {
             ++gets_;
             lastAuthorization_ = headerOf(request, "Authorization");
@@ -1259,15 +1132,16 @@ private:
         return request.mid(from, request.indexOf("\r\n", from) - from);
     }
 
-    std::unique_ptr<QTemporaryDir> cacheDir_;
     QTcpServer server_;
+    QThread* serverThread_ = nullptr;
+    quint16 port_ = 0;
+    std::unique_ptr<QTemporaryDir> cacheDir_;
+
     QString scenario_;
-    QByteArray lastPayloadHash_;
     QByteArray lastIfNoneMatch_;
     QByteArray lastAuthorization_;
     QByteArray lastQuery_;
     QByteArray lastRange_;
-    QByteArray aimMp4_;
     int requests_ = 0;
     int propfinds_ = 0;
     int gets_ = 0;

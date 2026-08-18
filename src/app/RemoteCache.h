@@ -1,13 +1,10 @@
-// Discovery and content cache for telemetry that lives on a remote server.
+// Remote discovery and the shared normalized-telemetry cache.
 //
-// One sync engine, one cache layout, one offline story — the parts that do not
-// depend on the protocol. A protocol contributes two things: a way to list what
-// the server holds, and a way to authenticate a request. Everything else
-// (deciding what changed, streaming it to disk, pruning what the server
-// dropped, falling back to the last good cache) is shared.
-//
-// Callers downstream of a sync only ever see a local directory, so nothing in
-// the app has to learn which protocol produced a file.
+// A connection contributes listing and authentication. Discovery keeps only
+// zero-byte source stubs plus ETag metadata in the per-location cache. Native
+// `.telemetry` files are content-addressed in `.omatrack/c`: remote objects
+// use their ETag, local files use their BLAKE3 digest, and remote cache objects
+// are published create-only so machines converge without overwriting.
 #pragma once
 
 #include "LibraryLocation.h"
@@ -24,7 +21,6 @@
 #include <functional>
 #include <memory>
 
-class QNetworkAccessManager;
 class QNetworkRequest;
 
 namespace omatrack {
@@ -68,29 +64,6 @@ struct RemoteSyncResult {
     bool success = false;
 };
 
-/// A protocol, as two callbacks rather than a class: sync() is straight-line
-/// synchronous code, and a test can supply lambdas to drive the engine with no
-/// network at all.
-///
-/// `sign` runs on every outgoing request, listing and download alike, and owns
-/// both authentication and any protocol-specific headers.
-struct RemoteBackend {
-    std::function<bool(QNetworkAccessManager&, QVector<RemoteObject>*,
-                       QString*)>
-        list;
-    std::function<void(QNetworkRequest&, const QByteArray& method,
-                       const QByteArray& payload)>
-        sign;
-    /// Whatever signing this protocol's requests obliged the backend to work
-    /// out — for S3, the bucket's region. Meaningful only once list() has run.
-    /// The sync records it so that presigning a stream URL later reproduces
-    /// the same scope without another round trip.
-    std::function<QString()> scope;
-    /// Absolute URL of one object under this connection, or invalid when the
-    /// backend cannot name objects itself (tests that only list).
-    std::function<QUrl(const QString& relativePath)> urlFor;
-};
-
 /// A blocking HTTP round trip. Backends share this with the engine so that
 /// timeout and redirect handling stay in one place.
 struct HttpResponse {
@@ -114,43 +87,78 @@ inline bool ioCancelled(const IoCancel& cancel) {
     return cancel && cancel->load(std::memory_order_relaxed);
 }
 
+/// A protocol, as a bag of callbacks rather than a class. Listing runs as
+/// straight-line synchronous code on a worker thread, and a test can supply
+/// lambdas to drive the engine with no network at all.
+///
+/// `sign` runs on every header-signed outgoing request, listing and download
+/// alike, and owns authentication and any protocol-specific headers. The
+/// `presign` callback produces a URL a credential-less client can fetch — a
+/// SigV4 presigned URL for S3/GCS, credentials embedded in the URL for
+/// WebDAV — so the player and the range reader never have to know how the
+/// server authenticates. `head`, `get` and `putIfAbsent` are shared helpers
+/// built on `sign` + sendFollowing(), so the engine never switches on the
+/// protocol to build a request.
+struct RemoteBackend {
+    /// List every object under the connection. `scope` receives the protocol
+    /// scope the sync should record (the S3 region) — empty when the protocol
+    /// has none. `cancel` propagates through paging and directory recursion.
+    std::function<bool(QVector<RemoteObject>* objects, QString* scope,
+                       QString* error, const IoCancel& cancel)>
+        list;
+    std::function<void(QNetworkRequest&, const QByteArray& method,
+                       const QByteArray& payload)>
+        sign;
+    /// Absolute URL of one object under this connection, or invalid when the
+    /// backend cannot name objects itself (tests that only list).
+    std::function<QUrl(const QString& relativePath)> objectUrl;
+    /// A URL a player with no notion of these credentials can fetch.
+    /// `expirySeconds` bounds signed URLs; WebDAV ignores it.
+    std::function<QUrl(const QUrl& objectUrl, int expirySeconds)> presign;
+
+    /// One header-signed HEAD. Used for region discovery and metadata.
+    HttpResponse head(const QUrl& url, const IoCancel& cancel = {}) const;
+    /// One header-signed GET returning the body.
+    HttpResponse get(const QUrl& url, const IoCancel& cancel = {}) const;
+    /// Create-only PUT: succeeds (empty string) on 200/201/204/412, else the
+    /// reason. Existing objects win.
+    QString putIfAbsent(const QUrl& url, const QByteArray& body,
+                        const IoCancel& cancel = {}) const;
+};
+
 /// Base request carrying the policies every Omatrack request needs. Qt is told
 /// not to follow redirects on its own — it would reuse headers signed for the
 /// original URL, which both breaks the signature and can hand credentials to a
 /// host that never earned them. sendFollowing() follows them deliberately,
 /// rebuilding and re-signing each hop.
-///
-/// HTTP runs on a dedicated I/O thread. The caller blocks on a QFuture, never
-/// on a nested QEventLoop, so the GUI loop only ever sees the result.
+/// HTTP runs on a dedicated I/O thread. The caller blocks on the I/O thread's
+/// QFuture; this must never be called on the GUI thread — run it through
+/// QtConcurrent and observe the result with a QFutureWatcher instead.
 QNetworkRequest makeRequest(const QUrl& url);
-HttpResponse sendFollowing(QNetworkAccessManager& manager, const QUrl& url,
-                           const QByteArray& method,
+HttpResponse sendFollowing(const QUrl& url, const QByteArray& method,
                            const RequestFactory& build,
                            const QByteArray& body = {},
                            const IoCancel& cancel = {});
 
 /// Stable identity for a library entry, connection or folder alike. The input
-/// is unchanged from when WebDAV was the only protocol, so no configured
-/// location loses the cache it already downloaded.
+/// is unchanged from when WebDAV was the only protocol, so location metadata
+/// remains stable across restarts.
 QString locationId(const QString& target, const QString& username);
 
-/// Where a connection's downloads live. Empty for a plain folder.
+/// Per-location discovery cache containing source stubs and ETag metadata.
+/// Empty for a plain folder.
 QString cacheDirectory(const RemoteConnection& connection);
 
-/// The root under which every protocol's caches sit.
+/// Root under which per-location discovery caches sit.
 QString cacheRoot();
-/// Sanitise an object ETag into a cache-private file stem. Used to name the
-/// one-time AiM extract at `.omatrack/aim-{etag}.mp4`.
+/// Shared local cache for normalized `.telemetry` files. The cache is keyed by
+/// a remote ETag or a local source-file BLAKE3 digest, never by location.
+QString telemetryCacheDirectory();
+QString telemetryCachePath(const QString& key);
 QString etagFileKey(const QString& etag);
-/// True for cache-private `.omatrack/` artifacts and hidden recording
-/// companions (`.<video>.telemetry`, plus leftover `.json` / `.ld`).
-/// Companions download before the media they describe and are not
-/// library sources.
+/// True for cache-private `.omatrack/` artifacts and legacy/overlay names
+/// that must not become library sources.
 bool isSidecarPath(const QString& relativePath);
-/// Hidden native companion the sync will fetch: `.<video>.telemetry`.
-/// Leftover Motec/JSON sidecars stay classified as sidecars so they are
-/// not library rows, but they are not downloaded.
-bool isPortableTelemetryCompanion(const QString& relativePath);
 /// Wait until the I/O thread has finished tearing down the last reply.
 void drainNetworkIo();
 
@@ -158,17 +166,20 @@ void drainNetworkIo();
 QString cachedObjectEtag(const RemoteConnection& connection,
                          const QString& localPath);
 
-/// Byte length the last sync recorded for `localPath`, or -1.
-qint64 cachedObjectSize(const RemoteConnection& connection,
-                        const QString& localPath);
+/// Fetches an object that is not part of the remote listing, such as
+/// `.omatrack/c/{key}.telemetry`, into `destination`. Returns an empty string
+/// on success or on a 404 cache miss; other failures are returned to the
+/// caller.
+QString fetchRemoteObject(const RemoteConnection& connection,
+                          const QString& relativePath,
+                          const QString& destination,
+                          const IoCancel& cancel = {});
 
-/// Publishes `body` only if the server does not already have that name
-/// (`If-None-Match: *`). An empty return is success. A 412 fetches the
-/// existing object instead of overwriting it. Local bytes already present
-/// are left untouched.
-QString putObject(const RemoteConnection& connection,
-                  const QString& relativePath, const QByteArray& body,
-                  const IoCancel& cancel = {});
+/// Publishes a generated cache object to the remote root without mirroring it
+/// into the per-location discovery cache. Existing objects win.
+QString publishRemoteObject(const RemoteConnection& connection,
+                            const QString& relativePath, const QByteArray& body,
+                            const IoCancel& cancel = {});
 
 /// What the cache holds, split by who decided to put it there.
 struct CacheUsage {

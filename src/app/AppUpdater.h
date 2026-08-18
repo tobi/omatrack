@@ -11,7 +11,7 @@
 
 #include "AppUpdate.h"
 
-#include <QObject>
+#include <QFuture>
 #include <QString>
 #include <QtQml/qqmlregistration.h>
 
@@ -80,6 +80,14 @@ signals:
 private:
     enum class Phase { Idle, Checking, Downloading, Installing };
 
+    struct CheckResult {
+        bool ok = false;
+        bool newer = false;
+        omatrack::GithubRelease release;
+        QString sha256;
+        QString error;
+    };
+
     void loadState();
     void saveState() const;
     void scheduleCheck(int delayMs);
@@ -112,4 +120,8 @@ private:
     omatrack::GithubRelease latest_;
     std::shared_ptr<std::atomic<bool>> cancel_;
     QTimer* pollTimer_ = nullptr;
+    // Held so the destructor can cancel and wait: without waiting, a worker
+    // lambda that captures `this` can touch this after free.
+    QFuture<CheckResult> checkFuture_;
+    QFuture<omatrack::UpdateInstallOutcome> installFuture_;
 };
