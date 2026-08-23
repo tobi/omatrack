@@ -20,6 +20,7 @@
 #ifdef OMATRACK_ENABLE_AUTOTEST_HARNESS
 #include "AutotestHarness.h"
 #endif
+#include "Headless.h"
 #include "TelemetryStore.h"
 #include "VerboseLog.h"
 #ifdef Q_OS_WIN
@@ -51,7 +52,13 @@ void printHelp(const char* executable) {
         "Omatrack telemetry workstation\n\n"
         "Usage:\n"
         "  %s [options] [telemetry-directory|telemetry-or-video-file]\n"
-        "  %s --help\n\n"
+        "  %s parse <file>                       (.pds .ld .vbo .mp4 "
+        ".telemetry)\n"
+        "  %s unify <file> --output <csv>\n"
+        "  %s corners <file> [--lap N] [--reference <file>] "
+        "[--reference-lap N] --zone <start:end> ...\n"
+        "  %s compare <aimd.mp4> <file.telemetry>\n"
+        "  %s --help | --version\n\n"
         "Options:\n"
         "  -h, --help     Show this help and exit.\n"
         "  -V, --version  Print the version and exit.\n"
@@ -60,15 +67,10 @@ void printHelp(const char* executable) {
         "                 compare. Same as OMATRACK_VERBOSE=1.\n"
         "                 On Arch/Omarchy also set QT_FORCE_STDERR_LOGGING=1\n"
         "                 if you launch from a desktop entry.\n\n"
-        "Headless inspection, CSV export, and corner analysis are currently "
-        "provided by omatrack-cli:\n"
-        "  omatrack-cli parse <file>   (.pds .ld .vbo .mp4 .telemetry)\n"
-        "  omatrack-cli unify <file> --output <csv>\n"
-        "  omatrack-cli corners <file> [--reference <file>] "
-        "--zone <start:end>\n"
-        "  omatrack-cli compare <aimd.mp4> <file.telemetry>\n\n"
-        "Run omatrack-cli without arguments for its complete usage.\n",
-        executable, executable);
+        "The parse, unify, corners and compare commands run headless: no "
+        "window, no\nconfiguration read, exit code is the result. Run one "
+        "with no further\narguments for its usage.\n",
+        executable, executable, executable, executable, executable, executable);
 }
 
 }  // namespace
@@ -77,6 +79,9 @@ int main(int argc, char** argv) {
 #ifdef Q_OS_WIN
     if (omatrack::consumeWindowsSetupHook(argc, argv)) return 0;
 #endif
+    // Headless commands never touch Qt, omatrack.yml, or a display.
+    if (argc >= 2 && omatrack::headless::isCommand(argv[1]))
+        return omatrack::headless::run(argc, argv, argv[0]);
     const bool helpRequested = takeFlag(argc, argv, "--help", "-h");
     const bool versionRequested = takeFlag(argc, argv, "--version", "-V");
     const bool verbose = takeFlag(argc, argv, "--verbose", "-v") ||

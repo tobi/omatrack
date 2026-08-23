@@ -46,7 +46,7 @@ through braking, turn-in, apex, and throttle pickup.
   reused without downloads, and available offline. Onboard video plays over
   the network rather than being downloaded, or is downloaded on request for a
   flight.
-- Inspect parsing, channel mapping, lap detection, and unification through `omatrack-cli`.
+- Inspect parsing, channel mapping, lap detection, unification and corner analysis headlessly: `omatrack parse|unify|corners|compare` run before Qt starts, with no window and no configuration.
 
 ## Architecture
 
@@ -55,7 +55,7 @@ flowchart TD
     F["PDS / LD / VBO / MP4"] --> R["motorsport-telemetry-rs"]
     R --> B["Panic-safe bulk C ABI"]
     B --> C["Qt-free C++ normalization core"]
-    C --> CLI["omatrack-cli"]
+    C --> CLI["omatrack parse / unify / corners"]
     C --> S["TelemetryStore"]
     A["Track Atlas JSONL"] --> S
     S --> T["C++ trace renderer"]
@@ -133,7 +133,7 @@ On macOS, run `./build/Omatrack.app/Contents/MacOS/Omatrack`. On Windows, run
 
 `./scripts/package-windows.sh` builds the release, stages `cmake --install`,
 and writes `dist/omatrack-<version>-windows-x86_64.zip`. The layout is flat:
-`omatrack.exe`, `omatrack-cli.exe`, and the DLLs they load sit at the archive
+`omatrack.exe` and the DLLs it loads sit at the archive
 root next to a `qt.conf`, while Qt plugins, QML modules, and license/doc files
 live under `lib/` and stay out of the way.
 
@@ -147,10 +147,17 @@ An existing pre-rename `racecraft.yml`, legacy `QSettings` preferences, and Trac
 ## Headless inspection
 
 ```sh
-./build/omatrack-cli parse /path/to/copied-session.pds
-./build/omatrack-cli unify /path/to/copied-session.pds \
+./build/omatrack parse /path/to/copied-session.pds
+./build/omatrack unify /path/to/copied-session.pds \
   --output /tmp/session.unified.csv
+./build/omatrack corners /path/to/session.mp4 --lap 4 \
+  --reference /path/to/session.mp4 --reference-lap 3 --zone 0.05:0.09
 ```
+
+These commands are dispatched before Qt is initialised, so they need no
+display and never read `omatrack.yml`. `./build/omatrack-cli` is a thin
+test-only binary over the same commands (used by CTest and the benchmark
+scripts); it is not installed or shipped.
 
 `unify` refuses to overwrite an existing file. Its CSV includes GPS latitude and longitude when available; treat exported files as sensitive location data. Omatrack never rewrites source telemetry or video.
 
@@ -160,7 +167,7 @@ An existing pre-rename `racecraft.yml`, legacy `QSettings` preferences, and Trac
 cmake --install build --prefix "$HOME/.local"
 ```
 
-The install target provides `omatrack`, `omatrack-cli`, platform deployment
+The install target provides `omatrack`, platform deployment
 metadata, and license notices. Tagged releases publish a Linux AppImage, its
 `.zsync` sidecar, a macOS disk image, a Windows Velopack installer, and
 `SHA256SUMS.txt` from GitHub Actions. The macOS build is

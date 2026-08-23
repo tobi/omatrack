@@ -34,7 +34,7 @@ Use `cmake --build --preset debug --target cpp_format` and `qml_format` to apply
 ## Verification expectations
 
 - Parser or bridge changes: parse a copied real fixture for every affected format and run the corresponding Rust crate tests.
-- Normalization or lap changes: run `omatrack-cli unify` on a copied real fixture and inspect sample counts, units, distance monotonicity, and physical plausibility.
+- Normalization or lap changes: run `omatrack unify` on a copied real fixture and inspect sample counts, units, distance monotonicity, and physical plausibility.
 - Comparison changes: exercise primary/reference laps with different durations and with missing or degraded GPS.
 - UI or renderer changes: run the native application, inspect the changed interaction, and check hover/zoom paint timing against the 8.33 ms design target and 16.67 ms hard ceiling.
 - Video changes: verify the native OpenGL scene graph. Offscreen screenshots do not establish libmpv and `QQuickFramebufferObject` context sharing.

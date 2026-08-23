@@ -32,8 +32,12 @@ All notable user-facing changes are documented here.
   than the developer's own `omatrack.yml`.
 - Raw source channels open the recording index-only instead of decoding
   every channel of the file.
-- `omatrack --version` / `omatrack-cli --version` print the version and
-  exit; previously the GUI launched.
+- The headless commands moved into the main binary: `omatrack parse`,
+  `omatrack unify`, `omatrack corners`, `omatrack compare` run before Qt is
+  initialised, with no window and no `omatrack.yml`. `omatrack-cli` is now a
+  test-only binary over the same code and is no longer installed or shipped.
+- `omatrack --version` prints the version and exits; previously the GUI
+  launched.
 - Restored telemetry-synchronized video seeking when a native recording
   catalogs more than one linked video.
 - Added selectable reference synchronization for dual-video comparison:

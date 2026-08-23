@@ -19,8 +19,12 @@ function(run_cli expected_exit expected_pattern)
   endif()
 endfunction()
 
-run_cli(2 "usage:" )
-run_cli(2 "invalid arguments" unknown)
-run_cli(2 "invalid arguments" parse)
-run_cli(1 "omatrack-cli:" parse "${CMAKE_CURRENT_BINARY_DIR}/missing-session.pds")
-run_cli(2 "invalid arguments" unify missing.pds)
+# `omatrack` with no arguments (or an unknown word) opens the GUI, so those
+# two checks only apply to the test-only omatrack-cli binary.
+if(NOT GUI)
+  run_cli(2 "usage:" )
+  run_cli(2 "usage:" unknown)
+endif()
+run_cli(2 "usage:" parse)
+run_cli(1 "error:" parse "${CMAKE_CURRENT_BINARY_DIR}/missing-session.pds")
+run_cli(2 "usage:" unify missing.pds)

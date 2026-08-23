@@ -103,7 +103,6 @@ jobs:
             --desktop-file packaging/linux/io.github.tobi.omatrack.desktop
             --icon-file assets/omatrack.svg
             --executable AppDir/usr/bin/omatrack
-            --executable AppDir/usr/bin/omatrack-cli
             --plugin qt
             --output appimage
           )
@@ -126,9 +125,11 @@ jobs:
             "../$artifact" --appimage-extract >/dev/null
           )
           packaging/linux/verify-bundle.sh appimage-audit/squashfs-root
+          # The headless commands run before Qt starts: this proves the
+          # bundled binary resolves its libraries without a display.
           set +e
           cli_output=$(
-            appimage-audit/squashfs-root/usr/bin/omatrack-cli 2>&1
+            appimage-audit/squashfs-root/usr/bin/omatrack parse 2>&1
           )
           cli_status=$?
           set -e
@@ -337,7 +338,7 @@ jobs:
           test -f stage/omatrack.exe
           test -f stage/qt.conf
           set +e
-          cli_output=$(stage/omatrack-cli.exe 2>&1)
+          cli_output=$(stage/omatrack.exe parse 2>&1)
           cli_status=$?
           set -e
           test "$cli_status" -eq 2

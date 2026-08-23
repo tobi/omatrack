@@ -425,7 +425,7 @@ CornerContext{primary, reference metrics, delta-trace time deltas}
 
 ### Headless tools and automation
 
-`omatrack-cli` is the headless acceptance surface for parsing, mapping, lap detection and classification, 50 Hz unification, primary→reference alignment (`corners --reference` maps the reference zone through `ComparisonAlignment`, exactly as the GUI does, and prints the basis, anchor count and confidence; `--lap`/`--reference-lap` pick laps by id so two laps of one recording can be compared), corner analysis, and AiM vs `.telemetry` compare. The GUI also has screenshot and paint-benchmark modes driven by `OMATRACK_AUTOTEST*` environment variables.
+The headless commands (`omatrack parse|unify|corners|compare`, dispatched in `main()` before Qt is initialised, so no window, no `omatrack.yml`) are the acceptance surface for parsing, mapping, lap detection and classification, 50 Hz unification, primary→reference alignment (`corners --reference` maps the reference zone through `ComparisonAlignment`, exactly as the GUI does, and prints the basis, anchor count and confidence; `--lap`/`--reference-lap` pick laps by id so two laps of one recording can be compared), corner analysis, and AiM vs `.telemetry` compare. They live in `cli/Headless.*` (`omatrack_headless`, Qt-free); `cli/main.cpp` builds the test-only `omatrack-cli` over the same library for CTest and the benchmark scripts — never installed or packaged. The GUI also has screenshot and paint-benchmark modes driven by `OMATRACK_AUTOTEST*` environment variables.
 
 ## Architecture
 
@@ -452,8 +452,8 @@ src/core/TelemetryEngine                      Qt-free normalization + laps
               +--------------------+
               |                    |
               v                    v
-cli/main.cpp                       src/app/TelemetryStore
-headless acceptance                sessions, state, cache, Track Atlas
+cli/Headless.cpp                   src/app/TelemetryStore
+headless commands (omatrack parse…) sessions, state, cache, Track Atlas
                                            |
                                   +--------+-----------+---------+
                                   |                    |         |
@@ -478,7 +478,7 @@ Cargo-pinned `cbindgen` tool derives `omatrack_bridge.h` from the Rust exports
 into the CMake build tree before C++ compilation; no handwritten copy of that
 ABI exists. CTest registers the bridge tests. Vendor parser tests run in the
 upstream project. `src/core` builds the Qt-free
-`omatrack_core`, linked by both `cli/omatrack-cli` and the Qt app.
+`omatrack_core`, linked by `cli/omatrack_headless` (the `parse`/`unify`/`corners`/`compare` commands, compiled into the Qt app and into the test-only `omatrack-cli`).
 `src/app/CMakeLists.txt` declares the `Omatrack` QML module through
 `qt_add_qml_module`; QML documents and imported C++ types live together so
 `qmllint`, `qmlls`, and `qmlcachegen` resolve `import Omatrack`. Geist fonts
@@ -499,7 +499,7 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
 | QML UI | `src/app/*.qml` | Material windows, layout, delegates, controls, high-level orchestration | Full telemetry loops, duplicated analysis, format branches |
 | Bootstrap | `src/app/main.cpp` | Qt startup, style, fonts, store ownership, initial properties, module load | Product analysis, autotest behaviour |
 | Session/store | `src/app/TelemetryStore.*` + collaborators `PreferencesStore.*`, `TrackAtlasManager.*`, `OverlayManager.*`, `LibraryModel.*`, `StoreModels.*`/`StoreTypes.h`, `AsyncJob.h` | Lazy session handles, ETag/BLAKE3-keyed normalized telemetry cache, selection, cached selectable primary→reference alignment, comparison, viewport; preferences (debounced `omatrack.yml` writer), Track Atlas, MTX overlays, the library tree model and typed row models/gadgets handed to QML; every background pipeline is an `AsyncJob`/`SerialJobQueue` | Pixel-level paint loops, vendor byte parsing, self-update, hand-rolled `QFutureWatcher`/generation counters |
-| CLI | `cli/main.cpp` | Reproducible headless acceptance and inspection | A second analysis implementation |
+| Headless commands | `cli/Headless.*`, `cli/main.cpp` | Reproducible headless acceptance and inspection, inside `omatrack` and the test-only `omatrack-cli` | A second analysis implementation, Qt |
 
 ### Core data contracts
 
@@ -623,14 +623,14 @@ cmake --build --preset release
 ./build/omatrack /path/to/telemetry-directory
 ./build/omatrack --verbose /path/to/telemetry-directory
 OMATRACK_VIDEO=/path/to/onboard.mp4 ./build/omatrack /path/to/telemetry-directory
-./build/omatrack-cli parse /path/to/copied-session.pds
-./build/omatrack-cli unify /path/to/copied-session.pds \
+./build/omatrack parse /path/to/copied-session.pds
+./build/omatrack unify /path/to/copied-session.pds \
   --output /tmp/session.unified.csv
-./build/omatrack-cli corners /path/to/active.pds \
+./build/omatrack corners /path/to/active.pds \
   --reference /path/to/reference.pds --zone 0.30:0.36
-./build/omatrack-cli corners /path/to/session.mp4 --lap 3 \
+./build/omatrack corners /path/to/session.mp4 --lap 3 \
   --reference /path/to/session.mp4 --reference-lap 1 --zone 0.30:0.36
-./build/omatrack-cli compare /path/to/aim-extract.mp4 \
+./build/omatrack compare /path/to/aim-extract.mp4 \
   /path/to/.video.mp4.telemetry
 ```
 
@@ -647,7 +647,7 @@ offset, and video frames. It also sets `QT_FORCE_STDERR_LOGGING=1` so the
 lines are not swallowed by journald. Signed stream URLs are logged without
 userinfo or query.
 
-`omatrack-cli unify` requires an explicit output path, refuses to overwrite it, and includes GPS coordinates when available. Treat the exported CSV as sensitive location data.
+`omatrack unify` requires an explicit output path, refuses to overwrite it, and includes GPS coordinates when available. Treat the exported CSV as sensitive location data.
 
 Windows release zips use a flat layout: the executables and their load-time
 DLLs install at the archive root next to a generated `qt.conf`, while Qt
@@ -700,9 +700,9 @@ Use real, copied telemetry for the format and behavior being changed. Synthetic 
 
 ### Parser, bridge, or core
 
-1. Build `omatrack-cli`.
-2. Run `omatrack-cli parse` on each affected format; inspect format, mapped channels, and detected laps.
-3. Run `omatrack-cli unify` when mapping, units, resampling, distance, or lap bounds changed; inspect sample count and physical plausibility.
+1. Build `omatrack` (or the test-only `omatrack-cli`, which needs no Qt link).
+2. Run `omatrack parse` on each affected format; inspect format, mapped channels, and detected laps.
+3. Run `omatrack unify` when mapping, units, resampling, distance, or lap bounds changed; inspect sample count and physical plausibility.
 4. Run the relevant Rust crate tests, then the workspace tests for shared-trait or bridge changes.
 
 ### Store, Track Atlas, or comparison logic
@@ -711,7 +711,7 @@ Use real, copied telemetry for the format and behavior being changed. Synthetic 
 2. Select active and reference laps with different lengths.
 3. Exercise cursor, distance delta, raw channels, corner selection, and alignment as applicable.
 4. For Track Atlas work, verify a cached/offline start and a known track/layout match. Verify both individual corners and complexes when the changed model supports them.
-5. For a corner check, run `omatrack-cli corners` on two real laps of the same
+5. For a corner check, run `omatrack corners` on two real laps of the same
    track and read the notes: they must be true of that driving, and a corner
    the driver did nothing wrong in must stay silent. A check that fires on
    every corner is noise, not analysis. `corner-analysis-test` covers the

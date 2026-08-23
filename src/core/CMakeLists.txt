@@ -1,4 +1,5 @@
-# Qt-free analysis core. Linked by both the GUI and omatrack-cli; must stay
+# Qt-free analysis core. Linked by the GUI, the headless commands and the
+# test-only omatrack-cli; must stay
 # usable without a QGuiApplication.
 
 add_library(omatrack_core STATIC

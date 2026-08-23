@@ -174,6 +174,14 @@ add_test(NAME cli-contract
     -DCLI=$<TARGET_FILE:omatrack-cli>
     -P ${CMAKE_CURRENT_SOURCE_DIR}/CliContract.cmake)
 set_tests_properties(cli-contract PROPERTIES LABELS unit)
+# The same commands dispatched from the shipped binary, before Qt starts:
+# no display, no omatrack.yml, identical output.
+add_test(NAME headless-contract
+  COMMAND ${CMAKE_COMMAND}
+    -DCLI=$<TARGET_FILE:omatrack> -DGUI=1
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/CliContract.cmake)
+set_tests_properties(headless-contract PROPERTIES LABELS unit
+  ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # ── Make failures readable on Windows ───────────────────────────────
 # QTest only writes to stdout when stderr has a console attached. Under

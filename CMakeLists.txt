@@ -25,7 +25,8 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-# Binaries stay at the top of the build tree: ./build/omatrack, ./build/omatrack-cli.
+# Binaries stay at the top of the build tree: ./build/omatrack (and the
+# test-only ./build/omatrack-cli).
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
 find_program(CCACHE_PROGRAM ccache)
@@ -97,8 +98,8 @@ endif()
 
 add_subdirectory(third_party)
 add_subdirectory(src/core)
-add_subdirectory(src/app)
 add_subdirectory(cli)
+add_subdirectory(src/app)
 add_subdirectory(tests)
 
 # Formatting and static-analysis gates. Included last: it wires targets that

@@ -7,7 +7,7 @@
 #
 # Produces dist/omatrack-<version>-windows-x86_64.zip with a flat layout:
 #
-#   omatrack.exe   omatrack-cli.exe   *.dll   qt.conf
+#   omatrack.exe   *.dll   qt.conf
 #   lib/plugins/                         Qt platform/format/style plugins
 #   lib/qml/                             Qt QML modules
 #   lib/share/doc/omatrack/              README, LICENSE, notices
@@ -34,7 +34,7 @@ command -v cmake >/dev/null 2>&1 \
 if [ ! -f "$BUILD_DIR/build.ninja" ]; then
   cmake --preset release
 fi
-cmake --build --preset release --target omatrack omatrack-cli
+cmake --build --preset release --target omatrack
 [ -x "$BUILD_DIR/omatrack.exe" ] \
   || fail "omatrack.exe not found in $BUILD_DIR"
 
@@ -47,7 +47,7 @@ cmake --install "$BUILD_DIR" --prefix "$app"
 
 # ── 3. Verify the flat release contract before zipping. ──────────────
 [ -f "$app/omatrack.exe" ] || fail "omatrack.exe missing after install"
-[ -f "$app/omatrack-cli.exe" ] || fail "omatrack-cli.exe missing after install"
+[ ! -f "$app/omatrack-cli.exe" ] || fail "omatrack-cli.exe is test-only and must not be installed"
 [ -f "$app/qt.conf" ] || fail "qt.conf missing (Qt deployment did not run)"
 [ -d "$app/lib/qml" ] || fail "lib/qml missing (QML modules not deployed)"
 [ -d "$app/lib/plugins" ] || fail "lib/plugins missing (Qt plugins not deployed)"
