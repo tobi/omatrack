@@ -6428,11 +6428,15 @@ void TelemetryStore::rebuildCornerMarkers() {
             return omatrack::invertFraction(compare->distance, metres);
         };
 
+        // An alias rather than spelling `double CornerRow::*` twice:
+        // clang-format 14 (CI) and 22 disagree on the spacing of a
+        // pointer-to-member declarator.
+        using CornerField = double CornerRow::*;
         struct MarkerSpec {
             const char* key;
             const char* label;
-            double CornerRow::* primaryField;
-            double CornerRow::* compareField;
+            CornerField primaryField;
+            CornerField compareField;
         };
         static constexpr MarkerSpec kSpecs[] = {
             {"brake", "BRAKE", &CornerRow::brakePoint,
