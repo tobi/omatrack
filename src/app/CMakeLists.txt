@@ -110,6 +110,7 @@ qt_add_qml_module(omatrack
     TraceTextCache.h TraceTextCache.cpp
     UsbMedia.h UsbMedia.cpp
     VerboseLog.h VerboseLog.cpp
+    SingleInstance.h SingleInstance.cpp
     TraceSnapshot.h
     TraceInteraction.h TraceInteraction.cpp
     TraceLaneLayout.h TraceLaneLayout.cpp

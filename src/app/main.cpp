@@ -20,6 +20,7 @@
 #ifdef OMATRACK_ENABLE_AUTOTEST_HARNESS
 #include "AutotestHarness.h"
 #endif
+#include "SingleInstance.h"
 #include "TelemetryStore.h"
 #include "VerboseLog.h"
 #ifdef Q_OS_WIN
@@ -55,6 +56,9 @@ void printHelp(const char* executable) {
         "Options:\n"
         "  -h, --help     Show this help and exit.\n"
         "  -V, --version  Print the version and exit.\n"
+        "  -n, --new-instance\n"
+        "                 Start a separate process instead of handing the\n"
+        "                 path to the Omatrack that is already running.\n"
         "  -v, --verbose  Log file opens, cache hits and misses, writes,\n"
         "                 video/cursor seeks, and AiM vs .telemetry channel\n"
         "                 compare. Same as OMATRACK_VERBOSE=1.\n"
@@ -79,6 +83,7 @@ int main(int argc, char** argv) {
 #endif
     const bool helpRequested = takeFlag(argc, argv, "--help", "-h");
     const bool versionRequested = takeFlag(argc, argv, "--version", "-V");
+    const bool newInstance = takeFlag(argc, argv, "--new-instance", "-n");
     const bool verbose = takeFlag(argc, argv, "--verbose", "-v") ||
                          qEnvironmentVariableIntValue("OMATRACK_VERBOSE") != 0;
     if (helpRequested) {
@@ -128,6 +133,20 @@ int main(int argc, char** argv) {
     QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
     QGuiApplication app(argc, argv);
     if (verbose) omatrack::setVerbose(true);
+
+    // Explorer / Finder / xdg-open start a fresh process per file. Hand the
+    // path to the running workspace and leave, unless the user asked for a
+    // second instance or this is an acceptance run that must stay isolated.
+    omatrack::SingleInstance instance(
+        QStringLiteral("omatrack-") +
+        qEnvironmentVariable("USER", qEnvironmentVariable("USERNAME")));
+    const QStringList launchPaths = QCoreApplication::arguments().mid(1);
+    if (!newInstance && !autotest) {
+        if (instance.forwardToPrimary(launchPaths)) return 0;
+        if (!instance.listen())
+            qWarning() << "Single-instance socket unavailable:"
+                       << instance.serverError();
+    }
     std::setlocale(LC_NUMERIC, "C");
 #ifdef Q_OS_WIN
     omatrack::initializeWindowsIntegration(app);
@@ -187,16 +206,30 @@ int main(int argc, char** argv) {
         return -1;
     }
     // Configuration supplies persistent scan roots. A positional path opens a
-    // directory or one supported telemetry/video file.
-    const QStringList arguments = QCoreApplication::arguments();
-    if (arguments.size() > 1) {
-        const QString path = arguments.at(1);
-        if (QFileInfo(path).isDir())
-            store->addSessionDirectory(path);
-        else
-            store->openFile(path);
-    }
+    // directory or one supported telemetry/video file — the same rule for the
+    // command line and for paths forwarded by a later launch.
+    const auto openPaths = [store](const QStringList& paths) {
+        for (const QString& path : paths) {
+            if (QFileInfo(path).isDir())
+                store->addSessionDirectory(path);
+            else
+                store->openFile(path);
+        }
+    };
+    openPaths(launchPaths);
     if (!startupVideoPath.isEmpty()) store->openFile(startupVideoPath);
+    QObject::connect(
+        &instance, &omatrack::SingleInstance::pathsReceived, &app,
+        [&engine, openPaths](const QStringList& paths) {
+            openPaths(paths);
+            for (QObject* root : engine.rootObjects())
+                if (auto* window = qobject_cast<QQuickWindow*>(root)) {
+                    if (window->windowState() & Qt::WindowMinimized)
+                        window->showNormal();
+                    window->raise();
+                    window->requestActivate();
+                }
+        });
 
 #ifdef OMATRACK_ENABLE_AUTOTEST_HARNESS
     omatrack::autotest::install(engine, *store);

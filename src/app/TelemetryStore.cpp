@@ -3754,6 +3754,17 @@ QString TelemetryStore::defaultTelemetryDirectory() const {
     return directory;
 }
 
+QString TelemetryStore::localPathFromUrl(const QString& value) const {
+    const QString text = value.trimmed();
+    if (!text.startsWith(QStringLiteral("file:"), Qt::CaseInsensitive))
+        return text;
+    return QUrl(text).toLocalFile();
+}
+
+QUrl TelemetryStore::defaultTelemetryDirectoryUrl() const {
+    return QUrl::fromLocalFile(defaultTelemetryDirectory());
+}
+
 // True when the active lap carries usable GPS: the damper-alignment tool is
 // only the fallback for sessions that cannot be aligned positionally.
 bool TelemetryStore::hasGpsData() const {

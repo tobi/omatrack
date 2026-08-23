@@ -31,9 +31,6 @@ Item {
         libraryPage.refresh();
         return true;
     }
-    function defaultTelemetryFolder(): url {
-        return "file://" + Store.defaultTelemetryDirectory();
-    }
     function refresh(): void {
         libraryPage.locationRows = Store.libraryLocations();
         // Measured by walking the cache, so this is only read when the page
@@ -46,8 +43,7 @@ Item {
         libraryPage.cacheVideoText = usage.videoText;
     }
     function toLocalPath(value): string {
-        const text = value.toString();
-        return text.startsWith("file://") ? decodeURIComponent(text.substring(7)) : text;
+        return Store.localPathFromUrl(value);
     }
 
     objectName: "preferencesLibraryPage"
@@ -72,7 +68,7 @@ Item {
         id: telemetryFolderDialog
 
         acceptLabel: "Add folder"
-        folder: libraryPage.defaultTelemetryFolder()
+        folder: Store.defaultTelemetryDirectoryUrl()
         title: "Choose telemetry folder"
 
         onAccepted: libraryPage.addDirectory(telemetryFolderDialog.folder)

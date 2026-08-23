@@ -106,6 +106,13 @@ wins on load. Caches (Track Atlas snapshot) stay outside the file.
   file dialog, recent-file menu, or application drag/drop. Individual files do
   not become configured scan roots; persist at most the six most recent
   successful opens in `omatrack.yml`.
+- One instance per user. A launch from Explorer/Finder/`xdg-open` hands its
+  paths to the running Omatrack over `SingleInstance` (a `QLocalServer`
+  keyed on the user name) and exits; the primary opens them and raises its
+  window. `--new-instance` opts out; acceptance runs never join or listen.
+  Paths from dialogs and drops cross QML as `file:` URLs and are decoded by
+  `Store.localPathFromUrl()` (`QUrl::toLocalFile`), never by string
+  slicing — `file:///C:/…` is the Windows shape and a hand strip breaks it.
 - Run directory discovery and lap-summary parsing off the UI thread;
   expose `TelemetryStore::loading` so every session-library surface can retain
   its current data and show progress while a replacement snapshot is built.
@@ -411,7 +418,8 @@ CornerContext{primary, reference metrics, delta-trace time deltas}
   to `Update.exe apply --waitPid`. No UAC; `current/` is replaced in a
   couple of seconds. A leftover zip install is offered the Setup.exe so
   it can migrate. File associations are HKCU: telemetry formats default
-  on, `.mp4` default off, prompted on first run.
+  on (`.pds`, `.ld`, `.ldx`, `.vbo`, `.telemetry` — an `.ldx` opens its
+  sibling `.ld`), `.mp4` default off, prompted on first run.
 - macOS: one click downloads `Omatrack-*-macOS-arm64.dmg`, verifies
   `SHA256SUMS.txt`, copies `Omatrack.app` off the image, then a helper
   waits for this process to exit, dittos the new bundle over the old one,
@@ -497,7 +505,7 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
 | Video sync | `src/app/VideoSyncController.*` | Primary/reference playback timing: reference rate, hard seeks, slow motion, next-lap countdown | Layout, media decoding, alignment math |
 | Video renderer | `src/app/MpvVideoItem.*` | libmpv lifecycle, OpenGL FBO rendering, playback state, and exact seek | Telemetry extraction, session association, or QML layout policy |
 | QML UI | `src/app/*.qml` | Material windows, layout, delegates, controls, high-level orchestration | Full telemetry loops, duplicated analysis, format branches |
-| Bootstrap | `src/app/main.cpp` | Qt startup, style, fonts, store ownership, initial properties, module load | Product analysis, autotest behaviour |
+| Bootstrap | `src/app/main.cpp`, `src/app/SingleInstance.*` | Qt startup, style, fonts, store ownership, initial properties, module load, single-instance path hand-off | Product analysis, autotest behaviour |
 | Session/store | `src/app/TelemetryStore.*` + collaborators `PreferencesStore.*`, `TrackAtlasManager.*`, `OverlayManager.*`, `LibraryModel.*`, `StoreModels.*`/`StoreTypes.h`, `AsyncJob.h` | Lazy session handles, ETag/BLAKE3-keyed normalized telemetry cache, selection, cached selectable primary→reference alignment, comparison, viewport; preferences (debounced `omatrack.yml` writer), Track Atlas, MTX overlays, the library tree model and typed row models/gadgets handed to QML; every background pipeline is an `AsyncJob`/`SerialJobQueue` | Pixel-level paint loops, vendor byte parsing, self-update, hand-rolled `QFutureWatcher`/generation counters |
 | CLI | `cli/main.cpp` | Reproducible headless acceptance and inspection | A second analysis implementation |
 

@@ -63,9 +63,6 @@ ApplicationWindow {
     function comparisonSyncValue(field: string, fallback: string): string {
         return Store.comparisonSyncStrategyField(field) || fallback;
     }
-    function defaultTelemetryFolder() {
-        return "file://" + Store.defaultTelemetryDirectory();
-    }
     function dismissCornerPopover() {
         Store.clearCornerFocus();
     }
@@ -251,9 +248,8 @@ ApplicationWindow {
         }
         videoSync.syncReferenceSource();
     }
-    function toLocalPath(value) {
-        const text = value.toString();
-        return text.startsWith("file://") ? decodeURIComponent(text.substring(7)) : text;
+    function toLocalPath(value): string {
+        return Store.localPathFromUrl(value);
     }
     function useSessionAlone(key) {
         const lapId = root.bestLapIdForSession(key);
@@ -1279,7 +1275,7 @@ ApplicationWindow {
         id: folderDialog
 
         acceptLabel: "Add"
-        folder: root.defaultTelemetryFolder()
+        folder: Store.defaultTelemetryDirectoryUrl()
         title: "Choose telemetry directory"
 
         onAccepted: root.addDir(folderDialog.folder)
