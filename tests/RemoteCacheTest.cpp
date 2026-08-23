@@ -11,6 +11,7 @@
 #include <QtTest>
 
 #include <QDir>
+#include <QStandardPaths>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -59,20 +60,26 @@ private slots:
             QString::fromStdString(omatrack::converterGeneration());
         QVERIFY(!generation.isEmpty());
         QVERIFY(generation != QStringLiteral("unknown"));
-        QCOMPARE(telemetryCacheRoot(),
-                 cacheDir_->filePath(QStringLiteral(".omatrack/c")));
+        // XDG_CACHE_HOME steers QStandardPaths only on Linux; derive the
+        // expectation from the same source the code uses so the layout is
+        // checked on every platform.
+        const QString base = QStandardPaths::writableLocation(
+            QStandardPaths::GenericCacheLocation);
+        QCOMPARE(telemetryCacheRoot(), base + QStringLiteral("/.omatrack/c"));
         QCOMPARE(telemetryCacheDirectory(),
-                 cacheDir_->filePath(QStringLiteral(".omatrack/c/") +
-                                     generation));
+                 base + QStringLiteral("/.omatrack/c/") + generation);
         QCOMPARE(telemetryCacheRelativeDirectory(),
                  QStringLiteral(".omatrack/c/") + generation);
         QCOMPARE(telemetryCachePath(QStringLiteral("\"abc/1\"")),
-                 cacheDir_->filePath(QStringLiteral(".omatrack/c/") +
-                                     generation +
-                                     QStringLiteral("/abc_1.telemetry")));
+                 base + QStringLiteral("/.omatrack/c/") + generation +
+                     QStringLiteral("/abc_1.telemetry"));
         QVERIFY(telemetryCachePath(QString()).isEmpty());
     }
     void prunesOtherConverterGenerations() {
+        // Only where the temporary XDG_CACHE_HOME is honoured: pruning the
+        // developer's real cache is not a unit test.
+        if (!telemetryCacheRoot().startsWith(cacheDir_->path()))
+            QSKIP("GenericCacheLocation ignores XDG_CACHE_HOME here");
         const QDir root(telemetryCacheRoot());
         QVERIFY(QDir().mkpath(root.filePath(QStringLiteral("0-deadbeef0000"))));
         QVERIFY(QDir().mkpath(telemetryCacheDirectory()));
