@@ -951,7 +951,17 @@ void TraceView::buildCursorScene(TraceSceneBuilder& builder) {
     // its compare-fraction map and lap pointers are stable while the cursor
     // moves, so a cursor frame never allocates the std::function. Only the
     // cursor position is read fresh.
-    if (!snapshot_.primary && store_) snapshot_ = store_->traceSnapshot();
+    //
+    // Stable while the cursor moves — not across a lap swap. The GUI thread
+    // may have replaced a UnifiedLap (re-opening the selected file adopts a
+    // fresh lap over the loaded one, a session change evicts the cache) and
+    // this overlay can be synced before the static view rebuilds, so the
+    // cached pointers are checked against the store every frame and the
+    // snapshot is retaken only when they differ. A pointer compare is the
+    // whole steady-state cost.
+    if (store_ && (snapshot_.primary != store_->primaryUnified() ||
+                   snapshot_.compare != store_->compareUnified()))
+        snapshot_ = store_->traceSnapshot();
     const UnifiedLap* primary = snapshot_.primary;
     if (!primary) return;
     const UnifiedLap* compare = snapshot_.compare;

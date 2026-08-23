@@ -35,20 +35,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Dynamic rules; they do not survive `hyprctl reload`, which is the point —
+# nothing is written to ~/.config/hypr. They go in *before* the output exists:
+# `default = true` makes the named workspace the one the new output shows, and
+# a window on an inactive workspace gets no frame callbacks, so the scene graph
+# never renders it, the libmpv FBO never comes up and the video never loads.
+# The output mirrors the developer monitors' scale so screenshots come out at
+# the same density as a real run.
+hyprctl eval "hl.workspace_rule({ workspace = \"$WORKSPACE\", monitor = \"$OUTPUT\", default = true })" >/dev/null
+hyprctl eval "hl.monitor({ output = \"$OUTPUT\", mode = \"${OMATRACK_HEADLESS_MODE:-2560x1600@60}\", position = \"auto\", scale = ${OMATRACK_HEADLESS_SCALE:-2} })" >/dev/null
+hyprctl eval "o.window({ class = \"^(omatrack-autotest)$\" }, { workspace = \"$WORKSPACE silent\", no_initial_focus = true, float = true, size = \"${OMATRACK_HEADLESS_WINDOW:-1280 800}\", move = \"0 0\" })" >/dev/null
+
 if ! hyprctl monitors -j | jq -e --arg n "$OUTPUT" '.[] | select(.name == $n)' >/dev/null; then
     hyprctl output create headless "$OUTPUT" >/dev/null
     created=1
-    # Give the compositor a moment to bring the output up before a workspace
-    # is bound to it.
-    sleep 0.3
+    # Give the compositor a moment to bring the output and its workspace up.
+    sleep 0.5
 fi
-
-# Dynamic rules; they do not survive `hyprctl reload`, which is the point —
-# nothing is written to ~/.config/hypr. The output mirrors the developer
-# monitors' scale so screenshots come out at the same density as a real run.
-hyprctl eval "hl.monitor({ output = \"$OUTPUT\", mode = \"${OMATRACK_HEADLESS_MODE:-2560x1600@60}\", position = \"auto\", scale = ${OMATRACK_HEADLESS_SCALE:-2} })" >/dev/null
-hyprctl eval "hl.workspace_rule({ workspace = \"$WORKSPACE\", monitor = \"$OUTPUT\" })" >/dev/null
-hyprctl eval "o.window({ class = \"^(omatrack-autotest)$\" }, { workspace = \"$WORKSPACE silent\", no_initial_focus = true, float = true, size = \"${OMATRACK_HEADLESS_WINDOW:-1280 800}\", move = \"0 0\" })" >/dev/null
 
 export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-wayland}"
 export QT_FORCE_STDERR_LOGGING=1

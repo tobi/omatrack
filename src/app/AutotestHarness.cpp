@@ -977,7 +977,13 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                 QObject* root = engine.rootObjects().first();
                                 auto* video = root->findChild<MpvVideoItem*>(
                                     QStringLiteral("videoPlayer"));
-                                if (!video || !video->loaded()) return;
+                                // After the app's own seek to the telemetry
+                                // cursor has landed, or the skips below start
+                                // from 0 s and drag the cursor to lap start.
+                                if (!video || !video->loaded() ||
+                                    video->exactSeekCount() < 1 ||
+                                    video->seeking())
+                                    return;
                                 auto activate =
                                     [root](
                                         const QString& objectName,
@@ -1142,669 +1148,675 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                     const int finalDelay = autotestDualVideo    ? 7000
                                            : autotestConfidence ? 8000
                                                                 : 2500;
-                    QTimer::singleShot(
-                        finalDelay, &engine,
-                        [&store, &engine, shotPath, startupVideoPath,
-                         autotestWindows, autotestRename, autotestBrakeSync,
-                         autotestCornerEdit, autotestCorner, autotestConfidence,
-                         autotestVideoHud, autotestZoom, autotestDualVideo,
-                         autotestStandaloneVideo, sequentialVideoReady,
-                         videoShortcutReady]() {
-                            QList<QQuickWindow*> windows;
+                    // The final assertions run `finalDelay` after the video
+                    // has loaded, not after startup: an exact seek into a
+                    // multi-gigabyte recording plus decoder start-up can eat
+                    // a fixed window before the first frame plays, and that
+                    // is mpv's load time, not a sync error. Capped so a video
+                    // that never loads still fails instead of hanging.
+                    const auto finalAssertions = [&store, &engine, shotPath,
+                                                  startupVideoPath,
+                                                  autotestWindows,
+                                                  autotestRename,
+                                                  autotestBrakeSync,
+                                                  autotestCornerEdit,
+                                                  autotestCorner,
+                                                  autotestConfidence,
+                                                  autotestVideoHud,
+                                                  autotestZoom,
+                                                  autotestDualVideo,
+                                                  autotestStandaloneVideo,
+                                                  sequentialVideoReady,
+                                                  videoShortcutReady]() {
+                        QList<QQuickWindow*> windows;
+                        for (QObject* root : engine.rootObjects()) {
+                            if (auto* window =
+                                    qobject_cast<QQuickWindow*>(root))
+                                windows.append(window);
+                            if (autotestWindows) {
+                                for (QQuickWindow* child :
+                                     root->findChildren<QQuickWindow*>())
+                                    if (!windows.contains(child))
+                                        windows.append(child);
+                            }
+                        }
+                        bool videoReady = startupVideoPath.isEmpty();
+                        if (autotestStandaloneVideo) {
+                            QObject* root = engine.rootObjects().isEmpty()
+                                                ? nullptr
+                                                : engine.rootObjects().first();
+                            videoReady = root && root->property(
+                                                         "standaloneVideoAut"
+                                                         "otestReady")
+                                                     .toBool();
+                        } else if (!videoReady) {
                             for (QObject* root : engine.rootObjects()) {
-                                if (auto* window =
-                                        qobject_cast<QQuickWindow*>(root))
-                                    windows.append(window);
-                                if (autotestWindows) {
-                                    for (QQuickWindow* child :
-                                         root->findChildren<QQuickWindow*>())
-                                        if (!windows.contains(child))
-                                            windows.append(child);
+                                auto* video = root->findChild<MpvVideoItem*>(
+                                    QStringLiteral("videoPl"
+                                                   "ayer"));
+                                if (!video || !video->ready() ||
+                                    !video->loaded() ||
+                                    video->duration() <= 0.0)
+                                    continue;
+                                videoReady =
+                                    std::abs(video->volume() - 75.0) <= 0.01;
+                                if (!store.primaryVideoSource().isEmpty()) {
+                                    const double target =
+                                        store.primaryVideoTime();
+                                    const double error =
+                                        std::abs(video->position() - target);
+                                    qWarning() << "AUTO"
+                                                  "TEST"
+                                                  " vid"
+                                                  "eo "
+                                                  "sync"
+                                                  ":"
+                                               << video->position()
+                                               << "targ"
+                                                  "et"
+                                               << target
+                                               << "erro"
+                                                  "r"
+                                               << error;
+                                    videoReady = videoReady && error <= 0.1;
+                                    const omatrack::UnifiedLap* lap =
+                                        store.primaryUnified();
+                                    if (autotestBrakeSync) {
+                                        // Scan the brake channel
+                                        // for the peak pressure
+                                        // sample so the check
+                                        // pauses on real heavy
+                                        // braking, not whatever
+                                        // cursor position the
+                                        // video happened to land
+                                        // on.
+                                        size_t peakSample = 0;
+                                        double peakBrake = 0.0;
+                                        if (lap && !lap->brake.empty()) {
+                                            for (size_t i = 0;
+                                                 i < lap->brake.size(); ++i) {
+                                                if (lap->brake[i] > peakBrake) {
+                                                    peakBrake = lap->brake[i];
+                                                    peakSample = i;
+                                                }
+                                            }
+                                            // Seek cursor to
+                                            // the peak brake
+                                            // sample. Guard
+                                            // against size()==1
+                                            // to avoid 0/0 NaN.
+                                            const double frac =
+                                                lap->brake.size() > 1
+                                                    ? double(peakSample) /
+                                                          double(lap->brake
+                                                                     .size() -
+                                                                 1)
+                                                    : 0.0;
+                                            store.setCursorFrac(frac);
+                                        }
+                                        const size_t sample =
+                                            lap && !lap->brake.empty()
+                                                ? std::min(
+                                                      size_t(std::llround(
+                                                          store.cursorFrac() *
+                                                          double(lap->brake
+                                                                     .size() -
+                                                                 1))),
+                                                      lap->brake.size() - 1)
+                                                : 0;
+                                        const bool brakeReady =
+                                            lap && !lap->brake.empty() &&
+                                            video->paused() &&
+                                            lap->brake[sample] >= 10.0;
+                                        qWarning() << "AUTOTEST brake "
+                                                      "sync:"
+                                                   << brakeReady << "lap time"
+                                                   << (lap && !lap->time.empty()
+                                                           ? lap->time[sample]
+                                                           : -1.0)
+                                                   << "peak brake" << peakBrake
+                                                   << "at sample" << peakSample;
+                                        videoReady = videoReady && brakeReady;
+                                    } else {
+                                        const double baseline =
+                                            autotestDualVideo
+                                                ? root->property(
+                                                          "dualCurs"
+                                                          "or"
+                                                          "Baselin"
+                                                          "e")
+                                                      .toDouble()
+                                                : 0.5;
+                                        const double playbackStart =
+                                            lap && !lap->time.empty()
+                                                ? baseline +
+                                                      (autotestDualVideo
+                                                           ? 2.0
+                                                           : 1.0) /
+                                                          lap->time.back()
+                                                : 1.0;
+                                        videoReady =
+                                            videoReady &&
+                                            (autotestVideoHud ||
+                                             (!video->paused() &&
+                                              store.cursorFrac() >
+                                                  playbackStart + 0.002));
+                                    }
+                                }
+                                qWarning() << "AUTOTEST"
+                                              " video "
+                                              "volume:"
+                                           << video->volume();
+                                break;
+                            }
+                            if (!videoReady)
+                                qWarning() << "AUTOTEST"
+                                              " video "
+                                              "failed "
+                                              "to "
+                                              "load or "
+                                              "sync";
+                        }
+                        if (autotestVideoHud) {
+                            QObject* root = engine.rootObjects().isEmpty()
+                                                ? nullptr
+                                                : engine.rootObjects().first();
+                            auto* overlay =
+                                root ? root->findChild<QQuickItem*>(
+                                           QStringLiteral("videoTelemetryOverl"
+                                                          "ay"))
+                                     : nullptr;
+                            QQuickItem* parent =
+                                overlay ? overlay->parentItem() : nullptr;
+                            const double unscaledWidth =
+                                parent ? std::min(
+                                             {parent->width() - 16.0, 1000.0,
+                                              std::max(520.0,
+                                                       parent->width() * 0.72)})
+                                       : 0.0;
+                            const double expectedWidth =
+                                std::max(0.0, unscaledWidth * 0.65);
+                            const double expectedHeight = expectedWidth * 0.21;
+                            const double expectedX =
+                                parent ? (parent->width() - expectedWidth) * 0.5
+                                       : 0.0;
+                            const double expectedY =
+                                parent ? std::max(
+                                             0.0,
+                                             std::min(parent->height() -
+                                                          expectedHeight,
+                                                      parent->height() * 0.9 -
+                                                          expectedHeight * 0.5))
+                                       : 0.0;
+                            const bool hudReady =
+                                overlay && parent && overlay->isVisible() &&
+                                std::abs(overlay->width() - expectedWidth) <=
+                                    1.0 &&
+                                std::abs(overlay->height() - expectedHeight) <=
+                                    1.0 &&
+                                std::abs(overlay->x() - expectedX) <= 1.0 &&
+                                std::abs(overlay->y() - expectedY) <= 1.0;
+                            qWarning()
+                                << "AUTOTEST video HUD layout:" << hudReady
+                                << "size"
+                                << QSizeF(overlay ? overlay->width() : 0.0,
+                                          overlay ? overlay->height() : 0.0)
+                                << "position"
+                                << QPointF(overlay ? overlay->x() : 0.0,
+                                           overlay ? overlay->y() : 0.0);
+                            videoReady = videoReady && hudReady;
+                        }
+                        if (windows.isEmpty())
+                            qWarning() << "AUTOTEST "
+                                          "found no "
+                                          "QQuickWindo"
+                                          "w";
+
+                        bool renameReady = true;
+                        if (autotestRename) {
+                            QObject* root = engine.rootObjects().isEmpty()
+                                                ? nullptr
+                                                : engine.rootObjects().first();
+                            renameReady = root &&
+                                          root->findChild<QObject*>(
+                                              QStringLiteral("headerD"
+                                                             "riverEd"
+                                                             "it")) &&
+                                          store.driverDisplayName(
+                                              store.primarySessionKey()) ==
+                                              QStringLiteral(
+                                                  "Autotes"
+                                                  "t "
+                                                  "Drive"
+                                                  "r");
+                            qWarning() << "AUTOTEST "
+                                          "driver "
+                                          "rename:"
+                                       << renameReady;
+                        }
+                        qWarning() << "AUTOTEST gps "
+                                      "available:"
+                                   << store.hasGpsData();
+                        bool dualVideoReady = true;
+                        if (autotestDualVideo) {
+                            QObject* root = engine.rootObjects().isEmpty()
+                                                ? nullptr
+                                                : engine.rootObjects().first();
+                            auto* primary =
+                                root ? root->findChild<MpvVideoItem*>(
+                                           QStringLiteral("v"
+                                                          "i"
+                                                          "d"
+                                                          "e"
+                                                          "o"
+                                                          "P"
+                                                          "l"
+                                                          "a"
+                                                          "y"
+                                                          "e"
+                                                          "r"))
+                                     : nullptr;
+                            auto* reference =
+                                root ? root->findChild<MpvVideoItem*>(
+                                           QStringLiteral("v"
+                                                          "i"
+                                                          "d"
+                                                          "e"
+                                                          "o"
+                                                          "P"
+                                                          "l"
+                                                          "a"
+                                                          "y"
+                                                          "e"
+                                                          "r"
+                                                          "R"
+                                                          "e"
+                                                          "f"
+                                                          "e"
+                                                          "r"
+                                                          "e"
+                                                          "n"
+                                                          "c"
+                                                          "e"))
+                                     : nullptr;
+                            const double target = store.compareVideoTime();
+                            const double error =
+                                reference
+                                    ? std::abs(reference->position() - target)
+                                    : -1.0;
+                            auto* controls = root
+                                                 ? root->findChild<QQuickItem*>(
+                                                       QStringLiteral("v"
+                                                                      "i"
+                                                                      "d"
+                                                                      "e"
+                                                                      "o"
+                                                                      "C"
+                                                                      "o"
+                                                                      "n"
+                                                                      "t"
+                                                                      "r"
+                                                                      "o"
+                                                                      "l"
+                                                                      "s"))
+                                                 : nullptr;
+                            const bool fullscreenRestored =
+                                root && !root->property(
+                                                 "vi"
+                                                 "de"
+                                                 "oF"
+                                                 "ul"
+                                                 "ls"
+                                                 "cr"
+                                                 "ee"
+                                                 "n")
+                                             .toBool();
+                            const bool chromeReady =
+                                controls &&
+                                controls->findChild<QQuickItem*>(
+                                    QStringLiteral("videoPl"
+                                                   "ayPause"
+                                                   "Butto"
+                                                   "n")) &&
+                                root->findChild<QQuickItem*>(
+                                    QStringLiteral("videoMu"
+                                                   "teButto"
+                                                   "n")) &&
+                                controls->findChild<QQuickItem*>(
+                                    QStringLiteral("videoFu"
+                                                   "llscree"
+                                                   "nButto"
+                                                   "n"));
+                            const int seekBaseline = root ? root->property(
+                                                                    "d"
+                                                                    "u"
+                                                                    "a"
+                                                                    "l"
+                                                                    "R"
+                                                                    "e"
+                                                                    "f"
+                                                                    "e"
+                                                                    "r"
+                                                                    "e"
+                                                                    "n"
+                                                                    "c"
+                                                                    "e"
+                                                                    "S"
+                                                                    "e"
+                                                                    "e"
+                                                                    "k"
+                                                                    "B"
+                                                                    "a"
+                                                                    "s"
+                                                                    "e"
+                                                                    "l"
+                                                                    "i"
+                                                                    "n"
+                                                                    "e")
+                                                                .toInt()
+                                                          : -1;
+                            const bool continuousPlayback =
+                                reference && seekBaseline >= 0 &&
+                                reference->exactSeekCount() == seekBaseline;
+                            const bool pauseAlignmentReady =
+                                root &&
+                                root->property("dualPauseAlignmentReady")
+                                    .toBool();
+                            dualVideoReady =
+                                root &&
+                                root->property(
+                                        "dualVid"
+                                        "eo")
+                                    .toBool() &&
+                                primary && primary->ready() &&
+                                primary->loaded() &&
+                                primary->duration() > 0.0 && reference &&
+                                reference->ready() && reference->loaded() &&
+                                reference->duration() > 0.0 &&
+                                primary->source() != reference->source() &&
+                                reference->muted() && !primary->paused() &&
+                                !reference->paused() && error <= 0.15 &&
+                                pauseAlignmentReady && continuousPlayback &&
+                                !store.comparisonAlignmentBasis().isEmpty() &&
+                                fullscreenRestored && chromeReady &&
+                                sequentialVideoReady();
+                            qWarning()
+                                << "AUTOTEST "
+                                   "dual video:"
+                                << dualVideoReady << "primary"
+                                << (primary ? primary->source().fileName()
+                                            : QString())
+                                << (primary ? primary->position() : -1.0)
+                                << "reference"
+                                << (reference ? reference->source().fileName()
+                                              : QString())
+                                << (reference ? reference->position() : -1.0)
+                                << "target" << target << "error" << error
+                                << "loaded" << (primary && primary->loaded())
+                                << (reference && reference->loaded())
+                                << "paused"
+                                << (primary ? primary->paused() : false)
+                                << (reference ? reference->paused() : false)
+                                << "store"
+                                << store.primaryVideoSource().fileName()
+                                << store.compareVideoSource().fileName();
+                            qWarning() << "AUTOTEST "
+                                          "dual sync "
+                                          "model:"
+                                       << store.comparisonAlignmentBasis()
+                                       << "gps anchors"
+                                       << store.comparisonGpsAnchors() << "rate"
+                                       << (reference ? reference->playbackRate()
+                                                     : -1.0)
+                                       << "seeks "
+                                          "during "
+                                          "playback"
+                                       << (reference && seekBaseline >= 0
+                                               ? reference->exactSeekCount() -
+                                                     seekBaseline
+                                               : -1);
+                        }
+                        bool cornerMutationReady = true;
+                        if (autotestCornerEdit) {
+                            QObject* root = engine.rootObjects().isEmpty()
+                                                ? nullptr
+                                                : engine.rootObjects().first();
+                            cornerMutationReady =
+                                root && root->property(
+                                                "cornerEditAutotest"
+                                                "Ready")
+                                            .toBool();
+                            qWarning() << "AUTOTEST corner mutations:"
+                                       << cornerMutationReady;
+                        }
+                        const bool cornerFocusReady =
+                            !autotestCorner ||
+                            (!engine.rootObjects().isEmpty() &&
+                             engine.rootObjects()
+                                 .first()
+                                 ->property("cornerFocusAutotestRe"
+                                            "ady")
+                                 .toBool());
+                        const CornerFocusSummary cornerSummary =
+                            autotestCorner ? store.cornerFocusSummary()
+                                           : CornerFocusSummary();
+                        const bool cornerConsistencyReady =
+                            !autotestCorner ||
+                            (!cornerSummary.consistencyLoading &&
+                             cornerSummary.consistencyLapCount >= 2 &&
+                             cornerSummary.consistencyValidLapCount >= 2 &&
+                             cornerSummary.brakeConsistencyAvailable);
+                        if (autotestCorner)
+                            qWarning()
+                                << "AUTOTEST corner consistency:"
+                                << cornerConsistencyReady << "laps"
+                                << cornerSummary.consistencyLapCount
+                                << "braking"
+                                << cornerSummary.consistencyBrakeLapCount
+                                << "sigma" << cornerSummary.brakePointStdDev
+                                << "range" << cornerSummary.brakePointRange;
+                        const bool zoomReady =
+                            !autotestZoom || (!engine.rootObjects().isEmpty() &&
+                                              engine.rootObjects()
+                                                  .first()
+                                                  ->property("wheelZoomA"
+                                                             "utotestRea"
+                                                             "dy")
+                                                  .toBool());
+                        bool confidenceReady = true;
+                        TraceView* confidenceTrace = nullptr;
+                        if (autotestConfidence) {
+                            QObject* root = engine.rootObjects().isEmpty()
+                                                ? nullptr
+                                                : engine.rootObjects().first();
+                            confidenceTrace =
+                                root ? root->findChild<TraceView*>(
+                                           QStringLiteral("traceView"))
+                                     : nullptr;
+                            int highlightedFilmstripLaps = 0;
+                            int fixedEdgeLaps = 0;
+                            bool fixedEdgeLapWidths = true;
+                            auto* window = qobject_cast<QQuickWindow*>(root);
+                            QQuickItem* visualRoot =
+                                window ? window->contentItem() : nullptr;
+                            const QVector<LapRow> activeLaps =
+                                store.lapRowsForSession(
+                                    store.primarySessionKey());
+                            for (const LapRow& lap : activeLaps) {
+                                QQuickItem* item = autotestFindItem(
+                                    visualRoot,
+                                    QStringLiteral("activeFilmstripLap-%1")
+                                        .arg(lap.lapId));
+                                if (!item) continue;
+                                if (item->property("confidenceLap").toBool())
+                                    ++highlightedFilmstripLaps;
+                                if (item->property("fixedWidthLap").toBool()) {
+                                    ++fixedEdgeLaps;
+                                    fixedEdgeLapWidths &=
+                                        std::abs(item->width() - 30.0) < 0.1;
                                 }
                             }
-                            bool videoReady = startupVideoPath.isEmpty();
-                            if (autotestStandaloneVideo) {
-                                QObject* root =
-                                    engine.rootObjects().isEmpty()
-                                        ? nullptr
-                                        : engine.rootObjects().first();
-                                videoReady =
-                                    root && root->property(
-                                                    "standaloneVideoAut"
-                                                    "otestReady")
-                                                .toBool();
-                            } else if (!videoReady) {
+                            const TraceConfidenceBand* speedBand =
+                                store.traceConfidenceBand(
+                                    QStringLiteral("speed"));
+                            const std::vector<double>& consistency =
+                                store.traceConsistency();
+                            double maximumConsistency = 0.0;
+                            for (const double value : consistency)
+                                if (std::isfinite(value))
+                                    maximumConsistency =
+                                        std::max(maximumConsistency, value);
+                            const UnifiedLap* primary = store.primaryUnified();
+                            const bool consistencyReady =
+                                primary &&
+                                consistency.size() == primary->size() &&
+                                maximumConsistency > 0.05 &&
+                                maximumConsistency <= 1.0;
+                            const QVariantMap benchmark =
+                                confidenceTrace
+                                    ? confidenceTrace->benchmarkGeometry(60)
+                                    : QVariantMap();
+                            const double averageMs =
+                                benchmark.value("averageMs").toDouble();
+                            confidenceReady =
+                                root && confidenceTrace &&
+                                root->property(
+                                        "confidenceButtonAutotestRe"
+                                        "ady")
+                                    .toBool() &&
+                                root->property(
+                                        "confidencePressAutotestRea"
+                                        "dy")
+                                    .toBool() &&
+                                store.traceConfidenceMode() &&
+                                !store.traceConfidenceLoading() &&
+                                store.traceConfidenceLapCount() >= 2 &&
+                                speedBand && speedBand->valid() &&
+                                consistencyReady &&
+                                highlightedFilmstripLaps ==
+                                    store.traceConfidenceLapCount() &&
+                                fixedEdgeLaps >= 2 && fixedEdgeLapWidths &&
+                                averageMs < 8.33;
+                            qWarning()
+                                << "AUTOTEST confidence overlay:"
+                                << confidenceReady << "laps"
+                                << store.traceConfidenceLapCount()
+                                << "filmstrip highlighted"
+                                << highlightedFilmstripLaps << "fixed edge laps"
+                                << fixedEdgeLaps << "max consistency"
+                                << maximumConsistency << "average_ms"
+                                << averageMs << "quads"
+                                << benchmark.value("quads").toInt();
+                        }
+                        const QFileInfo requested(shotPath);
+                        for (QQuickWindow* window : windows) {
+                            QString output = shotPath;
+                            if (autotestWindows) {
+                                QString suffix = requested.suffix();
+                                if (!suffix.isEmpty()) suffix.prepend('.');
+                                output = requested.path() + "/" +
+                                         requested.completeBaseName() + "_" +
+                                         (window->objectName().isEmpty()
+                                              ? QStringLiteral("window")
+                                              : window->objectName()) +
+                                         suffix;
+                            }
+                            const QImage image = window->grabWindow();
+                            if (image.save(output))
+                                qWarning() << "AUTOTEST"
+                                              " saved:"
+                                           << output << image.size();
+                            else
+                                qWarning() << "AUTOTEST"
+                                              " save "
+                                              "failed:"
+                                           << output;
+                        }
+                        if (autotestConfidence && confidenceTrace) {
+                            QKeyEvent release(QEvent::KeyRelease,
+                                              Qt::Key_Period, Qt::NoModifier);
+                            QCoreApplication::sendEvent(confidenceTrace,
+                                                        &release);
+                            QCoreApplication::processEvents();
+                            const bool releaseRestoredLatch =
+                                store.traceConfidenceMode();
+                            auto* button =
+                                engine.rootObjects()
+                                    .first()
+                                    ->findChild<QQuickItem*>(
+                                        QStringLiteral("confidenceButton"));
+                            if (button) {
+                                const QPointF center(button->width() * 0.5,
+                                                     button->height() * 0.5);
+                                QMouseEvent press(
+                                    QEvent::MouseButtonPress, center, center,
+                                    center, Qt::LeftButton, Qt::LeftButton,
+                                    Qt::NoModifier);
+                                QCoreApplication::sendEvent(button, &press);
+                                QMouseEvent buttonRelease(
+                                    QEvent::MouseButtonRelease, center, center,
+                                    center, Qt::LeftButton, Qt::NoButton,
+                                    Qt::NoModifier);
+                                QCoreApplication::sendEvent(button,
+                                                            &buttonRelease);
+                                QCoreApplication::processEvents();
+                            }
+                            const bool buttonDisabled =
+                                button &&
+                                !button->property("checked").toBool() &&
+                                !store.traceConfidenceMode();
+                            confidenceReady = confidenceReady &&
+                                              releaseRestoredLatch &&
+                                              buttonDisabled;
+                            qWarning() << "AUTOTEST confidence key "
+                                          "release preserves button:"
+                                       << releaseRestoredLatch
+                                       << "button off:" << buttonDisabled;
+                        }
+                        videoReady = videoReady && renameReady &&
+                                     cornerMutationReady && cornerFocusReady &&
+                                     cornerConsistencyReady &&
+                                     confidenceReady && zoomReady &&
+                                     dualVideoReady && *videoShortcutReady;
+                        const int exitCode =
+                            videoReady                                     ? 0
+                            : !cornerMutationReady                         ? 3
+                            : !cornerFocusReady || !cornerConsistencyReady ? 4
+                            : !confidenceReady                             ? 5
+                                                                           : 2;
+                        qApp->exit(exitCode);
+                    };
+                    if (startupVideoPath.isEmpty() || autotestStandaloneVideo) {
+                        QTimer::singleShot(finalDelay, &engine,
+                                           finalAssertions);
+                    } else {
+                        auto* loadedTimer = new QTimer(&engine);
+                        loadedTimer->setInterval(50);
+                        auto* waited = new int(0);
+                        QObject::connect(
+                            loadedTimer, &QTimer::timeout, &engine,
+                            [loadedTimer, waited, &engine, finalDelay,
+                             finalAssertions]() {
+                                *waited += 50;
+                                bool loaded = false;
                                 for (QObject* root : engine.rootObjects()) {
                                     auto* video =
                                         root->findChild<MpvVideoItem*>(
-                                            QStringLiteral("videoPl"
-                                                           "ayer"));
-                                    if (!video || !video->ready() ||
-                                        !video->loaded() ||
-                                        video->duration() <= 0.0)
-                                        continue;
-                                    videoReady = std::abs(video->volume() -
-                                                          75.0) <= 0.01;
-                                    if (!store.primaryVideoSource().isEmpty()) {
-                                        const double target =
-                                            store.primaryVideoTime();
-                                        const double error = std::abs(
-                                            video->position() - target);
-                                        qWarning() << "AUTO"
-                                                      "TEST"
-                                                      " vid"
-                                                      "eo "
-                                                      "sync"
-                                                      ":"
-                                                   << video->position()
-                                                   << "targ"
-                                                      "et"
-                                                   << target
-                                                   << "erro"
-                                                      "r"
-                                                   << error;
-                                        videoReady = videoReady && error <= 0.1;
-                                        const omatrack::UnifiedLap* lap =
-                                            store.primaryUnified();
-                                        if (autotestBrakeSync) {
-                                            // Scan the brake channel
-                                            // for the peak pressure
-                                            // sample so the check
-                                            // pauses on real heavy
-                                            // braking, not whatever
-                                            // cursor position the
-                                            // video happened to land
-                                            // on.
-                                            size_t peakSample = 0;
-                                            double peakBrake = 0.0;
-                                            if (lap && !lap->brake.empty()) {
-                                                for (size_t i = 0;
-                                                     i < lap->brake.size();
-                                                     ++i) {
-                                                    if (lap->brake[i] >
-                                                        peakBrake) {
-                                                        peakBrake =
-                                                            lap->brake[i];
-                                                        peakSample = i;
-                                                    }
-                                                }
-                                                // Seek cursor to
-                                                // the peak brake
-                                                // sample. Guard
-                                                // against size()==1
-                                                // to avoid 0/0 NaN.
-                                                const double frac =
-                                                    lap->brake.size() > 1
-                                                        ? double(peakSample) /
-                                                              double(
-                                                                  lap->brake
-                                                                      .size() -
-                                                                  1)
-                                                        : 0.0;
-                                                store.setCursorFrac(frac);
-                                            }
-                                            const size_t sample =
-                                                lap && !lap->brake.empty()
-                                                    ? std::min(
-                                                          size_t(std::llround(
-                                                              store
-                                                                  .cursorFrac() *
-                                                              double(
-                                                                  lap->brake
-                                                                      .size() -
-                                                                  1))),
-                                                          lap->brake.size() - 1)
-                                                    : 0;
-                                            const bool brakeReady =
-                                                lap && !lap->brake.empty() &&
-                                                video->paused() &&
-                                                lap->brake[sample] >= 10.0;
-                                            qWarning()
-                                                << "AUTOTEST brake "
-                                                   "sync:"
-                                                << brakeReady << "lap time"
-                                                << (lap && !lap->time.empty()
-                                                        ? lap->time[sample]
-                                                        : -1.0)
-                                                << "peak brake" << peakBrake
-                                                << "at sample" << peakSample;
-                                            videoReady =
-                                                videoReady && brakeReady;
-                                        } else {
-                                            const double baseline =
-                                                autotestDualVideo
-                                                    ? root->property(
-                                                              "dualCurs"
-                                                              "or"
-                                                              "Baselin"
-                                                              "e")
-                                                          .toDouble()
-                                                    : 0.5;
-                                            const double playbackStart =
-                                                lap && !lap->time.empty()
-                                                    ? baseline +
-                                                          (autotestDualVideo
-                                                               ? 2.0
-                                                               : 1.0) /
-                                                              lap->time.back()
-                                                    : 1.0;
-                                            videoReady =
-                                                videoReady &&
-                                                (autotestVideoHud ||
-                                                 (!video->paused() &&
-                                                  store.cursorFrac() >
-                                                      playbackStart + 0.002));
-                                        }
-                                    }
-                                    qWarning() << "AUTOTEST"
-                                                  " video "
-                                                  "volume:"
-                                               << video->volume();
-                                    break;
+                                            QStringLiteral("videoPlayer"));
+                                    loaded = video && video->loaded();
+                                    if (loaded) break;
                                 }
-                                if (!videoReady)
-                                    qWarning() << "AUTOTEST"
-                                                  " video "
-                                                  "failed "
-                                                  "to "
-                                                  "load or "
-                                                  "sync";
-                            }
-                            if (autotestVideoHud) {
-                                QObject* root =
-                                    engine.rootObjects().isEmpty()
-                                        ? nullptr
-                                        : engine.rootObjects().first();
-                                auto* overlay =
-                                    root ? root->findChild<QQuickItem*>(
-                                               QStringLiteral(
-                                                   "videoTelemetryOverl"
-                                                   "ay"))
-                                         : nullptr;
-                                QQuickItem* parent =
-                                    overlay ? overlay->parentItem() : nullptr;
-                                const double unscaledWidth =
-                                    parent
-                                        ? std::min(
-                                              {parent->width() - 16.0, 1000.0,
-                                               std::max(520.0, parent->width() *
-                                                                   0.72)})
-                                        : 0.0;
-                                const double expectedWidth =
-                                    std::max(0.0, unscaledWidth * 0.65);
-                                const double expectedHeight =
-                                    expectedWidth * 0.21;
-                                const double expectedX =
-                                    parent ? (parent->width() - expectedWidth) *
-                                                 0.5
-                                           : 0.0;
-                                const double expectedY =
-                                    parent ? std::max(
-                                                 0.0,
-                                                 std::min(
-                                                     parent->height() -
-                                                         expectedHeight,
-                                                     parent->height() * 0.9 -
-                                                         expectedHeight * 0.5))
-                                           : 0.0;
-                                const bool hudReady =
-                                    overlay && parent && overlay->isVisible() &&
-                                    std::abs(overlay->width() -
-                                             expectedWidth) <= 1.0 &&
-                                    std::abs(overlay->height() -
-                                             expectedHeight) <= 1.0 &&
-                                    std::abs(overlay->x() - expectedX) <= 1.0 &&
-                                    std::abs(overlay->y() - expectedY) <= 1.0;
-                                qWarning()
-                                    << "AUTOTEST video HUD layout:" << hudReady
-                                    << "size"
-                                    << QSizeF(overlay ? overlay->width() : 0.0,
-                                              overlay ? overlay->height() : 0.0)
-                                    << "position"
-                                    << QPointF(overlay ? overlay->x() : 0.0,
-                                               overlay ? overlay->y() : 0.0);
-                                videoReady = videoReady && hudReady;
-                            }
-                            if (windows.isEmpty())
-                                qWarning() << "AUTOTEST "
-                                              "found no "
-                                              "QQuickWindo"
-                                              "w";
-
-                            bool renameReady = true;
-                            if (autotestRename) {
-                                QObject* root =
-                                    engine.rootObjects().isEmpty()
-                                        ? nullptr
-                                        : engine.rootObjects().first();
-                                renameReady = root &&
-                                              root->findChild<QObject*>(
-                                                  QStringLiteral("headerD"
-                                                                 "riverEd"
-                                                                 "it")) &&
-                                              store.driverDisplayName(
-                                                  store.primarySessionKey()) ==
-                                                  QStringLiteral(
-                                                      "Autotes"
-                                                      "t "
-                                                      "Drive"
-                                                      "r");
-                                qWarning() << "AUTOTEST "
-                                              "driver "
-                                              "rename:"
-                                           << renameReady;
-                            }
-                            qWarning() << "AUTOTEST gps "
-                                          "available:"
-                                       << store.hasGpsData();
-                            bool dualVideoReady = true;
-                            if (autotestDualVideo) {
-                                QObject* root =
-                                    engine.rootObjects().isEmpty()
-                                        ? nullptr
-                                        : engine.rootObjects().first();
-                                auto* primary =
-                                    root ? root->findChild<MpvVideoItem*>(
-                                               QStringLiteral("v"
-                                                              "i"
-                                                              "d"
-                                                              "e"
-                                                              "o"
-                                                              "P"
-                                                              "l"
-                                                              "a"
-                                                              "y"
-                                                              "e"
-                                                              "r"))
-                                         : nullptr;
-                                auto* reference =
-                                    root ? root->findChild<MpvVideoItem*>(
-                                               QStringLiteral("v"
-                                                              "i"
-                                                              "d"
-                                                              "e"
-                                                              "o"
-                                                              "P"
-                                                              "l"
-                                                              "a"
-                                                              "y"
-                                                              "e"
-                                                              "r"
-                                                              "R"
-                                                              "e"
-                                                              "f"
-                                                              "e"
-                                                              "r"
-                                                              "e"
-                                                              "n"
-                                                              "c"
-                                                              "e"))
-                                         : nullptr;
-                                const double target = store.compareVideoTime();
-                                const double error =
-                                    reference ? std::abs(reference->position() -
-                                                         target)
-                                              : -1.0;
-                                auto* controls =
-                                    root ? root->findChild<QQuickItem*>(
-                                               QStringLiteral("v"
-                                                              "i"
-                                                              "d"
-                                                              "e"
-                                                              "o"
-                                                              "C"
-                                                              "o"
-                                                              "n"
-                                                              "t"
-                                                              "r"
-                                                              "o"
-                                                              "l"
-                                                              "s"))
-                                         : nullptr;
-                                const bool fullscreenRestored =
-                                    root && !root->property(
-                                                     "vi"
-                                                     "de"
-                                                     "oF"
-                                                     "ul"
-                                                     "ls"
-                                                     "cr"
-                                                     "ee"
-                                                     "n")
-                                                 .toBool();
-                                const bool chromeReady =
-                                    controls &&
-                                    controls->findChild<QQuickItem*>(
-                                        QStringLiteral("videoPl"
-                                                       "ayPause"
-                                                       "Butto"
-                                                       "n")) &&
-                                    root->findChild<QQuickItem*>(
-                                        QStringLiteral("videoMu"
-                                                       "teButto"
-                                                       "n")) &&
-                                    controls->findChild<QQuickItem*>(
-                                        QStringLiteral("videoFu"
-                                                       "llscree"
-                                                       "nButto"
-                                                       "n"));
-                                const int seekBaseline = root ? root->property(
-                                                                        "d"
-                                                                        "u"
-                                                                        "a"
-                                                                        "l"
-                                                                        "R"
-                                                                        "e"
-                                                                        "f"
-                                                                        "e"
-                                                                        "r"
-                                                                        "e"
-                                                                        "n"
-                                                                        "c"
-                                                                        "e"
-                                                                        "S"
-                                                                        "e"
-                                                                        "e"
-                                                                        "k"
-                                                                        "B"
-                                                                        "a"
-                                                                        "s"
-                                                                        "e"
-                                                                        "l"
-                                                                        "i"
-                                                                        "n"
-                                                                        "e")
-                                                                    .toInt()
-                                                              : -1;
-                                const bool continuousPlayback =
-                                    reference && seekBaseline >= 0 &&
-                                    reference->exactSeekCount() == seekBaseline;
-                                const bool pauseAlignmentReady =
-                                    root &&
-                                    root->property("dualPauseAlignmentReady")
-                                        .toBool();
-                                dualVideoReady =
-                                    root &&
-                                    root->property(
-                                            "dualVid"
-                                            "eo")
-                                        .toBool() &&
-                                    primary && primary->ready() &&
-                                    primary->loaded() &&
-                                    primary->duration() > 0.0 && reference &&
-                                    reference->ready() && reference->loaded() &&
-                                    reference->duration() > 0.0 &&
-                                    primary->source() != reference->source() &&
-                                    reference->muted() && !primary->paused() &&
-                                    !reference->paused() && error <= 0.15 &&
-                                    pauseAlignmentReady && continuousPlayback &&
-                                    !store.comparisonAlignmentBasis()
-                                         .isEmpty() &&
-                                    fullscreenRestored && chromeReady &&
-                                    sequentialVideoReady();
-                                qWarning()
-                                    << "AUTOTEST "
-                                       "dual video:"
-                                    << dualVideoReady << "primary"
-                                    << (primary ? primary->source().fileName()
-                                                : QString())
-                                    << (primary ? primary->position() : -1.0)
-                                    << "reference"
-                                    << (reference
-                                            ? reference->source().fileName()
-                                            : QString())
-                                    << (reference ? reference->position()
-                                                  : -1.0)
-                                    << "target" << target << "error" << error
-                                    << "loaded"
-                                    << (primary && primary->loaded())
-                                    << (reference && reference->loaded())
-                                    << "paused"
-                                    << (primary ? primary->paused() : false)
-                                    << (reference ? reference->paused() : false)
-                                    << "store"
-                                    << store.primaryVideoSource().fileName()
-                                    << store.compareVideoSource().fileName();
-                                qWarning()
-                                    << "AUTOTEST "
-                                       "dual sync "
-                                       "model:"
-                                    << store.comparisonAlignmentBasis()
-                                    << "gps anchors"
-                                    << store.comparisonGpsAnchors() << "rate"
-                                    << (reference ? reference->playbackRate()
-                                                  : -1.0)
-                                    << "seeks "
-                                       "during "
-                                       "playback"
-                                    << (reference && seekBaseline >= 0
-                                            ? reference->exactSeekCount() -
-                                                  seekBaseline
-                                            : -1);
-                            }
-                            bool cornerMutationReady = true;
-                            if (autotestCornerEdit) {
-                                QObject* root =
-                                    engine.rootObjects().isEmpty()
-                                        ? nullptr
-                                        : engine.rootObjects().first();
-                                cornerMutationReady =
-                                    root && root->property(
-                                                    "cornerEditAutotest"
-                                                    "Ready")
-                                                .toBool();
-                                qWarning() << "AUTOTEST corner mutations:"
-                                           << cornerMutationReady;
-                            }
-                            const bool cornerFocusReady =
-                                !autotestCorner ||
-                                (!engine.rootObjects().isEmpty() &&
-                                 engine.rootObjects()
-                                     .first()
-                                     ->property("cornerFocusAutotestRe"
-                                                "ady")
-                                     .toBool());
-                            const CornerFocusSummary cornerSummary =
-                                autotestCorner ? store.cornerFocusSummary()
-                                               : CornerFocusSummary();
-                            const bool cornerConsistencyReady =
-                                !autotestCorner ||
-                                (!cornerSummary.consistencyLoading &&
-                                 cornerSummary.consistencyLapCount >= 2 &&
-                                 cornerSummary.consistencyValidLapCount >= 2 &&
-                                 cornerSummary.brakeConsistencyAvailable);
-                            if (autotestCorner)
-                                qWarning()
-                                    << "AUTOTEST corner consistency:"
-                                    << cornerConsistencyReady << "laps"
-                                    << cornerSummary.consistencyLapCount
-                                    << "braking"
-                                    << cornerSummary.consistencyBrakeLapCount
-                                    << "sigma" << cornerSummary.brakePointStdDev
-                                    << "range" << cornerSummary.brakePointRange;
-                            const bool zoomReady =
-                                !autotestZoom ||
-                                (!engine.rootObjects().isEmpty() &&
-                                 engine.rootObjects()
-                                     .first()
-                                     ->property("wheelZoomA"
-                                                "utotestRea"
-                                                "dy")
-                                     .toBool());
-                            bool confidenceReady = true;
-                            TraceView* confidenceTrace = nullptr;
-                            if (autotestConfidence) {
-                                QObject* root =
-                                    engine.rootObjects().isEmpty()
-                                        ? nullptr
-                                        : engine.rootObjects().first();
-                                confidenceTrace =
-                                    root ? root->findChild<TraceView*>(
-                                               QStringLiteral("traceView"))
-                                         : nullptr;
-                                int highlightedFilmstripLaps = 0;
-                                int fixedEdgeLaps = 0;
-                                bool fixedEdgeLapWidths = true;
-                                auto* window =
-                                    qobject_cast<QQuickWindow*>(root);
-                                QQuickItem* visualRoot =
-                                    window ? window->contentItem() : nullptr;
-                                const QVector<LapRow> activeLaps =
-                                    store.lapRowsForSession(
-                                        store.primarySessionKey());
-                                for (const LapRow& lap : activeLaps) {
-                                    QQuickItem* item = autotestFindItem(
-                                        visualRoot,
-                                        QStringLiteral("activeFilmstripLap-%1")
-                                            .arg(lap.lapId));
-                                    if (!item) continue;
-                                    if (item->property("confidenceLap")
-                                            .toBool())
-                                        ++highlightedFilmstripLaps;
-                                    if (item->property("fixedWidthLap")
-                                            .toBool()) {
-                                        ++fixedEdgeLaps;
-                                        fixedEdgeLapWidths &=
-                                            std::abs(item->width() - 30.0) <
-                                            0.1;
-                                    }
-                                }
-                                const TraceConfidenceBand* speedBand =
-                                    store.traceConfidenceBand(
-                                        QStringLiteral("speed"));
-                                const std::vector<double>& consistency =
-                                    store.traceConsistency();
-                                double maximumConsistency = 0.0;
-                                for (const double value : consistency)
-                                    if (std::isfinite(value))
-                                        maximumConsistency =
-                                            std::max(maximumConsistency, value);
-                                const UnifiedLap* primary =
-                                    store.primaryUnified();
-                                const bool consistencyReady =
-                                    primary &&
-                                    consistency.size() == primary->size() &&
-                                    maximumConsistency > 0.05 &&
-                                    maximumConsistency <= 1.0;
-                                const QVariantMap benchmark =
-                                    confidenceTrace
-                                        ? confidenceTrace->benchmarkGeometry(60)
-                                        : QVariantMap();
-                                const double averageMs =
-                                    benchmark.value("averageMs").toDouble();
-                                confidenceReady =
-                                    root && confidenceTrace &&
-                                    root->property(
-                                            "confidenceButtonAutotestRe"
-                                            "ady")
-                                        .toBool() &&
-                                    root->property(
-                                            "confidencePressAutotestRea"
-                                            "dy")
-                                        .toBool() &&
-                                    store.traceConfidenceMode() &&
-                                    !store.traceConfidenceLoading() &&
-                                    store.traceConfidenceLapCount() >= 2 &&
-                                    speedBand && speedBand->valid() &&
-                                    consistencyReady &&
-                                    highlightedFilmstripLaps ==
-                                        store.traceConfidenceLapCount() &&
-                                    fixedEdgeLaps >= 2 && fixedEdgeLapWidths &&
-                                    averageMs < 8.33;
-                                qWarning()
-                                    << "AUTOTEST confidence overlay:"
-                                    << confidenceReady << "laps"
-                                    << store.traceConfidenceLapCount()
-                                    << "filmstrip highlighted"
-                                    << highlightedFilmstripLaps
-                                    << "fixed edge laps" << fixedEdgeLaps
-                                    << "max consistency" << maximumConsistency
-                                    << "average_ms" << averageMs << "quads"
-                                    << benchmark.value("quads").toInt();
-                            }
-                            const QFileInfo requested(shotPath);
-                            for (QQuickWindow* window : windows) {
-                                QString output = shotPath;
-                                if (autotestWindows) {
-                                    QString suffix = requested.suffix();
-                                    if (!suffix.isEmpty()) suffix.prepend('.');
-                                    output = requested.path() + "/" +
-                                             requested.completeBaseName() +
-                                             "_" +
-                                             (window->objectName().isEmpty()
-                                                  ? QStringLiteral("window")
-                                                  : window->objectName()) +
-                                             suffix;
-                                }
-                                const QImage image = window->grabWindow();
-                                if (image.save(output))
-                                    qWarning() << "AUTOTEST"
-                                                  " saved:"
-                                               << output << image.size();
-                                else
-                                    qWarning() << "AUTOTEST"
-                                                  " save "
-                                                  "failed:"
-                                               << output;
-                            }
-                            if (autotestConfidence && confidenceTrace) {
-                                QKeyEvent release(QEvent::KeyRelease,
-                                                  Qt::Key_Period,
-                                                  Qt::NoModifier);
-                                QCoreApplication::sendEvent(confidenceTrace,
-                                                            &release);
-                                QCoreApplication::processEvents();
-                                const bool releaseRestoredLatch =
-                                    store.traceConfidenceMode();
-                                auto* button =
-                                    engine.rootObjects()
-                                        .first()
-                                        ->findChild<QQuickItem*>(
-                                            QStringLiteral("confidenceButton"));
-                                if (button) {
-                                    const QPointF center(
-                                        button->width() * 0.5,
-                                        button->height() * 0.5);
-                                    QMouseEvent press(
-                                        QEvent::MouseButtonPress, center,
-                                        center, center, Qt::LeftButton,
-                                        Qt::LeftButton, Qt::NoModifier);
-                                    QCoreApplication::sendEvent(button, &press);
-                                    QMouseEvent buttonRelease(
-                                        QEvent::MouseButtonRelease, center,
-                                        center, center, Qt::LeftButton,
-                                        Qt::NoButton, Qt::NoModifier);
-                                    QCoreApplication::sendEvent(button,
-                                                                &buttonRelease);
-                                    QCoreApplication::processEvents();
-                                }
-                                const bool buttonDisabled =
-                                    button &&
-                                    !button->property("checked").toBool() &&
-                                    !store.traceConfidenceMode();
-                                confidenceReady = confidenceReady &&
-                                                  releaseRestoredLatch &&
-                                                  buttonDisabled;
-                                qWarning() << "AUTOTEST confidence key "
-                                              "release preserves button:"
-                                           << releaseRestoredLatch
-                                           << "button off:" << buttonDisabled;
-                            }
-                            videoReady = videoReady && renameReady &&
-                                         cornerMutationReady &&
-                                         cornerFocusReady &&
-                                         cornerConsistencyReady &&
-                                         confidenceReady && zoomReady &&
-                                         dualVideoReady && *videoShortcutReady;
-                            const int exitCode =
-                                videoReady             ? 0
-                                : !cornerMutationReady ? 3
-                                : !cornerFocusReady || !cornerConsistencyReady
-                                    ? 4
-                                : !confidenceReady ? 5
-                                                   : 2;
-                            qApp->exit(exitCode);
-                        });
+                                if (!loaded && *waited < 20000) return;
+                                if (!loaded)
+                                    qWarning() << "AUTOTEST video never loaded";
+                                loadedTimer->stop();
+                                loadedTimer->deleteLater();
+                                delete waited;
+                                QTimer::singleShot(finalDelay, &engine,
+                                                   finalAssertions);
+                            });
+                        loadedTimer->start();
+                    }
                     return;
                 }
             }

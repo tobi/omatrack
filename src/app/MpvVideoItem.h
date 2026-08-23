@@ -10,6 +10,7 @@
 #include <QUrl>
 
 #include <memory>
+#include <optional>
 
 struct MpvSharedState;
 class MpvVideoRenderer;
@@ -43,6 +44,14 @@ public:
     bool muted() const { return muted_; }
     bool seeking() const { return seeking_; }
     double position() const { return position_; }
+    /// Where the playhead is, or is about to be: the target of an exact seek
+    /// mpv has not finished yet, else the last reported position. Relative
+    /// skips must start from this — an exact seek into a multi-gigabyte
+    /// recording takes long enough that `position()` is stale for a second
+    /// keypress, and skipping from it lands both presses on the same frame.
+    double targetPosition() const {
+        return pendingSeekTarget_.value_or(position_);
+    }
     double duration() const { return duration_; }
     double volume() const { return volume_; }
     double playbackRate() const { return playbackRate_; }
@@ -112,6 +121,11 @@ private:
     double volume_ = 75.0;
     double playbackRate_ = 1.0;
     int exactSeekCount_ = 0;
+    /// Set by seek(), cleared by the PLAYBACK_RESTART that follows the
+    /// MPV_EVENT_SEEK mpv emits for it. A restart from an earlier seek that
+    /// arrives in between must not clear a newer target, hence the flag.
+    std::optional<double> pendingSeekTarget_;
+    bool pendingSeekAcknowledged_ = false;
     /// Where a reopen puts the playhead back, and how many reopens have been
     /// tried since a file last loaded. Without the count, a recording that is
     /// simply broken would be retried for as long as the window is open.

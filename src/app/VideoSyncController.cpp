@@ -330,7 +330,10 @@ void VideoSyncController::togglePaused() {
 void VideoSyncController::seekRelative(double seconds) {
     if (!primaryPlayer_ || !primaryPlayer_->loaded()) return;
     if (lapAdvanceCount_ > 0) cancelLapAdvance();
-    const double target = std::max(0.0, primaryPlayer_->position() + seconds);
+    // From the seek in flight, not the last reported frame: a second tap
+    // before a multi-gigabyte exact seek lands must still add up.
+    const double target =
+        std::max(0.0, primaryPlayer_->targetPosition() + seconds);
     primaryPlayer_->seek(target);
     if (telemetryVideoActive_ && store_) store_->setCursorFromVideoTime(target);
     if (dualVideo()) syncReferenceVideo(true);

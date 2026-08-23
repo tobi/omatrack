@@ -44,6 +44,10 @@ Interactive rendering targets 60–120 fps. A frame is 16.67 ms at 60 Hz and 8.3
   block the GUI thread on I/O, and do not wait for it with a nested
   `QEventLoop`.
 - Keep static traces separate from the lightweight cursor/selection overlay.
+  An overlay that caches lap pointers from the static build must compare them
+  against the store every frame: `updatePaintNode()` runs on the render
+  thread, and a `UnifiedLap` the GUI thread replaced in between is freed
+  memory by then.
 - Cache normalized laps, raw-channel resamples, delta arrays, geometry, and overview rasters; invalidate them only when their inputs change.
 - Bound draw work to the viewport and pixel budget. Do not submit every source sample when fewer points can produce the same image.
 - Avoid per-frame heap allocation and avoid copies of full telemetry arrays.
@@ -748,10 +752,13 @@ scripts/autotest.sh ./build-acceptance/omatrack --mute /path/to/copied-telemetry
 ```
 
 `scripts/autotest.sh` keeps the run off the developer's screen: under
-Hyprland it creates a headless output, routes every `omatrack-autotest`
-window (the Wayland app_id the harness announces) to a floating 1280×800
-window on a workspace bound to that output, and removes the output when the
-command exits. The window still has a real GL context, so traces and video
+Hyprland it creates a headless output whose default workspace is bound to it
+(a window on an *inactive* workspace gets no frame callbacks, so the scene
+graph never renders it and the libmpv FBO never comes up), floats every
+`omatrack-autotest` window (the Wayland app_id the harness announces) there
+at 1280×800, and removes the output when the command exits. Write
+screenshots under `build-acceptance/screenshots/` so they stay with the
+build that produced them and out of `/tmp`. The window still has a real GL context, so traces and video
 render and the screenshot is the full frame; nothing is written to
 `~/.config/hypr`. Without Hyprland it runs the command as given. `--mute`
 silences playback for one process without touching `video.muted`.

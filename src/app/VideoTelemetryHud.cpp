@@ -107,7 +107,11 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
         return root;
     }
 
-    if (snapshotDirty_) {
+    // Signals mark the snapshot dirty, but a lap object can also be replaced
+    // underneath an unchanged selection (re-adopting a loaded lap). The
+    // pointer compare catches that before a freed lap is read.
+    if (snapshotDirty_ || snapshot_.primary != store_->primaryUnified() ||
+        snapshot_.compare != store_->compareUnified()) {
         snapshot_ = store_->traceSnapshot();
         snapshotDirty_ = false;
         brakeMaxDirty_ = true;
