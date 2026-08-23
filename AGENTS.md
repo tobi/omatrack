@@ -51,7 +51,7 @@ Interactive rendering targets 60–120 fps. A frame is 16.67 ms at 60 Hz and 8.3
 
 ### Native Linux and Omarchy are deliberate
 
-Use Qt Quick Material for application chrome and C++/Qt rendering for hot paths. Do not introduce a web stack or a second UI toolkit. Omarchy is the first-class desktop integration: follow its active color theme when available, while retaining the current `SystemPalette` fallback so the app still starts outside Omarchy. Cross-platform behavior is welcome when it does not weaken the Linux experience or complicate the hot path.
+Use Qt Quick Material for application chrome and C++/Qt rendering for hot paths. Do not introduce a web stack or a second UI toolkit. Omarchy is the first-class desktop integration: follow its active color theme when available and fall back to `Style`'s complete built-in dark palette everywhere else — never the platform `SystemPalette`, whose single highlight color cannot serve as both `accent` (text, marks) and `selection` (row background) and whose light Windows values clash with the dark video chrome. Cross-platform behavior is welcome when it does not weaken the Linux experience or complicate the hot path.
 
 ### Preserve source truth
 
