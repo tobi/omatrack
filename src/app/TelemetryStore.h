@@ -805,6 +805,10 @@ public:
     QAbstractItemModel* libraryModel() const { return libraryModel_.get(); }
     bool videoMuted() const;
     void setVideoMuted(bool muted);
+    /// `--mute`: silence playback for this process without touching
+    /// `video.muted` in omatrack.yml. The first click on the speaker button
+    /// ends the override and persists as usual.
+    void overrideVideoMuted(bool muted);
     QStringList sessionDirectoriesList() const { return sessionDirectories(); }
 
 signals:
@@ -995,6 +999,7 @@ private:
     double viewEnd_ = 1.0;
     bool editingCorners_ = false;
     bool ready_ = false;
+    std::optional<bool> videoMutedOverride_;
     bool loading_ = false;
     bool rescanPending_ = false;
     bool primaryLapLoading_ = false;

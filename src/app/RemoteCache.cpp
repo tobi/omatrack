@@ -931,10 +931,9 @@ qint64 enforceCacheBudget(qint64 limitBytes, const QSet<QString>& keepPaths) {
     };
     QVector<Candidate> candidates;
     qint64 total = 0;
-    // The discovery caches and the shared normalized-telemetry cache share
-    // one budget and one LRU: a remote ETag and a local BLAKE3 digest both
-    // produce a `.telemetry` under .omatrack/c, and evicting them by the same
-    // mtime rule keeps the whole cache honest. The Track Atlas snapshot lives
+    // The discovery caches and the ETag-keyed normalized-telemetry mirror
+    // share one budget and one LRU, and evicting them by the same mtime rule
+    // keeps the whole cache honest. The Track Atlas snapshot lives
     // outside this — it is a single small file refreshed on a timer, not a
     // growing pile of laps, and evicting it would only force an immediate
     // re-fetch.

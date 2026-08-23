@@ -76,8 +76,8 @@ bool isMotecLayoutPath(const QString& path) {
                                             Qt::CaseInsensitive) == 0;
 }
 
-/// Motec layout files are not recordings. A sibling `.ld` is ingest-only and
-/// is converted to `.telemetry` before anything analyses it.
+/// Motec layout files are not recordings. A sibling `.ld` is the recording
+/// the parser opens instead.
 QString motecRecordingPath(const QString& ldxPath) {
     QString stem = ldxPath;
     stem.chop(3);
@@ -1597,9 +1597,23 @@ bool isRemoteConnection(const RemoteConnection& connection) {
            !cacheDirectory(connection).isEmpty();
 }
 
-bool ensureNativeCompanion(const QString& sourcePath, QString* nativePath,
-                           QString* error, const RemoteConnection* connection,
-                           const IoCancel& cancel = {}) {
+/// Remote recordings only: resolve the ETag-keyed normalized `.telemetry`
+/// for `sourcePath`, consulting this machine's cache, then the cache
+/// published beside the recordings on the server, and converting from the
+/// complete source only when both miss. Local files never come here — they
+/// are opened directly by the parser, which is cheaper than fingerprinting a
+/// multi-gigabyte onboard recording to look up a copy of it.
+///
+/// `lookupOnly` stops at the two cache lookups: the sidebar pass runs it for
+/// every listed recording right after a sync, so a video that nobody has
+/// converted yet must stay a plain row rather than trigger a 5–30 GB
+/// download. The explicit click on that row converts, writes the local
+/// mirror, and publishes to the server for the next machine.
+bool ensureRemoteNativeTelemetry(const QString& sourcePath,
+                                 const RemoteConnection& connection,
+                                 QString* nativePath, QString* error,
+                                 const IoCancel& cancel = {},
+                                 bool lookupOnly = false) {
     if (ioCancelled(cancel)) return false;
     const QString vendor = vendorSourcePath(sourcePath);
     if (vendor.isEmpty()) {
@@ -1609,26 +1623,10 @@ bool ensureNativeCompanion(const QString& sourcePath, QString* nativePath,
         return false;
     }
 
-    QString key;
-    QString inputPath = vendor;
-    QTemporaryFile remoteSource;
-    if (connection) {
-        key = cachedObjectEtag(*connection, vendor);
-        if (key.isEmpty()) {
-            if (error) *error = QStringLiteral("Remote file has no ETag.");
-            return false;
-        }
-    } else {
-        const auto digest = blake3File(vendor.toStdString());
-        if (!digest) {
-            if (error)
-                *error = QStringLiteral("Unable to fingerprint source file.");
-            return false;
-        }
-        key = QString::fromLatin1(
-            QByteArray(reinterpret_cast<const char*>(digest->data()),
-                       qsizetype(digest->size()))
-                .toHex());
+    const QString key = cachedObjectEtag(connection, vendor);
+    if (key.isEmpty()) {
+        if (error) *error = QStringLiteral("Remote file has no ETag.");
+        return false;
     }
 
     const QString cached = telemetryCachePath(key);
@@ -1646,53 +1644,58 @@ bool ensureNativeCompanion(const QString& sourcePath, QString* nativePath,
         return false;
     }
 
-    if (connection) {
-        // First consume a cache published by another machine. A miss is the
-        // only case that justifies reading the complete remote recording.
-        const QString remoteCache = telemetryCacheRelativeDirectory() +
-                                    QLatin1Char('/') + etagFileKey(key) +
-                                    QStringLiteral(".telemetry");
-        const QString fetchError =
-            fetchRemoteObject(*connection, remoteCache, cached, cancel);
-        if (!fetchError.isEmpty()) {
-            if (error) *error = fetchError;
-            return false;
-        }
-        if (QFileInfo(cached).isFile() && QFileInfo(cached).size() > 0) {
-            if (nativePath) *nativePath = cached;
-            qCInfo(lcIo).noquote()
-                << "telemetry cache hit remote" << etagFileKey(key);
-            return true;
-        }
+    // First consume a cache published by another machine. A miss is the
+    // only case that justifies reading the complete remote recording.
+    const QString remoteCache = telemetryCacheRelativeDirectory() +
+                                QLatin1Char('/') + etagFileKey(key) +
+                                QStringLiteral(".telemetry");
+    const QString fetchError =
+        fetchRemoteObject(connection, remoteCache, cached, cancel);
+    if (!fetchError.isEmpty()) {
+        if (error) *error = fetchError;
+        return false;
+    }
+    if (QFileInfo(cached).isFile() && QFileInfo(cached).size() > 0) {
+        if (nativePath) *nativePath = cached;
+        qCInfo(lcIo).noquote()
+            << "telemetry cache hit remote" << etagFileKey(key);
+        return true;
+    }
+    if (lookupOnly) {
+        if (error)
+            *error = QStringLiteral(
+                "This recording has not been converted yet; open it once.");
+        return false;
+    }
 
-        const QString relative =
-            QDir(cacheDirectory(*connection)).relativeFilePath(vendor);
-        if (relative.isEmpty() || relative.startsWith(QStringLiteral(".."))) {
-            if (error)
-                *error = QStringLiteral("Remote source is outside its cache.");
-            return false;
-        }
-        remoteSource.setFileTemplate(
-            QDir(QDir::tempPath())
-                .filePath(QStringLiteral("omatrack-source-XXXXXX.") +
-                          QFileInfo(vendor).suffix()));
-        if (!remoteSource.open()) {
-            if (error)
-                *error = QStringLiteral("Unable to create remote source temp.");
-            return false;
-        }
-        inputPath = remoteSource.fileName();
-        remoteSource.close();
-        const QString downloadError =
-            fetchRemoteObject(*connection, relative, inputPath, cancel);
-        if (!downloadError.isEmpty() || !QFileInfo(inputPath).isFile() ||
-            QFileInfo(inputPath).size() == 0) {
-            if (error)
-                *error = downloadError.isEmpty()
-                             ? QStringLiteral("Unable to load remote source.")
-                             : downloadError;
-            return false;
-        }
+    const QString relative =
+        QDir(cacheDirectory(connection)).relativeFilePath(vendor);
+    if (relative.isEmpty() || relative.startsWith(QStringLiteral(".."))) {
+        if (error)
+            *error = QStringLiteral("Remote source is outside its cache.");
+        return false;
+    }
+    QTemporaryFile remoteSource;
+    remoteSource.setFileTemplate(
+        QDir(QDir::tempPath())
+            .filePath(QStringLiteral("omatrack-source-XXXXXX.") +
+                      QFileInfo(vendor).suffix()));
+    if (!remoteSource.open()) {
+        if (error)
+            *error = QStringLiteral("Unable to create remote source temp.");
+        return false;
+    }
+    const QString inputPath = remoteSource.fileName();
+    remoteSource.close();
+    const QString downloadError =
+        fetchRemoteObject(connection, relative, inputPath, cancel);
+    if (!downloadError.isEmpty() || !QFileInfo(inputPath).isFile() ||
+        QFileInfo(inputPath).size() == 0) {
+        if (error)
+            *error = downloadError.isEmpty()
+                         ? QStringLiteral("Unable to load remote source.")
+                         : downloadError;
+        return false;
     }
 
     if (ioCancelled(cancel)) return false;
@@ -1742,18 +1745,13 @@ bool ensureNativeCompanion(const QString& sourcePath, QString* nativePath,
         return false;
     }
 
-    if (connection) {
-        QFile body(cached);
-        if (body.open(QIODevice::ReadOnly)) {
-            const QString remoteCache = telemetryCacheRelativeDirectory() +
-                                        QLatin1Char('/') + etagFileKey(key) +
-                                        QStringLiteral(".telemetry");
-            const QString publishError = publishRemoteObject(
-                *connection, remoteCache, body.readAll(), cancel);
-            if (!publishError.isEmpty())
-                qCWarning(lcIo).noquote()
-                    << "telemetry cache publish failed" << publishError;
-        }
+    QFile body(cached);
+    if (body.open(QIODevice::ReadOnly)) {
+        const QString publishError = publishRemoteObject(
+            connection, remoteCache, body.readAll(), cancel);
+        if (!publishError.isEmpty())
+            qCWarning(lcIo).noquote()
+                << "telemetry cache publish failed" << publishError;
     }
     if (nativePath) *nativePath = cached;
     qCInfo(lcIo).noquote() << "telemetry cache generated" << etagFileKey(key)
@@ -1761,22 +1759,43 @@ bool ensureNativeCompanion(const QString& sourcePath, QString* nativePath,
     return true;
 }
 
+/// The file the parser opens for a library entry: the vendor recording
+/// itself for local files, the ETag-keyed `.telemetry` for remote ones.
+/// Empty when there is nothing to parse (a Motec layout without its `.ld`,
+/// a remote miss that could not be converted).
+QString parserPathFor(const QString& path, const RemoteConnection* connection,
+                      QString* error = nullptr, const IoCancel& cancel = {},
+                      bool lookupOnly = false) {
+    const QString vendor = vendorSourcePath(path);
+    if (vendor.isEmpty()) {
+        if (error)
+            *error = QStringLiteral(
+                "This Motec layout file has no recording beside it.");
+        return {};
+    }
+    if (!connection) return vendor;
+    QString native;
+    if (!ensureRemoteNativeTelemetry(vendor, *connection, &native, error,
+                                     cancel, lookupOnly))
+        return {};
+    return native;
+}
+
 IndexedSession indexSession(const QString& path,
                             const RemoteConnection* connection = nullptr,
-                            const IoCancel& cancel = {}) {
+                            const IoCancel& cancel = {},
+                            bool sidebarPass = false) {
     if (ioCancelled(cancel)) return {};
-    QString parserPath = vendorSourcePath(path);
-    if (parserPath.isEmpty()) parserPath = path;
-
-    QString native;
-    if (!ensureNativeCompanion(parserPath, &native, nullptr, connection,
-                               cancel) ||
-        !isTelemetryFilePath(native)) {
+    // The sidebar never pulls a remote video to describe it; a remote `.pds`
+    // or `.ld` is kilobytes and converts on the spot.
+    const bool lookupOnly = sidebarPass && connection && isVideoPath(path);
+    const QString parserPath =
+        parserPathFor(path, connection, nullptr, cancel, lookupOnly);
+    if (parserPath.isEmpty()) {
         IndexedSession result;
         result.unsupportedVideo = isVideoPath(path);
         return result;
     }
-    parserPath = native;
 
     if (ioCancelled(cancel)) return {};
     auto handle =
@@ -2343,8 +2362,8 @@ std::shared_ptr<SidebarMetadataResult> loadSidebarMetadata(
     result->path = path;
     result->metadata =
         omatrack::track_metadata::readHierarchy(QFileInfo(path).absolutePath());
-    IndexedSession indexed =
-        indexSession(path, connection.id.isEmpty() ? nullptr : &connection);
+    IndexedSession indexed = indexSession(
+        path, connection.id.isEmpty() ? nullptr : &connection, {}, true);
     result->handle = std::move(indexed.handle);
     result->unsupportedVideo = indexed.unsupportedVideo;
     return result;
@@ -2851,7 +2870,14 @@ void TelemetryStore::queueFileOpen(const QString& filePath, FileOpenRole role,
                     result->lap->lapId, std::move(result->lap->source),
                     std::move(result->lap->unified), result->lap->driverId,
                     result->lap->forceDriverId, result->lap->videoIdentity);
-                if (added) emit sessionsChanged();
+                if (added) {
+                    // A remote video that the sidebar could only list as a
+                    // plain file now has laps; let its row catch up.
+                    sidebarMetadataLoaded_.insert(result->path);
+                    emit sessionsChanged();
+                    emit sidebarMetadataChanged(
+                        result->path, sidebarFileDetails(result->path));
+                }
                 int selectedLap = result->lap->lapId;
                 if (wantedLap >= 0 && wantedLap != selectedLap) {
                     for (const LapEntry& lap : session->laps()) {
@@ -5181,9 +5207,21 @@ void TelemetryStore::setCursorFrac(double v) {
 }
 
 void TelemetryStore::setVideoMuted(bool muted) {
-    if (muted == prefs_->videoMuted()) return;
-    prefs_->setVideoMuted(muted);
-    schedulePreferencesSave();
+    const bool was = videoMuted();
+    videoMutedOverride_.reset();
+    if (muted != prefs_->videoMuted()) {
+        prefs_->setVideoMuted(muted);
+        schedulePreferencesSave();
+    }
+    if (was != muted) emit videoMutedChanged();
+}
+
+void TelemetryStore::overrideVideoMuted(bool muted) {
+    if (videoMuted() == muted) {
+        videoMutedOverride_ = muted;
+        return;
+    }
+    videoMutedOverride_ = muted;
     emit videoMutedChanged();
 }
 QString TelemetryStore::effectiveComparisonSyncStrategy() const {
@@ -7598,7 +7636,9 @@ bool TelemetryStore::hasGlobalTime() const {
 
 bool TelemetryStore::trackAtlasReady() const { return !atlas_->isEmpty(); }
 QString TelemetryStore::trackAtlasStatus() const { return atlas_->status(); }
-bool TelemetryStore::videoMuted() const { return prefs_->videoMuted(); }
+bool TelemetryStore::videoMuted() const {
+    return videoMutedOverride_.value_or(prefs_->videoMuted());
+}
 QStringList TelemetryStore::recentFiles() const {
     return prefs_->recentFiles();
 }

@@ -4,7 +4,7 @@
 
 Omatrack is a native racing-telemetry workstation. Its primary target is Linux under Omarchy, built with Qt 6, Qt Quick, and Material controls. It should turn heterogeneous logger files into a coherent, driver-facing model of sessions, laps, channels, tracks, corners, and corner complexes.
 
-This is not a single-format file viewer or a generic chart demo. The product direction is a full telemetry system that can ingest every major race format through one analysis pipeline. The current parser bridge supports Pi/Cosworth `.pds`, MoTeC `.ld`, Racelogic `.vbo`, AiM `aimd` telemetry embedded in `.mp4`, native `.telemetry`, and Motorsport Telemetry JSONL (MTJ recordings and MTX sidecars). That is the starting set, not the intended limit. Vendor files are converted once to native `.telemetry` in the shared cache (`$XDG_CACHE_HOME/.omatrack/c/{generation}/{key}.telemetry`) and every later open, unify, and video-sync path reads that. Motec `.ldx` is not a session. MTX is an overlay, not a library session: drop or sibling-find a `.ext.jsonl` / `.mtx.jsonl`, overlap-join it onto the open host by integer nanoseconds, and show it as a collapsible folder of extra channels and spans. `.telemetry` is Omatrack's native recording: header first, O(1) catalog, lossless channel columns, laps, video links, and frame sync. Any problem that should be solved at load time or pre-computed belongs in that format — extend `telemetry-format` upstream, do not add a second sidecar schema in Qt.
+This is not a single-format file viewer or a generic chart demo. The product direction is a full telemetry system that can ingest every major race format through one analysis pipeline. The current parser bridge supports Pi/Cosworth `.pds`, MoTeC `.ld`, Racelogic `.vbo`, AiM `aimd` telemetry embedded in `.mp4`, native `.telemetry`, and Motorsport Telemetry JSONL (MTJ recordings and MTX sidecars). That is the starting set, not the intended limit. Local files are opened directly by the parser on every open — no conversion, no fingerprinting, nothing written anywhere. `.telemetry` is generated only for recordings on a connected server: keyed by the object's ETag under `.omatrack/c/{generation}/` both in the local cache and at the remote root, so one conversion of a multi-gigabyte onboard MP4 serves every machine. Motec `.ldx` is not a session. MTX is an overlay, not a library session: drop or sibling-find a `.ext.jsonl` / `.mtx.jsonl`, overlap-join it onto the open host by integer nanoseconds, and show it as a collapsible folder of extra channels and spans. `.telemetry` is Omatrack's native recording: header first, O(1) catalog, lossless channel columns, laps, video links, and frame sync. Any problem that should be solved at load time or pre-computed belongs in that format — extend `telemetry-format` upstream, do not add a second sidecar schema in Qt.
 
 ## Product goal
 
@@ -116,10 +116,10 @@ wins on load. Caches (Track Atlas snapshot) stay outside the file.
 - Run directory discovery and lap-summary parsing off the UI thread;
   expose `TelemetryStore::loading` so every session-library surface can retain
   its current data and show progress while a replacement snapshot is built.
-- First open of a vendor file writes native `.telemetry` into the shared
-  cache and every later open reads that file. There is no session-index JSON
-  cache: the `.telemetry` catalog is the index. Nothing is ever written
-  beside the source.
+- A local file is its own parser path. `openIndex()` reads only what the
+  sidebar needs, so there is no session-index cache and no conversion step;
+  nothing is ever written beside the source or derived from it on disk.
+  Only remote recordings get a `.telemetry` (below).
 - Dispatch formats through the Rust parser workspace.
 - Infer inexpensive metadata from filenames/folders before parsing samples.
 - Group the library as Track → Date → Session → Laps.
@@ -181,14 +181,19 @@ wins on load. Caches (Track Atlas snapshot) stay outside the file.
   a second telemetry cache. Before parsing a remote file, lookup uses its ETag
   in the local machine's
   `$XDG_CACHE_HOME/.omatrack/c/{generation}/{ETag}.telemetry`, then the
-  remote root's `.omatrack/c/{generation}/{ETag}.telemetry`. On a miss, the complete
-  source is loaded once, converted to native `.telemetry`, written locally,
-  and published create-only to the remote cache. A 412 means another client
-  won; use that object rather than overwrite it. Discovery remains usable
-  offline from its last stubs and ETag metadata.
-- Local recordings use the same shared cache layout, keyed by the full-file
-  BLAKE3 digest instead of ETag. The source stays immutable; generated
-  normalized telemetry lives only under `.omatrack/c/`.
+  remote root's `.omatrack/c/{generation}/{ETag}.telemetry`. The sidebar pass
+  that runs right after a sync stops there: a remote video nobody has
+  converted yet is listed as a plain file, not pulled. Clicking it loads the
+  complete source once, converts it to native `.telemetry`, writes the local
+  mirror, and publishes create-only to the remote cache so the next machine
+  finds it in its sidebar pass. (A remote `.pds`/`.ld` is kilobytes and
+  converts during the sidebar pass.) A 412 means another client won; use
+  that object rather than overwrite it. Discovery remains usable offline from
+  its last stubs and ETag metadata.
+- Local recordings are never converted or hashed. `.telemetry` files exist
+  only for remote objects, and only under `.omatrack/c/`; the ETag in the
+  name is the identity, BLAKE3 is used solely to verify a linked video
+  against a catalog that carries one.
 - `{generation}` is `omatrack::converterGeneration()`: the native format
   version and the pinned `motorsport-telemetry-rs` revision
   (`10-1b1e6c562cf1`), derived by the bridge's `build.rs` from its own
@@ -442,7 +447,7 @@ WebDAV / S3 / GCS server ------------> src/app/RemoteCache
                                            + WebDavBackend, S3Backend, SigV4
                                            remote discovery stubs + ETag
                                            shared local/remote `.omatrack/c`
-                                           `{ETag}.telemetry` / `{BLAKE3}.telemetry`
+                                           `{ETag}.telemetry` (remote only)
                                            |
                                            v
                                       TelemetryStore scan
@@ -506,7 +511,7 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
 | Video renderer | `src/app/MpvVideoItem.*` | libmpv lifecycle, OpenGL FBO rendering, playback state, and exact seek | Telemetry extraction, session association, or QML layout policy |
 | QML UI | `src/app/*.qml` | Material windows, layout, delegates, controls, high-level orchestration | Full telemetry loops, duplicated analysis, format branches |
 | Bootstrap | `src/app/main.cpp`, `src/app/SingleInstance.*` | Qt startup, style, fonts, store ownership, initial properties, module load, single-instance path hand-off | Product analysis, autotest behaviour |
-| Session/store | `src/app/TelemetryStore.*` + collaborators `PreferencesStore.*`, `TrackAtlasManager.*`, `OverlayManager.*`, `LibraryModel.*`, `StoreModels.*`/`StoreTypes.h`, `AsyncJob.h` | Lazy session handles, ETag/BLAKE3-keyed normalized telemetry cache, selection, cached selectable primary→reference alignment, comparison, viewport; preferences (debounced `omatrack.yml` writer), Track Atlas, MTX overlays, the library tree model and typed row models/gadgets handed to QML; every background pipeline is an `AsyncJob`/`SerialJobQueue` | Pixel-level paint loops, vendor byte parsing, self-update, hand-rolled `QFutureWatcher`/generation counters |
+| Session/store | `src/app/TelemetryStore.*` + collaborators `PreferencesStore.*`, `TrackAtlasManager.*`, `OverlayManager.*`, `LibraryModel.*`, `StoreModels.*`/`StoreTypes.h`, `AsyncJob.h` | Lazy session handles, ETag-keyed normalized telemetry cache for remote recordings, selection, cached selectable primary→reference alignment, comparison, viewport; preferences (debounced `omatrack.yml` writer), Track Atlas, MTX overlays, the library tree model and typed row models/gadgets handed to QML; every background pipeline is an `AsyncJob`/`SerialJobQueue` | Pixel-level paint loops, vendor byte parsing, self-update, hand-rolled `QFutureWatcher`/generation counters |
 | CLI | `cli/main.cpp` | Reproducible headless acceptance and inspection | A second analysis implementation |
 
 ### Core data contracts
@@ -515,11 +520,11 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
 - `Lap`: source-session bounds and lap time.
 - `UnifiedLap`: same-rate, lap-relative arrays plus distance provenance and GPS-quality channels used by every analysis and rendering feature.
 - `SessionHandle`: owns one library identity (the video or vendor file shown
-  in the tree) and opens the cached native `.telemetry` as the parser path. Unified
-  laps stay in memory. Its compact `VideoClock` retains the signed per-video
-  presentation offsets, presentation-order frame timestamps, linked filenames,
-  and BLAKE3 identities from the `.telemetry` catalog after decoded source
-  arrays are released.
+  in the tree) and opens it directly as the parser path — or, for a remote
+  recording, the ETag-keyed `.telemetry`. Unified laps stay in memory. Its
+  compact `VideoClock` retains the signed per-video presentation offsets,
+  presentation-order frame timestamps, linked filenames, and any BLAKE3
+  identities after decoded source arrays are released.
 - `TelemetryStore`: the single Qt-facing source of truth for active/reference selection, the selected primary→reference alignment map, and UI state.
 - `CornerZone`: the current individual corner range. Do not stretch it to represent every Track Atlas layer; introduce explicit domain types when complexes and geometry enter the model.
 
@@ -738,17 +743,26 @@ context — the running compositor is the simplest one:
 ```sh
 cmake --preset acceptance
 cmake --build --preset acceptance
-QT_QPA_PLATFORM=wayland \
-QT_FORCE_STDERR_LOGGING=1 \
 OMATRACK_AUTOTEST=/tmp/omatrack.png \
-./build-acceptance/omatrack /path/to/copied-telemetry
+scripts/autotest.sh ./build-acceptance/omatrack --mute /path/to/copied-telemetry
 ```
 
+`scripts/autotest.sh` keeps the run off the developer's screen: under
+Hyprland it creates a headless output, routes every `omatrack-autotest`
+window (the Wayland app_id the harness announces) to a floating 1280×800
+window on a workspace bound to that output, and removes the output when the
+command exits. The window still has a real GL context, so traces and video
+render and the screenshot is the full frame; nothing is written to
+`~/.config/hypr`. Without Hyprland it runs the command as given. `--mute`
+silences playback for one process without touching `video.muted`.
 An acceptance run never touches the developer's `omatrack.yml`: when
 `OMATRACK_AUTOTEST` is set and `XDG_CONFIG_HOME` is not, `main()` points
 `XDG_CONFIG_HOME` at `$TMPDIR/omatrack-autotest/config`, so driver renames,
 corner edits, pins and the positional scan root land in a scratch document.
 Set `XDG_CONFIG_HOME` yourself to test against a specific configuration.
+
+Do not launch acceptance runs bare on the desktop: the window takes focus
+and the timing-sensitive video checks become flaky.
 
 `QT_QPA_PLATFORM=offscreen` still runs and still writes a screenshot — use it
 for dialogs, windows, loading states and selection logic — but every trace,
@@ -791,11 +805,11 @@ Embedded libmpv playback must be verified on the native Linux/Omarchy OpenGL sce
   library sessions: they are overlap-joined onto the open host and drawn as a
   collapsible folder of header chrome, span tracks, and sample channels. An
   ordinary MP4 without an `aimd` track remains valid for standalone playback.
-  Native normalized telemetry is keyed by source identity: remote ETag or
-  local full-file BLAKE3. The local cache is
-  `$XDG_CACHE_HOME/.omatrack/c/{generation}/{key}.telemetry`; remote cache
+  Local files are parsed in place; no `.telemetry` is generated for them.
+  Remote recordings are normalized once and keyed by ETag: the local mirror
+  is `$XDG_CACHE_HOME/.omatrack/c/{generation}/{ETag}.telemetry`; remote
   publication is create-only at
-  `ROOT/.omatrack/c/{generation}/{key}.telemetry`. No hidden
+  `ROOT/.omatrack/c/{generation}/{ETag}.telemetry`. No hidden
   `.{video}.telemetry` companion or old AiM range extract is used.
 - Session parsing is lazy at two levels. `TelemetrySource::openIndex()`
   reads channel metadata only and `ensureDecoded()` materialises one channel
@@ -867,12 +881,13 @@ Embedded libmpv playback must be verified on the native Linux/Omarchy OpenGL sce
   Atlas corner station mapping.
 - `sessionStartUnixTime()`/`hasGlobalTime()` do not currently provide global session time.
 - The GUI is file-based post-session analysis today. Future live or database-backed work must preserve the same normalized core instead of bypassing it.
-- The app embeds one video. An `aimd` MP4 is converted to the same
-  ETag/BLAKE3-keyed normalized `.telemetry` cache as every other source.
-  Signed presentation offsets, the presentation-order frame table, per-lap
-  first frames, and linked-video identities remain in that native catalog.
-  Remote conversion reads the complete source only after both cache locations
-  miss; it never reconstructs timing from FPS or stores a hidden companion.
+- The app embeds one video. A local `aimd` MP4 is opened directly: the AiM
+  source supplies the signed presentation offset and the presentation-order
+  frame table, and the opened file is its own identity (`ExactSource`). A
+  remote one is converted to the ETag-keyed `.telemetry`, whose catalog keeps
+  that clock; conversion reads the complete source only after both cache
+  locations miss and never reconstructs timing from FPS or stores a hidden
+  companion.
 - Configuration migrates from the pre-YAML `QSettings` store, the pre-rename `racecraft.yml`/Track Atlas cache, and per-track corner CSVs on first run; legacy stores are read only and left untouched.
 - HTTP (sync, range GET, Track Atlas, video fetch, GitHub update checks)
   runs on a dedicated

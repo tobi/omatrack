@@ -59,6 +59,8 @@ void printHelp(const char* executable) {
         "  -n, --new-instance\n"
         "                 Start a separate process instead of handing the\n"
         "                 path to the Omatrack that is already running.\n"
+        "  --mute         Mute video playback for this run only; the saved\n"
+        "                 video.muted preference is left alone.\n"
         "  -v, --verbose  Log file opens, cache hits and misses, writes,\n"
         "                 video/cursor seeks, and AiM vs .telemetry channel\n"
         "                 compare. Same as OMATRACK_VERBOSE=1.\n"
@@ -84,6 +86,7 @@ int main(int argc, char** argv) {
     const bool helpRequested = takeFlag(argc, argv, "--help", "-h");
     const bool versionRequested = takeFlag(argc, argv, "--version", "-V");
     const bool newInstance = takeFlag(argc, argv, "--new-instance", "-n");
+    const bool mute = takeFlag(argc, argv, "--mute", nullptr);
     const bool verbose = takeFlag(argc, argv, "--verbose", "-v") ||
                          qEnvironmentVariableIntValue("OMATRACK_VERBOSE") != 0;
     if (helpRequested) {
@@ -123,6 +126,12 @@ int main(int argc, char** argv) {
         QStandardPaths::ApplicationsLocation, desktopFileName + ".desktop");
     if (!desktopEntry.isEmpty())
         QGuiApplication::setDesktopFileName(desktopFileName);
+    // Acceptance windows announce a distinct Wayland app_id so the compositor
+    // can park them on a headless output (scripts/autotest.sh) instead of
+    // popping them over the developer's work.
+    if (autotest)
+        QGuiApplication::setDesktopFileName(
+            QStringLiteral("omatrack-autotest"));
 
     // The trace surfaces are scene-graph geometry now, so their edges are
     // antialiased by the framebuffer rather than by QPainter. libmpv renders
@@ -216,6 +225,7 @@ int main(int argc, char** argv) {
                 store->openFile(path);
         }
     };
+    if (mute) store->overrideVideoMuted(true);
     openPaths(launchPaths);
     if (!startupVideoPath.isEmpty()) store->openFile(startupVideoPath);
     QObject::connect(
