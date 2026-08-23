@@ -38,6 +38,8 @@ All notable user-facing changes are documented here.
   test-only binary over the same code and is no longer installed or shipped.
 - `omatrack --version` prints the version and exits; previously the GUI
   launched.
+- The Windows installer asset is named `Omatrack-<version>-windows-x86_64-Setup.exe`
+  like the Linux and macOS assets.
 - Restored telemetry-synchronized video seeking when a native recording
   catalogs more than one linked video.
 - Added selectable reference synchronization for dual-video comparison:

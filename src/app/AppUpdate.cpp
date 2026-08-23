@@ -76,7 +76,7 @@ std::optional<GithubRelease> parseGithubRelease(const QByteArray& body) {
     static const QRegularExpression windowsNupkgName(
         QStringLiteral("^io\\.github\\.tobi\\.omatrack-.+-full\\.nupkg$"));
     static const QRegularExpression windowsSetupName(
-        QStringLiteral("^io\\.github\\.tobi\\.omatrack-win-Setup\\.exe$"));
+        QStringLiteral("^Omatrack-.+-windows-x86_64-Setup\\.exe$"));
     static const QRegularExpression macDmgName(
         QStringLiteral("^Omatrack-.+-macOS-arm64\\.dmg$"));
     const QJsonArray assets = object.value(QStringLiteral("assets")).toArray();

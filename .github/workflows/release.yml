@@ -364,17 +364,23 @@ jobs:
             --skipVeloAppCheck `
             --outputDir velopack-out
           Get-ChildItem velopack-out | Format-Table Name, Length
-          if (-not (Get-ChildItem velopack-out -Filter *-win-Setup.exe)) {
+          $setup = Get-ChildItem velopack-out -Filter *-win-Setup.exe
+          if (-not $setup) {
             throw "Velopack Setup.exe was not produced"
           }
           if (-not (Get-ChildItem velopack-out -Filter *-full.nupkg)) {
             throw "Velopack full nupkg was not produced"
           }
+          # The installer is the user-facing asset: name it like the AppImage
+          # and the dmg. The nupkg keeps Velopack's own {packId}-{version}
+          # naming because Update.exe and releases.win.json depend on it.
+          Move-Item $setup.FullName `
+            "velopack-out/Omatrack-$env:OMATRACK_RELEASE_VERSION-windows-x86_64-Setup.exe"
       - uses: actions/upload-artifact@v7
         with:
           name: release-windows
           path: |
-            velopack-out/*-win-Setup.exe
+            velopack-out/Omatrack-*-windows-x86_64-Setup.exe
             velopack-out/*-full.nupkg
             velopack-out/releases.win.json
           if-no-files-found: error
@@ -398,7 +404,7 @@ jobs:
           shopt -s nullglob
           installables=(
             Omatrack-*-linux-x86_64.AppImage
-            io.github.tobi.omatrack-win-Setup.exe
+            Omatrack-*-windows-x86_64-Setup.exe
             io.github.tobi.omatrack-*-full.nupkg
             Omatrack-*-macOS-arm64.dmg
           )
@@ -410,7 +416,7 @@ jobs:
             SHA256SUMS.txt
           grep -E '^[0-9a-f]{64}  io.github.tobi.omatrack-.+-full\.nupkg$' \
             SHA256SUMS.txt
-          grep -E '^[0-9a-f]{64}  io.github.tobi.omatrack-win-Setup\.exe$' \
+          grep -E '^[0-9a-f]{64}  Omatrack-.+-windows-x86_64-Setup\.exe$' \
             SHA256SUMS.txt
           grep -E '^[0-9a-f]{64}  Omatrack-.+-macOS-arm64\.dmg$' \
             SHA256SUMS.txt

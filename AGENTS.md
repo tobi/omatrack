@@ -406,7 +406,10 @@ CornerContext{primary, reference metrics, delta-trace time deltas}
   running file, verifies `SHA256SUMS.txt`, swaps it in place, and relaunches
   from the same path. The running squashfs mount is left alone.
 - Windows: tagged releases ship a Velopack per-user installer
-  (`io.github.tobi.omatrack-win-Setup.exe`) plus a `*-full.nupkg`.
+  (`Omatrack-*-windows-x86_64-Setup.exe`, renamed from Velopack's output so
+  it reads like the AppImage and dmg) plus the `io.github.tobi.omatrack-*-full.nupkg`,
+  which keeps Velopack's `{packId}-{version}` name because `Update.exe` and
+  `releases.win.json` depend on it.
   One click downloads the nupkg, verifies `SHA256SUMS.txt`, and hands it
   to `Update.exe apply --waitPid`. No UAC; `current/` is replaced in a
   couple of seconds. A leftover zip install is offered the Setup.exe so
