@@ -16,6 +16,12 @@ namespace {
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kMetersPerDegree = 111320.0;
 constexpr double kGpsAnchorRate = 5.0;
+// Travel-direction gate for GPS anchors: heading is measured over ±0.3 s and
+// the candidate must point within 60° of the primary (cos 60° = 0.5). A
+// hairpin's two legs differ by ~180°, a chicane's by 90° or more.
+constexpr double kHeadingHalfWindowSeconds = 0.3;
+constexpr double kHeadingMinimumTravelMeters = 3.0;
+constexpr double kHeadingMinimumAgreement = 0.5;
 
 struct Anchor {
     size_t primaryIndex = 0;
@@ -69,6 +75,38 @@ bool gpsCoverageAvailable(const omatrack::UnifiedLap& lap) {
            double(last - first) / double(lap.time.size() - 1) >= 0.5;
 }
 
+/// Local travel direction at `index` as a unit (north, east) vector from the
+/// GPS fixes `kHeadingHalfWindowSeconds` either side. Empty when either end
+/// lacks a usable fix or the car barely moved (a heading from two fixes a
+/// metre apart is GPS noise, not a direction).
+struct Heading {
+    double north = 0.0;
+    double east = 0.0;
+};
+
+std::optional<Heading> travelHeading(const omatrack::UnifiedLap& lap,
+                                     size_t index) {
+    const size_t half = size_t(
+        std::max(1.0, std::round(lap.sampleRate * kHeadingHalfWindowSeconds)));
+    const size_t before = index > half ? index - half : 0;
+    const size_t after = std::min(index + half, lap.time.size() - 1);
+    if (after <= before) return std::nullopt;
+    if (!gpsFixUsable(lap.gpsLat[before], lap.gpsLon[before],
+                      lap.gpsPositionAccuracy[before]) ||
+        !gpsFixUsable(lap.gpsLat[after], lap.gpsLon[after],
+                      lap.gpsPositionAccuracy[after]))
+        return std::nullopt;
+    const double meanLatitude =
+        0.5 * (lap.gpsLat[before] + lap.gpsLat[after]) * kPi / 180.0;
+    const double north =
+        (lap.gpsLat[after] - lap.gpsLat[before]) * kMetersPerDegree;
+    const double east = (lap.gpsLon[after] - lap.gpsLon[before]) *
+                        kMetersPerDegree * std::cos(meanLatitude);
+    const double length = std::hypot(north, east);
+    if (length < kHeadingMinimumTravelMeters) return std::nullopt;
+    return Heading{north / length, east / length};
+}
+
 std::optional<size_t> nearestGpsIndex(const omatrack::UnifiedLap& primary,
                                       size_t primaryIndex,
                                       const omatrack::UnifiedLap& compare,
@@ -81,6 +119,7 @@ std::optional<size_t> nearestGpsIndex(const omatrack::UnifiedLap& primary,
     const double primaryAccuracy = primary.gpsPositionAccuracy[primaryIndex];
     if (!gpsFixUsable(latitude, longitude, primaryAccuracy))
         return std::nullopt;
+    const auto primaryHeading = travelHeading(primary, primaryIndex);
 
     const auto centerIt = std::lower_bound(compare.time.begin(),
                                            compare.time.end(), baseCompareTime);
@@ -102,10 +141,23 @@ std::optional<size_t> nearestGpsIndex(const omatrack::UnifiedLap& primary,
         const double east = (compare.gpsLon[j] - longitude) * kMetersPerDegree *
                             std::cos(meanLatitude);
         const double distance = std::hypot(north, east);
-        if (distance < bestDistance) {
-            bestDistance = distance;
-            best = j;
+        if (distance >= bestDistance) continue;
+        // The other leg of a hairpin, or the straight behind a chicane, can
+        // be the nearest fix inside the search window while being a point
+        // the car passes in the opposite direction. Reject candidates whose
+        // travel direction disagrees with the primary's; a pit-lane fix or a
+        // stationary car has no heading and is judged on distance alone.
+        if (primaryHeading) {
+            const auto compareHeading = travelHeading(compare, j);
+            if (compareHeading) {
+                const double agreement =
+                    primaryHeading->north * compareHeading->north +
+                    primaryHeading->east * compareHeading->east;
+                if (agreement < kHeadingMinimumAgreement) continue;
+            }
         }
+        bestDistance = distance;
+        best = j;
     }
     if (best == compare.time.size()) return std::nullopt;
     const double acceptance = std::min(

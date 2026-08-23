@@ -398,7 +398,7 @@ QStringList LibraryModel::filePaths() const {
 // ── LibraryFilterModel ──────────────────────────────────────────────
 
 LibraryFilterModel::LibraryFilterModel(QObject* parent)
-    : QSortFilterProxyModel(parent) {
+    : FilterChangeProxyModel(parent) {
     setRecursiveFilteringEnabled(true);
 }
 
@@ -423,42 +423,47 @@ bool LibraryFilterModel::revealSession(const QString& sessionKey) {
 
 void LibraryFilterModel::setFilterText(const QString& text) {
     if (filterText_ == text) return;
-    filterText_ = text;
-    emit filterTextChanged();
-    syncFilteringActive();
-    invalidateFilter();
+    changeFilter([&] {
+        filterText_ = text;
+        emit filterTextChanged();
+        syncFilteringActive();
+    });
 }
 
 void LibraryFilterModel::setSelectedDrivers(const QStringList& drivers) {
     if (selectedDrivers_ == drivers) return;
-    selectedDrivers_ = drivers;
-    emit selectedDriversChanged();
-    syncFilteringActive();
-    invalidateFilter();
+    changeFilter([&] {
+        selectedDrivers_ = drivers;
+        emit selectedDriversChanged();
+        syncFilteringActive();
+    });
 }
 
 void LibraryFilterModel::setSelectedYears(const QStringList& years) {
     if (selectedYears_ == years) return;
-    selectedYears_ = years;
-    emit selectedYearsChanged();
-    syncFilteringActive();
-    invalidateFilter();
+    changeFilter([&] {
+        selectedYears_ = years;
+        emit selectedYearsChanged();
+        syncFilteringActive();
+    });
 }
 
 void LibraryFilterModel::setSelectedTrack(const QString& track) {
     if (selectedTrack_ == track) return;
-    selectedTrack_ = track;
-    emit selectedTrackChanged();
-    syncFilteringActive();
-    invalidateFilter();
+    changeFilter([&] {
+        selectedTrack_ = track;
+        emit selectedTrackChanged();
+        syncFilteringActive();
+    });
 }
 
 void LibraryFilterModel::setSelectedKind(const QString& kind) {
     if (selectedKind_ == kind) return;
-    selectedKind_ = kind;
-    emit selectedKindChanged();
-    syncFilteringActive();
-    invalidateFilter();
+    changeFilter([&] {
+        selectedKind_ = kind;
+        emit selectedKindChanged();
+        syncFilteringActive();
+    });
 }
 
 bool LibraryFilterModel::facetsActive() const {

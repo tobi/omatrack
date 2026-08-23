@@ -6,6 +6,7 @@
 // whichever protocol produced the listing.
 
 #include "app/RemoteCache.h"
+#include "core/TelemetryEngine.h"
 
 #include <QtTest>
 
@@ -54,12 +55,44 @@ private slots:
         QVERIFY(listening);
     }
     void usesSharedTelemetryCacheKeys() {
-        QCOMPARE(telemetryCacheDirectory(),
+        const QString generation =
+            QString::fromStdString(omatrack::converterGeneration());
+        QVERIFY(!generation.isEmpty());
+        QVERIFY(generation != QStringLiteral("unknown"));
+        QCOMPARE(telemetryCacheRoot(),
                  cacheDir_->filePath(QStringLiteral(".omatrack/c")));
-        QCOMPARE(
-            telemetryCachePath(QStringLiteral("\"abc/1\"")),
-            cacheDir_->filePath(QStringLiteral(".omatrack/c/abc_1.telemetry")));
+        QCOMPARE(telemetryCacheDirectory(),
+                 cacheDir_->filePath(QStringLiteral(".omatrack/c/") +
+                                     generation));
+        QCOMPARE(telemetryCacheRelativeDirectory(),
+                 QStringLiteral(".omatrack/c/") + generation);
+        QCOMPARE(telemetryCachePath(QStringLiteral("\"abc/1\"")),
+                 cacheDir_->filePath(QStringLiteral(".omatrack/c/") +
+                                     generation +
+                                     QStringLiteral("/abc_1.telemetry")));
         QVERIFY(telemetryCachePath(QString()).isEmpty());
+    }
+    void prunesOtherConverterGenerations() {
+        const QDir root(telemetryCacheRoot());
+        QVERIFY(QDir().mkpath(root.filePath(QStringLiteral("0-deadbeef0000"))));
+        QVERIFY(QDir().mkpath(telemetryCacheDirectory()));
+        const auto write = [](const QString& path) {
+            QFile file(path);
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write("x");
+        };
+        write(root.filePath(QStringLiteral("0-deadbeef0000/old.telemetry")));
+        write(root.filePath(QStringLiteral("legacy.telemetry")));
+        const QString current = telemetryCachePath(QStringLiteral("keep"));
+        write(current);
+
+        QCOMPARE(pruneStaleTelemetryCaches(), 2);
+        QVERIFY(!QFileInfo::exists(
+            root.filePath(QStringLiteral("0-deadbeef0000"))));
+        QVERIFY(!QFileInfo::exists(
+            root.filePath(QStringLiteral("legacy.telemetry"))));
+        QVERIFY(QFileInfo::exists(current));
+        QCOMPARE(pruneStaleTelemetryCaches(), 0);
     }
     void fetchesAndPublishesSharedRemoteCache() {
         scenario_ = QStringLiteral("telemetry-cache");

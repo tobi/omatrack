@@ -328,12 +328,11 @@ void SyncStrategyModel::refresh(const QVector<SyncStrategyRow>& rows) {
 // ── RowFilterModel ──────────────────────────────────────────────────
 
 RowFilterModel::RowFilterModel(QObject* parent)
-    : QSortFilterProxyModel(parent) {}
+    : FilterChangeProxyModel(parent) {}
 
 void RowFilterModel::setFilterText(const QString& text) {
     if (filterText_ == text) return;
-    filterText_ = text;
-    invalidateFilter();
+    changeFilter([&] { filterText_ = text; });
     emit filterTextChanged();
 }
 

@@ -50,6 +50,11 @@ PreferencesStore::PreferencesStore(QObject* parent)
     prefsTimer_->setInterval(250);
     connect(prefsTimer_, &QTimer::timeout, this, [this]() {
         if (!YamlConfig::instance().isWritable()) return;
+        // Never overlap two writes. Both are QSaveFile renames, so whichever
+        // commits last wins — and a slow first write could land *after* the
+        // newer document. The document stays dirty, and the completion
+        // callback below re-arms the timer once the in-flight write lands.
+        if (saveJob_.running()) return;
         const QByteArray bytes = YamlConfig::instance().serializeDocument();
         YamlConfig::instance().clearDirty();
         const QString path = YamlConfig::filePath();

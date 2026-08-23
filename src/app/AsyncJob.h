@@ -14,11 +14,13 @@
 #include <QThreadPool>
 #include <QtConcurrent/QtConcurrentRun>
 
+#include <algorithm>
 #include <atomic>
 #include <deque>
 #include <functional>
 #include <memory>
 #include <utility>
+#include <vector>
 
 /// QObject base carrying the `running` state and its change signal, so the
 /// store can bind loading Q_PROPERTYs to any AsyncJob without templating.
@@ -80,6 +82,10 @@ public:
     ~AsyncJob() override {
         if (cancel_) cancel_->store(true);
         if (watcher_->isRunning()) watcher_->waitForFinished();
+        // Superseded runs were detached from the watcher by setFuture() but
+        // their workers may still be executing; they were told to cancel when
+        // they were superseded, so this wait is normally short.
+        for (QFuture<T>& future : superseded_) future.waitForFinished();
     }
 
     /// Cancel token for the current run; empty before the first start.
@@ -91,6 +97,7 @@ public:
     void start(std::function<T(omatrack::IoCancel)> work,
                std::function<void(T)> onLatest, QThreadPool* pool = nullptr) {
         if (cancel_) cancel_->store(true);
+        rememberSuperseded();
         generation_ = nextGeneration();
         watchedGeneration_ = generation_;
         cancel_ = std::make_shared<std::atomic<bool>>(false);
@@ -118,15 +125,29 @@ public:
     /// through the event loop. For shutdown paths only.
     void wait() {
         if (watcher_->isRunning()) watcher_->waitForFinished();
+        for (QFuture<T>& future : superseded_) future.waitForFinished();
+        superseded_.clear();
     }
 
 private:
+    /// Keep a handle on a run that start() is about to detach from the
+    /// watcher, and drop the ones that have already finished, so the
+    /// destructor can wait for every worker this job ever launched.
+    void rememberSuperseded() {
+        superseded_.erase(
+            std::remove_if(superseded_.begin(), superseded_.end(),
+                           [](const QFuture<T>& f) { return f.isFinished(); }),
+            superseded_.end());
+        if (watcher_->isRunning()) superseded_.push_back(watcher_->future());
+    }
+
     static quint64 nextGeneration() {
         static std::atomic<quint64> counter{0};
         return counter.fetch_add(1, std::memory_order_relaxed) + 1;
     }
 
     QFutureWatcher<T>* watcher_;
+    std::vector<QFuture<T>> superseded_;
     omatrack::IoCancel cancel_;
     std::function<void(T)> onLatest_;
     // Monotonic intent counter, bumped on every start() and reset(). A run is

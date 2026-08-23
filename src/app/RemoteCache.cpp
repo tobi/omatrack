@@ -1,5 +1,7 @@
 #include "RemoteCache.h"
 
+#include "core/TelemetryEngine.h"
+
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDateTime>
@@ -873,7 +875,7 @@ CacheUsage cacheUsage() {
     };
     for (const QString& directory : cacheDirectories())
         countDirectory(directory);
-    countDirectory(telemetryCacheDirectory());
+    countDirectory(telemetryCacheRoot());
     return usage;
 }
 
@@ -881,7 +883,7 @@ qint64 clearCache() {
     const CacheUsage usage = cacheUsage();
     for (const QString& directory : cacheDirectories())
         QDir(directory).removeRecursively();
-    QDir(telemetryCacheDirectory()).removeRecursively();
+    QDir(telemetryCacheRoot()).removeRecursively();
     return usage.bytes + usage.videoBytes;
 }
 
@@ -937,7 +939,7 @@ qint64 enforceCacheBudget(qint64 limitBytes, const QSet<QString>& keepPaths) {
     // growing pile of laps, and evicting it would only force an immediate
     // re-fetch.
     QStringList directories = cacheDirectories();
-    directories.append(telemetryCacheDirectory());
+    directories.append(telemetryCacheRoot());
     for (const QString& directory : std::as_const(directories)) {
         QDirIterator files(directory, QDir::Files | QDir::Hidden,
                            QDirIterator::Subdirectories);
@@ -1010,10 +1012,39 @@ QString etagFileKey(const QString& etag) {
     if (key.isEmpty() || !localPathError(key).isEmpty()) return {};
     return key;
 }
-QString telemetryCacheDirectory() {
+QString telemetryCacheRoot() {
     return QStandardPaths::writableLocation(
                QStandardPaths::GenericCacheLocation) +
            QStringLiteral("/.omatrack/c");
+}
+
+QString telemetryCacheRelativeDirectory() {
+    return QStringLiteral(".omatrack/c/") +
+           QString::fromStdString(omatrack::converterGeneration());
+}
+
+QString telemetryCacheDirectory() {
+    return telemetryCacheRoot() + QLatin1Char('/') +
+           QString::fromStdString(omatrack::converterGeneration());
+}
+
+int pruneStaleTelemetryCaches() {
+    // A directory under .omatrack/c that is not this build's generation was
+    // written by a converter this build no longer trusts; nothing will ever
+    // read it again, so it would only sit there counting against the budget.
+    const QString current = QFileInfo(telemetryCacheDirectory()).fileName();
+    int removed = 0;
+    const QDir root(telemetryCacheRoot());
+    for (const QFileInfo& entry :
+         root.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        if (entry.fileName() == current) continue;
+        if (QDir(entry.absoluteFilePath()).removeRecursively()) ++removed;
+    }
+    // Pre-generation layout kept `{key}.telemetry` directly in the root.
+    for (const QFileInfo& entry : root.entryInfoList(QDir::Files)) {
+        if (QFile::remove(entry.absoluteFilePath())) ++removed;
+    }
+    return removed;
 }
 
 QString telemetryCachePath(const QString& key) {

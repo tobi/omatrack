@@ -32,3 +32,4 @@ CMakeUserPresets.json
 *.unified.csv
 # Profiler traces, screenshots, and benchmark outputs are local artifacts.
 profiler/
+.pi/

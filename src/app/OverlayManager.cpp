@@ -28,16 +28,6 @@ QString overlayGroupId(const QString& path) {
     return QString::number(qHash(canonical), 16);
 }
 
-QColor sidecarChannelColorFor(const QString& name) {
-    static const QColor palette[] = {
-        QColor(QStringLiteral("#7fbbb3")), QColor(QStringLiteral("#d699b6")),
-        QColor(QStringLiteral("#dbbc7f")), QColor(QStringLiteral("#83c092")),
-        QColor(QStringLiteral("#e67e80")), QColor(QStringLiteral("#e09d7f")),
-        QColor(QStringLiteral("#a7c080")),
-    };
-    return palette[qHash(name) % (sizeof(palette) / sizeof(palette[0]))];
-}
-
 const LapEntry* lapEntryFor(const SessionHandle* session, int lapId) {
     if (!session || lapId < 0) return nullptr;
     for (const LapEntry& lap : session->laps()) {

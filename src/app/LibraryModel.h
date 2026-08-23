@@ -14,6 +14,8 @@
 
 #include <QAbstractListModel>
 #include <QHash>
+#include "FilterChange.h"
+
 #include <QSortFilterProxyModel>
 #include <QStringList>
 #include <QVariantList>
@@ -164,7 +166,7 @@ private:
 
 // ── filter proxy ────────────────────────────────────────────────────
 
-class LibraryFilterModel : public QSortFilterProxyModel {
+class LibraryFilterModel : public FilterChangeProxyModel {
     Q_OBJECT
     QML_ELEMENT
     Q_PROPERTY(QString filterText READ filterText WRITE setFilterText NOTIFY

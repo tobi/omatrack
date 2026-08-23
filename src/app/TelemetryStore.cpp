@@ -66,11 +66,6 @@ const QUrl kTrackAtlasUrl(QStringLiteral(
 const QString kTrackAtlasRawBase = QStringLiteral(
     "https://raw.githubusercontent.com/tobi/track-atlas/main/tracks/");
 QPointer<TelemetryStore> s_storeInstance;
-QString legacyAppDataPath() {
-    return QStandardPaths::writableLocation(
-               QStandardPaths::GenericDataLocation) +
-           QStringLiteral("/racecraft/racecraft-qt");
-}
 bool isTelemetryFilePath(const QString& path) {
     return QFileInfo(path).suffix().compare(QStringLiteral("telemetry"),
                                             Qt::CaseInsensitive) == 0;
@@ -285,10 +280,6 @@ double geoDistanceKm(double firstLat, double firstLon, double secondLat,
     const double a =
         sinLat * sinLat + std::cos(lat1) * std::cos(lat2) * sinLon * sinLon;
     return 2.0 * kEarthRadiusKm * std::asin(std::sqrt(std::clamp(a, 0.0, 1.0)));
-}
-
-QString atlasGeometryKey(const QString& trackSlug, const QString& layoutId) {
-    return trackSlug + QLatin1Char('/') + layoutId;
 }
 
 QColor defaultChannelColor(const QString& key) {
@@ -1658,8 +1649,8 @@ bool ensureNativeCompanion(const QString& sourcePath, QString* nativePath,
     if (connection) {
         // First consume a cache published by another machine. A miss is the
         // only case that justifies reading the complete remote recording.
-        const QString remoteCache = QStringLiteral(".omatrack/c/") +
-                                    etagFileKey(key) +
+        const QString remoteCache = telemetryCacheRelativeDirectory() +
+                                    QLatin1Char('/') + etagFileKey(key) +
                                     QStringLiteral(".telemetry");
         const QString fetchError =
             fetchRemoteObject(*connection, remoteCache, cached, cancel);
@@ -1754,8 +1745,8 @@ bool ensureNativeCompanion(const QString& sourcePath, QString* nativePath,
     if (connection) {
         QFile body(cached);
         if (body.open(QIODevice::ReadOnly)) {
-            const QString remoteCache = QStringLiteral(".omatrack/c/") +
-                                        etagFileKey(key) +
+            const QString remoteCache = telemetryCacheRelativeDirectory() +
+                                        QLatin1Char('/') + etagFileKey(key) +
                                         QStringLiteral(".telemetry");
             const QString publishError = publishRemoteObject(
                 *connection, remoteCache, body.readAll(), cancel);
@@ -2267,6 +2258,11 @@ std::shared_ptr<SessionScanResult> scanLibraryLocations(
         result->elapsedMs = timer.elapsed();
         return result;
     }
+    // Normalizations written by another converter generation are dead weight
+    // by definition; drop them before the budget is measured.
+    if (const int pruned = pruneStaleTelemetryCaches())
+        qCInfo(lcIo).noquote()
+            << "telemetry cache pruned" << pruned << "stale generation entries";
     enforceCacheBudget(cacheLimitBytes, openPaths);
 
     for (int index = 0; index < locations.size(); ++index) {
@@ -2569,7 +2565,7 @@ TelemetryStore::TelemetryStore(QObject* parent)
     // folder location yet (for example, after locations was hand-edited to
     // an empty list). The directory itself is created once, off the GUI
     // thread, so a QML call never blocks on mkdir.
-    QtConcurrent::run(
+    QThreadPool::globalInstance()->start(
         [dir = defaultTelemetryDirectory()]() { QDir().mkpath(dir); });
 
     atlas_->startup();
@@ -3316,7 +3312,8 @@ void TelemetryStore::removeLocation(const QString& id) {
     // forever: nothing can reach them again once the location is gone.
     const QString cache = cachePathFor(prefs_->locations()[index]);
     if (!cache.isEmpty())
-        QtConcurrent::run([cache]() { QDir(cache).removeRecursively(); });
+        QThreadPool::globalInstance()->start(
+            [cache]() { QDir(cache).removeRecursively(); });
     prefs_->locations().remove(index);
     locationStatuses_.remove(id);
     locationFileCounts_.remove(id);
@@ -6609,9 +6606,12 @@ const std::vector<double>* TelemetryStore::extraChannelData(const QString& key,
     if (!job) job = new AsyncJob<std::shared_ptr<std::vector<double>>>(this);
     job->start(
         [parserPath, rawName, startTime, endTime](IoCancel) {
+            // Index-only open: sampleAt() goes through the bridge handle,
+            // so there is no reason to decode every channel of the file
+            // to read one raw trace.
             std::string error;
             auto source =
-                TelemetrySource::open(parserPath.toStdString(), &error);
+                TelemetrySource::openIndex(parserPath.toStdString(), &error);
             if (!source) return std::shared_ptr<std::vector<double>>{};
             int channelIndex = -1;
             const auto& channels = source->channels();
@@ -6640,6 +6640,10 @@ const std::vector<double>* TelemetryStore::extraChannelData(const QString& key,
         [this, cacheKey](std::shared_ptr<std::vector<double>> values) {
             extraChannelLoading_.remove(cacheKey);
             if (values) extraChannelCache_.insert(cacheKey, values);
+            // One job per (session, lap, channel) would otherwise accumulate
+            // for the life of the store; the job has delivered, release it.
+            if (auto* finished = extraChannelJobs_.take(cacheKey))
+                finished->deleteLater();
             emit channelConfigChanged();
         });
     return nullptr;

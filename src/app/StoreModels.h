@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "FilterChange.h"
 #include "StoreTypes.h"
 
 #include <QAbstractListModel>
@@ -224,7 +225,7 @@ private:
 // the source model. QML instantiates this, binds sourceModel, and sets
 // filterText to drive filtering without JS array loops.
 
-class RowFilterModel : public QSortFilterProxyModel {
+class RowFilterModel : public FilterChangeProxyModel {
     Q_OBJECT
     QML_ELEMENT
     Q_PROPERTY(QString filterText READ filterText WRITE setFilterText NOTIFY

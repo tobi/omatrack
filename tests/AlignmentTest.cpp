@@ -159,6 +159,55 @@ private slots:
         }
     }
 
+    void gpsAnchorsRejectTheOtherLegOfAHairpin() {
+        // Out-leg north for 10 s at 20 m/s, hairpin, return leg 8 m to the
+        // east. The reference lags by 0.5 s (10 m). Past t ≈ 6 s the nearest
+        // reference fix inside the ±8 s window is on the *return* leg (8 m),
+        // not the true match (10 m). Without a travel-direction gate that
+        // one wrong anchor is accepted, every true anchor behind it is then
+        // rejected as non-monotonic, and the map interpolates across a
+        // seven-second hole to the wrong side of the hairpin.
+        constexpr int kRate = 50;
+        constexpr double kLegSeconds = 10.0;
+        constexpr double kLag = 0.5;
+        constexpr int kSamples = int((2 * kLegSeconds + kLag) * kRate) + 1;
+        constexpr double kSpeed = 20.0;  // m/s
+        constexpr double kMetersPerDegree = 111320.0;
+        const double lonScale =
+            1.0 / (kMetersPerDegree * std::cos(43.0 * kPi / 180.0));
+        auto position = [&](double t, double* lat, double* lon) {
+            t = std::clamp(t, 0.0, 2 * kLegSeconds);
+            const double north = t <= kLegSeconds
+                                     ? kSpeed * t
+                                     : kSpeed * (2 * kLegSeconds - t);
+            const double east = t <= kLegSeconds ? 0.0 : 8.0;
+            *lat = 43.0 + north / kMetersPerDegree;
+            *lon = -88.0 + east * lonScale;
+        };
+        auto primary = makeLap(kSamples, true);
+        auto compare = primary;
+        for (int i = 0; i < kSamples; ++i) {
+            const double t = double(i) / kRate;
+            position(t, &primary.gpsLat[size_t(i)], &primary.gpsLon[size_t(i)]);
+            position(t - kLag, &compare.gpsLat[size_t(i)],
+                     &compare.gpsLon[size_t(i)]);
+        }
+
+        const auto result = computeComparisonAlignment(
+            primary, compare,
+            options(ComparisonAlignmentStrategy::GpsContinuous));
+        QCOMPARE(result.basis, QStringLiteral("GPS · variable speed"));
+        for (double t : {3.0, 7.0, 8.0, 9.0, 12.0, 15.0}) {
+            const int index = int(t * kRate);
+            const double mapped = result.time[index];
+            QVERIFY2(std::abs(mapped - (t + kLag)) < 0.25,
+                     qPrintable(QStringLiteral("t=%1 mapped to %2, want %3")
+                                    .arg(t)
+                                    .arg(mapped)
+                                    .arg(t + kLag)));
+        }
+    }
+
     void preCornerDampersMatchLocalSignature() {
         constexpr int kSamples = 1200;
         constexpr int kShift = 11;

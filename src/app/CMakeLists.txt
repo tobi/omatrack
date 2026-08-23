@@ -85,6 +85,7 @@ qt_add_qml_module(omatrack
     VideoDeltaBar.qml
   SOURCES
     AsyncJob.h
+    FilterChange.h
     StoreTypes.h
     StoreModels.h StoreModels.cpp
     LibraryModel.h LibraryModel.cpp

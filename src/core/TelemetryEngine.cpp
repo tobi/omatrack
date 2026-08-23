@@ -195,10 +195,22 @@ std::vector<Lap> buildLapsFromSplits(const std::vector<double>& splitTimesIn,
                                      bool rejectShortCrossings) {
     std::vector<Lap> result;
     if (duration <= 0) return result;
+    // Two crossings within 10 s are one beacon seen twice (a double trigger,
+    // or the same crossing reported by two signals a sample apart), never two
+    // laps. Collapse them onto the first so consecutive laps stay contiguous:
+    // dropping the pair instead would leave the seconds between the two
+    // triggers belonging to no lap.
+    constexpr double kMinimumCrossingGapSeconds = 10.0;
     std::set<double> filtered;
     for (double s : splitTimesIn)
         if (s > 0 && s < duration) filtered.insert(s);
-    std::vector<double> splits(filtered.begin(), filtered.end());
+    std::vector<double> splits;
+    splits.reserve(filtered.size());
+    for (double s : filtered) {
+        if (!splits.empty() && s - splits.back() <= kMinimumCrossingGapSeconds)
+            continue;
+        splits.push_back(s);
+    }
     // Without two crossings the whole recording is one unbounded fragment.
     if (splits.size() < 2) {
         return {Lap{0, 0, duration, duration * 1000.0, /*complete=*/false}};
@@ -209,10 +221,8 @@ std::vector<Lap> buildLapsFromSplits(const std::vector<double>& splitTimesIn,
         bool complete;
     };
     std::vector<Bound> lapBounds;
-    for (size_t i = 0; i + 1 < splits.size(); ++i) {
-        double a = splits[i], b = splits[i + 1];
-        if (b - a > 10) lapBounds.push_back({a, b, true});
-    }
+    for (size_t i = 0; i + 1 < splits.size(); ++i)
+        lapBounds.push_back({splits[i], splits[i + 1], true});
     if (lapBounds.empty()) {
         return {Lap{0, 0, duration, duration * 1000.0, /*complete=*/false}};
     }
@@ -286,6 +296,10 @@ std::vector<Lap> pdsApplyPreviousLapTimes(
     };
     std::vector<Lap> out = laps;
     for (auto& lap : out) {
+        // A head/tail fragment ends at the recording boundary, not at a
+        // crossing; the "previous lap time" there describes the lap before
+        // it and must not be adopted just because it falls inside tolerance.
+        if (!lap.complete) continue;
         const double prevLapSec = samplePrevLapTime(lap.endTime);
         if (prevLapSec < 0.0) continue;
         const double crossingSec = lap.endTime - lap.startTime;
@@ -1077,6 +1091,14 @@ bool TelemetrySource::sampleAtNs(size_t channelIdx, std::uint64_t timeNs,
         return omatrack_sample_at(handle_, channelIdx, timeNs, linear ? 1 : 0,
                                   out) != 0;
     return sampleAt(channelIdx, double(timeNs) / 1e9, out, linear);
+}
+
+const std::string& converterGeneration() {
+    static const std::string generation = [] {
+        const char* value = omatrack_converter_generation();
+        return std::string(value && *value ? value : "unknown");
+    }();
+    return generation;
 }
 
 bool isJsonlPath(const std::string& path) {

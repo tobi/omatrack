@@ -398,6 +398,19 @@ private slots:
         }
         QVERIFY(foundShort);
     }
+    void doubleTriggerCollapsesOntoFirstCrossing() {
+        // A beacon seen twice at 120 s and 123 s is one crossing. The lap
+        // after it must start at 120 s, not 123 s: no gap between laps.
+        auto laps = buildLapsFromSplits({30.0, 120.0, 123.0, 210.0}, 240.0);
+        std::vector<Lap> complete;
+        for (const auto& lap : laps)
+            if (lap.complete) complete.push_back(lap);
+        QCOMPARE(complete.size(), size_t(2));
+        QCOMPARE(complete[0].startTime, 30.0);
+        QCOMPARE(complete[0].endTime, 120.0);
+        QCOMPARE(complete[1].startTime, 120.0);
+        QCOMPARE(complete[1].endTime, 210.0);
+    }
     void headFragmentMarkedIncomplete() {
         // Split at 60 s in a 180 s recording → head is a fragment
         auto laps = buildLapsFromSplits({60.0, 150.0}, 180.0);
@@ -422,6 +435,18 @@ private slots:
             pdsApplyPreviousLapTimes(laps, previousTimes, 1);
         QVERIFY(confirmed.front().complete);
         QCOMPARE(confirmed.front().timeMs, 117831.0);
+    }
+    void fragmentNeverAdoptsPreviousLapTime() {
+        // Trailing fragment 1507.5→1635 s (127.5 s). The logger still reports
+        // the previous *complete* lap (116.172 s) at the recording end, and
+        // 15 % tolerance would accept it; the fragment must keep its own
+        // duration.
+        const std::vector<Lap> laps{Lap{11, 1507.5, 1635.0, 127500.0, false}};
+        std::vector<double> previousTimes(1636, 116172.0);
+        const std::vector<Lap> out =
+            pdsApplyPreviousLapTimes(laps, previousTimes, 1);
+        QVERIFY(!out.front().complete);
+        QCOMPARE(out.front().timeMs, 127500.0);
     }
     void mismatchedPreviousLapMarksFragmentIncomplete() {
         const std::vector<Lap> laps{Lap{0, 491.5, 510.3, 18800.0, true}};

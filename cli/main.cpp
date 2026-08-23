@@ -2,7 +2,8 @@
 //
 //   omatrack-cli parse <file>
 //   omatrack-cli unify <file> --output <csv>
-//   omatrack-cli corners <file> [--reference <file>] --zone <start:end> ...
+//   omatrack-cli corners <file> [--lap N] [--reference <file>]
+//                        [--reference-lap N] --zone <start:end> ...
 //   omatrack-cli compare <aimd.mp4> <file.telemetry>
 //
 // Exit code is the acceptance signal: 0 = success, non-zero = failure.
@@ -201,7 +202,15 @@ static int cmdUnify(const std::string& path, const std::string& outputPath) {
 
 // Runs the same corner analyzers the GUI runs, on the same unified laps, so a
 // check can be developed and regression-tested without a display.
-static int cmdCorners(const std::string& path, const std::string& referencePath,
+// Lap `id` when requested (-1 picks the fastest), or -1 when absent.
+static int lapIndexById(const std::vector<Lap>& laps, int id) {
+    for (size_t i = 0; i < laps.size(); ++i)
+        if (laps[i].id == id) return int(i);
+    return -1;
+}
+
+static int cmdCorners(const std::string& path, int lapId,
+                      const std::string& referencePath, int referenceLapId,
                       const std::vector<std::pair<double, double>>& zones) {
     std::string error;
     auto src = TelemetrySource::open(path, &error);
@@ -214,7 +223,13 @@ static int cmdCorners(const std::string& path, const std::string& referencePath,
         printf("FAIL: no laps\n");
         return 1;
     }
-    const Lap& lap = laps[size_t(fastestLapIndex(laps))];
+    const int lapIndex =
+        lapId < 0 ? fastestLapIndex(laps) : lapIndexById(laps, lapId);
+    if (lapIndex < 0) {
+        printf("FAIL: no lap %d in active recording\n", lapId);
+        return 1;
+    }
+    const Lap& lap = laps[size_t(lapIndex)];
     const UnifiedLap primary = src->unifyLap(lap.startTime, lap.endTime);
     printf("active: lap %d %s\n", lap.id, formatLapTime(lap.timeMs).c_str());
 
@@ -231,10 +246,33 @@ static int cmdCorners(const std::string& path, const std::string& referencePath,
             printf("FAIL: reference has no laps\n");
             return 1;
         }
-        const Lap& pick = referenceLaps[size_t(fastestLapIndex(referenceLaps))];
+        const int pickIndex = referenceLapId < 0
+                                  ? fastestLapIndex(referenceLaps)
+                                  : lapIndexById(referenceLaps, referenceLapId);
+        if (pickIndex < 0) {
+            printf("FAIL: no lap %d in reference recording\n", referenceLapId);
+            return 1;
+        }
+        const Lap& pick = referenceLaps[size_t(pickIndex)];
         reference = referenceSource->unifyLap(pick.startTime, pick.endTime);
         printf("reference: lap %d %s\n", pick.id,
                formatLapTime(pick.timeMs).c_str());
+    }
+
+    // Map reference zones through the same comparison alignment the GUI uses
+    // (GPS-continuous when both laps carry usable fixes, else lap percentage)
+    // so the reference corner range is aligned, not assumed identical.
+    omatrack::alignment::Result alignment;
+    if (!reference.time.empty()) {
+        alignment = omatrack::alignment::compute(primary, reference);
+        printf("alignment: %s  anchors=%d  confidence=%s%s%s\n",
+               alignment.basis.empty() ? "none" : alignment.basis.c_str(),
+               alignment.gpsAnchors,
+               omatrack::alignment::confidenceLabel(alignment.basis,
+                                                    alignment.gpsAnchors)
+                   .c_str(),
+               alignment.rejectionReason.empty() ? "" : "  rejected: ",
+               alignment.rejectionReason.c_str());
     }
 
     for (const auto& zone : zones) {
@@ -243,14 +281,9 @@ static int cmdCorners(const std::string& path, const std::string& referencePath,
         context.primaryMetrics =
             measureCorner(primary, zone.first, zone.second);
         if (!reference.time.empty()) {
-            // Map the reference zone through the same comparison alignment
-            // the GUI uses (lap-percentage/gps-continuous as available) so
-            // the reference corner range is aligned, not assumed identical.
             context.reference = &reference;
             double refStart = zone.first;
             double refEnd = zone.second;
-            const auto alignment =
-                omatrack::alignment::compute(primary, reference);
             if (alignment.fraction.size() == primary.time.size()) {
                 refStart = omatrack::alignment::interpolateFraction(
                     alignment.fraction, zone.first);
@@ -325,23 +358,29 @@ static int cmdCompare(const std::string& leftPath,
 }
 
 int main(int argc, char** argv) {
+    if (argc == 2 &&
+        (std::string(argv[1]) == "--version" || std::string(argv[1]) == "-V")) {
+        printf("omatrack-cli %s\n", OMATRACK_VERSION);
+        return 0;
+    }
     if (argc < 2) {
         fprintf(
             stderr,
             "usage:\n"
             "  %s parse <file.pds|file.ld|file.vbo|file.mp4|file.telemetry>\n"
             "  %s unify <file> --output <csv>\n"
-            "  %s corners <file> [--reference <file>] "
-            "--zone <start:end> [--zone ...]\n"
-            "  %s compare <aimd.mp4> <file.telemetry>\n\n"
+            "  %s corners <file> [--lap N] [--reference <file>] "
+            "[--reference-lap N] --zone <start:end> [--zone ...]\n"
+            "  %s compare <aimd.mp4> <file.telemetry>\n"
+            "  %s --version\n\n"
             "unify exports location-bearing GPS fields when available; "
             "choose an explicit output path and handle it as sensitive "
             "data.\n"
-            "corners runs the corner analyzers on the fastest lap; zones "
-            "are lap fractions.\n"
+            "corners runs the corner analyzers on the fastest lap (or the "
+            "lap ids given); zones are lap fractions.\n"
             "compare dumps GPS, main channels, laps, and video-frame "
             "sync from an AiM extract against its .telemetry companion.\n",
-            argv[0], argv[0], argv[0], argv[0]);
+            argv[0], argv[0], argv[0], argv[0], argv[0]);
         return 2;
     }
     const std::string cmd = argv[1];
@@ -351,11 +390,17 @@ int main(int argc, char** argv) {
     if (cmd == "compare" && argc == 4) return cmdCompare(argv[2], argv[3]);
     if (cmd == "corners" && argc >= 3) {
         std::string reference;
+        int lapId = -1;
+        int referenceLapId = -1;
         std::vector<std::pair<double, double>> zones;
         for (int i = 3; i < argc; ++i) {
             const std::string option = argv[i];
             if (option == "--reference" && i + 1 < argc) {
                 reference = argv[++i];
+            } else if (option == "--lap" && i + 1 < argc) {
+                lapId = std::stoi(argv[++i]);
+            } else if (option == "--reference-lap" && i + 1 < argc) {
+                referenceLapId = std::stoi(argv[++i]);
             } else if (option == "--zone" && i + 1 < argc) {
                 const std::string value = argv[++i];
                 const size_t colon = value.find(':');
@@ -374,7 +419,7 @@ int main(int argc, char** argv) {
             fprintf(stderr, "corners needs at least one --zone start:end\n");
             return 2;
         }
-        return cmdCorners(argv[2], reference, zones);
+        return cmdCorners(argv[2], lapId, reference, referenceLapId, zones);
     }
     fprintf(stderr, "invalid arguments; run %s without arguments for usage\n",
             argv[0]);

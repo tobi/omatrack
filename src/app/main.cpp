@@ -54,6 +54,7 @@ void printHelp(const char* executable) {
         "  %s --help\n\n"
         "Options:\n"
         "  -h, --help     Show this help and exit.\n"
+        "  -V, --version  Print the version and exit.\n"
         "  -v, --verbose  Log file opens, cache hits and misses, writes,\n"
         "                 video/cursor seeks, and AiM vs .telemetry channel\n"
         "                 compare. Same as OMATRACK_VERBOSE=1.\n"
@@ -77,16 +78,32 @@ int main(int argc, char** argv) {
     if (omatrack::consumeWindowsSetupHook(argc, argv)) return 0;
 #endif
     const bool helpRequested = takeFlag(argc, argv, "--help", "-h");
+    const bool versionRequested = takeFlag(argc, argv, "--version", "-V");
     const bool verbose = takeFlag(argc, argv, "--verbose", "-v") ||
                          qEnvironmentVariableIntValue("OMATRACK_VERBOSE") != 0;
     if (helpRequested) {
         printHelp(argc > 0 ? argv[0] : "omatrack");
         return 0;
     }
+    if (versionRequested) {
+        std::printf("omatrack %s\n", OMATRACK_VERSION);
+        return 0;
+    }
     // Must precede QGuiApplication: Arch Qt logs qInfo to journald otherwise.
     if (verbose) qputenv("QT_FORCE_STDERR_LOGGING", "1");
 #ifdef OMATRACK_ENABLE_AUTOTEST_HARNESS
     const bool autotest = !qgetenv("OMATRACK_AUTOTEST").isEmpty();
+    // The harness renames drivers, edits corners, pins files and appends the
+    // positional directory as a scan root — all of which are written to
+    // omatrack.yml. That must never be the developer's own configuration, so
+    // an acceptance run gets a scratch XDG_CONFIG_HOME unless the caller
+    // already pointed one somewhere deliberate.
+    if (autotest && qEnvironmentVariableIsEmpty("XDG_CONFIG_HOME")) {
+        const QString scratch =
+            QStandardPaths::writableLocation(QStandardPaths::TempLocation) +
+            QStringLiteral("/omatrack-autotest/config");
+        qputenv("XDG_CONFIG_HOME", scratch.toUtf8());
+    }
 #else
     constexpr bool autotest = false;
 #endif

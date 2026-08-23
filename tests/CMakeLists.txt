@@ -104,6 +104,7 @@ target_link_libraries(remote-cache-test PRIVATE
   Qt6::Test
   Qt6::Core
   Qt6::Network
+  omatrack_core
   omatrack_warnings)
 add_test(NAME remote-cache-test COMMAND remote-cache-test)
 set_tests_properties(remote-cache-test PROPERTIES LABELS unit)

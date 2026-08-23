@@ -152,9 +152,20 @@ QString cacheDirectory(const RemoteConnection& connection);
 /// Root under which per-location discovery caches sit.
 QString cacheRoot();
 /// Shared local cache for normalized `.telemetry` files. The cache is keyed by
-/// a remote ETag or a local source-file BLAKE3 digest, never by location.
+/// a remote ETag or a local source-file BLAKE3 digest, never by location, and
+/// lives under one directory per converter generation
+/// (`.omatrack/c/{generation}/{key}.telemetry`) so a decoder fix upstream
+/// regenerates every normalization instead of trusting an older one.
+QString telemetryCacheRoot();
 QString telemetryCacheDirectory();
+/// The same generation directory relative to a remote root, for the shared
+/// cache published beside the recordings (`.omatrack/c/{generation}`).
+QString telemetryCacheRelativeDirectory();
 QString telemetryCachePath(const QString& key);
+/// Remove every generation directory other than this build's, plus any
+/// pre-generation `{key}.telemetry` left directly in the root. Returns the
+/// number of entries removed. Disk I/O: call from a worker.
+int pruneStaleTelemetryCaches();
 QString etagFileKey(const QString& etag);
 /// True for cache-private `.omatrack/` artifacts and legacy/overlay names
 /// that must not become library sources.

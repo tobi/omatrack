@@ -2,8 +2,38 @@
 
 All notable user-facing changes are documented here.
 
-## Unreleased
+## 1.5.0 — 2026-08-22
 
+- Upstream `motorsport-telemetry-rs` advanced to 1.1.0. AiM sample
+  timelines now follow the logger's own timestamps instead of a nominal
+  rate (previously up to 0.5 s of drift over a 20-minute recording), lap
+  boundaries come from the lap timer with the counter's numbering, and the
+  fastest lap is always one of the listed laps. Cosworth `Global Time` is
+  read as the recording's absolute clock, so PDS files without GPS get a
+  real session date. Cross-lap GPS alignment finds two to three times as
+  many anchors on real recordings as a result.
+- The CLI and the GUI can no longer disagree about laps: every open path
+  takes its lap list from upstream, for vendor files and `.telemetry`
+  alike. `omatrack-cli corners` gained `--lap` / `--reference-lap` and
+  prints the alignment basis, anchor count and confidence.
+- Normalized-telemetry caches are keyed by converter generation
+  (`.omatrack/c/{format version}-{upstream rev}/`). Advancing the upstream
+  pin regenerates every normalization instead of trusting a file an older
+  decoder wrote; stale generations are pruned at the start of a scan.
+- Lap classification: a trailing recording fragment no longer adopts the
+  previous complete lap's reported time, and a double beacon trigger
+  collapses onto one crossing instead of leaving a gap between laps.
+- GPS alignment anchors must agree with the primary's travel direction
+  (within 60°), so the other leg of a hairpin or a jittering fix is never
+  an anchor.
+- Preference writes can no longer overlap: a slow write landing after a
+  newer one could previously revert `omatrack.yml`.
+- The acceptance harness runs against a scratch `XDG_CONFIG_HOME` rather
+  than the developer's own `omatrack.yml`.
+- Raw source channels open the recording index-only instead of decoding
+  every channel of the file.
+- `omatrack --version` / `omatrack-cli --version` print the version and
+  exit; previously the GUI launched.
 - Restored telemetry-synchronized video seeking when a native recording
   catalogs more than one linked video.
 - Added selectable reference synchronization for dual-video comparison:

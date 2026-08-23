@@ -283,7 +283,7 @@ fn fingerprint(path: &Path) -> io::Result<blake3::Hash> {
     Ok(hasher.finalize())
 }
 
-fn build_handle(src: Box<dyn TelemetrySource>, derive_laps: bool) -> Box<BridgeFile> {
+fn build_handle(src: Box<dyn TelemetrySource>) -> Box<BridgeFile> {
     let names = src
         .channels()
         .iter()
@@ -299,24 +299,26 @@ fn build_handle(src: Box<dyn TelemetrySource>, derive_laps: bool) -> Box<BridgeF
         .iter()
         .map(|video| CString::new(video.filename.as_str()).unwrap_or_default())
         .collect::<Vec<_>>();
-    let source_laps = if derive_laps {
-        read_source_metadata(src.as_ref()).laps
-    } else {
-        src.source_lap_metadata()
-            .map(|metadata| metadata.laps)
-            .unwrap_or_default()
-    }
-    .into_iter()
-    .map(|lap| OmatrackSourceLap {
-        number: lap.number,
-        start_ns: lap.start_ns,
-        end_ns: lap.end_ns,
-        duration_ns: lap.duration_ns,
-        first_video_frame: lap.first_video_frame.unwrap_or(0),
-        complete: u8::from(lap.complete),
-        has_first_video_frame: u8::from(lap.first_video_frame.is_some()),
-    })
-    .collect();
+    // Laps always come from upstream's `read_source_metadata`, for every
+    // format and both open modes. For a `.telemetry` that is the catalog's
+    // authoritative list; for a vendor file it is the same list the
+    // converter will write into that catalog. Forwarding only authoritative
+    // laps here let a vendor file opened directly fall back to a second lap
+    // heuristic on the C++ side, so the CLI on an MP4 and the GUI on its
+    // `.telemetry` named different laps as fastest.
+    let source_laps = read_source_metadata(src.as_ref())
+        .laps
+        .into_iter()
+        .map(|lap| OmatrackSourceLap {
+            number: lap.number,
+            start_ns: lap.start_ns,
+            end_ns: lap.end_ns,
+            duration_ns: lap.duration_ns,
+            first_video_frame: lap.first_video_frame.unwrap_or(0),
+            complete: u8::from(lap.complete),
+            has_first_video_frame: u8::from(lap.first_video_frame.is_some()),
+        })
+        .collect();
     let sidecar = if telemetry_format::is_jsonl_path(std::path::Path::new(src.path())) {
         sidecar_tables(src.as_ref())
     } else {
@@ -481,7 +483,7 @@ unsafe fn open_bridge(path: *const c_char, index_only: bool, function: &str) -> 
             }
         };
         match parse_path(Path::new(path_str), index_only) {
-            Ok(src) => Box::into_raw(build_handle(src, index_only)) as *mut c_void,
+            Ok(src) => Box::into_raw(build_handle(src)) as *mut c_void,
             Err(e) => {
                 set_error(format!("{function}: {e}"));
                 std::ptr::null_mut()
@@ -1506,6 +1508,26 @@ pub unsafe extern "C" fn omatrack_video_presentation_times_ns(
     })
 }
 
+/// Identity of the converter that writes normalized `.telemetry` files:
+/// `{native format version}-{pinned upstream rev, 12 hex}`. Omatrack keys
+/// its normalized-telemetry caches by source identity *and* this string, so
+/// advancing the pinned `motorsport-telemetry-rs` revision or bumping the
+/// native format regenerates every cache instead of trusting a file an older
+/// decoder produced. The string is static and never needs freeing.
+#[no_mangle]
+pub extern "C" fn omatrack_converter_generation() -> *const c_char {
+    use std::sync::OnceLock;
+    static GENERATION: OnceLock<CString> = OnceLock::new();
+    GENERATION
+        .get_or_init(|| {
+            let rev = env!("OMATRACK_UPSTREAM_REV");
+            let short = &rev[..rev.len().min(12)];
+            CString::new(format!("{}-{}", telemetry_format::FORMAT_VERSION, short))
+                .unwrap_or_default()
+        })
+        .as_ptr()
+}
+
 /// True when `path` is an MTJ/MTX JSONL document (plain or zstd).
 ///
 /// # Safety
@@ -1837,40 +1859,37 @@ mod tests {
             sample_count: 1,
             duration_ns: 1_000_000_000,
         };
-        Box::into_raw(build_handle(
-            Box::new(TestSource {
-                channels: vec![channel],
-                samples: vec![0.0],
-                video_presentation_offset_ns: Some(101_500_000),
-                video_times: vec![101_500_000, 601_500_000, 1_101_500_000],
-                videos: vec![VideoFileRef {
-                    filename: "test.mp4".into(),
-                    index: 1,
-                    blake3: Some([0xab; 32]),
-                    frame_count: 3,
-                    presentation_offset_ns: Some(101_500_000),
-                }],
-                source_laps: Some(vec![
-                    LapMetadata {
-                        number: 7,
-                        start_ns: 1_000_000_000,
-                        end_ns: 91_000_000_000,
-                        duration_ns: 90_000_000_000,
-                        complete: true,
-                        first_video_frame: Some(60),
-                    },
-                    LapMetadata {
-                        number: 8,
-                        start_ns: 91_000_000_000,
-                        end_ns: 100_000_000_000,
-                        duration_ns: 9_000_000_000,
-                        complete: false,
-                        first_video_frame: None,
-                    },
-                ]),
-            }),
-            false,
-        )) as *mut c_void
+        Box::into_raw(build_handle(Box::new(TestSource {
+            channels: vec![channel],
+            samples: vec![0.0],
+            video_presentation_offset_ns: Some(101_500_000),
+            video_times: vec![101_500_000, 601_500_000, 1_101_500_000],
+            videos: vec![VideoFileRef {
+                filename: "test.mp4".into(),
+                index: 1,
+                blake3: Some([0xab; 32]),
+                frame_count: 3,
+                presentation_offset_ns: Some(101_500_000),
+            }],
+            source_laps: Some(vec![
+                LapMetadata {
+                    number: 7,
+                    start_ns: 1_000_000_000,
+                    end_ns: 91_000_000_000,
+                    duration_ns: 90_000_000_000,
+                    complete: true,
+                    first_video_frame: Some(60),
+                },
+                LapMetadata {
+                    number: 8,
+                    start_ns: 91_000_000_000,
+                    end_ns: 100_000_000_000,
+                    duration_ns: 9_000_000_000,
+                    complete: false,
+                    first_video_frame: None,
+                },
+            ]),
+        }))) as *mut c_void
     }
 
     #[test]
@@ -2023,17 +2042,14 @@ mod tests {
             sample_count: samples.len() as u64,
             duration_ns: samples.len() as u64 * 1_000_000_000,
         };
-        let handle = Box::into_raw(build_handle(
-            Box::new(TestSource {
-                channels: vec![channel],
-                samples,
-                video_presentation_offset_ns: None,
-                video_times: Vec::new(),
-                videos: Vec::new(),
-                source_laps: None,
-            }),
-            true,
-        )) as *mut c_void;
+        let handle = Box::into_raw(build_handle(Box::new(TestSource {
+            channels: vec![channel],
+            samples,
+            video_presentation_offset_ns: None,
+            video_times: Vec::new(),
+            videos: Vec::new(),
+            source_laps: None,
+        }))) as *mut c_void;
 
         assert_eq!(unsafe { omatrack_source_lap_count(handle) }, 3);
         let mut middle = OmatrackSourceLap {

@@ -282,6 +282,11 @@ private:
     std::vector<std::uint8_t> channelVisible_;
 };
 
+/// Identity of the converter that writes normalized `.telemetry`:
+/// `{native format version}-{pinned upstream rev}`. Caches of normalized
+/// telemetry are keyed by source identity *and* this, so a decoder fix
+/// upstream regenerates them instead of trusting an older normalization.
+const std::string& converterGeneration();
 /// True when `path` is an MTJ/MTX JSONL document (plain or zstd).
 bool isJsonlPath(const std::string& path);
 /// True when `path` names an MTX sidecar (`.ext.jsonl` / `.mtx.jsonl`).
