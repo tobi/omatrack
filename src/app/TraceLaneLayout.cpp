@@ -121,8 +121,12 @@ void TraceLaneLayout::updateLabelWidth() {
     QFontMetricsF titleMetrics(labelFont_);
     QFontMetricsF unitMetrics(unitFont_);
     double widest = kMinLabelW - 8.0;
+    // Only lanes that are on screen set the width. Every raw source channel
+    // is a spec too (AiM names run to `+-_Test_Best_Time`), and sizing the
+    // column for a hidden one steals trace width for nothing.
     for (const ChannelSpec& spec : channelSpecs_) {
         if (spec.kind == ChannelSpec::Kind::GroupHeader) continue;
+        if (store_ && !store_->channelVisible(spec.key)) continue;
         if (!spec.title.isEmpty())
             widest =
                 std::max(widest, titleMetrics.horizontalAdvance(spec.title));

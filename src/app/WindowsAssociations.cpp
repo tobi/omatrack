@@ -77,6 +77,10 @@ QVector<FileAssociation> fileAssociations() {
          false, true},
         {QStringLiteral("ld"), QStringLiteral("MoTeC telemetry session"), false,
          true},
+        // A MoTeC layout is not a recording, but it is the file i2 users
+        // double-click; the store opens the sibling `.ld` for it.
+        {QStringLiteral("ldx"), QStringLiteral("MoTeC telemetry layout"), false,
+         true},
         {QStringLiteral("vbo"),
          QStringLiteral("Racelogic VBOX telemetry session"), false, true},
         {QStringLiteral("telemetry"), QStringLiteral("Omatrack telemetry"),

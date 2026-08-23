@@ -2,7 +2,24 @@
 
 All notable user-facing changes are documented here.
 
-## 1.5.0 — 2026-08-22
+## 1.5.5 — 2026-08-23
+
+- Local recordings are opened directly by the parser on every open: no
+  conversion, no hashing, nothing written beside them. Native `.telemetry`
+  is generated only for recordings on a connected server, keyed by ETag and
+  converter generation, and shared through the remote cache.
+- A second `omatrack` launch hands its file to the running instance instead
+  of opening a second window; Windows `file:` URL paths and the `.ldx`
+  association are handled.
+- Built-in dark fallback palette when Omarchy's theme is unavailable; the
+  selection colour is never the accent.
+- Video: skips apply to the in-flight seek target; render overlays
+  revalidate lap pointers; the label column is sized by the visible lanes.
+- `--mute` flag and a headless autotest runner (`scripts/autotest.sh`).
+- Release tooling pins tagged linuxdeploy releases rather than the moving
+  `continuous` asset.
+
+## 1.5.0 — 2026-08-22 (not published)
 
 - Upstream `motorsport-telemetry-rs` advanced to 1.1.0. AiM sample
   timelines now follow the logger's own timestamps instead of a nominal

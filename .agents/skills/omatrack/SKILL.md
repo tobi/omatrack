@@ -133,11 +133,15 @@ heuristic pre-filter only.
 ## Proving a change
 
 ```sh
-cmake --build build --parallel
-QT_QPA_PLATFORM=wayland QT_FORCE_STDERR_LOGGING=1 \
-  OMATRACK_AUTOTEST=/tmp/omatrack.png \
-  ./build/omatrack ~/Documents/Telemetry/<event>
+cmake --build --preset acceptance
+OMATRACK_AUTOTEST=/tmp/omatrack.png \
+  scripts/autotest.sh ./build-acceptance/omatrack --mute ~/Documents/Telemetry/<event>
 ```
+
+Always go through `scripts/autotest.sh`: it parks the window on a headless
+Hyprland output (real GL, full-frame screenshot, no focus steal) and `--mute`
+keeps the onboard audio off. A bare launch pops over the developer's work
+and makes the video-sync checks flaky.
 
 `OMATRACK_AUTOTEST_WINDOWS=1` writes `<base>_window.png`,
 `<base>_channelsWindow.png`, and `<base>_settingsWindow.png` **instead of** the

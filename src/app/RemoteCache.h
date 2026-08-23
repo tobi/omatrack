@@ -2,9 +2,10 @@
 //
 // A connection contributes listing and authentication. Discovery keeps only
 // zero-byte source stubs plus ETag metadata in the per-location cache. Native
-// `.telemetry` files are content-addressed in `.omatrack/c`: remote objects
-// use their ETag, local files use their BLAKE3 digest, and remote cache objects
-// are published create-only so machines converge without overwriting.
+// `.telemetry` files exist for remote recordings only and are keyed by the
+// object's ETag under `.omatrack/c/{generation}/`, both on this machine and
+// beside the recordings on the server, where they are published create-only
+// so machines converge without overwriting. Local files are parsed directly.
 #pragma once
 
 #include "LibraryLocation.h"
@@ -151,8 +152,8 @@ QString cacheDirectory(const RemoteConnection& connection);
 
 /// Root under which per-location discovery caches sit.
 QString cacheRoot();
-/// Shared local cache for normalized `.telemetry` files. The cache is keyed by
-/// a remote ETag or a local source-file BLAKE3 digest, never by location, and
+/// Local mirror of the normalized `.telemetry` files for remote recordings.
+/// The cache is keyed by the remote object's ETag, never by location, and
 /// lives under one directory per converter generation
 /// (`.omatrack/c/{generation}/{key}.telemetry`) so a decoder fix upstream
 /// regenerates every normalization instead of trusting an older one.

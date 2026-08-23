@@ -235,7 +235,10 @@ MpvVideoItem::MpvVideoItem(QQuickItem* parent)
         return;
     }
 
-    mpv_request_log_messages(state_->handle, "warn");
+    // Under --verbose mpv narrates file open, demuxer probing and seeks, the
+    // account needed when a load stalls or a seek lands on the wrong frame.
+    mpv_request_log_messages(state_->handle,
+                             omatrack::isVerbose() ? "info" : "warn");
     mpv_observe_property(state_->handle, 1, "time-pos", MPV_FORMAT_DOUBLE);
     mpv_observe_property(state_->handle, 2, "duration", MPV_FORMAT_DOUBLE);
     mpv_observe_property(state_->handle, 3, "pause", MPV_FORMAT_FLAG);
@@ -308,12 +311,17 @@ void MpvVideoItem::processEvents() {
                 break;
             }
             case MPV_EVENT_SEEK:
+                if (pendingSeekTarget_) pendingSeekAcknowledged_ = true;
                 if (!seeking_) {
                     seeking_ = true;
                     emit seekingChanged();
                 }
                 break;
             case MPV_EVENT_PLAYBACK_RESTART:
+                if (pendingSeekAcknowledged_) {
+                    pendingSeekTarget_.reset();
+                    pendingSeekAcknowledged_ = false;
+                }
                 if (seeking_) {
                     seeking_ = false;
                     emit seekingChanged();
@@ -391,8 +399,15 @@ void MpvVideoItem::processEvents() {
             case MPV_EVENT_LOG_MESSAGE: {
                 const auto* message =
                     static_cast<mpv_event_log_message*>(event->data);
-                if (message && message->text)
-                    qWarning().noquote() << "libmpv:" << message->text;
+                if (message && message->text) {
+                    const QString text =
+                        QString::fromUtf8(message->text).trimmed();
+                    if (message->log_level <= MPV_LOG_LEVEL_WARN)
+                        qWarning().noquote() << "libmpv:" << text;
+                    else
+                        qCInfo(lcIo).noquote()
+                            << "libmpv" << message->prefix << text;
+                }
                 break;
             }
             default: break;
@@ -427,6 +442,8 @@ void MpvVideoItem::openMedia(const QUrl& source) {
     pendingSource_ = source;
     position_ = 0.0;
     duration_ = 0.0;
+    pendingSeekTarget_.reset();
+    pendingSeekAcknowledged_ = false;
     loaded_ = false;
     autoplayPending_ = true;
     title_ = source.isLocalFile() ? QFileInfo(source.toLocalFile()).fileName()
@@ -489,6 +506,8 @@ void MpvVideoItem::closeMedia() {
     title_.clear();
     position_ = 0.0;
     duration_ = 0.0;
+    pendingSeekTarget_.reset();
+    pendingSeekAcknowledged_ = false;
     if (loaded_) {
         loaded_ = false;
         emit loadedChanged();
@@ -550,6 +569,8 @@ void MpvVideoItem::seek(double seconds) {
     seconds = std::max(0.0, seconds);
     if (duration_ > 0.0) seconds = std::min(seconds, duration_);
     ++exactSeekCount_;
+    pendingSeekTarget_ = seconds;
+    pendingSeekAcknowledged_ = false;
     if (lcSeek().isInfoEnabled())
         qCInfo(lcSeek).noquote() << QStringLiteral("seek video %1  t=%2s")
                                         .arg(omatrack::displayUrl(source_),
@@ -561,7 +582,9 @@ void MpvVideoItem::seek(double seconds) {
     });
 }
 
-void MpvVideoItem::seekRelative(double seconds) { seek(position_ + seconds); }
+void MpvVideoItem::seekRelative(double seconds) {
+    seek(targetPosition() + seconds);
+}
 
 void MpvVideoItem::frameStep() {
     if (!loaded_) return;

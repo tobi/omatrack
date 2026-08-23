@@ -3,7 +3,7 @@
 // Reads the active Omarchy theme's colors.toml and exposes it to QML as the
 // `Theme` singleton. On Omarchy it watches the desktop's current-theme state
 // and reloads after an atomic theme swap. Outside Omarchy the map stays empty
-// and QML falls back to SystemPalette.
+// and `Style` uses its built-in dark palette.
 
 #pragma once
 

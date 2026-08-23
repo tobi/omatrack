@@ -502,6 +502,15 @@ public:
 
     const QVector<OverlayGroup>& overlayGroups() const;
     Q_INVOKABLE bool directoryExists(const QString& dirPath) const;
+    /// Native path for a `file:` URL from a dialog or a drop. Platform
+    /// dialogs hand back `file:///C:/Users/…` on Windows, which a string
+    /// strip of `file://` turns into `/C:/Users/…`; `QUrl::toLocalFile()`
+    /// is the only correct decoder. Takes a string so a typed `C:\…` path
+    /// is never parsed as a URL with scheme `c`; anything that is not a
+    /// `file:` URL passes through unchanged.
+    Q_INVOKABLE QString localPathFromUrl(const QString& value) const;
+    /// `defaultTelemetryDirectory()` as a `file:` URL for dialog `folder`.
+    Q_INVOKABLE QUrl defaultTelemetryDirectoryUrl() const;
     /// The default telemetry library folder: the platform's Documents
     /// location plus `/Telemetry` (honors Windows OneDrive redirection),
     /// created if it does not exist so a fresh install never lands in a
@@ -796,6 +805,10 @@ public:
     QAbstractItemModel* libraryModel() const { return libraryModel_.get(); }
     bool videoMuted() const;
     void setVideoMuted(bool muted);
+    /// `--mute`: silence playback for this process without touching
+    /// `video.muted` in omatrack.yml. The first click on the speaker button
+    /// ends the override and persists as usual.
+    void overrideVideoMuted(bool muted);
     QStringList sessionDirectoriesList() const { return sessionDirectories(); }
 
 signals:
@@ -986,6 +999,7 @@ private:
     double viewEnd_ = 1.0;
     bool editingCorners_ = false;
     bool ready_ = false;
+    std::optional<bool> videoMutedOverride_;
     bool loading_ = false;
     bool rescanPending_ = false;
     bool primaryLapLoading_ = false;
