@@ -134,6 +134,31 @@ std::vector<double> pdsLapTimeSplits(const std::vector<double>& values,
     return splits;
 }
 
+std::vector<double> pdsLastLapTimeSplits(const std::vector<double>& values,
+                                         int freq) {
+    std::vector<double> splits;
+    if (freq <= 0 || values.size() < 2) return splits;
+    auto asSeconds = [](double value) {
+        if (!std::isfinite(value) || value <= 0.0) return -1.0;
+        if (value > 1000.0 && value < 600000.0) value /= 1000.0;
+        return value > 1.0 && value < 600.0 ? value : -1.0;
+    };
+    double previous = asSeconds(values[0]);
+    int lastSplitIndex = -std::max(1, freq);
+    int clusterGap = std::max(1, freq / 2);
+    for (size_t i = 1; i < values.size(); ++i) {
+        const double current = asSeconds(values[i]);
+        if (current < 0.0) continue;
+        if (previous > 0.0 && std::fabs(current - previous) > 0.05 &&
+            int(i) - lastSplitIndex >= clusterGap) {
+            splits.push_back(double(i) / double(freq));
+            lastSplitIndex = int(i);
+        }
+        previous = current;
+    }
+    return splits;
+}
+
 std::vector<double> pdsLapNumberSplits(const std::vector<double>& values,
                                        int freq) {
     std::vector<double> splits;
@@ -1312,11 +1337,27 @@ std::vector<Lap> TelemetrySource::detectLaps() const {
         return {std::move(values), frequency};
     };
 
+    auto firstExactId = [&](const std::vector<std::string>& aliases) -> int {
+        for (auto& alias : aliases) {
+            const std::string nAlias = normalizeChannelName(alias);
+            for (size_t i = 0; i < channels_.size(); ++i) {
+                if (!channels_[i].hasSamples()) continue;
+                if (normalizeChannelName(channels_[i].name) == nAlias)
+                    return int(i);
+            }
+        }
+        return -1;
+    };
+
     int lapBeaconId = firstId({"lap_beacon_trig", "laptrigger", "lap_beacon"});
     int lapNumberId = firstId({"lap number"});
     int lapDistanceId = firstId({"lap distance corrected", "lap distance"});
-    int lapTimeId = firstId({"lap time"});
-    int previousLapTimeId = firstId({"previous lap time", "previous lt"});
+    // Exact names only: a contains match on "lap time" would pick
+    // Delta_Lap_Time / Ref_Lap_Time ahead of Current_Lap_Time.
+    int lapTimeId = firstExactId({"current lap time", "lap current lap time",
+                                  "lap time running", "lap time"});
+    int previousLapTimeId = firstExactId(
+        {"previous lap time", "previous lt", "last lap time", "last lt"});
 
     auto [lapBeacon, beaconFreq] = series(lapBeaconId);
     auto [lapNumber, numberFreq] = series(lapNumberId);
@@ -1342,10 +1383,12 @@ std::vector<Lap> TelemetrySource::detectLaps() const {
     const std::vector<double> lapNumberSplits =
         pdsLapNumberSplits(lapNumber, numberFreq);
     const bool lapNumberIsAuthority = lapNumberCarriesState(lapNumber);
-    const std::vector<double> splitTimes =
-        selectLapSplits(beaconSplits, lapNumberSplits, lapNumberIsAuthority,
-                        pdsLapTimeSplits(lapTime, timeFreq),
-                        pdsDistanceSplits(lapDistance, distanceFreq));
+    std::vector<double> lapTimeSplits = pdsLapTimeSplits(lapTime, timeFreq);
+    if (lapTimeSplits.size() < 2)
+        lapTimeSplits = pdsLastLapTimeSplits(prevLapTime, prevFreq);
+    const std::vector<double> splitTimes = selectLapSplits(
+        beaconSplits, lapNumberSplits, lapNumberIsAuthority, lapTimeSplits,
+        pdsDistanceSplits(lapDistance, distanceFreq));
 
     // Counter increments define boundaries, but a double trigger can still
     // create an impossible crossing pair. Keep the shared short-lap rejection
@@ -1463,12 +1506,16 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime,
     auto gearIt = resampled.find("gear");
     if (gearIt != resampled.end()) {
         int minPositive = std::numeric_limits<int>::max();
+        int maxGear = 0;
         for (double v : gearIt->second) {
             int g = int(std::llround(v));
             if (g > 0) minPositive = std::min(minPositive, g);
+            maxGear = std::max(maxGear, g);
         }
-        if (minPositive != std::numeric_limits<int>::max() && minPositive >= 2)
-            gearOffset = 1;
+        // Some loggers store N=1, 1st=2, ..., 6th=7. A flying lap that never
+        // uses 1st still reports 2-6 in a 1-based display encoding — only a
+        // 7 proves the shifted scale.
+        if (minPositive >= 2 && maxGear >= 7) gearOffset = 1;
     }
 
     UnifiedLap unified;

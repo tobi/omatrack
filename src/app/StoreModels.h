@@ -25,6 +25,7 @@ class LapListModel : public QAbstractListModel {
     QML_ANONYMOUS
     Q_PROPERTY(int fixedLapCount READ fixedLapCount NOTIFY refreshed)
     Q_PROPERTY(int flexibleTimeMs READ flexibleTimeMs NOTIFY refreshed)
+    Q_PROPERTY(int totalTimeMs READ totalTimeMs NOTIFY refreshed)
 public:
     enum Role {
         LapIdRole = Qt::UserRole,
@@ -48,6 +49,7 @@ public:
     void refresh(const QVector<LapRow>& rows);
     int fixedLapCount() const { return fixedLapCount_; }
     int flexibleTimeMs() const { return flexibleTimeMs_; }
+    int totalTimeMs() const { return totalTimeMs_; }
 
 signals:
     void refreshed();
@@ -56,6 +58,7 @@ private:
     QVector<LapRow> rows_;
     int fixedLapCount_ = 0;
     int flexibleTimeMs_ = 0;
+    int totalTimeMs_ = 0;
 };
 
 // ── channel list model ──────────────────────────────────────────────

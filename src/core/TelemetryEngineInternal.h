@@ -24,6 +24,10 @@ std::vector<double> pdsBeaconSplits(const std::vector<double>& values,
 std::vector<double> pdsLapTimeSplits(const std::vector<double>& values,
                                      int freq);
 
+/// Splits from a last/previous-lap-time channel (detects a new posted time).
+std::vector<double> pdsLastLapTimeSplits(const std::vector<double>& values,
+                                         int freq);
+
 /// Splits from a lap-number channel (detects positive-to-next-positive
 /// increments; zero/dropout recovery only re-establishes counter state).
 std::vector<double> pdsLapNumberSplits(const std::vector<double>& values,

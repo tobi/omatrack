@@ -3942,6 +3942,33 @@ QString TelemetryStore::detectedAtlasSlug(const SessionHandle* session) const {
     }
     if (filenameMatches.size() == 1) return *filenameMatches.cbegin();
 
+    // IMSA stems use short venue codes (IND, RAM) that are unique prefixes
+    // of an atlas slug/aka, not exact tokens.
+    QSet<QString> prefixMatches;
+    for (auto it = atlas_->tracks().cbegin(); it != atlas_->tracks().cend();
+         ++it) {
+        QStringList names{it.key(),
+                          it.value().value(QStringLiteral("name")).toString()};
+        for (const QJsonValue& alias :
+             it.value().value(QStringLiteral("aka")).toArray())
+            names.append(alias.toString());
+        const QJsonObject externalIds =
+            it.value().value(QStringLiteral("external_ids")).toObject();
+        for (auto external = externalIds.begin(); external != externalIds.end();
+             ++external)
+            names.append(external.value().toString());
+        for (const QString& name : names) {
+            const QString normalized = normalizeAtlasName(name);
+            for (const QString& token : filenameTokens) {
+                if (token.size() >= 3 && normalized.startsWith(token)) {
+                    prefixMatches.insert(it.key());
+                    break;
+                }
+            }
+        }
+    }
+    if (prefixMatches.size() == 1) return *prefixMatches.cbegin();
+
     // Some AiM recordings expose a GPS channel whose receiver payload is an
     // invalid equator placeholder. Borrow the unambiguous venue identity from
     // GPS-valid recordings on consecutive days in the same event folder.
@@ -4032,8 +4059,19 @@ QVariantList TelemetryStore::trackAtlasChoices() const {
          ++it) {
         const QString name =
             it.value().value(QStringLiteral("name")).toString(it.key());
-        rows.append(QVariantMap{{QStringLiteral("name"), name},
-                                {QStringLiteral("slug"), it.key()}});
+        QStringList search{name, it.key()};
+        for (const QJsonValue& alias :
+             it.value().value(QStringLiteral("aka")).toArray())
+            search.append(alias.toString());
+        const QJsonObject externalIds =
+            it.value().value(QStringLiteral("external_ids")).toObject();
+        for (auto external = externalIds.begin(); external != externalIds.end();
+             ++external)
+            search.append(external.value().toString());
+        rows.append(QVariantMap{
+            {QStringLiteral("name"), name},
+            {QStringLiteral("slug"), it.key()},
+            {QStringLiteral("search"), search.join(QLatin1Char(' '))}});
     }
     std::sort(rows.begin(), rows.end(),
               [](const QVariantMap& a, const QVariantMap& b) {

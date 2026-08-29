@@ -46,13 +46,16 @@ void LapListModel::refresh(const QVector<LapRow>& rows) {
     rows_ = rows;
     fixedLapCount_ = 0;
     flexibleTimeMs_ = 0;
+    totalTimeMs_ = 0;
     for (const LapRow& r : rows) {
+        totalTimeMs_ += std::max(1, r.timeMs);
         if (!r.countsForBest)
             ++fixedLapCount_;
         else
             flexibleTimeMs_ += std::max(1, r.timeMs);
     }
     flexibleTimeMs_ = std::max(1, flexibleTimeMs_);
+    totalTimeMs_ = std::max(1, totalTimeMs_);
     endResetModel();
     emit refreshed();
 }

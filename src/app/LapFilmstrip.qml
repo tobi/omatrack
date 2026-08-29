@@ -36,6 +36,7 @@ Rectangle {
             delegate: Rectangle {
                 id: sessionStrip
 
+                readonly property var laps: sessionStrip.strip.reference ? Store.compareLaps : Store.primaryLaps
                 required property var modelData
                 property string selectedLapTime: {
                     const key = strip.reference ? Store.compareSessionKey : Store.primarySessionKey;
@@ -97,18 +98,18 @@ Rectangle {
                             spacing: 3
 
                             Repeater {
-                                model: sessionStrip.strip.lapsModel
+                                model: sessionStrip.laps
 
                                 delegate: Rectangle {
                                     id: proportionalLap
 
                                     readonly property bool confidenceLap: !sessionStrip.strip.reference && Store.traceConfidenceMode && Store.traceConfidenceIncludesLap(sessionStrip.strip.sessionKey, proportionalLap.lapId)
                                     required property bool countsForBest
-                                    readonly property bool fixedWidthLap: !proportionalLap.countsForBest
-                                    readonly property real flexibleLaneWidth: Math.max(0, proportionalLapLane.width - Math.max(0, sessionStrip.strip.lapsCount - 1) * proportionalLapRow.spacing - sessionStrip.strip.fixedLapCount * 30)
+                                    readonly property real flexibleLaneWidth: Math.max(0, proportionalLapLane.width - Math.max(0, sessionStrip.laps.rowCount - 1) * proportionalLapRow.spacing - (sessionStrip.laps.fixedLapCount === sessionStrip.laps.rowCount ? 0 : sessionStrip.laps.fixedLapCount * 30))
                                     required property bool isFastest
                                     required property string label
                                     required property int lapId
+                                    readonly property bool pinIncomplete: !proportionalLap.countsForBest && sessionStrip.laps.fixedLapCount !== sessionStrip.laps.rowCount
                                     property bool selectedLap: sessionStrip.strip.reference ? sessionStrip.strip.sessionKey === Store.compareSessionKey && proportionalLap.lapId === Store.compareLapIndex : sessionStrip.strip.sessionKey === Store.primarySessionKey && proportionalLap.lapId === Store.primaryLapIndex
                                     required property int timeMs
                                     required property string timeText
@@ -125,7 +126,7 @@ Rectangle {
                                     height: proportionalLapRow.height - 8
                                     objectName: (sessionStrip.strip.reference ? "referenceFilmstripLap-" : "activeFilmstripLap-") + proportionalLap.lapId
                                     radius: 3
-                                    width: proportionalLap.fixedWidthLap ? 30 : Math.max(1, proportionalLap.flexibleLaneWidth * Math.max(1, proportionalLap.timeMs) / sessionStrip.strip.flexibleTimeMs)
+                                    width: proportionalLap.pinIncomplete ? 30 : Math.max(1, proportionalLap.flexibleLaneWidth * Math.max(1, proportionalLap.timeMs) / (sessionStrip.laps.fixedLapCount === sessionStrip.laps.rowCount ? sessionStrip.laps.totalTimeMs : sessionStrip.laps.flexibleTimeMs))
 
                                     Rectangle {
                                         anchors.bottom: parent.bottom
@@ -145,7 +146,7 @@ Rectangle {
                                         font.bold: proportionalLap.selectedLap || proportionalLap.confidenceLap
                                         font.family: Style.monoFontFamily
                                         font.pixelSize: 9
-                                        text: proportionalLap.fixedWidthLap ? proportionalLap.label : proportionalLap.timeText
+                                        text: proportionalLap.pinIncomplete ? proportionalLap.label : proportionalLap.timeText
                                         verticalAlignment: Text.AlignVCenter
                                     }
                                     MouseArea {

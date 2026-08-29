@@ -239,6 +239,32 @@ private slots:
 };
 
 // ────────────────────────────────────────────────────────────────────
+// pdsLastLapTimeSplits — a posted last-lap time changing to a new value
+// ────────────────────────────────────────────────────────────────────
+
+class LastLapTimeSplitsTest : public QObject {
+    Q_OBJECT
+private slots:
+    void detectsPostedTimeChange() {
+        // 5 Hz, Previous_LT in milliseconds. Stays at 1:16.852, then jumps
+        // to 1:17.034 at the next crossing.
+        std::vector<double> v(50, 76852.0);
+        v.insert(v.end(), 50, 77034.0);
+        auto splits = pdsLastLapTimeSplits(v, 5);
+        QCOMPARE(splits.size(), size_t(1));
+        QCOMPARE(splits[0], 10.0);
+    }
+    void ignoresZeros() {
+        std::vector<double> v(40, 0.0);
+        QVERIFY(pdsLastLapTimeSplits(v, 5).empty());
+    }
+    void tooShort() {
+        std::vector<double> v{76852.0};
+        QVERIFY(pdsLastLapTimeSplits(v, 5).empty());
+    }
+};
+
+// ────────────────────────────────────────────────────────────────────
 // pdsLapNumberSplits — increments in lap number
 // ────────────────────────────────────────────────────────────────────
 
@@ -955,6 +981,58 @@ private slots:
         QVERIFY(!std::isfinite(lap.gpsLon[lap.gpsLon.size() - 1]));
     }
 
+    void detectLapsUsesCurrentLapTimeReset() {
+        TelemetrySource src;
+        RawChannel timer;
+        timer.name = "Current_Lap_Time";
+        timer.frequencyHz = 10.0;
+        timer.durationSec = 240.0;
+        for (int lap = 0; lap < 3; ++lap)
+            for (int i = 0; i < 800; ++i)
+                timer.samples.push_back(double(i) * 100.0);
+        src.channels() = {timer};
+
+        const std::vector<Lap> laps = src.detectLaps();
+        QVERIFY(std::any_of(laps.begin(), laps.end(),
+                            [](const Lap& lap) { return lap.complete; }));
+    }
+
+    void detectLapsPrefersCurrentLapTimeOverDelta() {
+        TelemetrySource src;
+        RawChannel delta;
+        delta.name = "Delta_Lap_Time";
+        delta.frequencyHz = 10.0;
+        delta.durationSec = 240.0;
+        delta.samples.assign(2400, 0.0);
+        RawChannel timer = delta;
+        timer.name = "Current_Lap_Time";
+        timer.samples.clear();
+        for (int lap = 0; lap < 3; ++lap)
+            for (int i = 0; i < 800; ++i)
+                timer.samples.push_back(double(i) * 100.0);
+        src.channels() = {delta, timer};
+
+        const std::vector<Lap> laps = src.detectLaps();
+        QVERIFY(std::any_of(laps.begin(), laps.end(),
+                            [](const Lap& lap) { return lap.complete; }));
+    }
+
+    void detectLapsUsesPreviousLt() {
+        TelemetrySource src;
+        RawChannel previous;
+        previous.name = "Previous_LT";
+        previous.frequencyHz = 5.0;
+        previous.durationSec = 240.0;
+        previous.samples.insert(previous.samples.end(), 400, 76852.0);
+        previous.samples.insert(previous.samples.end(), 400, 77034.0);
+        previous.samples.insert(previous.samples.end(), 400, 77200.0);
+        src.channels() = {previous};
+
+        const std::vector<Lap> laps = src.detectLaps();
+        QVERIFY(std::any_of(laps.begin(), laps.end(),
+                            [](const Lap& lap) { return lap.complete; }));
+    }
+
     void detectLapsUsesSyntheticCounter() {
         TelemetrySource src;
         RawChannel counter;
@@ -1084,7 +1162,6 @@ private slots:
         QVERIFY(lap.speed[25] <= 500.0);
     }
 
-
     void unifyLapConvertsMilesPerHour() {
         TelemetrySource src;
         RawChannel speed;
@@ -1174,7 +1251,20 @@ private slots:
         QVERIFY(std::fabs(src.unifyLap(0.0, 1.0).steering[25] - 90.0) < 1e-6);
     }
 
-    void unifyLapShiftsOneBasedGearWhenMinimumIsTwo() {
+    void unifyLapShiftsTwoToSevenGearEncoding() {
+        TelemetrySource src;
+        RawChannel gear;
+        gear.name = "Gear";
+        gear.samples = {2.0, 7.0};
+        gear.frequencyHz = 2.0;
+        gear.durationSec = 1.0;
+        src.channels() = {gear};
+        const UnifiedLap lap = src.unifyLap(0.0, 1.0);
+        QVERIFY(lap.gear.front() == 1);
+        QVERIFY(lap.gear.back() == 6);
+    }
+
+    void unifyLapKeepsDisplayGearWhenFlyingLapStartsAtTwo() {
         TelemetrySource src;
         RawChannel gear;
         gear.name = "Gear";
@@ -1183,8 +1273,8 @@ private slots:
         gear.durationSec = 1.0;
         src.channels() = {gear};
         const UnifiedLap lap = src.unifyLap(0.0, 1.0);
-        QVERIFY(lap.gear.front() == 1);
-        QVERIFY(lap.gear.back() == 2);
+        QVERIFY(lap.gear.front() == 2);
+        QVERIFY(lap.gear.back() == 3);
     }
 
     void unifyLapConvertsGpsAccuracyUnits() {
@@ -1403,7 +1493,20 @@ private slots:
         QVERIFY(std::fabs(src.unifyLap(0.0, 1.0).steering[25] - 90.0) < 1e-6);
     }
 
-    void unifyLapShiftsOneBasedGearWhenMinimumIsTwo() {
+    void unifyLapShiftsTwoToSevenGearEncoding() {
+        TelemetrySource src;
+        RawChannel gear;
+        gear.name = "Gear";
+        gear.samples = {2.0, 7.0};
+        gear.frequencyHz = 2.0;
+        gear.durationSec = 1.0;
+        src.channels() = {gear};
+        const UnifiedLap lap = src.unifyLap(0.0, 1.0);
+        QVERIFY(lap.gear.front() == 1);
+        QVERIFY(lap.gear.back() == 6);
+    }
+
+    void unifyLapKeepsDisplayGearWhenFlyingLapStartsAtTwo() {
         TelemetrySource src;
         RawChannel gear;
         gear.name = "Gear";
@@ -1412,8 +1515,8 @@ private slots:
         gear.durationSec = 1.0;
         src.channels() = {gear};
         const UnifiedLap lap = src.unifyLap(0.0, 1.0);
-        QVERIFY(lap.gear.front() == 1);
-        QVERIFY(lap.gear.back() == 2);
+        QVERIFY(lap.gear.front() == 2);
+        QVERIFY(lap.gear.back() == 3);
     }
 
     void unifyLapConvertsGpsAccuracyUnits() {
@@ -1693,6 +1796,10 @@ int main(int argc, char* argv[]) {
     }
     {
         LapTimeSplitsTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        LastLapTimeSplitsTest t;
         status |= QTest::qExec(&t, argc, argv);
     }
     {

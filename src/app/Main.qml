@@ -104,7 +104,8 @@ ApplicationWindow {
             lapsModel: lapsModel,
             lapsCount: lapsModel.rowCount,
             fixedLapCount: lapsModel.fixedLapCount,
-            flexibleTimeMs: lapsModel.flexibleTimeMs
+            flexibleTimeMs: lapsModel.flexibleTimeMs,
+            totalTimeMs: lapsModel.totalTimeMs
         };
     }
     function movePointerTooltip(owner: string, x: real, y: real): void {

@@ -19,6 +19,7 @@ Dialog {
     property bool folderScope: false
     property var metadata: ({})
     property string targetPath: ""
+    property var trackSlugMatches: []
 
     function addDriverMapping(): void {
         const rows = metadataDialog.driverRows.slice();
@@ -111,6 +112,11 @@ Dialog {
         }
         return result;
     }
+    function chooseTrackSlug(slug: string): void {
+        trackSlugField.text = slug;
+        metadataDialog.trackSlugMatches = [];
+        trackSlugPopup.close();
+    }
     function completedValue(loaded: var, valueKey: string, inheritedKey: string, suggestedKey: string): string {
         const value = loaded[valueKey] || "";
         if (value !== "")
@@ -141,6 +147,18 @@ Dialog {
     }
     function placeholderColor(inheritedValue: string): color {
         return inheritedValue !== "" ? Style.blueColor : Style.dimTextColor;
+    }
+    function refreshTrackSlugMatches(query: string): void {
+        const needle = query.trim().toLowerCase();
+        let rows = [];
+        const atlasRows = Store.trackAtlasChoices();
+        for (let i = 0; i < atlasRows.length; ++i) {
+            const row = atlasRows[i];
+            const haystack = String(row.search || (row.name + " " + row.slug)).toLowerCase();
+            if (needle === "" || haystack.indexOf(needle) !== -1)
+                rows.push(row);
+        }
+        metadataDialog.trackSlugMatches = rows;
     }
     function removeDriverMapping(index: int): void {
         const rows = metadataDialog.driverRows.slice();
@@ -456,12 +474,32 @@ Dialog {
                         horizontalAlignment: Text.AlignRight
                         text: "Atlas slug"
                     }
-                    CompactTextField {
-                        id: trackSlugField
-
+                    Item {
                         Layout.fillWidth: true
-                        placeholderText: metadataDialog.inheritedPlaceholder(metadataDialog.metadata.inheritedTrackSlug || "", "track-atlas-slug")
-                        placeholderTextColor: metadataDialog.placeholderColor(metadataDialog.metadata.inheritedTrackSlug || "")
+                        implicitHeight: trackSlugField.implicitHeight
+
+                        CompactTextField {
+                            id: trackSlugField
+
+                            anchors.fill: parent
+                            placeholderText: metadataDialog.inheritedPlaceholder(metadataDialog.metadata.inheritedTrackSlug || "", "search tracks we know")
+                            placeholderTextColor: metadataDialog.placeholderColor(metadataDialog.metadata.inheritedTrackSlug || "")
+
+                            onActiveFocusChanged: {
+                                if (activeFocus) {
+                                    metadataDialog.refreshTrackSlugMatches(text);
+                                    if (metadataDialog.trackSlugMatches.length > 0)
+                                        trackSlugPopup.open();
+                                }
+                            }
+                            onTextEdited: {
+                                metadataDialog.refreshTrackSlugMatches(text);
+                                if (metadataDialog.trackSlugMatches.length > 0)
+                                    trackSlugPopup.open();
+                                else
+                                    trackSlugPopup.close();
+                            }
+                        }
                     }
                 }
                 ToolButton {
@@ -614,6 +652,59 @@ Dialog {
             Store.saveVideoMetadata(metadataDialog.targetPath, metadataDialog.savePayload());
     }
 
+    Popup {
+        id: trackSlugPopup
+
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        height: Math.min(220, 8 + metadataDialog.trackSlugMatches.length * 26)
+        padding: 1
+        parent: Overlay.overlay
+        width: trackSlugField.width
+        x: trackSlugField.mapToItem(Overlay.overlay, 0, 0).x
+        y: trackSlugField.mapToItem(Overlay.overlay, 0, trackSlugField.height + 2).y
+
+        background: Rectangle {
+            border.color: Style.borderColor
+            border.width: 1
+            color: Style.darkBackgroundColor
+            radius: 4
+        }
+        contentItem: ListView {
+            clip: true
+            model: metadataDialog.trackSlugMatches.length
+
+            delegate: Rectangle {
+                id: slugChoice
+
+                readonly property var choice: metadataDialog.trackSlugMatches[slugChoice.index]
+                required property int index
+
+                color: slugChoiceMouse.containsMouse ? Style.selectionColor : "transparent"
+                height: 26
+                width: ListView.view.width
+
+                Label {
+                    anchors.fill: parent
+                    anchors.leftMargin: 8
+                    anchors.rightMargin: 8
+                    color: Style.foregroundColor
+                    elide: Text.ElideRight
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: Style.smallFontSize
+                    text: slugChoice.choice.name + "  ·  " + slugChoice.choice.slug
+                    verticalAlignment: Text.AlignVCenter
+                }
+                MouseArea {
+                    id: slugChoiceMouse
+
+                    anchors.fill: parent
+                    hoverEnabled: true
+
+                    onClicked: metadataDialog.chooseTrackSlug(slugChoice.choice.slug)
+                }
+            }
+        }
+    }
     Connections {
         function onFolderChannelSampleReady(loaded: var): void {
             if (metadataDialog.folderScope && loaded.path === metadataDialog.targetPath)

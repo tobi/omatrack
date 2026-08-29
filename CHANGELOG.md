@@ -2,6 +2,18 @@
 
 All notable user-facing changes are documented here.
 
+## 1.5.6 — 2026-08-29
+
+- Filmstrip binds the live lap models, so laps show as soon as a session is
+  selected (video already sought to the best lap while the strip stayed empty).
+  Incomplete-only sessions fill the lane instead of 30 px stubs.
+- Gear is no longer shifted down one on a flying lap that never uses 1st;
+  the 2–7 logger encoding is applied only when a 7 is present.
+- Lap detection falls back to `Current_Lap_Time` resets and `Previous_LT`
+  steps when the transponder/counter is quiet, without grabbing Delta/Ref.
+- Assign-track and atlas-slug fields autocomplete the Track Atlas list;
+  short venue codes such as `IND` uniquely prefix-match `indianapolis`.
+
 ## 1.5.5 — 2026-08-23
 
 - Local recordings are opened directly by the parser on every open: no
