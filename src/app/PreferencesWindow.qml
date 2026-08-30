@@ -197,11 +197,9 @@ ApplicationWindow {
 
                 PreferencesLibraryPage {
                     id: libraryPage
-
                 }
                 PreferencesDriversPage {
                     id: driversPage
-
                 }
                 PreferencesTrackDataPage {
                 }

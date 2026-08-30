@@ -358,6 +358,17 @@ ApplicationWindow {
         videoFullscreen: root.videoFullscreen
     }
     Shortcut {
+        enabled: root.videoFullscreen || Store.focusedCorner >= 0
+        sequence: "Escape"
+
+        onActivated: {
+            if (root.videoFullscreen)
+                root.videoSetFullscreen(false);
+            else
+                Store.clearCornerFocus();
+        }
+    }
+    Shortcut {
         enabled: {
             const item = root.activeFocusItem;
             if (!item)
@@ -368,17 +379,6 @@ ApplicationWindow {
         sequence: "X"
 
         onActivated: Store.swapPrimaryWithReference()
-    }
-    Shortcut {
-        enabled: root.videoFullscreen || Store.focusedCorner >= 0
-        sequence: "Escape"
-
-        onActivated: {
-            if (root.videoFullscreen)
-                root.videoSetFullscreen(false);
-            else
-                Store.clearCornerFocus();
-        }
     }
     DropArea {
         id: fileDropArea
