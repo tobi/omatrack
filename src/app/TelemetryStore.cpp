@@ -2559,6 +2559,7 @@ TelemetryStore::TelemetryStore(QObject* parent)
     // refreshes them; refreshed on the matching store signal.
     primaryLapsModel_ = std::make_unique<LapListModel>(this);
     compareLapsModel_ = std::make_unique<LapListModel>(this);
+    filmstripSessionsModel_ = std::make_unique<FilmstripSessionListModel>(this);
     channelsModel_ = std::make_unique<ChannelListModel>(this);
     cornersModel_ = std::make_unique<CornerListModel>(this);
     driverMappingsModel_ = std::make_unique<DriverMappingModel>(this);
@@ -2566,6 +2567,7 @@ TelemetryStore::TelemetryStore(QObject* parent)
     libraryModel_ = std::make_unique<LibraryModel>(this);
     connect(this, &TelemetryStore::selectionChanged, this, [this]() {
         refreshLapModels();
+        refreshFilmstripModel();
         refreshCornersModel();
         refreshSyncStrategyModel();
     });
@@ -2573,6 +2575,7 @@ TelemetryStore::TelemetryStore(QObject* parent)
         refreshLibraryModel();
         refreshDriverMappingsModel();
         refreshLapModels();
+        refreshFilmstripModel();
     });
     connect(this, &TelemetryStore::channelConfigChanged, this,
             [this]() { refreshChannelsModel(); });
@@ -5012,6 +5015,8 @@ void TelemetryStore::setPrimary(SessionHandle* session, int lapId) {
     overlays_->resampleOverlays();
     emit cornersChanged();
     emit videoTimeChanged();
+    emit cursorFracChanged();
+    emit selectionChanged();
     logSelectedLap("select primary", session, lapId);
 }
 
@@ -5194,20 +5199,62 @@ int TelemetryStore::bestLapIdForSession(const QString& sessionKey) const {
     return s->laps().first().lapId;
 }
 
+namespace {
+QString formatLapDeltaMs(double deltaMs) {
+    const double seconds = deltaMs / 1000.0;
+    const QString sign =
+        seconds >= 0.0 ? QStringLiteral("+") : QStringLiteral("−");
+    return sign + QString::number(std::fabs(seconds), 'f', 3);
+}
+
+QString lapHoverText(const QVector<LapEntry>& laps, const LapEntry& target,
+                     int selectedLapId) {
+    QStringList parts;
+    parts.append(target.timeText);
+    const LapEntry* best = nullptr;
+    const LapEntry* selected = nullptr;
+    for (const LapEntry& lap : laps) {
+        if (lap.countsForBest() && (!best || lap.timeMs < best->timeMs))
+            best = &lap;
+        if (lap.lapId == selectedLapId) selected = &lap;
+    }
+    if (best && best->lapId != target.lapId)
+        parts.append(QStringLiteral("vs best %1")
+                         .arg(formatLapDeltaMs(target.timeMs - best->timeMs)));
+    if (selected && selected->lapId != target.lapId &&
+        (!best || selected->lapId != best->lapId))
+        parts.append(
+            QStringLiteral("vs sel %1")
+                .arg(formatLapDeltaMs(target.timeMs - selected->timeMs)));
+    for (const LapEntry& lap : laps) {
+        if (!lap.countsForBest() || lap.lapId == target.lapId) continue;
+        if (best && lap.lapId == best->lapId) continue;
+        if (selected && lap.lapId == selected->lapId) continue;
+        parts.append(QStringLiteral("%1 %2").arg(
+            lap.label, formatLapDeltaMs(target.timeMs - lap.timeMs)));
+    }
+    return parts.join(QStringLiteral("  "));
+}
+}  // namespace
+
 QVector<LapRow> TelemetryStore::buildLapRows(SessionHandle* session) const {
     QVector<LapRow> rows;
     if (!session) return rows;
+    const int selectedId = session == primarySession_   ? primaryLap_
+                           : session == compareSession_ ? compareLap_
+                                                        : -1;
     for (const LapEntry& l : session->laps()) {
         LapRow row;
         row.lapId = l.lapId;
         row.label = l.label;
         row.timeText = l.timeText;
-        row.timeMs = l.timeMs;
+        row.timeMs = int(l.timeMs);
         row.startTime = l.startTime;
         row.isFastest = l.isFastest;
         row.isComplete = l.isComplete;
         row.isPitLap = l.isPitLap;
         row.countsForBest = l.countsForBest();
+        row.hoverText = lapHoverText(session->laps(), l, selectedId);
         rows.append(row);
     }
     return rows;
@@ -5221,6 +5268,40 @@ QVector<LapRow> TelemetryStore::lapRowsForSession(
 void TelemetryStore::refreshLapModels() {
     primaryLapsModel_->refresh(buildLapRows(primarySession_));
     compareLapsModel_->refresh(buildLapRows(compareSession_));
+}
+
+void TelemetryStore::refreshFilmstripModel() {
+    QVector<FilmstripSessionRow> rows;
+    if (primarySession_) {
+        FilmstripSessionRow row;
+        row.sessionKey = primarySession_->sessionKey();
+        row.driverName = driverDisplay(primarySession_);
+        row.bestTime = primarySession_->bestLapTime();
+        row.reference = false;
+        rows.append(row);
+    }
+    if (compareSession_ && compareSession_ != primarySession_) {
+        FilmstripSessionRow row;
+        row.sessionKey = compareSession_->sessionKey();
+        row.driverName = driverDisplay(compareSession_);
+        row.bestTime = compareSession_->bestLapTime();
+        row.reference = true;
+        rows.append(row);
+    }
+    filmstripSessionsModel_->refresh(rows);
+}
+
+ActiveSessionRoles TelemetryStore::activeSessionRoles() const {
+    ActiveSessionRoles roles;
+    roles.sessionKey = primarySessionKey();
+    if (primarySession_ && primarySession_->isVideo())
+        roles.videoIdentity = primarySession_->path();
+    roles.filmstripKey = filmstripSessionsModel_
+                             ? filmstripSessionsModel_->primarySessionKey()
+                             : QString();
+    roles.sidebarKey =
+        libraryModel_ ? libraryModel_->primarySessionKey() : QString();
+    return roles;
 }
 bool TelemetryStore::traceConfidenceIncludesLap(const QString& sessionKey,
                                                 int lapId) const {

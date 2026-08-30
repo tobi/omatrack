@@ -122,7 +122,8 @@ add_test(NAME usb-media-test COMMAND usb-media-test)
 set_tests_properties(usb-media-test PROPERTIES LABELS unit)
 
 qt_add_executable(library-model-test LibraryModelTest.cpp
-  ${CMAKE_SOURCE_DIR}/src/app/LibraryModel.cpp)
+  ${CMAKE_SOURCE_DIR}/src/app/LibraryModel.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/StoreModels.cpp)
 target_include_directories(library-model-test PRIVATE
   ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(library-model-test PRIVATE

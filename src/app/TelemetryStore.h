@@ -455,6 +455,8 @@ class TelemetryStore : public QObject {
         LapListModel* primaryLaps READ primaryLapsModel NOTIFY selectionChanged)
     Q_PROPERTY(
         LapListModel* compareLaps READ compareLapsModel NOTIFY selectionChanged)
+    Q_PROPERTY(FilmstripSessionListModel* filmstripSessions READ
+                   filmstripSessionsModel NOTIFY selectionChanged)
     Q_PROPERTY(QAbstractItemModel* channels READ channelsModel NOTIFY
                    channelConfigChanged)
     Q_PROPERTY(
@@ -667,6 +669,7 @@ public:
     /// Load a lap into the session cache without changing the selection.
     Q_INVOKABLE void prefetchLap(const QString& sessionKey, int lapId);
     Q_INVOKABLE int bestLapIdForSession(const QString& sessionKey) const;
+    Q_INVOKABLE ActiveSessionRoles activeSessionRoles() const;
     QVector<LapRow> lapRowsForSession(const QString& sessionKey) const;
     Q_INVOKABLE bool traceConfidenceIncludesLap(const QString& sessionKey,
                                                 int lapId) const;
@@ -853,6 +856,9 @@ public:
     }
     LapListModel* primaryLapsModel() const { return primaryLapsModel_.get(); }
     LapListModel* compareLapsModel() const { return compareLapsModel_.get(); }
+    FilmstripSessionListModel* filmstripSessionsModel() const {
+        return filmstripSessionsModel_.get();
+    }
     QAbstractItemModel* channelsModel() const { return channelsModel_.get(); }
     QAbstractItemModel* cornersModel() const { return cornersModel_.get(); }
     QAbstractItemModel* driverMappingsModel() const {
@@ -986,6 +992,7 @@ private:
     double nextCornerStartFraction() const;
     // ── typed model refresh ────────────────────────────────────────
     void refreshLapModels();
+    void refreshFilmstripModel();
     void refreshChannelsModel();
     void refreshCornersModel();
     void refreshDriverMappingsModel();
@@ -1111,6 +1118,7 @@ private:
     // builders. Owned by the store; refreshed on the matching store signal.
     std::unique_ptr<LapListModel> primaryLapsModel_;
     std::unique_ptr<LapListModel> compareLapsModel_;
+    std::unique_ptr<FilmstripSessionListModel> filmstripSessionsModel_;
     std::unique_ptr<ChannelListModel> channelsModel_;
     std::unique_ptr<CornerListModel> cornersModel_;
     std::unique_ptr<DriverMappingModel> driverMappingsModel_;

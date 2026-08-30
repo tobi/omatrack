@@ -24,6 +24,7 @@ QVariant LapListModel::data(const QModelIndex& index, int role) const {
         case IsCompleteRole: return row.isComplete;
         case IsPitLapRole: return row.isPitLap;
         case CountsForBestRole: return row.countsForBest;
+        case HoverTextRole: return row.hoverText;
     }
     return {};
 }
@@ -39,6 +40,7 @@ QHash<int, QByteArray> LapListModel::roleNames() const {
         {IsCompleteRole, "isComplete"},
         {IsPitLapRole, "isPitLap"},
         {CountsForBestRole, "countsForBest"},
+        {HoverTextRole, "hoverText"},
     };
 }
 
@@ -51,7 +53,8 @@ void LapListModel::refresh(const QVector<LapRow>& rows) {
                    a.timeText == b.timeText && a.timeMs == b.timeMs &&
                    a.startTime == b.startTime && a.isFastest == b.isFastest &&
                    a.isComplete == b.isComplete && a.isPitLap == b.isPitLap &&
-                   a.countsForBest == b.countsForBest;
+                   a.countsForBest == b.countsForBest &&
+                   a.hoverText == b.hoverText;
         });
     fixedLapCount_ = 0;
     flexibleTimeMs_ = 0;
@@ -66,6 +69,59 @@ void LapListModel::refresh(const QVector<LapRow>& rows) {
     flexibleTimeMs_ = std::max(1, flexibleTimeMs_);
     totalTimeMs_ = std::max(1, totalTimeMs_);
     emit refreshed();
+}
+
+// ── FilmstripSessionListModel ───────────────────────────────────────
+
+FilmstripSessionListModel::FilmstripSessionListModel(QObject* parent)
+    : IdentityListModel(parent) {}
+
+int FilmstripSessionListModel::rowCount(const QModelIndex& parent) const {
+    return parent.isValid() ? 0 : rows_.size();
+}
+
+QVariant FilmstripSessionListModel::data(const QModelIndex& index,
+                                         int role) const {
+    if (!checkIndex(index, CheckIndexOption::IndexIsValid)) return {};
+    const FilmstripSessionRow& row = rows_[index.row()];
+    switch (role) {
+        case SessionKeyRole: return row.sessionKey;
+        case DriverNameRole: return row.driverName;
+        case BestTimeRole: return row.bestTime;
+        case ReferenceRole: return row.reference;
+    }
+    return {};
+}
+
+QHash<int, QByteArray> FilmstripSessionListModel::roleNames() const {
+    return {
+        {SessionKeyRole, "sessionKey"},
+        {DriverNameRole, "driverName"},
+        {BestTimeRole, "bestTime"},
+        {ReferenceRole, "reference"},
+    };
+}
+
+void FilmstripSessionListModel::refresh(
+    const QVector<FilmstripSessionRow>& rows) {
+    replaceByIdentity(
+        rows_, rows,
+        [](const FilmstripSessionRow& row) {
+            return row.reference ? QStringLiteral("reference")
+                                 : QStringLiteral("primary");
+        },
+        [](const FilmstripSessionRow& a, const FilmstripSessionRow& b) {
+            return a.sessionKey == b.sessionKey &&
+                   a.driverName == b.driverName && a.bestTime == b.bestTime &&
+                   a.reference == b.reference;
+        });
+    emit refreshed();
+}
+
+QString FilmstripSessionListModel::primarySessionKey() const {
+    for (const FilmstripSessionRow& row : rows_)
+        if (!row.reference) return row.sessionKey;
+    return {};
 }
 
 // ── ChannelListModel ────────────────────────────────────────────────

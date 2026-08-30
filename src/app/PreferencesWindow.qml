@@ -1,13 +1,13 @@
 pragma ComponentBehavior: Bound
 import Omatrack
 
-// Modeless preferences workspace. Each section owns its domain state and
-// applies changes immediately; the shell only owns navigation.
-
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
+
+// Modeless preferences workspace. Each section owns its domain state and
+// applies changes immediately; the shell only owns navigation.
 
 ApplicationWindow {
     id: preferencesWindow

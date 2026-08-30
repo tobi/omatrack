@@ -23,8 +23,9 @@ FetchContent_Declare(
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_Declare(
   sol2
+  # d805d02: optional<T&>::emplace fix for GCC 15 / Clang 19
   GIT_REPOSITORY https://github.com/ThePhD/sol2.git
-  GIT_TAG v3.3.1)
+  GIT_TAG d805d027e0a0a7222e936926139f06e23828ce9f)
 FetchContent_GetProperties(lua_src)
 if(NOT lua_src_POPULATED)
   FetchContent_Populate(lua_src)

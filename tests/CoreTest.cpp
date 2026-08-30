@@ -363,6 +363,15 @@ private slots:
         for (int i = 0; i < 500; ++i) v.push_back(double(i) * 10);
         QVERIFY(pdsDistanceSplits(v, 10).empty());
     }
+    void kilometreScaleWrapIsAReset() {
+        // IMS oval ~4 km reported in kilometres never clears a 300 m floor.
+        std::vector<double> v;
+        for (int i = 0; i < 400; ++i) v.push_back(double(i) * 0.01);
+        for (int i = 0; i < 400; ++i) v.push_back(double(i) * 0.01);
+        const std::vector<double> splits = pdsDistanceSplits(v, 10);
+        QVERIFY(splits.size() >= 1);
+        QCOMPARE(splits[0], 40.0);
+    }
 };
 
 // ────────────────────────────────────────────────────────────────────
@@ -528,6 +537,35 @@ private slots:
             pdsApplyLapDistanceCoverage(laps, position, 1);
         QVERIFY(checked[0].complete);
         QVERIFY(checked[1].complete);
+    }
+    void outlierCoverageDoesNotRejectTypicalLaps() {
+        // Three similar oval laps plus one GPS-spike pair that spans the
+        // whole session range. Median coverage is low; racing laps stay.
+        const std::vector<Lap> laps{Lap{0, 0.0, 40.0, 40000.0, true},
+                                    Lap{1, 40.0, 80.0, 40000.0, true},
+                                    Lap{2, 80.0, 120.0, 40000.0, true},
+                                    Lap{3, 120.0, 160.0, 40000.0, true}};
+        std::vector<double> position(161, 0.0);
+        for (int i = 0; i <= 120; ++i) position[size_t(i)] = double(i % 41);
+        for (int i = 121; i <= 160; ++i) position[size_t(i)] = double(i);
+
+        const std::vector<Lap> checked =
+            pdsApplyLapDistanceCoverage(laps, position, 1);
+        QVERIFY(checked[0].complete);
+        QVERIFY(checked[1].complete);
+        QVERIFY(checked[2].complete);
+        QVERIFY(checked[3].complete);
+    }
+    void restorePromotesVendorIncompleteRacingLaps() {
+        std::vector<Lap> laps{Lap{1, 0.0, 80.0, 80000.0, false},
+                              Lap{2, 80.0, 160.0, 80000.0, false},
+                              Lap{3, 160.0, 241.0, 81000.0, false},
+                              Lap{4, 241.0, 260.0, 19000.0, false}};
+        restoreRepresentativeCrossings(laps);
+        QVERIFY(laps[0].complete);
+        QVERIFY(laps[1].complete);
+        QVERIFY(laps[2].complete);
+        QVERIFY(!laps[3].complete);
     }
 };
 
@@ -1186,6 +1224,21 @@ private slots:
         QCOMPARE(laps[0].timeMs, 19750.0);
         QVERIFY(laps[0].complete);
         QVERIFY(!laps[0].sourceNumber.has_value());
+    }
+
+    void detectLapsRestoresVendorIncompleteRacingLaps() {
+        TelemetrySource src;
+        src.sourceLaps() = {Lap{1, 0.0, 80.0, 80000.0, false},
+                            Lap{2, 80.0, 160.0, 80000.0, false},
+                            Lap{3, 160.0, 241.0, 81000.0, false},
+                            Lap{4, 241.0, 260.0, 19000.0, false}};
+
+        const std::vector<Lap> laps = src.detectLaps();
+        QCOMPARE(laps.size(), size_t(4));
+        QVERIFY(laps[0].complete);
+        QVERIFY(laps[1].complete);
+        QVERIFY(laps[2].complete);
+        QVERIFY(!laps[3].complete);
     }
 
     void unifyLapNormalizesSyntheticChannels() {

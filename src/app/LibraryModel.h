@@ -121,6 +121,7 @@ public:
     /// Update primary/reference highlighting on all rows.
     void updateSelection(const QString& primaryKey,
                          const QString& referenceKey);
+    QString primarySessionKey() const { return primaryKey_; }
 
     /// True when any facet filter or text search is active (all nodes
     /// expand while filtering).

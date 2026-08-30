@@ -43,10 +43,6 @@ Pane {
         else
             filterModel.selectedYears = current.concat([name]);
     }
-    function updateFileMetadata(path: string, details: var): void {
-    // The C++ model handles metadata updates via the store's
-    // sidebarMetadataChanged signal; nothing to do here.
-    }
 
     padding: 0
 

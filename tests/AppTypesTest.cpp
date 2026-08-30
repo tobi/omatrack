@@ -179,6 +179,51 @@ private slots:
     }
 };
 
+class ActiveSessionRolesTest : public QObject {
+    Q_OBJECT
+private slots:
+    void emptyAgrees() { QVERIFY(ActiveSessionRoles{}.agree()); }
+    void setPrimarySelectLapSidebarAgree() {
+        ActiveSessionRoles roles;
+        roles.sessionKey = QStringLiteral("/indy.mp4");
+        roles.videoIdentity = QStringLiteral("/indy.mp4");
+        roles.filmstripKey = QStringLiteral("/indy.mp4");
+        roles.sidebarKey = QStringLiteral("/indy.mp4");
+        QVERIFY(roles.agree());
+    }
+    void nonVideoEmptyIdentityAgrees() {
+        ActiveSessionRoles roles;
+        roles.sessionKey = QStringLiteral("/session.ld");
+        roles.filmstripKey = QStringLiteral("/session.ld");
+        roles.sidebarKey = QStringLiteral("/session.ld");
+        QVERIFY(roles.agree());
+    }
+    void staleVideoFails() {
+        ActiveSessionRoles roles;
+        roles.sessionKey = QStringLiteral("/a.mp4");
+        roles.videoIdentity = QStringLiteral("/b.mp4");
+        roles.filmstripKey = QStringLiteral("/a.mp4");
+        roles.sidebarKey = QStringLiteral("/a.mp4");
+        QVERIFY(!roles.agree());
+    }
+    void filmstripMismatchFails() {
+        ActiveSessionRoles roles;
+        roles.sessionKey = QStringLiteral("/a.mp4");
+        roles.videoIdentity = QStringLiteral("/a.mp4");
+        roles.filmstripKey = QStringLiteral("/b.mp4");
+        roles.sidebarKey = QStringLiteral("/a.mp4");
+        QVERIFY(!roles.agree());
+    }
+    void sidebarMismatchFails() {
+        ActiveSessionRoles roles;
+        roles.sessionKey = QStringLiteral("/a.mp4");
+        roles.videoIdentity = QStringLiteral("/a.mp4");
+        roles.filmstripKey = QStringLiteral("/a.mp4");
+        roles.sidebarKey = QStringLiteral("/b.mp4");
+        QVERIFY(!roles.agree());
+    }
+};
+
 // Run all test classes in one executable.
 int main(int argc, char* argv[]) {
     int status = 0;
@@ -200,6 +245,10 @@ int main(int argc, char* argv[]) {
     }
     {
         CornerMarkerTest t;
+        status |= QTest::qExec(&t, argc, argv);
+    }
+    {
+        ActiveSessionRolesTest t;
         status |= QTest::qExec(&t, argc, argv);
     }
 

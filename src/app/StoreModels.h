@@ -22,6 +22,7 @@
 class LapListModel : public IdentityListModel {
     Q_OBJECT
     QML_ANONYMOUS
+    Q_PROPERTY(int count READ count NOTIFY refreshed)
     Q_PROPERTY(int fixedLapCount READ fixedLapCount NOTIFY refreshed)
     Q_PROPERTY(int flexibleTimeMs READ flexibleTimeMs NOTIFY refreshed)
     Q_PROPERTY(int totalTimeMs READ totalTimeMs NOTIFY refreshed)
@@ -36,6 +37,7 @@ public:
         IsCompleteRole,
         IsPitLapRole,
         CountsForBestRole,
+        HoverTextRole,
     };
     Q_ENUM(Role)
 
@@ -46,6 +48,7 @@ public:
     QHash<int, QByteArray> roleNames() const override;
 
     void refresh(const QVector<LapRow>& rows);
+    int count() const { return rows_.size(); }
     int fixedLapCount() const { return fixedLapCount_; }
     int flexibleTimeMs() const { return flexibleTimeMs_; }
     int totalTimeMs() const { return totalTimeMs_; }
@@ -58,6 +61,38 @@ private:
     int fixedLapCount_ = 0;
     int flexibleTimeMs_ = 0;
     int totalTimeMs_ = 0;
+};
+
+// ── filmstrip session model ─────────────────────────────────────────
+
+class FilmstripSessionListModel : public IdentityListModel {
+    Q_OBJECT
+    QML_ANONYMOUS
+    Q_PROPERTY(int count READ count NOTIFY refreshed)
+public:
+    enum Role {
+        SessionKeyRole = Qt::UserRole,
+        DriverNameRole,
+        BestTimeRole,
+        ReferenceRole,
+    };
+    Q_ENUM(Role)
+
+    explicit FilmstripSessionListModel(QObject* parent = nullptr);
+
+    int rowCount(const QModelIndex& parent = {}) const override;
+    QVariant data(const QModelIndex& index, int role) const override;
+    QHash<int, QByteArray> roleNames() const override;
+
+    void refresh(const QVector<FilmstripSessionRow>& rows);
+    int count() const { return rows_.size(); }
+    QString primarySessionKey() const;
+
+signals:
+    void refreshed();
+
+private:
+    QVector<FilmstripSessionRow> rows_;
 };
 
 // ── channel list model ──────────────────────────────────────────────

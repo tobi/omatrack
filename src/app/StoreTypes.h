@@ -26,6 +26,7 @@ class LapRow {
     Q_PROPERTY(bool isComplete MEMBER isComplete)
     Q_PROPERTY(bool isPitLap MEMBER isPitLap)
     Q_PROPERTY(bool countsForBest MEMBER countsForBest)
+    Q_PROPERTY(QString hoverText MEMBER hoverText)
 public:
     int lapId = 0;
     QString label;
@@ -36,6 +37,7 @@ public:
     bool isComplete = false;
     bool isPitLap = false;
     bool countsForBest = false;
+    QString hoverText;
 };
 
 // ── channel row ─────────────────────────────────────────────────────
@@ -443,6 +445,48 @@ public:
     QString bestLapText;
 };
 
+// ── filmstrip session row ───────────────────────────────────────────
+
+class FilmstripSessionRow {
+    Q_GADGET
+    QML_ANONYMOUS
+    Q_PROPERTY(QString sessionKey MEMBER sessionKey)
+    Q_PROPERTY(QString driverName MEMBER driverName)
+    Q_PROPERTY(QString bestTime MEMBER bestTime)
+    Q_PROPERTY(bool reference MEMBER reference)
+public:
+    QString sessionKey;
+    QString driverName;
+    QString bestTime;
+    bool reference = false;
+};
+
+// ── canonical active-session identity ───────────────────────────────
+// Video, traces, filmstrip, and sidebar must name the same session.
+
+class ActiveSessionRoles {
+    Q_GADGET
+    QML_VALUE_TYPE(activeSessionRoles)
+    Q_PROPERTY(QString sessionKey MEMBER sessionKey)
+    Q_PROPERTY(QString videoIdentity MEMBER videoIdentity)
+    Q_PROPERTY(QString filmstripKey MEMBER filmstripKey)
+    Q_PROPERTY(QString sidebarKey MEMBER sidebarKey)
+public:
+    QString sessionKey;
+    QString videoIdentity;
+    QString filmstripKey;
+    QString sidebarKey;
+
+    bool agree() const {
+        if (sessionKey != filmstripKey || sessionKey != sidebarKey)
+            return false;
+        if (!videoIdentity.isEmpty() && videoIdentity != sessionKey)
+            return false;
+        return true;
+    }
+};
+
 Q_DECLARE_METATYPE(CursorReadout)
 Q_DECLARE_METATYPE(CornerFocusSummary)
 Q_DECLARE_METATYPE(SessionInfoRow)
+Q_DECLARE_METATYPE(ActiveSessionRoles)

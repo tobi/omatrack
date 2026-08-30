@@ -1,4 +1,5 @@
 #include "app/LibraryModel.h"
+#include "app/StoreModels.h"
 
 #include <QAbstractItemModel>
 #include <QSignalSpy>
@@ -38,6 +39,42 @@ private slots:
         QCOMPARE(reset.size(), 0);
         QVERIFY(inserted.size() >= 1);
         QCOMPARE(model.rowCount(), 3);
+    }
+
+    void setPrimarySelectLapSidebarAgree() {
+        LibraryModel library;
+        FilmstripSessionListModel filmstrip;
+        const QString key = QStringLiteral("/tmp/indy.mp4");
+
+        library.updateSelection(key, QString());
+        FilmstripSessionRow row;
+        row.sessionKey = key;
+        row.reference = false;
+        filmstrip.refresh({row});
+
+        ActiveSessionRoles roles;
+        roles.sessionKey = key;
+        roles.videoIdentity = key;
+        roles.filmstripKey = filmstrip.primarySessionKey();
+        roles.sidebarKey = library.primarySessionKey();
+        QVERIFY(roles.agree());
+
+        const QString other = QStringLiteral("/tmp/other.mp4");
+        library.updateSelection(other, QString());
+        row.sessionKey = other;
+        filmstrip.refresh({row});
+        roles.sessionKey = other;
+        roles.videoIdentity = other;
+        roles.filmstripKey = filmstrip.primarySessionKey();
+        roles.sidebarKey = library.primarySessionKey();
+        QVERIFY(roles.agree());
+
+        library.updateSelection(QString(), QString());
+        filmstrip.refresh({});
+        roles = ActiveSessionRoles{};
+        roles.filmstripKey = filmstrip.primarySessionKey();
+        roles.sidebarKey = library.primarySessionKey();
+        QVERIFY(roles.agree());
     }
 
     void filterDoesNotReset() {

@@ -41,7 +41,7 @@ FileIdentity fileIdentity(const QString& path) {
     identity.generation = generationKey();
     if (path.isEmpty()) return identity;
 #ifdef Q_OS_UNIX
-    struct stat st{};
+    struct stat st = {};
     if (stat(QFile::encodeName(path).constData(), &st) != 0) return identity;
     identity.device = static_cast<quint64>(st.st_dev);
     identity.inode = static_cast<quint64>(st.st_ino);

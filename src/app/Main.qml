@@ -10,22 +10,20 @@ import QtQuick.Layouts
 ApplicationWindow {
     id: root
 
-    property bool _lapStripDirty: true
-    property string activeSessionKey: ""
+    readonly property string activeSessionKey: Store.primarySessionKey
     property string activeSessionName: ""
 
     // Supplied by QQmlApplicationEngine::setInitialProperties in main().
     required property bool autotestWindows
 
-    // Caches the root itself renders: the lap filmstrip, the damper-alignment
-    // traces, and the telemetry directories listed in the drawer. Each is
-    // refreshed from the matching Store signal in the Connections block below.
+    // Caches the root itself renders: damper-alignment traces and the
+    // telemetry directories listed in the drawer. The filmstrip binds to
+    // Store.filmstripSessions. Each cache is refreshed from Store signals.
     property bool deltaTraceVisible: false
     property var directoryRows: []
     // Side by side only when the reference lap has its own recording and the
     // primary video is telemetry-linked, so both can share one alignment map.
     readonly property bool dualVideo: telemetryVideoActive && Store.compareVideoSource.toString() !== "" && Store.compareVideoSource.toString() !== Store.primaryVideoSource.toString()
-    property var filmstripSessions: []
     // Rapid selection changes update one pending source instead of queuing
     // stale callLater closures that can reopen the previous recording.
     property url pendingVideoSource: ""
@@ -33,7 +31,7 @@ ApplicationWindow {
     property string pointerTooltipText: ""
     property real pointerTooltipX: 0
     property real pointerTooltipY: 0
-    property string referenceSessionKey: ""
+    readonly property string referenceSessionKey: Store.compareSessionKey
     property string referenceSessionName: ""
     property bool sidebarVisible: true
     readonly property bool standaloneVideoActive: root.videoVisible && !root.telemetryVideoActive
@@ -94,20 +92,6 @@ ApplicationWindow {
         root.telemetryVideoActive = false;
         root.videoVisible = false;
     }
-    function lapStripEntry(key, reference) {
-        const lapsModel = reference ? Store.compareLaps : Store.primaryLaps;
-        return {
-            sessionKey: key,
-            driverName: Store.driverDisplayName(key),
-            bestTime: root.sessionInfoForKey(key)?.bestLapText || "",
-            reference: reference,
-            lapsModel: lapsModel,
-            lapsCount: lapsModel.rowCount,
-            fixedLapCount: lapsModel.fixedLapCount,
-            flexibleTimeMs: lapsModel.flexibleTimeMs,
-            totalTimeMs: lapsModel.totalTimeMs
-        };
-    }
     function movePointerTooltip(owner: string, x: real, y: real): void {
         if (root.pointerTooltipOwner !== owner)
             return;
@@ -140,21 +124,8 @@ ApplicationWindow {
         root.deltaTraceVisible = Store.channelVisible("delta");
     }
     function refreshLapStrip() {
-        const newActive = Store.primarySessionKey;
-        const newReference = Store.compareSessionKey;
-        if (!root._lapStripDirty && newActive === root.activeSessionKey && newReference === root.referenceSessionKey)
-            return;
-        root._lapStripDirty = false;
-        root.activeSessionKey = newActive;
-        root.referenceSessionKey = newReference;
-        root.activeSessionName = root.sessionNameForKey(root.activeSessionKey);
-        root.referenceSessionName = root.sessionNameForKey(root.referenceSessionKey);
-        let strips = [];
-        if (root.activeSessionKey !== "")
-            strips.push(root.lapStripEntry(root.activeSessionKey, false));
-        if (root.referenceSessionKey !== "" && root.referenceSessionKey !== root.activeSessionKey)
-            strips.push(root.lapStripEntry(root.referenceSessionKey, true));
-        root.filmstripSessions = strips;
+        root.activeSessionName = root.sessionNameForKey(Store.primarySessionKey);
+        root.referenceSessionName = root.sessionNameForKey(Store.compareSessionKey);
     }
     // A streamed recording is reached through a signature that expires, and a
     // laptop closed at the circuit and opened on the plane home wakes up
@@ -1174,7 +1145,6 @@ ApplicationWindow {
             root.syncTelemetryVideo();
         }
         function onSessionsChanged(): void {
-            root._lapStripDirty = true;
             root.refreshLapStrip();
             root.directoryRows = Store.sessionDirectories();
         }
@@ -1398,26 +1368,6 @@ ApplicationWindow {
         titleText: trace.spanHoverTitle
         visible: trace.spanHoverVisible
     }
-    Menu {
-        id: lapMenu
-
-        property int lapId: -1
-        property string sessionKey: ""
-
-        MenuItem {
-            enabled: lapMenu.sessionKey !== Store.primarySessionKey || lapMenu.lapId !== Store.primaryLapIndex
-            text: "Set as active lap"
-
-            onTriggered: Store.selectLap(lapMenu.sessionKey, lapMenu.lapId)
-        }
-        MenuItem {
-            enabled: lapMenu.sessionKey !== Store.primarySessionKey || lapMenu.lapId !== Store.primaryLapIndex
-            text: "Set as reference lap"
-
-            onTriggered: Store.compareLap(lapMenu.sessionKey, lapMenu.lapId)
-        }
-    }
-
     // ══ body ════════════════════════════════════════════════════════
     ColumnLayout {
         anchors.fill: parent
@@ -1426,13 +1376,6 @@ ApplicationWindow {
         LapFilmstrip {
             id: lapFilmstrip
 
-            sessions: root.filmstripSessions
-
-            onLapMenuRequested: (sessionKey, lapId, x, y) => {
-                lapMenu.sessionKey = sessionKey;
-                lapMenu.lapId = lapId;
-                lapMenu.popup(lapFilmstrip, x, y);
-            }
             onPointerTooltipDismissed: owner => root.dismissPointerTooltip(owner)
             onPointerTooltipMoved: (owner, x, y) => root.movePointerTooltip(owner, x, y)
             onPointerTooltipRequested: (owner, text, x, y) => root.showPointerTooltip(owner, text, x, y)
