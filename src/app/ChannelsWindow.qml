@@ -161,7 +161,9 @@ ApplicationWindow {
             Layout.fillHeight: true
             Layout.fillWidth: true
             clip: true
+            highlightFollowsCurrentItem: false
             model: channelFilter
+            reuseItems: true
             spacing: 2
 
             delegate: Rectangle {

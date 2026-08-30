@@ -90,6 +90,37 @@ Item {
             onClicked: toolbar.trace.fitChannels = checked
         }
         CompactToolButton {
+            id: eventModeButton
+
+            Layout.fillHeight: true
+            Layout.maximumWidth: 56
+            Layout.minimumWidth: 56
+            Layout.preferredWidth: 56
+            checkable: true
+            checked: Store.eventMode
+            objectName: "eventModeButton"
+            text: "Event"
+            tip: Store.eventMode ? "Show the full library" : "Filter the library to this track and day"
+
+            onClicked: Store.eventMode = eventModeButton.checked
+        }
+        Label {
+            color: Style.accentColor
+            font.family: Style.monoFontFamily
+            font.pixelSize: Style.smallFontSize
+            text: Store.eventSession
+            visible: Store.eventMode && Store.eventSession !== ""
+        }
+        CompactTextField {
+            Layout.maximumWidth: 64
+            Layout.preferredWidth: 64
+            placeholderText: "c1"
+            text: Store.eventSession
+            visible: Store.eventMode
+
+            onEditingFinished: Store.eventSession = text.trim()
+        }
+        CompactToolButton {
             id: confidenceButton
 
             Layout.fillHeight: true

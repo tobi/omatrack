@@ -12,9 +12,9 @@
 
 #pragma once
 
-#include <QAbstractListModel>
-#include <QHash>
 #include "FilterChange.h"
+#include "ModelDiff.h"
+#include <QHash>
 
 #include <QSortFilterProxyModel>
 #include <QStringList>
@@ -23,7 +23,7 @@
 #include <QVector>
 #include <QtQml/qqmlregistration.h>
 
-class LibraryModel : public QAbstractListModel {
+class LibraryModel : public IdentityListModel {
     Q_OBJECT
     QML_ELEMENT
     Q_PROPERTY(QStringList driverPills READ driverPills NOTIFY refreshed)
@@ -143,7 +143,11 @@ private:
     };
 
     static Node fromVariantMap(const QVariantMap& vm);
-    void flatten();
+    QString rowIdentity(const Node& node) const {
+        return node.kind + QChar(0) + node.path + QChar(0) + node.key;
+    }
+    QVector<FlatRow> flattenTree(const QVector<Node>& roots) const;
+    void applyFlat(QVector<FlatRow> next);
     void collectFacets();
     void expandAll(Node& node) const;
     bool nodeExpanded(const QString& kind, const QString& path) const;
@@ -179,6 +183,8 @@ class LibraryFilterModel : public FilterChangeProxyModel {
                    NOTIFY selectedTrackChanged)
     Q_PROPERTY(QString selectedKind READ selectedKind WRITE setSelectedKind
                    NOTIFY selectedKindChanged)
+    Q_PROPERTY(QString selectedDay READ selectedDay WRITE setSelectedDay NOTIFY
+                   selectedDayChanged)
 public:
     explicit LibraryFilterModel(QObject* parent = nullptr);
 
@@ -197,6 +203,9 @@ public:
     QString selectedKind() const { return selectedKind_; }
     void setSelectedKind(const QString& kind);
 
+    QString selectedDay() const { return selectedDay_; }
+    void setSelectedDay(const QString& day);
+
     bool filterAcceptsRow(int sourceRow,
                           const QModelIndex& sourceParent) const override;
 
@@ -210,6 +219,7 @@ signals:
     void selectedYearsChanged();
     void selectedTrackChanged();
     void selectedKindChanged();
+    void selectedDayChanged();
 
 private:
     void syncFilteringActive();
@@ -221,5 +231,6 @@ private:
     QStringList selectedYears_;
     QString selectedTrack_;
     QString selectedKind_;
+    QString selectedDay_;
     LibraryModel* source_ = nullptr;
 };

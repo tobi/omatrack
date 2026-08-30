@@ -162,6 +162,14 @@ ApplicationWindow {
                                 label: "Track data"
                             }
                             ListElement {
+                                detail: "Track and session"
+                                label: "Event"
+                            }
+                            ListElement {
+                                detail: "Reference HUD traces"
+                                label: "Overlay"
+                            }
+                            ListElement {
                                 detail: "GitHub AppImage"
                                 label: "Updates"
                             }
@@ -189,11 +197,17 @@ ApplicationWindow {
 
                 PreferencesLibraryPage {
                     id: libraryPage
+
                 }
                 PreferencesDriversPage {
                     id: driversPage
+
                 }
                 PreferencesTrackDataPage {
+                }
+                PreferencesEventPage {
+                }
+                PreferencesOverlayPage {
                 }
                 PreferencesUpdatesPage {
                 }

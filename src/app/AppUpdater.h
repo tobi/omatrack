@@ -35,6 +35,9 @@ class AppUpdater : public QObject {
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
     Q_PROPERTY(QString error READ error NOTIFY statusChanged)
     Q_PROPERTY(double progress READ progress NOTIFY progressChanged)
+    Q_PROPERTY(qint64 downloadBytes READ downloadBytes NOTIFY progressChanged)
+    Q_PROPERTY(qint64 downloadTotal READ downloadTotal NOTIFY progressChanged)
+    Q_PROPERTY(QString downloadLabel READ downloadLabel NOTIFY progressChanged)
     Q_PROPERTY(bool associationPrompt READ associationPrompt NOTIFY
                    associationPromptChanged)
     Q_PROPERTY(int associationCount READ associationCount NOTIFY
@@ -54,6 +57,9 @@ public:
     QString status() const { return status_; }
     QString error() const { return error_; }
     double progress() const { return progress_; }
+    qint64 downloadBytes() const { return downloadBytes_; }
+    qint64 downloadTotal() const { return downloadTotal_; }
+    QString downloadLabel() const;
     bool associationPrompt() const { return associationPrompt_; }
     int associationCount() const;
 
@@ -116,6 +122,8 @@ private:
     QString snoozeVersion_;
     QString lastCheck_;
     double progress_ = 0.0;
+    qint64 downloadBytes_ = 0;
+    qint64 downloadTotal_ = 0;
     quint64 generation_ = 0;
     omatrack::GithubRelease latest_;
     std::shared_ptr<std::atomic<bool>> cancel_;

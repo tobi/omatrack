@@ -8,7 +8,7 @@
 
 // ── LibraryModel ────────────────────────────────────────────────────
 
-LibraryModel::LibraryModel(QObject* parent) : QAbstractListModel(parent) {}
+LibraryModel::LibraryModel(QObject* parent) : IdentityListModel(parent) {}
 
 QHash<int, QByteArray> LibraryModel::roleNames() const {
     return {
@@ -147,23 +147,21 @@ LibraryModel::Node LibraryModel::fromVariantMap(const QVariantMap& vm) {
 }
 
 void LibraryModel::setTree(const QVariantList& sources) {
-    beginResetModel();
-    rootNodes_.clear();
-    rootNodes_.reserve(sources.size());
+    QVector<Node> nextRoots;
+    nextRoots.reserve(sources.size());
     for (const QVariant& source : sources)
-        rootNodes_.append(fromVariantMap(source.toMap()));
+        nextRoots.append(fromVariantMap(source.toMap()));
     sessionAncestors_.clear();
-    buildAncestorCache(Node{}, {});  // clear
-    // Build ancestor cache for revealSession.
-    for (const Node& node : std::as_const(rootNodes_)) {
+    for (const Node& node : std::as_const(nextRoots)) {
         QStringList ancestors;
         buildAncestorCache(node, ancestors);
     }
     if (filtering_)
-        for (Node& node : rootNodes_) expandAll(node);
-    flatten();
+        for (Node& node : nextRoots) expandAll(node);
+    QVector<FlatRow> nextFlat = flattenTree(nextRoots);
+    applyFlat(std::move(nextFlat));
+    rootNodes_ = std::move(nextRoots);
     collectFacets();
-    endResetModel();
     emit refreshed();
 }
 
@@ -198,15 +196,16 @@ void LibraryModel::expandAll(Node& node) const {
     for (Node& child : node.children) expandAll(child);
 }
 
-void LibraryModel::flatten() {
-    flat_.clear();
-    for (const Node& node : std::as_const(rootNodes_)) {
+QVector<LibraryModel::FlatRow> LibraryModel::flattenTree(
+    const QVector<Node>& roots) const {
+    QVector<FlatRow> flat;
+    for (const Node& node : roots) {
         const bool expanded = filtering_ || nodeExpanded(node.kind, node.path);
-        flat_.append({&node, 0, expanded,
-                      node.kind == QLatin1String("file") &&
-                          !node.key.isEmpty() && node.key == primaryKey_,
-                      node.kind == QLatin1String("file") &&
-                          !node.key.isEmpty() && node.key == referenceKey_});
+        flat.append({&node, 0, expanded,
+                     node.kind == QLatin1String("file") &&
+                         !node.key.isEmpty() && node.key == primaryKey_,
+                     node.kind == QLatin1String("file") &&
+                         !node.key.isEmpty() && node.key == referenceKey_});
         if (expanded) {
             // Recurse into children
             QVector<const Node*> stack;
@@ -220,13 +219,13 @@ void LibraryModel::flatten() {
                 int indent = indentStack.takeLast();
                 const bool curExpanded =
                     filtering_ || nodeExpanded(current->kind, current->path);
-                flat_.append({current, indent, curExpanded,
-                              current->kind == QLatin1String("file") &&
-                                  !current->key.isEmpty() &&
-                                  current->key == primaryKey_,
-                              current->kind == QLatin1String("file") &&
-                                  !current->key.isEmpty() &&
-                                  current->key == referenceKey_});
+                flat.append({current, indent, curExpanded,
+                             current->kind == QLatin1String("file") &&
+                                 !current->key.isEmpty() &&
+                                 current->key == primaryKey_,
+                             current->kind == QLatin1String("file") &&
+                                 !current->key.isEmpty() &&
+                                 current->key == referenceKey_});
                 if (curExpanded) {
                     for (int i = current->children.size() - 1; i >= 0; --i) {
                         stack.append(&current->children[i]);
@@ -236,6 +235,33 @@ void LibraryModel::flatten() {
             }
         }
     }
+    return flat;
+}
+
+void LibraryModel::applyFlat(QVector<FlatRow> next) {
+    replaceByIdentity(
+        flat_, std::move(next),
+        [this](const FlatRow& row) {
+            return row.node ? rowIdentity(*row.node) : QString();
+        },
+        [](const FlatRow& left, const FlatRow& right) {
+            if (!left.node || !right.node) return left.node == right.node;
+            const Node& a = *left.node;
+            const Node& b = *right.node;
+            return left.indent == right.indent &&
+                   left.expanded == right.expanded &&
+                   left.isPrimary == right.isPrimary &&
+                   left.isReference == right.isReference &&
+                   a.title == b.title && a.bestLapText == b.bestLapText &&
+                   a.driver == b.driver && a.sessionName == b.sessionName &&
+                   a.track == b.track && a.lapCount == b.lapCount &&
+                   a.childCount == b.childCount && a.available == b.available &&
+                   a.pinned == b.pinned && a.isVideo == b.isVideo &&
+                   a.hasSession == b.hasSession && a.key == b.key &&
+                   a.startTimeText == b.startTimeText &&
+                   a.driveTimeText == b.driveTimeText &&
+                   a.sessionDayKey == b.sessionDayKey;
+        });
 }
 
 void LibraryModel::collectFacets() {
@@ -264,9 +290,7 @@ void LibraryModel::toggleNode(const QString& kind, const QString& path) {
     const QString key = nodeKey(kind, path);
     const bool currently = nodeExpanded(kind, path);
     expanded_[key] = !currently;
-    beginResetModel();
-    flatten();
-    endResetModel();
+    applyFlat(flattenTree(rootNodes_));
 }
 
 bool LibraryModel::revealSession(const QString& sessionKey) {
@@ -280,11 +304,7 @@ bool LibraryModel::revealSession(const QString& sessionKey) {
             changed = true;
         }
     }
-    if (changed) {
-        beginResetModel();
-        flatten();
-        endResetModel();
-    }
+    if (changed) applyFlat(flattenTree(rootNodes_));
     return changed;
 }
 
@@ -370,11 +390,9 @@ void LibraryModel::updateSelection(const QString& primaryKey,
 void LibraryModel::setFilteringActive(bool active) {
     if (filtering_ == active) return;
     filtering_ = active;
-    beginResetModel();
     if (active)
         for (Node& node : rootNodes_) expandAll(node);
-    flatten();
-    endResetModel();
+    applyFlat(flattenTree(rootNodes_));
 }
 
 QStringList LibraryModel::filePaths() const {
@@ -466,16 +484,27 @@ void LibraryFilterModel::setSelectedKind(const QString& kind) {
     });
 }
 
+void LibraryFilterModel::setSelectedDay(const QString& day) {
+    if (selectedDay_ == day) return;
+    changeFilter([&] {
+        selectedDay_ = day;
+        emit selectedDayChanged();
+        syncFilteringActive();
+    });
+}
+
 bool LibraryFilterModel::facetsActive() const {
     return !selectedDrivers_.isEmpty() || !selectedYears_.isEmpty() ||
-           !selectedTrack_.isEmpty() || !selectedKind_.isEmpty();
+           !selectedTrack_.isEmpty() || !selectedKind_.isEmpty() ||
+           !selectedDay_.isEmpty();
 }
 
 bool LibraryFilterModel::rowPassesFacets(int sourceRow) const {
     if (!source_) return true;
     const QModelIndex idx = source_->index(sourceRow);
     if (selectedDrivers_.isEmpty() && selectedYears_.isEmpty() &&
-        selectedTrack_.isEmpty() && selectedKind_.isEmpty())
+        selectedTrack_.isEmpty() && selectedKind_.isEmpty() &&
+        selectedDay_.isEmpty())
         return true;
     const QString kind = idx.data(LibraryModel::KindRole).toString();
     // Only filter file rows; non-file rows pass (they are kept by
@@ -504,6 +533,11 @@ bool LibraryFilterModel::rowPassesFacets(int sourceRow) const {
         if (selectedKind_ == QLatin1String("video") && !isVideo) return false;
         if (selectedKind_ == QLatin1String("telemetry") && isVideo)
             return false;
+    }
+    if (!selectedDay_.isEmpty()) {
+        const QString day =
+            idx.data(LibraryModel::SessionDayKeyRole).toString();
+        if (day != selectedDay_) return false;
     }
     return true;
 }
@@ -545,6 +579,11 @@ bool LibraryFilterModel::filterAcceptsRow(
         if (selectedKind_ == QLatin1String("video") && !isVideo) return false;
         if (selectedKind_ == QLatin1String("telemetry") && isVideo)
             return false;
+    }
+    if (!selectedDay_.isEmpty()) {
+        const QString day =
+            idx.data(LibraryModel::SessionDayKeyRole).toString();
+        if (day != selectedDay_) return false;
     }
 
     // Text search: case-insensitive substring across multiple fields.

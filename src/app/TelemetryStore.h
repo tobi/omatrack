@@ -42,6 +42,7 @@ class SessionHandle;
 class TelemetryStore;
 class QNetworkAccessManager;
 class QTimer;
+class QFileSystemWatcher;
 class QQmlEngine;
 class QJSEngine;
 template <typename T>
@@ -465,6 +466,30 @@ class TelemetryStore : public QObject {
                    videoMutedChanged)
     Q_PROPERTY(
         QStringList recentFiles READ recentFiles NOTIFY recentFilesChanged)
+    Q_PROPERTY(
+        bool eventMode READ eventMode WRITE setEventMode NOTIFY eventChanged)
+    Q_PROPERTY(QString eventTrack READ eventTrack WRITE setEventTrack NOTIFY
+                   eventChanged)
+    Q_PROPERTY(QString eventSession READ eventSession WRITE setEventSession
+                   NOTIFY eventChanged)
+    Q_PROPERTY(
+        QString eventDate READ eventDate WRITE setEventDate NOTIFY eventChanged)
+    Q_PROPERTY(bool usbPresent READ usbPresent NOTIFY usbChanged)
+    Q_PROPERTY(QString usbLabel READ usbLabel NOTIFY usbChanged)
+    Q_PROPERTY(bool usbCopyVisible READ usbCopyVisible NOTIFY usbChanged)
+    Q_PROPERTY(QString usbCopyStatus READ usbCopyStatus NOTIFY usbChanged)
+    Q_PROPERTY(double usbCopyProgress READ usbCopyProgress NOTIFY usbChanged)
+    Q_PROPERTY(QString usbDest READ usbDest WRITE setUsbDest NOTIFY usbChanged)
+    Q_PROPERTY(
+        QString usbFormat READ usbFormat WRITE setUsbFormat NOTIFY usbChanged)
+    Q_PROPERTY(QString usbRenameScript READ usbRenameScript WRITE
+                   setUsbRenameScript NOTIFY usbChanged)
+    Q_PROPERTY(QString overlayRefColor READ overlayRefColor WRITE
+                   setOverlayRefColor NOTIFY overlayStyleChanged)
+    Q_PROPERTY(QString overlayRefStyle READ overlayRefStyle WRITE
+                   setOverlayRefStyle NOTIFY overlayStyleChanged)
+    Q_PROPERTY(bool overlayRefWhite READ overlayRefWhite WRITE
+                   setOverlayRefWhite NOTIFY overlayStyleChanged)
 public:
     // Registered as the `Store` singleton of the Omatrack QML module. The
     // QML engine owns the single instance and default-constructs it while
@@ -479,6 +504,35 @@ public:
     Q_INVOKABLE void closeTrack(const QString& trackName);
 
     Q_INVOKABLE void scan();
+    bool eventMode() const;
+    QString eventTrack() const;
+    QString eventSession() const;
+    QString eventDate() const;
+    Q_INVOKABLE void setEventMode(bool enabled);
+    Q_INVOKABLE void setEventTrack(const QString& track);
+    Q_INVOKABLE void setEventSession(const QString& session);
+    Q_INVOKABLE void setEventDate(const QString& date);
+    bool usbPresent() const { return usbPresent_; }
+    QString usbLabel() const { return usbLabel_; }
+    bool usbCopyVisible() const { return usbCopyVisible_; }
+    QString usbCopyStatus() const { return usbCopyStatus_; }
+    double usbCopyProgress() const { return usbCopyProgress_; }
+    QString usbDest() const;
+    QString usbFormat() const;
+    QString usbRenameScript() const;
+    Q_INVOKABLE void setUsbDest(const QString& dest);
+    Q_INVOKABLE void setUsbFormat(const QString& format);
+    Q_INVOKABLE void setUsbRenameScript(const QString& script);
+    Q_INVOKABLE void showUsbCopy();
+    Q_INVOKABLE void hideUsbCopy();
+    Q_INVOKABLE void copyUsbFiles();
+    Q_INVOKABLE QString luaRenameExample() const;
+    QString overlayRefColor() const;
+    QString overlayRefStyle() const;
+    bool overlayRefWhite() const;
+    Q_INVOKABLE void setOverlayRefColor(const QString& color);
+    Q_INVOKABLE void setOverlayRefStyle(const QString& style);
+    Q_INVOKABLE void setOverlayRefWhite(bool enabled);
     Q_INVOKABLE void addSessionDirectory(const QString& dirPath);
     /// Queue one telemetry source for indexing and lap loading. Ordinary video
     /// is reported through standaloneVideoRequested after background probing.
@@ -604,6 +658,8 @@ public:
     Q_INVOKABLE void compareLap(const QString& sessionKey, int lapId);
     Q_INVOKABLE void clearCompare();
     Q_INVOKABLE void clearPrimary();
+    /// Swap primary and reference analysis roles. No-op without a reference.
+    Q_INVOKABLE bool swapPrimaryWithReference();
     /// Next lap in recording order after the primary, or -1 at the last lap.
     Q_INVOKABLE int nextPrimaryLapId() const;
     Q_INVOKABLE QString lapLabel(const QString& sessionKey, int lapId) const;
@@ -843,6 +899,9 @@ signals:
     void sidebarMetadataChanged(const QString& path,
                                 const QVariantMap& details);
     void recentFilesChanged();
+    void eventChanged();
+    void usbChanged();
+    void overlayStyleChanged();
     void standaloneVideoRequested(const QUrl& source);
     void operationError(const QString& title, const QString& message);
     void overlaysChanged();
@@ -882,6 +941,10 @@ private:
     void setCompareLapLoading(bool loading);
     void startSessionScan();
     void finishSessionScan(std::shared_ptr<SessionScanResult> result);
+    void setupLibraryWatch();
+    void rebuildLibraryWatch();
+    void startUsbScan();
+    void finishUsbScan(std::shared_ptr<SessionScanResult> result);
     int sidebarPinIndex(const QString& kind, const QString& path) const;
     void rememberRecentFile(const QString& filePath);
     QString driverDisplay(const SessionHandle* session) const;
@@ -952,6 +1015,8 @@ private:
     /// through operationError.
     AsyncJob<FolderMetadataWrite> folderMetadataJob_;
     AsyncJob<std::shared_ptr<SessionScanResult>> scanJob_;
+    AsyncJob<std::shared_ptr<SessionScanResult>> usbScanJob_;
+    AsyncJob<QVariantMap> usbCopyJob_;
     SerialJobQueue<std::shared_ptr<FileOpenResult>> fileOpenQueue_;
     QString fileOpenPath_;
     QSet<QString> transientSessionPaths_;
@@ -1051,4 +1116,15 @@ private:
     std::unique_ptr<DriverMappingModel> driverMappingsModel_;
     std::unique_ptr<SyncStrategyModel> syncStrategyModel_;
     std::unique_ptr<LibraryModel> libraryModel_;
+    QFileSystemWatcher* libraryWatch_ = nullptr;
+    QTimer* usbPollTimer_ = nullptr;
+    QTimer* usbDebounce_ = nullptr;
+    QStringList usbRoots_;
+    QVariantList usbFileSources_;
+    bool usbPresent_ = false;
+    bool usbCopyVisible_ = false;
+    bool usbRescanOnly_ = false;
+    QString usbLabel_;
+    QString usbCopyStatus_;
+    double usbCopyProgress_ = 0.0;
 };

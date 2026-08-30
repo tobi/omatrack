@@ -74,6 +74,13 @@ private slots:
         QVERIFY(!omatrack::isUsbBlockDevice(
             QByteArrayLiteral("/dev/does-not-exist"), sys));
     }
+
+    void listingDoesNotCopyOrPersist() {
+        const auto first = omatrack::mountedUsbVolumes();
+        const auto second = omatrack::mountedUsbVolumes();
+        QCOMPARE(first, second);
+        for (const auto& volume : first) QVERIFY(!volume.rootPath.isEmpty());
+    }
 };
 
 QTEST_GUILESS_MAIN(UsbMediaTest)

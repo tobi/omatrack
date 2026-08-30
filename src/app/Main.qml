@@ -387,6 +387,18 @@ ApplicationWindow {
         videoFullscreen: root.videoFullscreen
     }
     Shortcut {
+        enabled: {
+            const item = root.activeFocusItem;
+            if (!item)
+                return true;
+            return !(item instanceof TextInput || item instanceof TextEdit);
+        }
+        objectName: "swapReferenceShortcut"
+        sequence: "X"
+
+        onActivated: Store.swapPrimaryWithReference()
+    }
+    Shortcut {
         enabled: root.videoFullscreen || Store.focusedCorner >= 0
         sequence: "Escape"
 
@@ -900,6 +912,7 @@ ApplicationWindow {
 
             HoverHandler {
                 id: videoControlsHover
+
             }
             MouseArea {
                 anchors.fill: parent
@@ -1361,9 +1374,11 @@ ApplicationWindow {
     }
     ChannelsWindow {
         id: channelsWindow
+
     }
     PreferencesWindow {
         id: settingsWindow
+
     }
     ToolTip {
         id: pointerTooltip
@@ -1579,6 +1594,11 @@ ApplicationWindow {
 
                         anchors.fill: parent
                         objectName: "videoStageSlot"
+
+                        UsbCopyOverlay {
+                            anchors.fill: parent
+                            visible: Store.usbCopyVisible
+                        }
                     }
                 }
                 Rectangle {

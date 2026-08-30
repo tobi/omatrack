@@ -11,16 +11,15 @@
 #pragma once
 
 #include "FilterChange.h"
+#include "ModelDiff.h"
 #include "StoreTypes.h"
-
-#include <QAbstractListModel>
 #include <QSortFilterProxyModel>
 #include <QVector>
 #include <QtQml/qqmlregistration.h>
 
 // ── lap list model ──────────────────────────────────────────────────
 
-class LapListModel : public QAbstractListModel {
+class LapListModel : public IdentityListModel {
     Q_OBJECT
     QML_ANONYMOUS
     Q_PROPERTY(int fixedLapCount READ fixedLapCount NOTIFY refreshed)
@@ -63,7 +62,7 @@ private:
 
 // ── channel list model ──────────────────────────────────────────────
 
-class ChannelListModel : public QAbstractListModel {
+class ChannelListModel : public IdentityListModel {
     Q_OBJECT
 public:
     enum Role {
@@ -93,7 +92,7 @@ private:
 
 // ── corner list model (basic ranges + comparison columns) ───────────
 
-class CornerListModel : public QAbstractListModel {
+class CornerListModel : public IdentityListModel {
     Q_OBJECT
 public:
     enum Role {
@@ -172,7 +171,7 @@ private:
 
 // ── driver mapping model ────────────────────────────────────────────
 
-class DriverMappingModel : public QAbstractListModel {
+class DriverMappingModel : public IdentityListModel {
     Q_OBJECT
 public:
     enum Role {
@@ -200,7 +199,7 @@ private:
 
 // ── sync strategy model ─────────────────────────────────────────────
 
-class SyncStrategyModel : public QAbstractListModel {
+class SyncStrategyModel : public IdentityListModel {
     Q_OBJECT
 public:
     enum Role {

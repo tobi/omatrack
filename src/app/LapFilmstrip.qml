@@ -25,6 +25,16 @@ Rectangle {
     color: Style.traceBackgroundColor
     visible: filmstrip.sessions.length > 0
 
+    Menu {
+        id: swapReferenceMenu
+
+        MenuItem {
+            enabled: Store.comparing
+            text: "Swap with reference  X"
+
+            onTriggered: Store.swapPrimaryWithReference()
+        }
+    }
     Column {
         anchors.fill: parent
         anchors.margins: 6
@@ -59,6 +69,8 @@ Rectangle {
                     spacing: 5
 
                     DenseTwoLineRow {
+                        id: stripLabel
+
                         Layout.maximumWidth: 190
                         Layout.minimumWidth: 190
                         Layout.preferredWidth: 190
@@ -73,6 +85,13 @@ Rectangle {
                         titleFamily: Style.monoFontFamily
                         titleSize: 9
                         titleSpacing: 4
+
+                        MouseArea {
+                            acceptedButtons: Qt.RightButton
+                            anchors.fill: parent
+
+                            onClicked: swapReferenceMenu.popup()
+                        }
                     }
                     CompactToolButton {
                         Layout.preferredHeight: 24
