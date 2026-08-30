@@ -206,7 +206,7 @@ ToolBar {
             id: updateCluster
 
             spacing: 4
-            visible: Updater.supported && Updater.enabled && Updater.available
+            visible: Updater.supported && Updater.enabled && (Updater.available || Updater.busy)
 
             CompactToolButton {
                 id: updateButton
@@ -244,12 +244,19 @@ ToolBar {
 
                 onClicked: Updater.snooze()
             }
+            ProgressBar {
+                Layout.preferredWidth: 88
+                from: 0
+                to: 1
+                value: Updater.progress
+                visible: Updater.busy
+            }
             Label {
                 color: Style.mutedTextColor
                 elide: Text.ElideRight
                 font.family: Style.monoFontFamily
                 font.pixelSize: 10
-                text: Updater.status
+                text: Updater.downloadLabel !== "" ? Updater.downloadLabel : Updater.status
                 visible: Updater.busy && appBar.width >= 780
             }
         }

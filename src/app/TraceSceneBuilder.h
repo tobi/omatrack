@@ -84,8 +84,10 @@ public:
                       const QColor& color, bool fill, qreal width);
 
     struct EnvelopeStyle {
+        enum class Dash { Solid, Dashed, Dotted };
         qreal width = 1.0;
         bool fill = false;
+        Dash dash = Dash::Solid;
         QColor color;
         QColor fillColor;
     };

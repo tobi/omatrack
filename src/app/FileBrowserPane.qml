@@ -43,15 +43,19 @@ Pane {
         else
             filterModel.selectedYears = current.concat([name]);
     }
-    function updateFileMetadata(path: string, details: var): void {
-        // The C++ model handles metadata updates via the store's
-        // sidebarMetadataChanged signal; nothing to do here.
-    }
 
     padding: 0
 
     background: Rectangle {
         color: Style.darkBackgroundColor
+    }
+
+    Component.onCompleted: {
+        if (Store.eventMode) {
+            if (Store.eventTrack !== "")
+                filterModel.selectedTrack = Store.eventTrack;
+            filterModel.selectedDay = Store.eventDate;
+        }
     }
 
     LibraryFilterModel {
@@ -60,9 +64,17 @@ Pane {
         sourceModel: Store.library
     }
     Connections {
+        function onEventChanged(): void {
+            if (Store.eventMode) {
+                if (Store.eventTrack !== "")
+                    filterModel.selectedTrack = Store.eventTrack;
+                filterModel.selectedDay = Store.eventDate;
+            } else {
+                filterModel.selectedDay = "";
+            }
+        }
         function onSelectionChanged(): void {
-            if (filterModel.revealSession(Store.primarySessionKey))
-                filterModel.invalidate();
+            filterModel.revealSession(Store.primarySessionKey);
         }
 
         target: Store
@@ -299,17 +311,60 @@ Pane {
                 }
             }
         }
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 28
+            color: Style.surfaceColor
+            visible: Store.usbPresent
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 8
+                anchors.rightMargin: 4
+                spacing: 6
+
+                Label {
+                    Layout.fillWidth: true
+                    color: Style.accentColor
+                    elide: Text.ElideRight
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: 10
+                    text: Store.usbLabel
+                }
+                CompactButton {
+                    text: "Copy…"
+
+                    onClicked: Store.showUsbCopy()
+                }
+            }
+        }
         Item {
             Layout.fillHeight: true
             Layout.fillWidth: true
 
+            Timer {
+                id: restoreScrollTimer
+
+                property int savedFirst: -1
+                property real savedY: 0
+
+                interval: 0
+
+                onTriggered: {
+                    if (restoreScrollTimer.savedFirst >= 0)
+                        tree.positionViewAtIndex(restoreScrollTimer.savedFirst, ListView.Beginning);
+                    tree.contentY = restoreScrollTimer.savedY;
+                }
+            }
             ListView {
                 id: tree
 
                 anchors.fill: parent
                 boundsBehavior: Flickable.StopAtBounds
                 clip: true
+                highlightFollowsCurrentItem: false
                 model: filterModel
+                reuseItems: true
 
                 ScrollBar.vertical: ThinScrollBar {
                 }
@@ -347,6 +402,32 @@ Pane {
                     onSetActiveRequested: key => browser.setActiveRequested(key)
                     onSetReferenceRequested: key => browser.setReferenceRequested(key)
                     onToggleNodeRequested: (role, path) => filterModel.toggleNode(role, path)
+                }
+
+                Connections {
+                    function onLayoutAboutToBeChanged(): void {
+                        restoreScrollTimer.savedY = tree.contentY;
+                        restoreScrollTimer.savedFirst = tree.indexAt(1, tree.contentY + 1);
+                    }
+                    function onLayoutChanged(): void {
+                        restoreScrollTimer.restart();
+                    }
+                    function onRowsAboutToBeInserted(): void {
+                        restoreScrollTimer.savedY = tree.contentY;
+                        restoreScrollTimer.savedFirst = tree.indexAt(1, tree.contentY + 1);
+                    }
+                    function onRowsAboutToBeRemoved(): void {
+                        restoreScrollTimer.savedY = tree.contentY;
+                        restoreScrollTimer.savedFirst = tree.indexAt(1, tree.contentY + 1);
+                    }
+                    function onRowsInserted(): void {
+                        restoreScrollTimer.restart();
+                    }
+                    function onRowsRemoved(): void {
+                        restoreScrollTimer.restart();
+                    }
+
+                    target: filterModel
                 }
             }
             Column {

@@ -15,6 +15,11 @@
 #include "OverlayManager.h"
 #include "PreferencesStore.h"
 #include "TrackAtlasManager.h"
+#include "IndexCache.h"
+#include "LuaRename.h"
+#include "PathJail.h"
+#include "SwapRoles.h"
+#include "UsbMedia.h"
 
 #include <QCoreApplication>
 #include <QClipboard>
@@ -22,7 +27,9 @@
 #include <QDebug>
 #include <QDesktopServices>
 #include <QElapsedTimer>
+#include <QDate>
 #include <QDir>
+#include <QFileSystemWatcher>
 #include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
@@ -1798,6 +1805,16 @@ IndexedSession indexSession(const QString& path,
     }
 
     if (ioCancelled(cancel)) return {};
+    const QJsonObject cached = loadIndexCache(parserPath);
+    if (!cached.isEmpty()) {
+        auto cachedHandle =
+            std::make_unique<SessionHandle>(path, cached, parserPath);
+        if (cachedHandle->hasSummary()) {
+            IndexedSession result;
+            result.handle = std::move(cachedHandle);
+            return result;
+        }
+    }
     auto handle =
         std::make_unique<SessionHandle>(path, QJsonObject{}, parserPath);
     IndexedSession result;
@@ -1805,6 +1822,7 @@ IndexedSession indexSession(const QString& path,
         result.unsupportedVideo = isVideoPath(path);
         return result;
     }
+    storeIndexCache(parserPath, handle->metadataForCache());
     result.handle = std::move(handle);
     return result;
 }
@@ -2439,6 +2457,8 @@ TelemetryStore::TelemetryStore(QObject* parent)
     : QObject(parent),
       folderMetadataJob_(this),
       scanJob_(this),
+      usbScanJob_(this),
+      usbCopyJob_(this),
       fileOpenQueue_(this),
       primaryLapJob_(this),
       compareLapJob_(this),
@@ -2539,6 +2559,7 @@ TelemetryStore::TelemetryStore(QObject* parent)
     // refreshes them; refreshed on the matching store signal.
     primaryLapsModel_ = std::make_unique<LapListModel>(this);
     compareLapsModel_ = std::make_unique<LapListModel>(this);
+    filmstripSessionsModel_ = std::make_unique<FilmstripSessionListModel>(this);
     channelsModel_ = std::make_unique<ChannelListModel>(this);
     cornersModel_ = std::make_unique<CornerListModel>(this);
     driverMappingsModel_ = std::make_unique<DriverMappingModel>(this);
@@ -2546,6 +2567,7 @@ TelemetryStore::TelemetryStore(QObject* parent)
     libraryModel_ = std::make_unique<LibraryModel>(this);
     connect(this, &TelemetryStore::selectionChanged, this, [this]() {
         refreshLapModels();
+        refreshFilmstripModel();
         refreshCornersModel();
         refreshSyncStrategyModel();
     });
@@ -2553,6 +2575,7 @@ TelemetryStore::TelemetryStore(QObject* parent)
         refreshLibraryModel();
         refreshDriverMappingsModel();
         refreshLapModels();
+        refreshFilmstripModel();
     });
     connect(this, &TelemetryStore::channelConfigChanged, this,
             [this]() { refreshChannelsModel(); });
@@ -2590,6 +2613,7 @@ TelemetryStore::TelemetryStore(QObject* parent)
     atlas_->startup();
 
     scan();
+    setupLibraryWatch();
 }
 
 TelemetryStore::~TelemetryStore() {
@@ -3588,7 +3612,9 @@ QVariantList TelemetryStore::buildFileSourceTree() const {
     };
 
     QVariantList sources;
-    sources.reserve(fileSources_.size() + 2);
+    sources.reserve(fileSources_.size() + usbFileSources_.size() + 2);
+    for (const QVariant& source : usbFileSources_)
+        sources.append(enrichNode(enrichNode, source.toMap()));
     for (const QVariant& source : fileSources_)
         sources.append(enrichNode(enrichNode, source.toMap()));
 
@@ -4989,6 +5015,8 @@ void TelemetryStore::setPrimary(SessionHandle* session, int lapId) {
     overlays_->resampleOverlays();
     emit cornersChanged();
     emit videoTimeChanged();
+    emit cursorFracChanged();
+    emit selectionChanged();
     logSelectedLap("select primary", session, lapId);
 }
 
@@ -5171,20 +5199,62 @@ int TelemetryStore::bestLapIdForSession(const QString& sessionKey) const {
     return s->laps().first().lapId;
 }
 
+namespace {
+QString formatLapDeltaMs(double deltaMs) {
+    const double seconds = deltaMs / 1000.0;
+    const QString sign =
+        seconds >= 0.0 ? QStringLiteral("+") : QStringLiteral("−");
+    return sign + QString::number(std::fabs(seconds), 'f', 3);
+}
+
+QString lapHoverText(const QVector<LapEntry>& laps, const LapEntry& target,
+                     int selectedLapId) {
+    QStringList parts;
+    parts.append(target.timeText);
+    const LapEntry* best = nullptr;
+    const LapEntry* selected = nullptr;
+    for (const LapEntry& lap : laps) {
+        if (lap.countsForBest() && (!best || lap.timeMs < best->timeMs))
+            best = &lap;
+        if (lap.lapId == selectedLapId) selected = &lap;
+    }
+    if (best && best->lapId != target.lapId)
+        parts.append(QStringLiteral("vs best %1")
+                         .arg(formatLapDeltaMs(target.timeMs - best->timeMs)));
+    if (selected && selected->lapId != target.lapId &&
+        (!best || selected->lapId != best->lapId))
+        parts.append(
+            QStringLiteral("vs sel %1")
+                .arg(formatLapDeltaMs(target.timeMs - selected->timeMs)));
+    for (const LapEntry& lap : laps) {
+        if (!lap.countsForBest() || lap.lapId == target.lapId) continue;
+        if (best && lap.lapId == best->lapId) continue;
+        if (selected && lap.lapId == selected->lapId) continue;
+        parts.append(QStringLiteral("%1 %2").arg(
+            lap.label, formatLapDeltaMs(target.timeMs - lap.timeMs)));
+    }
+    return parts.join(QStringLiteral("  "));
+}
+}  // namespace
+
 QVector<LapRow> TelemetryStore::buildLapRows(SessionHandle* session) const {
     QVector<LapRow> rows;
     if (!session) return rows;
+    const int selectedId = session == primarySession_   ? primaryLap_
+                           : session == compareSession_ ? compareLap_
+                                                        : -1;
     for (const LapEntry& l : session->laps()) {
         LapRow row;
         row.lapId = l.lapId;
         row.label = l.label;
         row.timeText = l.timeText;
-        row.timeMs = l.timeMs;
+        row.timeMs = int(l.timeMs);
         row.startTime = l.startTime;
         row.isFastest = l.isFastest;
         row.isComplete = l.isComplete;
         row.isPitLap = l.isPitLap;
         row.countsForBest = l.countsForBest();
+        row.hoverText = lapHoverText(session->laps(), l, selectedId);
         rows.append(row);
     }
     return rows;
@@ -5198,6 +5268,40 @@ QVector<LapRow> TelemetryStore::lapRowsForSession(
 void TelemetryStore::refreshLapModels() {
     primaryLapsModel_->refresh(buildLapRows(primarySession_));
     compareLapsModel_->refresh(buildLapRows(compareSession_));
+}
+
+void TelemetryStore::refreshFilmstripModel() {
+    QVector<FilmstripSessionRow> rows;
+    if (primarySession_) {
+        FilmstripSessionRow row;
+        row.sessionKey = primarySession_->sessionKey();
+        row.driverName = driverDisplay(primarySession_);
+        row.bestTime = primarySession_->bestLapTime();
+        row.reference = false;
+        rows.append(row);
+    }
+    if (compareSession_ && compareSession_ != primarySession_) {
+        FilmstripSessionRow row;
+        row.sessionKey = compareSession_->sessionKey();
+        row.driverName = driverDisplay(compareSession_);
+        row.bestTime = compareSession_->bestLapTime();
+        row.reference = true;
+        rows.append(row);
+    }
+    filmstripSessionsModel_->refresh(rows);
+}
+
+ActiveSessionRoles TelemetryStore::activeSessionRoles() const {
+    ActiveSessionRoles roles;
+    roles.sessionKey = primarySessionKey();
+    if (primarySession_ && primarySession_->isVideo())
+        roles.videoIdentity = primarySession_->path();
+    roles.filmstripKey = filmstripSessionsModel_
+                             ? filmstripSessionsModel_->primarySessionKey()
+                             : QString();
+    roles.sidebarKey =
+        libraryModel_ ? libraryModel_->primarySessionKey() : QString();
+    return roles;
 }
 bool TelemetryStore::traceConfidenceIncludesLap(const QString& sessionKey,
                                                 int lapId) const {
@@ -7686,4 +7790,428 @@ QStringList TelemetryStore::recentFiles() const {
 }
 const QVector<OverlayGroup>& TelemetryStore::overlayGroups() const {
     return overlays_->overlayGroups();
+}
+
+#include "IndexCache.h"
+#include "LuaRename.h"
+#include "PathJail.h"
+#include "SwapRoles.h"
+#include "UsbMedia.h"
+
+#include <QFileSystemWatcher>
+#include <QStorageInfo>
+
+namespace {
+
+QStringList usbWatchRoots() {
+    QStringList roots;
+    const QString user = QDir::home().dirName();
+    const QString runMedia = QStringLiteral("/run/media/") + user;
+    if (QFileInfo::exists(runMedia)) roots.append(runMedia);
+    if (QFileInfo::exists(QStringLiteral("/media")))
+        roots.append(QStringLiteral("/media"));
+    return roots;
+}
+
+QSet<QString> configuredFolderTargets(
+    const QVector<LibraryLocation>& locations) {
+    QSet<QString> targets;
+    for (const LibraryLocation& location : locations) {
+        if (location.type != LocationType::Folder) continue;
+        const QString absolute =
+            QDir::cleanPath(QFileInfo(location.target).absoluteFilePath());
+        if (!absolute.isEmpty()) targets.insert(absolute);
+    }
+    return targets;
+}
+
+QString usbSectionName(const UsbVolume& volume) {
+    return QStringLiteral("USB — %1").arg(volume.name);
+}
+
+std::shared_ptr<SessionScanResult> scanUsbVolumes(
+    const QVector<UsbVolume>& volumes, const QSet<QString>& skipRoots,
+    const IoCancel& cancel) {
+    auto result = std::make_shared<SessionScanResult>();
+    const QStringList filters{
+        "*.pds",       "*.PDS",  "*.ld",     "*.LD",  "*.vbo", "*.telemetry",
+        "*.TELEMETRY", "*.VBO",  "*.mp4",    "*.MP4", "*.mov", "*.MOV",
+        "*.mkv",       "*.MKV",  "*.avi",    "*.AVI", "*.m4v", "*.M4V",
+        "*.webm",      "*.WEBM", "TRACK.yml"};
+    for (const UsbVolume& volume : volumes) {
+        if (ioCancelled(cancel)) break;
+        if (skipRoots.contains(volume.rootPath)) continue;
+        QSet<QString> sourcePaths;
+        QDirIterator it(volume.rootPath, filters, QDir::Files,
+                        QDirIterator::Subdirectories);
+        while (it.hasNext()) {
+            it.next();
+            if (it.fileName() == QStringLiteral("TRACK.yml")) continue;
+            const QString path = vendorSourcePath(it.filePath());
+            if (path.isEmpty()) continue;
+            if (isSidecarPath(QDir(volume.rootPath).relativeFilePath(path)))
+                continue;
+            const QFileInfo resolved(path);
+            const QString canonical = resolved.canonicalFilePath().isEmpty()
+                                          ? resolved.absoluteFilePath()
+                                          : resolved.canonicalFilePath();
+            sourcePaths.insert(canonical);
+        }
+        if (sourcePaths.isEmpty()) continue;
+        QVariantMap source = buildFileSource(volume.rootPath, sourcePaths);
+        source.insert(QStringLiteral("name"), usbSectionName(volume));
+        source.insert(QStringLiteral("transient"), true);
+        source.insert(QStringLiteral("usb"), true);
+        result->fileSources.append(source);
+        result->locationFileCounts.insert(volume.rootPath, sourcePaths.size());
+    }
+    return result;
+}
+
+QVariantMap copyContext(const QString& path, const QString& track,
+                        const QString& date, const QString& session,
+                        const QString& driver) {
+    const QFileInfo info(path);
+    return QVariantMap{
+        {QStringLiteral("track"),
+         track.isEmpty() ? QStringLiteral("unknown") : track},
+        {QStringLiteral("date"),
+         date.isEmpty() ? QDate::currentDate().toString(Qt::ISODate) : date},
+        {QStringLiteral("session"),
+         session.isEmpty() ? QStringLiteral("session") : session},
+        {QStringLiteral("original"), info.fileName()},
+        {QStringLiteral("driver"), driver},
+        {QStringLiteral("stem"), info.completeBaseName()},
+        {QStringLiteral("ext"), info.suffix()},
+    };
+}
+
+}  // namespace
+
+void TelemetryStore::setupLibraryWatch() {
+    libraryWatch_ = new QFileSystemWatcher(this);
+    usbPollTimer_ = new QTimer(this);
+    usbPollTimer_->setInterval(3000);
+    usbDebounce_ = new QTimer(this);
+    usbDebounce_->setSingleShot(true);
+    usbDebounce_->setInterval(400);
+    connect(usbDebounce_, &QTimer::timeout, this, [this]() {
+        if (usbRescanOnly_)
+            startUsbScan();
+        else
+            scan();
+        usbRescanOnly_ = false;
+    });
+    connect(libraryWatch_, &QFileSystemWatcher::directoryChanged, this,
+            [this](const QString& path) {
+                const QString slash = QDir::fromNativeSeparators(path);
+                usbRescanOnly_ =
+                    slash.startsWith(QStringLiteral("/run/media/")) ||
+                    slash.startsWith(QStringLiteral("/media/"));
+                usbDebounce_->start();
+            });
+    connect(usbPollTimer_, &QTimer::timeout, this, [this]() {
+        const auto volumes = mountedUsbVolumes();
+        QStringList roots;
+        for (const UsbVolume& volume : volumes) roots.append(volume.rootPath);
+        if (roots == usbRoots_) return;
+        usbRoots_ = roots;
+        usbRescanOnly_ = true;
+        usbDebounce_->start();
+    });
+    rebuildLibraryWatch();
+    usbPollTimer_->start();
+    startUsbScan();
+}
+
+void TelemetryStore::rebuildLibraryWatch() {
+    if (!libraryWatch_) return;
+    const QStringList current = libraryWatch_->directories();
+    if (!current.isEmpty()) libraryWatch_->removePaths(current);
+    QStringList paths;
+    for (const LibraryLocation& location : prefs_->locations()) {
+        if (!location.enabled || location.type != LocationType::Folder)
+            continue;
+        if (QFileInfo(location.target).isDir()) paths.append(location.target);
+    }
+    paths += usbWatchRoots();
+    paths += usbRoots_;
+    paths.removeDuplicates();
+    if (!paths.isEmpty()) libraryWatch_->addPaths(paths);
+}
+
+void TelemetryStore::startUsbScan() {
+    const QVector<UsbVolume> volumes = mountedUsbVolumes();
+    const QSet<QString> skip = configuredFolderTargets(prefs_->locations());
+    usbScanJob_.start(
+        [volumes, skip](IoCancel cancel) {
+            return scanUsbVolumes(volumes, skip, cancel);
+        },
+        [this](std::shared_ptr<SessionScanResult> result) {
+            finishUsbScan(std::move(result));
+        });
+}
+
+void TelemetryStore::finishUsbScan(std::shared_ptr<SessionScanResult> result) {
+    usbFileSources_.clear();
+    usbPresent_ = false;
+    usbLabel_.clear();
+    if (result) {
+        usbFileSources_ = result->fileSources;
+        usbPresent_ = !usbFileSources_.isEmpty();
+        if (usbPresent_)
+            usbLabel_ = usbFileSources_.constFirst()
+                            .toMap()
+                            .value(QStringLiteral("name"))
+                            .toString();
+    }
+    rebuildLibraryWatch();
+    refreshLibraryModel();
+    emit usbChanged();
+}
+
+bool TelemetryStore::eventMode() const { return prefs_->eventMode(); }
+QString TelemetryStore::eventTrack() const { return prefs_->eventTrack(); }
+QString TelemetryStore::eventSession() const { return prefs_->eventSession(); }
+QString TelemetryStore::eventDate() const { return prefs_->eventDate(); }
+
+void TelemetryStore::setEventMode(bool enabled) {
+    if (prefs_->eventMode() == enabled) return;
+    prefs_->setEventMode(enabled);
+    if (enabled) {
+        if (prefs_->eventDate().isEmpty())
+            prefs_->setEventDate(QDate::currentDate().toString(Qt::ISODate));
+        if (prefs_->eventTrack().isEmpty() && primarySession_) {
+            const QString track = displayTrack(primarySession_);
+            if (!track.isEmpty()) prefs_->setEventTrack(track);
+        }
+    }
+    schedulePreferencesSave();
+    emit eventChanged();
+}
+
+void TelemetryStore::setEventTrack(const QString& track) {
+    if (prefs_->eventTrack() == track) return;
+    prefs_->setEventTrack(track);
+    schedulePreferencesSave();
+    emit eventChanged();
+}
+
+void TelemetryStore::setEventSession(const QString& session) {
+    if (prefs_->eventSession() == session) return;
+    prefs_->setEventSession(session.trimmed());
+    schedulePreferencesSave();
+    emit eventChanged();
+}
+
+void TelemetryStore::setEventDate(const QString& date) {
+    if (prefs_->eventDate() == date) return;
+    prefs_->setEventDate(date);
+    schedulePreferencesSave();
+    emit eventChanged();
+}
+
+QString TelemetryStore::usbDest() const { return prefs_->usbDest(); }
+QString TelemetryStore::usbFormat() const { return prefs_->usbFormat(); }
+QString TelemetryStore::usbRenameScript() const {
+    return prefs_->usbRenameScript();
+}
+
+void TelemetryStore::setUsbDest(const QString& dest) {
+    if (prefs_->usbDest() == dest) return;
+    prefs_->setUsbDest(dest);
+    schedulePreferencesSave();
+    emit usbChanged();
+}
+
+void TelemetryStore::setUsbFormat(const QString& format) {
+    if (prefs_->usbFormat() == format) return;
+    prefs_->setUsbFormat(format);
+    schedulePreferencesSave();
+    emit usbChanged();
+}
+
+void TelemetryStore::setUsbRenameScript(const QString& script) {
+    if (prefs_->usbRenameScript() == script) return;
+    prefs_->setUsbRenameScript(script);
+    schedulePreferencesSave();
+    emit usbChanged();
+}
+
+QString TelemetryStore::luaRenameExample() const {
+    return exampleLuaRenameScript();
+}
+
+void TelemetryStore::showUsbCopy() {
+    if (!usbPresent_) return;
+    usbCopyVisible_ = true;
+    emit usbChanged();
+}
+
+void TelemetryStore::hideUsbCopy() {
+    if (!usbCopyVisible_) return;
+    usbCopyVisible_ = false;
+    emit usbChanged();
+}
+
+void TelemetryStore::copyUsbFiles() {
+    if (usbCopyJob_.running() || usbFileSources_.isEmpty()) return;
+    const QString dest = prefs_->usbDest().trimmed().isEmpty()
+                             ? defaultTelemetryDirectory()
+                             : prefs_->usbDest().trimmed();
+    const QString format = prefs_->usbFormat().trimmed().isEmpty()
+                               ? defaultCopyFormat()
+                               : prefs_->usbFormat();
+    const QString script = prefs_->usbRenameScript();
+    const QString track = prefs_->eventTrack();
+    const QString session = prefs_->eventSession();
+    const QString date = prefs_->eventDate().isEmpty()
+                             ? QDate::currentDate().toString(Qt::ISODate)
+                             : prefs_->eventDate();
+    QStringList files;
+    const auto collect = [&](auto&& self, const QVariantList& nodes) -> void {
+        for (const QVariant& node : nodes) {
+            const QVariantMap map = node.toMap();
+            if (map.value(QStringLiteral("role")).toString() ==
+                QStringLiteral("file")) {
+                const QString path =
+                    map.value(QStringLiteral("path")).toString();
+                if (!path.isEmpty()) files.append(path);
+            }
+            self(self, map.value(QStringLiteral("children")).toList());
+        }
+    };
+    collect(collect, usbFileSources_);
+    usbCopyStatus_ = QStringLiteral("Copying…");
+    usbCopyProgress_ = 0.0;
+    emit usbChanged();
+    usbCopyJob_.start(
+        [dest, format, script, track, session, date, files](IoCancel cancel) {
+            QString error;
+            int copied = 0;
+            for (int i = 0; i < files.size(); ++i) {
+                if (ioCancelled(cancel)) {
+                    error = QStringLiteral("Cancelled");
+                    break;
+                }
+                const QString source = files.at(i);
+                QVariantMap ctx = copyContext(source, track, date, session, {});
+                QString relative = expandCopyFormat(format, ctx);
+                if (!script.trimmed().isEmpty()) {
+                    const LuaRenameResult lua = runLuaRename(script, ctx);
+                    if (!lua.ok) {
+                        error = lua.error;
+                        break;
+                    }
+                    if (!lua.relativePath.trimmed().isEmpty())
+                        relative = lua.relativePath;
+                }
+                const PathJailResult jailed = jailRelativePath(dest, relative);
+                if (!jailed.ok) {
+                    error = jailed.error;
+                    break;
+                }
+                QDir().mkpath(QFileInfo(jailed.absolutePath).absolutePath());
+                if (QFileInfo::exists(jailed.absolutePath)) {
+                    ++copied;
+                    continue;
+                }
+                if (!QFile::copy(source, jailed.absolutePath)) {
+                    error = QStringLiteral("Could not copy %1")
+                                .arg(QFileInfo(source).fileName());
+                    break;
+                }
+                ++copied;
+            }
+            return QVariantMap{{QStringLiteral("error"), error},
+                               {QStringLiteral("copied"), copied},
+                               {QStringLiteral("dest"), dest}};
+        },
+        [this](QVariantMap result) {
+            const QString error =
+                result.value(QStringLiteral("error")).toString();
+            usbCopyProgress_ = 1.0;
+            if (!error.isEmpty()) {
+                usbCopyStatus_ = error;
+                emit operationError(QStringLiteral("USB copy"), error);
+            } else {
+                usbCopyStatus_ =
+                    QStringLiteral("Copied %1 files")
+                        .arg(result.value(QStringLiteral("copied")).toInt());
+                usbCopyVisible_ = false;
+                const QString dest =
+                    result.value(QStringLiteral("dest")).toString();
+                if (!dest.isEmpty()) appendFolderLocation(dest, false);
+                scan();
+            }
+            emit usbChanged();
+        });
+}
+
+bool TelemetryStore::swapPrimaryWithReference() {
+    if (!omatrack::swapRolesPossible(compareSession_ != nullptr)) return false;
+    SessionHandle* primary = primarySession_;
+    SessionHandle* compare = compareSession_;
+    const int primaryLap = primaryLap_;
+    const int compareLap = compareLap_;
+    primarySession_ = compare;
+    primaryLap_ = compareLap;
+    compareSession_ = primary;
+    compareLap_ = primaryLap;
+    overlays_->setPrimarySession(primarySession_);
+    overlays_->setPrimaryLap(primaryLap_);
+    overlays_->setCompareSession(compareSession_);
+    overlays_->setEventLabel(primaryLabel());
+    overlays_->setDriverName(primaryDriverName());
+    deltaCacheValid_ = false;
+    damperAlignmentValid_ = false;
+    invalidateComparisonAlignment();
+    rebuildComparisonAlignment();
+    prefs_->lastPrimaryKey() =
+        primarySession_ ? primarySession_->sessionKey() : QString();
+    prefs_->lastPrimaryLap() = primaryLap_;
+    prefs_->lastCompareKey() =
+        compareSession_ ? compareSession_->sessionKey() : QString();
+    prefs_->lastCompareLap() = compareLap_;
+    schedulePreferencesSave();
+    loadCornersForPrimary();
+    overlays_->resampleOverlays();
+    emit cornersChanged();
+    emit videoTimeChanged();
+    emit selectionChanged();
+    emit cursorFracChanged();
+    refreshLapModels();
+    libraryModel_->updateSelection(primarySessionKey(), compareSessionKey());
+    return true;
+}
+
+QString TelemetryStore::overlayRefColor() const {
+    return prefs_->overlayRefColor();
+}
+QString TelemetryStore::overlayRefStyle() const {
+    return prefs_->overlayRefStyle();
+}
+bool TelemetryStore::overlayRefWhite() const {
+    return prefs_->overlayRefWhite();
+}
+
+void TelemetryStore::setOverlayRefColor(const QString& color) {
+    if (prefs_->overlayRefColor() == color) return;
+    prefs_->setOverlayRefColor(color);
+    schedulePreferencesSave();
+    emit overlayStyleChanged();
+}
+
+void TelemetryStore::setOverlayRefStyle(const QString& style) {
+    if (prefs_->overlayRefStyle() == style) return;
+    prefs_->setOverlayRefStyle(style);
+    schedulePreferencesSave();
+    emit overlayStyleChanged();
+}
+
+void TelemetryStore::setOverlayRefWhite(bool enabled) {
+    if (prefs_->overlayRefWhite() == enabled) return;
+    prefs_->setOverlayRefWhite(enabled);
+    schedulePreferencesSave();
+    emit overlayStyleChanged();
 }

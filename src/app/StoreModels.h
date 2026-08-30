@@ -11,18 +11,18 @@
 #pragma once
 
 #include "FilterChange.h"
+#include "ModelDiff.h"
 #include "StoreTypes.h"
-
-#include <QAbstractListModel>
 #include <QSortFilterProxyModel>
 #include <QVector>
 #include <QtQml/qqmlregistration.h>
 
 // ── lap list model ──────────────────────────────────────────────────
 
-class LapListModel : public QAbstractListModel {
+class LapListModel : public IdentityListModel {
     Q_OBJECT
     QML_ANONYMOUS
+    Q_PROPERTY(int count READ count NOTIFY refreshed)
     Q_PROPERTY(int fixedLapCount READ fixedLapCount NOTIFY refreshed)
     Q_PROPERTY(int flexibleTimeMs READ flexibleTimeMs NOTIFY refreshed)
     Q_PROPERTY(int totalTimeMs READ totalTimeMs NOTIFY refreshed)
@@ -37,6 +37,7 @@ public:
         IsCompleteRole,
         IsPitLapRole,
         CountsForBestRole,
+        HoverTextRole,
     };
     Q_ENUM(Role)
 
@@ -47,6 +48,7 @@ public:
     QHash<int, QByteArray> roleNames() const override;
 
     void refresh(const QVector<LapRow>& rows);
+    int count() const { return rows_.size(); }
     int fixedLapCount() const { return fixedLapCount_; }
     int flexibleTimeMs() const { return flexibleTimeMs_; }
     int totalTimeMs() const { return totalTimeMs_; }
@@ -61,9 +63,41 @@ private:
     int totalTimeMs_ = 0;
 };
 
+// ── filmstrip session model ─────────────────────────────────────────
+
+class FilmstripSessionListModel : public IdentityListModel {
+    Q_OBJECT
+    QML_ANONYMOUS
+    Q_PROPERTY(int count READ count NOTIFY refreshed)
+public:
+    enum Role {
+        SessionKeyRole = Qt::UserRole,
+        DriverNameRole,
+        BestTimeRole,
+        ReferenceRole,
+    };
+    Q_ENUM(Role)
+
+    explicit FilmstripSessionListModel(QObject* parent = nullptr);
+
+    int rowCount(const QModelIndex& parent = {}) const override;
+    QVariant data(const QModelIndex& index, int role) const override;
+    QHash<int, QByteArray> roleNames() const override;
+
+    void refresh(const QVector<FilmstripSessionRow>& rows);
+    int count() const { return rows_.size(); }
+    QString primarySessionKey() const;
+
+signals:
+    void refreshed();
+
+private:
+    QVector<FilmstripSessionRow> rows_;
+};
+
 // ── channel list model ──────────────────────────────────────────────
 
-class ChannelListModel : public QAbstractListModel {
+class ChannelListModel : public IdentityListModel {
     Q_OBJECT
 public:
     enum Role {
@@ -93,7 +127,7 @@ private:
 
 // ── corner list model (basic ranges + comparison columns) ───────────
 
-class CornerListModel : public QAbstractListModel {
+class CornerListModel : public IdentityListModel {
     Q_OBJECT
 public:
     enum Role {
@@ -172,7 +206,7 @@ private:
 
 // ── driver mapping model ────────────────────────────────────────────
 
-class DriverMappingModel : public QAbstractListModel {
+class DriverMappingModel : public IdentityListModel {
     Q_OBJECT
 public:
     enum Role {
@@ -200,7 +234,7 @@ private:
 
 // ── sync strategy model ─────────────────────────────────────────────
 
-class SyncStrategyModel : public QAbstractListModel {
+class SyncStrategyModel : public IdentityListModel {
     Q_OBJECT
 public:
     enum Role {

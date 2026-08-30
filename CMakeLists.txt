@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(omatrack VERSION 1.6.0 LANGUAGES CXX)
+project(omatrack VERSION 1.6.1 LANGUAGES CXX)
 if(WIN32)
   # Windows release layout: the app ships as a flat zip, so executables and
   # their load-time DLLs install at the prefix root and every non-binary
@@ -96,6 +96,7 @@ if(OMATRACK_STATIC_GNU_RUNTIME)
     -static-libgcc -static-libstdc++)
 endif()
 
+include(cmake/LuaSandbox.cmake)
 add_subdirectory(third_party)
 add_subdirectory(src/core)
 add_subdirectory(cli)

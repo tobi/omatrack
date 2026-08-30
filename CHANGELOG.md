@@ -2,6 +2,30 @@
 
 All notable user-facing changes are documented here.
 
+## 1.6.1 — 2026-08-30
+
+- Header update control shows download percent and bytes next to the icon.
+- Sidebar, channels, laps, and other list models refresh with insert/remove
+  instead of resetting, so scroll position and selection survive a rescan or
+  filter change.
+- Event mode filters the library to one track and day, with a first-class
+  session name (`c1`, `c2`, …) shown in the toolbar and passed to USB copy
+  and Lua rename. Stored in `omatrack.yml`.
+- USB volumes are detected (`mountedUsbVolumes()` is wired) and shown as a
+  transient `USB — …` sidebar section. Nothing is copied until the Copy
+  overlay in the video slot is used. Destination and `{track}/{date}/{session}/{original}`
+  live in `omatrack.yml`.
+- Optional Lua 5.4 rename sandbox (no `io`/`os`/`load`/`setmetatable`,
+  instruction hook plus memory cap) returns a jailed relative path only.
+- Location and USB mount watches debounce into the existing scan job.
+- Sidebar `openIndex` cache lives under `$XDG_CACHE_HOME` and is keyed by
+  POSIX identity plus `converterGeneration()`. Failures are not stored.
+  Nothing is written beside the source recording.
+- Fullscreen overlay reference traces take color, dash/dot, and a white
+  similar-thickness preset from preferences.
+- `X` swaps primary and reference analysis roles (no-op without a reference)
+  and is offered on the filmstrip label. Text fields keep `X`.
+
 ## 1.6.0 — 2026-08-29
 
 - Updated the telemetry readers to the tested `motorsport-telemetry-rs`

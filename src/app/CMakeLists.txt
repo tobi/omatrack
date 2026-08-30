@@ -83,6 +83,9 @@ qt_add_qml_module(omatrack
     VideoMetadataDialog.qml
     VideoTelemetryOverlay.qml
     VideoDeltaBar.qml
+    UsbCopyOverlay.qml
+    PreferencesEventPage.qml
+    PreferencesOverlayPage.qml
   SOURCES
     AsyncJob.h
     FilterChange.h
@@ -109,6 +112,10 @@ qt_add_qml_module(omatrack
     TraceSceneBuilder.h TraceSceneBuilder.cpp
     TraceTextCache.h TraceTextCache.cpp
     UsbMedia.h UsbMedia.cpp
+    PathJail.h PathJail.cpp
+    IndexCache.h IndexCache.cpp
+    LuaRename.h LuaRename.cpp
+    ModelDiff.h
     VerboseLog.h VerboseLog.cpp
     SingleInstance.h SingleInstance.cpp
     TraceSnapshot.h
@@ -143,6 +150,8 @@ qt_add_resources(omatrack "omatrack_branding"
     ${CMAKE_SOURCE_DIR}/assets/omatrack.ico)
 
 target_link_libraries(omatrack PRIVATE
+  lua_sandbox
+  sol2_headers
   omatrack_core
   omatrack_headless
   omatrack_portable_runtime

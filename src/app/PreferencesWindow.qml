@@ -1,13 +1,13 @@
 pragma ComponentBehavior: Bound
 import Omatrack
 
-// Modeless preferences workspace. Each section owns its domain state and
-// applies changes immediately; the shell only owns navigation.
-
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
+
+// Modeless preferences workspace. Each section owns its domain state and
+// applies changes immediately; the shell only owns navigation.
 
 ApplicationWindow {
     id: preferencesWindow
@@ -162,6 +162,14 @@ ApplicationWindow {
                                 label: "Track data"
                             }
                             ListElement {
+                                detail: "Track and session"
+                                label: "Event"
+                            }
+                            ListElement {
+                                detail: "Reference HUD traces"
+                                label: "Overlay"
+                            }
+                            ListElement {
                                 detail: "GitHub AppImage"
                                 label: "Updates"
                             }
@@ -194,6 +202,10 @@ ApplicationWindow {
                     id: driversPage
                 }
                 PreferencesTrackDataPage {
+                }
+                PreferencesEventPage {
+                }
+                PreferencesOverlayPage {
                 }
                 PreferencesUpdatesPage {
                 }

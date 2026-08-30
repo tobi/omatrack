@@ -5,49 +5,58 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// Proportional lap filmstrip: one row per active/reference session, each row
-// a proportional bar of its laps with the best lap highlighted. Extracted
-// from Main.qml; the root passes the session strip array and receives
-// signals for pointer tooltips and the right-click lap menu.
+// Proportional lap filmstrip: one row per active/reference session. Laps fill
+// the lane by time, including Out/In/Frag. Left click selects the current lap
+// for that session; right click on a bar sets comparison. Label right-click
+// stays "Swap with reference  X".
 
 Rectangle {
     id: filmstrip
 
-    property var sessions: []
-
-    signal lapMenuRequested(string sessionKey, int lapId, real x, real y)
     signal pointerTooltipDismissed(string owner)
     signal pointerTooltipMoved(string owner, real x, real y)
     signal pointerTooltipRequested(string owner, string text, real x, real y)
 
     Layout.fillWidth: true
-    Layout.preferredHeight: visible ? filmstrip.sessions.length * 33 + 9 : 0
+    Layout.preferredHeight: visible ? Store.filmstripSessions.count * 33 + 9 : 0
     color: Style.traceBackgroundColor
-    visible: filmstrip.sessions.length > 0
+    visible: Store.filmstripSessions.count > 0
 
+    Menu {
+        id: swapReferenceMenu
+
+        MenuItem {
+            enabled: Store.comparing
+            text: "Swap with reference  X"
+
+            onTriggered: Store.swapPrimaryWithReference()
+        }
+    }
     Column {
         anchors.fill: parent
         anchors.margins: 6
         spacing: 3
 
         Repeater {
-            model: filmstrip.sessions
+            model: Store.filmstripSessions
 
             delegate: Rectangle {
                 id: sessionStrip
 
-                readonly property var laps: sessionStrip.strip.reference ? Store.compareLaps : Store.primaryLaps
-                required property var modelData
+                required property string bestTime
+                required property string driverName
+                readonly property var laps: sessionStrip.reference ? Store.compareLaps : Store.primaryLaps
+                required property bool reference
                 property string selectedLapTime: {
-                    const key = strip.reference ? Store.compareSessionKey : Store.primarySessionKey;
-                    const idx = strip.reference ? Store.compareLapIndex : Store.primaryLapIndex;
-                    if (key === strip.sessionKey && idx >= 0)
+                    const key = sessionStrip.reference ? Store.compareSessionKey : Store.primarySessionKey;
+                    const idx = sessionStrip.reference ? Store.compareLapIndex : Store.primaryLapIndex;
+                    if (key === sessionStrip.sessionKey && idx >= 0)
                         return Store.lapTimeText(key, idx);
-                    return strip.bestTime;
+                    return sessionStrip.bestTime;
                 }
-                property var strip: modelData
+                required property string sessionKey
 
-                color: strip.reference ? Qt.tint(Style.surfaceColor, Qt.rgba(Style.orangeColor.r, Style.orangeColor.g, Style.orangeColor.b, 0.08)) : Style.surfaceColor
+                color: sessionStrip.reference ? Qt.tint(Style.surfaceColor, Qt.rgba(Style.orangeColor.r, Style.orangeColor.g, Style.orangeColor.b, 0.08)) : Style.surfaceColor
                 height: 30
                 radius: 4
                 width: parent.width
@@ -59,28 +68,37 @@ Rectangle {
                     spacing: 5
 
                     DenseTwoLineRow {
+                        id: stripLabel
+
                         Layout.maximumWidth: 190
                         Layout.minimumWidth: 190
                         Layout.preferredWidth: 190
                         detailVisible: false
-                        rightColor: sessionStrip.strip.reference ? Style.orangeColor : Style.accentColor
+                        rightColor: sessionStrip.reference ? Style.orangeColor : Style.accentColor
                         rightFamily: Style.monoFontFamily
                         rightSize: 9
                         rightValue: sessionStrip.selectedLapTime
-                        title: sessionStrip.strip.driverName !== "" && sessionStrip.strip.driverName !== "Unknown" ? sessionStrip.strip.driverName : "Unknown driver"
+                        title: sessionStrip.driverName !== "" && sessionStrip.driverName !== "Unknown" ? sessionStrip.driverName : "Unknown driver"
                         titleBold: true
-                        titleColor: sessionStrip.strip.reference ? Style.orangeColor : Style.accentColor
+                        titleColor: sessionStrip.reference ? Style.orangeColor : Style.accentColor
                         titleFamily: Style.monoFontFamily
                         titleSize: 9
                         titleSpacing: 4
+
+                        MouseArea {
+                            acceptedButtons: Qt.RightButton
+                            anchors.fill: parent
+
+                            onClicked: swapReferenceMenu.popup()
+                        }
                     }
                     CompactToolButton {
                         Layout.preferredHeight: 24
                         Layout.preferredWidth: 24
                         text: "×"
-                        tip: sessionStrip.strip.reference ? "Remove reference session" : "Clear active session"
+                        tip: sessionStrip.reference ? "Remove reference session" : "Clear active session"
 
-                        onClicked: sessionStrip.strip.reference ? Store.clearCompare() : Store.clearPrimary()
+                        onClicked: sessionStrip.reference ? Store.clearCompare() : Store.clearPrimary()
                     }
                     Item {
                         Layout.preferredWidth: 7
@@ -103,30 +121,30 @@ Rectangle {
                                 delegate: Rectangle {
                                     id: proportionalLap
 
-                                    readonly property bool confidenceLap: !sessionStrip.strip.reference && Store.traceConfidenceMode && Store.traceConfidenceIncludesLap(sessionStrip.strip.sessionKey, proportionalLap.lapId)
+                                    readonly property bool confidenceLap: !sessionStrip.reference && Store.traceConfidenceMode && Store.traceConfidenceIncludesLap(sessionStrip.sessionKey, proportionalLap.lapId)
                                     required property bool countsForBest
-                                    readonly property real flexibleLaneWidth: Math.max(0, proportionalLapLane.width - Math.max(0, sessionStrip.laps.rowCount - 1) * proportionalLapRow.spacing - (sessionStrip.laps.fixedLapCount === sessionStrip.laps.rowCount ? 0 : sessionStrip.laps.fixedLapCount * 30))
+                                    required property string hoverText
+                                    required property bool isComplete
                                     required property bool isFastest
                                     required property string label
                                     required property int lapId
-                                    readonly property bool pinIncomplete: !proportionalLap.countsForBest && sessionStrip.laps.fixedLapCount !== sessionStrip.laps.rowCount
-                                    property bool selectedLap: sessionStrip.strip.reference ? sessionStrip.strip.sessionKey === Store.compareSessionKey && proportionalLap.lapId === Store.compareLapIndex : sessionStrip.strip.sessionKey === Store.primarySessionKey && proportionalLap.lapId === Store.primaryLapIndex
+                                    property bool selectedLap: sessionStrip.reference ? sessionStrip.sessionKey === Store.compareSessionKey && proportionalLap.lapId === Store.compareLapIndex : sessionStrip.sessionKey === Store.primarySessionKey && proportionalLap.lapId === Store.primaryLapIndex
                                     required property int timeMs
                                     required property string timeText
-                                    readonly property string tooltipOwner: "lap:" + sessionStrip.strip.sessionKey + ":" + proportionalLap.lapId + ":" + sessionStrip.strip.reference
+                                    readonly property string tooltipOwner: "lap:" + sessionStrip.sessionKey + ":" + proportionalLap.lapId + ":" + sessionStrip.reference
 
                                     // Bound to the Row, not `parent`:
                                     // a delegate evaluates its
                                     // bindings before it is reparented,
                                     // so `parent` is null on creation.
                                     anchors.verticalCenter: proportionalLapRow.verticalCenter
-                                    border.color: sessionStrip.strip.reference ? Style.orangeColor : Style.accentColor
+                                    border.color: sessionStrip.reference ? Style.orangeColor : Style.accentColor
                                     border.width: proportionalLap.selectedLap || proportionalLap.confidenceLap ? 1 : 0
                                     color: proportionalLap.selectedLap ? Style.selectionColor : proportionalLap.confidenceLap ? Qt.tint(Style.traceBackgroundColor, Qt.rgba(Style.accentColor.r, Style.accentColor.g, Style.accentColor.b, 0.2)) : proportionalLapMouse.containsMouse ? Style.backgroundColor : Style.traceBackgroundColor
                                     height: proportionalLapRow.height - 8
-                                    objectName: (sessionStrip.strip.reference ? "referenceFilmstripLap-" : "activeFilmstripLap-") + proportionalLap.lapId
+                                    objectName: (sessionStrip.reference ? "referenceFilmstripLap-" : "activeFilmstripLap-") + proportionalLap.lapId
                                     radius: 3
-                                    width: proportionalLap.pinIncomplete ? 30 : Math.max(1, proportionalLap.flexibleLaneWidth * Math.max(1, proportionalLap.timeMs) / (sessionStrip.laps.fixedLapCount === sessionStrip.laps.rowCount ? sessionStrip.laps.totalTimeMs : sessionStrip.laps.flexibleTimeMs))
+                                    width: Math.max(1, (proportionalLapLane.width - Math.max(0, sessionStrip.laps.count - 1) * proportionalLapRow.spacing) * Math.max(1, proportionalLap.timeMs) / Math.max(1, sessionStrip.laps.totalTimeMs))
 
                                     Rectangle {
                                         anchors.bottom: parent.bottom
@@ -141,12 +159,12 @@ Rectangle {
                                         anchors.fill: parent
                                         anchors.leftMargin: 5
                                         anchors.rightMargin: 5
-                                        color: proportionalLap.selectedLap ? (sessionStrip.strip.reference ? Style.orangeColor : Style.accentColor) : proportionalLap.isFastest ? Style.greenColor : Style.foregroundColor
+                                        color: proportionalLap.selectedLap ? (sessionStrip.reference ? Style.orangeColor : Style.accentColor) : proportionalLap.isFastest ? Style.greenColor : Style.foregroundColor
                                         elide: Text.ElideRight
                                         font.bold: proportionalLap.selectedLap || proportionalLap.confidenceLap
                                         font.family: Style.monoFontFamily
                                         font.pixelSize: 9
-                                        text: proportionalLap.pinIncomplete ? proportionalLap.label : proportionalLap.timeText
+                                        text: proportionalLap.isComplete ? proportionalLap.timeText : proportionalLap.label
                                         verticalAlignment: Text.AlignVCenter
                                     }
                                     MouseArea {
@@ -159,17 +177,17 @@ Rectangle {
                                         onClicked: mouse => {
                                             if (mouse.button === Qt.RightButton) {
                                                 filmstrip.pointerTooltipDismissed(proportionalLap.tooltipOwner);
-                                                filmstrip.lapMenuRequested(sessionStrip.strip.sessionKey, proportionalLap.lapId, mouse.x, mouse.y);
+                                                Store.compareLap(sessionStrip.sessionKey, proportionalLap.lapId);
                                                 return;
                                             }
-                                            if (sessionStrip.strip.reference)
-                                                Store.compareLap(sessionStrip.strip.sessionKey, proportionalLap.lapId);
+                                            if (sessionStrip.reference)
+                                                Store.compareLap(sessionStrip.sessionKey, proportionalLap.lapId);
                                             else
-                                                Store.selectLap(sessionStrip.strip.sessionKey, proportionalLap.lapId);
+                                                Store.selectLap(sessionStrip.sessionKey, proportionalLap.lapId);
                                         }
                                         onEntered: {
                                             const point = proportionalLapMouse.mapToItem(Overlay.overlay, proportionalLapMouse.mouseX, proportionalLapMouse.mouseY);
-                                            filmstrip.pointerTooltipRequested(proportionalLap.tooltipOwner, proportionalLap.timeText + " · " + proportionalLap.label + (proportionalLap.confidenceLap ? " · Consistency cohort" : ""), point.x, point.y);
+                                            filmstrip.pointerTooltipRequested(proportionalLap.tooltipOwner, proportionalLap.hoverText + (proportionalLap.confidenceLap ? " · Consistency cohort" : ""), point.x, point.y);
                                         }
                                         onExited: filmstrip.pointerTooltipDismissed(proportionalLap.tooltipOwner)
                                         onPositionChanged: mouse => {

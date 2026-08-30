@@ -121,6 +121,68 @@ target_link_libraries(usb-media-test PRIVATE
 add_test(NAME usb-media-test COMMAND usb-media-test)
 set_tests_properties(usb-media-test PROPERTIES LABELS unit)
 
+qt_add_executable(library-model-test LibraryModelTest.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/LibraryModel.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/StoreModels.cpp)
+target_include_directories(library-model-test PRIVATE
+  ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(library-model-test PRIVATE
+  Qt6::Test
+  Qt6::Core
+  Qt6::Gui
+  Qt6::Qml
+  omatrack_warnings)
+add_test(NAME library-model-test COMMAND library-model-test)
+set_tests_properties(library-model-test PROPERTIES LABELS unit)
+
+qt_add_executable(lua-rename-test LuaRenameTest.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/LuaRename.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/PathJail.cpp)
+target_include_directories(lua-rename-test PRIVATE
+  ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(lua-rename-test PRIVATE
+  Qt6::Test
+  Qt6::Core
+  lua_sandbox
+  sol2_headers
+  omatrack_warnings)
+add_test(NAME lua-rename-test COMMAND lua-rename-test)
+set_tests_properties(lua-rename-test PROPERTIES LABELS unit)
+
+qt_add_executable(index-cache-test IndexCacheTest.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/IndexCache.cpp)
+target_include_directories(index-cache-test PRIVATE
+  ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(index-cache-test PRIVATE
+  Qt6::Test
+  Qt6::Core
+  omatrack_core
+  omatrack_warnings)
+add_test(NAME index-cache-test COMMAND index-cache-test)
+set_tests_properties(index-cache-test PROPERTIES LABELS unit)
+
+qt_add_executable(overlay-style-test OverlayStyleTest.cpp)
+target_include_directories(overlay-style-test PRIVATE
+  ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(overlay-style-test PRIVATE
+  Qt6::Test
+  Qt6::Core
+  Qt6::Gui
+  Qt6::Quick
+  omatrack_warnings)
+add_test(NAME overlay-style-test COMMAND overlay-style-test)
+set_tests_properties(overlay-style-test PROPERTIES LABELS unit)
+
+qt_add_executable(swap-roles-test SwapRolesTest.cpp)
+target_include_directories(swap-roles-test PRIVATE
+  ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(swap-roles-test PRIVATE
+  Qt6::Test
+  Qt6::Core
+  omatrack_warnings)
+add_test(NAME swap-roles-test COMMAND swap-roles-test)
+set_tests_properties(swap-roles-test PROPERTIES LABELS unit)
+
 # ── Omarchy theme bridge test ───────────────────────────────────────
 qt_add_executable(omarchy-theme-test OmarchyThemeTest.cpp
   ${CMAKE_SOURCE_DIR}/src/app/OmarchyTheme.cpp)

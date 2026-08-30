@@ -1,10 +1,11 @@
 #include "StoreModels.h"
 
 #include <QString>
+#include <algorithm>
 
 // ── LapListModel ────────────────────────────────────────────────────
 
-LapListModel::LapListModel(QObject* parent) : QAbstractListModel(parent) {}
+LapListModel::LapListModel(QObject* parent) : IdentityListModel(parent) {}
 
 int LapListModel::rowCount(const QModelIndex& parent) const {
     return parent.isValid() ? 0 : rows_.size();
@@ -23,6 +24,7 @@ QVariant LapListModel::data(const QModelIndex& index, int role) const {
         case IsCompleteRole: return row.isComplete;
         case IsPitLapRole: return row.isPitLap;
         case CountsForBestRole: return row.countsForBest;
+        case HoverTextRole: return row.hoverText;
     }
     return {};
 }
@@ -38,16 +40,26 @@ QHash<int, QByteArray> LapListModel::roleNames() const {
         {IsCompleteRole, "isComplete"},
         {IsPitLapRole, "isPitLap"},
         {CountsForBestRole, "countsForBest"},
+        {HoverTextRole, "hoverText"},
     };
 }
 
 void LapListModel::refresh(const QVector<LapRow>& rows) {
-    beginResetModel();
-    rows_ = rows;
+    replaceByIdentity(
+        rows_, rows,
+        [](const LapRow& row) { return QString::number(row.lapId); },
+        [](const LapRow& a, const LapRow& b) {
+            return a.lapId == b.lapId && a.label == b.label &&
+                   a.timeText == b.timeText && a.timeMs == b.timeMs &&
+                   a.startTime == b.startTime && a.isFastest == b.isFastest &&
+                   a.isComplete == b.isComplete && a.isPitLap == b.isPitLap &&
+                   a.countsForBest == b.countsForBest &&
+                   a.hoverText == b.hoverText;
+        });
     fixedLapCount_ = 0;
     flexibleTimeMs_ = 0;
     totalTimeMs_ = 0;
-    for (const LapRow& r : rows) {
+    for (const LapRow& r : rows_) {
         totalTimeMs_ += std::max(1, r.timeMs);
         if (!r.countsForBest)
             ++fixedLapCount_;
@@ -56,14 +68,66 @@ void LapListModel::refresh(const QVector<LapRow>& rows) {
     }
     flexibleTimeMs_ = std::max(1, flexibleTimeMs_);
     totalTimeMs_ = std::max(1, totalTimeMs_);
-    endResetModel();
     emit refreshed();
+}
+
+// ── FilmstripSessionListModel ───────────────────────────────────────
+
+FilmstripSessionListModel::FilmstripSessionListModel(QObject* parent)
+    : IdentityListModel(parent) {}
+
+int FilmstripSessionListModel::rowCount(const QModelIndex& parent) const {
+    return parent.isValid() ? 0 : rows_.size();
+}
+
+QVariant FilmstripSessionListModel::data(const QModelIndex& index,
+                                         int role) const {
+    if (!checkIndex(index, CheckIndexOption::IndexIsValid)) return {};
+    const FilmstripSessionRow& row = rows_[index.row()];
+    switch (role) {
+        case SessionKeyRole: return row.sessionKey;
+        case DriverNameRole: return row.driverName;
+        case BestTimeRole: return row.bestTime;
+        case ReferenceRole: return row.reference;
+    }
+    return {};
+}
+
+QHash<int, QByteArray> FilmstripSessionListModel::roleNames() const {
+    return {
+        {SessionKeyRole, "sessionKey"},
+        {DriverNameRole, "driverName"},
+        {BestTimeRole, "bestTime"},
+        {ReferenceRole, "reference"},
+    };
+}
+
+void FilmstripSessionListModel::refresh(
+    const QVector<FilmstripSessionRow>& rows) {
+    replaceByIdentity(
+        rows_, rows,
+        [](const FilmstripSessionRow& row) {
+            return row.reference ? QStringLiteral("reference")
+                                 : QStringLiteral("primary");
+        },
+        [](const FilmstripSessionRow& a, const FilmstripSessionRow& b) {
+            return a.sessionKey == b.sessionKey &&
+                   a.driverName == b.driverName && a.bestTime == b.bestTime &&
+                   a.reference == b.reference;
+        });
+    emit refreshed();
+}
+
+QString FilmstripSessionListModel::primarySessionKey() const {
+    for (const FilmstripSessionRow& row : rows_)
+        if (!row.reference) return row.sessionKey;
+    return {};
 }
 
 // ── ChannelListModel ────────────────────────────────────────────────
 
 ChannelListModel::ChannelListModel(QObject* parent)
-    : QAbstractListModel(parent) {}
+    : IdentityListModel(parent) {}
 
 int ChannelListModel::rowCount(const QModelIndex& parent) const {
     return parent.isValid() ? 0 : rows_.size();
@@ -101,15 +165,19 @@ QHash<int, QByteArray> ChannelListModel::roleNames() const {
 }
 
 void ChannelListModel::refresh(const QVector<ChannelRow>& rows) {
-    beginResetModel();
-    rows_ = rows;
-    endResetModel();
+    replaceByIdentity(
+        rows_, rows, [](const ChannelRow& row) { return row.key; },
+        [](const ChannelRow& a, const ChannelRow& b) {
+            return a.key == b.key && a.title == b.title && a.unit == b.unit &&
+                   a.visible == b.visible && a.color == b.color &&
+                   a.weight == b.weight && a.source == b.source &&
+                   a.sidecar == b.sidecar && a.span == b.span;
+        });
 }
 
 // ── CornerListModel ─────────────────────────────────────────────────
 
-CornerListModel::CornerListModel(QObject* parent)
-    : QAbstractListModel(parent) {}
+CornerListModel::CornerListModel(QObject* parent) : IdentityListModel(parent) {}
 
 int CornerListModel::rowCount(const QModelIndex& parent) const {
     return parent.isValid() ? 0 : rows_.size();
@@ -245,15 +313,24 @@ QHash<int, QByteArray> CornerListModel::roleNames() const {
 }
 
 void CornerListModel::refresh(const QVector<CornerRow>& rows) {
-    beginResetModel();
-    rows_ = rows;
-    endResetModel();
+    replaceByIdentity(
+        rows_, rows,
+        [](const CornerRow& row) {
+            return row.name + QChar(0) + QString::number(row.start, 'g', 12);
+        },
+        [](const CornerRow& a, const CornerRow& b) {
+            return a.name == b.name && a.start == b.start && a.end == b.end &&
+                   a.entrySpeed == b.entrySpeed && a.apexSpeed == b.apexSpeed &&
+                   a.exitSpeed == b.exitSpeed && a.time == b.time &&
+                   a.hasCompare == b.hasCompare && a.delta == b.delta &&
+                   a.note == b.note && a.score == b.score;
+        });
 }
 
 // ── DriverMappingModel ──────────────────────────────────────────────
 
 DriverMappingModel::DriverMappingModel(QObject* parent)
-    : QAbstractListModel(parent) {}
+    : IdentityListModel(parent) {}
 
 int DriverMappingModel::rowCount(const QModelIndex& parent) const {
     return parent.isValid() ? 0 : rows_.size();
@@ -281,21 +358,19 @@ QHash<int, QByteArray> DriverMappingModel::roleNames() const {
 }
 
 void DriverMappingModel::refresh(const QVector<DriverMappingRow>& rows) {
-    if (rows.size() == rows_.size()) {
-        rows_ = rows;
-        if (!rows_.isEmpty())
-            emit dataChanged(index(0), index(rows_.size() - 1));
-    } else {
-        beginResetModel();
-        rows_ = rows;
-        endResetModel();
-    }
+    replaceByIdentity(
+        rows_, rows, [](const DriverMappingRow& row) { return row.key; },
+        [](const DriverMappingRow& a, const DriverMappingRow& b) {
+            return a.key == b.key && a.carNumber == b.carNumber &&
+                   a.carClass == b.carClass && a.driverId == b.driverId &&
+                   a.display == b.display;
+        });
 }
 
 // ── SyncStrategyModel ───────────────────────────────────────────────
 
 SyncStrategyModel::SyncStrategyModel(QObject* parent)
-    : QAbstractListModel(parent) {}
+    : IdentityListModel(parent) {}
 
 int SyncStrategyModel::rowCount(const QModelIndex& parent) const {
     return parent.isValid() ? 0 : rows_.size();
@@ -323,9 +398,12 @@ QHash<int, QByteArray> SyncStrategyModel::roleNames() const {
 }
 
 void SyncStrategyModel::refresh(const QVector<SyncStrategyRow>& rows) {
-    beginResetModel();
-    rows_ = rows;
-    endResetModel();
+    replaceByIdentity(
+        rows_, rows, [](const SyncStrategyRow& row) { return row.id; },
+        [](const SyncStrategyRow& a, const SyncStrategyRow& b) {
+            return a.id == b.id && a.label == b.label &&
+                   a.shortLabel == b.shortLabel && a.detail == b.detail;
+        });
 }
 
 // ── RowFilterModel ──────────────────────────────────────────────────

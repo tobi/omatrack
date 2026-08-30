@@ -390,6 +390,59 @@ Item {
             wrapMode: Text.WordWrap
         }
         Label {
+            font.bold: true
+            text: "USB copy"
+        }
+        Label {
+            Layout.fillWidth: true
+            color: Style.mutedTextColor
+            font.pixelSize: Style.smallFontSize
+            text: "Detected sticks are browsed in the sidebar and never added to this list. Copy is explicit."
+            wrapMode: Text.Wrap
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+
+            CompactTextField {
+                Layout.fillWidth: true
+                placeholderText: "Destination folder"
+                text: Store.usbDest
+
+                onEditingFinished: Store.usbDest = text.trim()
+            }
+            CompactButton {
+                text: "Choose…"
+
+                onClicked: usbDestDialog.open()
+            }
+        }
+        CompactTextField {
+            Layout.fillWidth: true
+            placeholderText: "{track}/{date}/{session}/{original}"
+            text: Store.usbFormat
+
+            onEditingFinished: Store.usbFormat = text.trim()
+        }
+        Label {
+            color: Style.mutedTextColor
+            font.pixelSize: Style.smallFontSize
+            text: "Optional Lua rename(ctx). Empty uses the format string."
+        }
+        ScrollView {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 120
+
+            TextArea {
+                placeholderText: Store.luaRenameExample()
+                selectByMouse: true
+                text: Store.usbRenameScript
+                wrapMode: TextEdit.Wrap
+
+                onEditingFinished: Store.usbRenameScript = text
+            }
+        }
+        Label {
             Layout.fillWidth: true
             color: Style.dimTextColor
             elide: Text.ElideMiddle
@@ -397,6 +450,15 @@ Item {
             font.pixelSize: Style.smallFontSize
             text: "Configuration: " + Store.configFilePath()
         }
+    }
+    Platform.FolderDialog {
+        id: usbDestDialog
+
+        acceptLabel: "Use folder"
+        folder: Store.defaultTelemetryDirectoryUrl()
+        title: "USB copy destination"
+
+        onAccepted: Store.usbDest = libraryPage.toLocalPath(usbDestDialog.folder)
     }
     Dialog {
         id: clearCacheDialog

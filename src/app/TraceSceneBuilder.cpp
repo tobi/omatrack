@@ -276,7 +276,20 @@ void TraceSceneBuilder::envelopePolyline(
         // Polyline through interpolated sample points, one per device column.
         pointsScratch_.clear();
         pointsScratch_.reserve(columns);
+        const int dashOn = style.dash == EnvelopeStyle::Dash::Dotted   ? 2
+                           : style.dash == EnvelopeStyle::Dash::Dashed ? 6
+                                                                       : 0;
+        const int dashOff = style.dash == EnvelopeStyle::Dash::Dotted   ? 4
+                            : style.dash == EnvelopeStyle::Dash::Dashed ? 4
+                                                                        : 0;
         for (int column = 0; column < columns; ++column) {
+            if (dashOn > 0) {
+                const int period = dashOn + dashOff;
+                if ((column % period) >= dashOn) {
+                    flush(pointsScratch_);
+                    continue;
+                }
+            }
             const double fraction =
                 xStart + xSpan * (double(column) + 0.5) / double(columns);
             if (fraction < clipLow || fraction > clipHigh) {
@@ -308,7 +321,20 @@ void TraceSceneBuilder::envelopePolyline(
     bool hasPrevious = false;
     double previousTop = 0.0;
     double previousBottom = 0.0;
+    const int envDashOn = style.dash == EnvelopeStyle::Dash::Dotted   ? 2
+                          : style.dash == EnvelopeStyle::Dash::Dashed ? 6
+                                                                      : 0;
+    const int envDashOff = style.dash == EnvelopeStyle::Dash::Dotted   ? 4
+                           : style.dash == EnvelopeStyle::Dash::Dashed ? 4
+                                                                       : 0;
     for (int column = 0; column < columns; ++column) {
+        if (envDashOn > 0) {
+            const int period = envDashOn + envDashOff;
+            if ((column % period) >= envDashOn) {
+                hasPrevious = false;
+                continue;
+            }
+        }
         const double startFraction =
             xStart + xSpan * double(column) / double(columns);
         const double endFraction =

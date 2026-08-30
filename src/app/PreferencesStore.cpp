@@ -281,6 +281,30 @@ void PreferencesStore::loadPreferences() {
     lastCompareLap_ =
         selection.value(QStringLiteral("compare_lap"), -1).toInt();
 
+    const QVariantMap event = config.map({QStringLiteral("event")});
+    eventMode_ = event.value(QStringLiteral("enabled"), false).toBool();
+    eventTrack_ = event.value(QStringLiteral("track")).toString();
+    eventSession_ = event.value(QStringLiteral("session")).toString();
+    eventDate_ = event.value(QStringLiteral("date")).toString();
+
+    const QVariantMap usb = config.map({QStringLiteral("usb")});
+    usbDest_ = usb.value(QStringLiteral("dest")).toString();
+    usbFormat_ =
+        usb.value(QStringLiteral("format"),
+                  QStringLiteral("{track}/{date}/{session}/{original}"))
+            .toString();
+    usbRenameScript_ = usb.value(QStringLiteral("rename_script")).toString();
+
+    const QVariantMap overlay = config.map({QStringLiteral("overlay")});
+    overlayRefColor_ =
+        overlay.value(QStringLiteral("ref_color"), QStringLiteral("#e09d7f"))
+            .toString();
+    overlayRefStyle_ =
+        overlay.value(QStringLiteral("ref_style"), QStringLiteral("dashed"))
+            .toString();
+    overlayRefWhite_ =
+        overlay.value(QStringLiteral("ref_white"), false).toBool();
+
     const QVariantMap mappings =
         config.map({QStringLiteral("driver_mappings")});
     for (auto it = mappings.cbegin(); it != mappings.cend(); ++it)
@@ -496,6 +520,20 @@ void PreferencesStore::scheduleSave() {
                     {QStringLiteral("primary_lap"), lastPrimaryLap_},
                     {QStringLiteral("compare_key"), lastCompareKey_},
                     {QStringLiteral("compare_lap"), lastCompareLap_}});
+    config.setMap({QStringLiteral("event")},
+                  QVariantMap{{QStringLiteral("enabled"), eventMode_},
+                              {QStringLiteral("track"), eventTrack_},
+                              {QStringLiteral("session"), eventSession_},
+                              {QStringLiteral("date"), eventDate_}});
+    config.setMap(
+        {QStringLiteral("usb")},
+        QVariantMap{{QStringLiteral("dest"), usbDest_},
+                    {QStringLiteral("format"), usbFormat_},
+                    {QStringLiteral("rename_script"), usbRenameScript_}});
+    config.setMap({QStringLiteral("overlay")},
+                  QVariantMap{{QStringLiteral("ref_color"), overlayRefColor_},
+                              {QStringLiteral("ref_style"), overlayRefStyle_},
+                              {QStringLiteral("ref_white"), overlayRefWhite_}});
 
     QVariantMap mappings;
     for (auto it = driverMappings_.cbegin(); it != driverMappings_.cend(); ++it)

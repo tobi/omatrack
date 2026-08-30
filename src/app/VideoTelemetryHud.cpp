@@ -84,6 +84,8 @@ void VideoTelemetryHud::setStore(TelemetryStore* store) {
             snapshotDirty_ = true;
             update();
         });
+        connect(store_, &TelemetryStore::overlayStyleChanged, this,
+                [this]() { update(); });
     }
     snapshotDirty_ = true;
     update();
@@ -250,11 +252,48 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
                                       style, 0.0, 1.0);
         };
 
+        const bool whiteRef = store_ && store_->overlayRefWhite();
+        const QString refStyle =
+            store_ ? store_->overlayRefStyle() : QStringLiteral("dashed");
+        const QColor refColor =
+            whiteRef ? QColor(Qt::white)
+                     : QColor(store_ && !store_->overlayRefColor().isEmpty()
+                                  ? store_->overlayRefColor()
+                                  : QStringLiteral("#e09d7f"));
+        const qreal refWidth = whiteRef ? 2.4 * s : 1.5 * s;
+        auto refDash = TraceSceneBuilder::EnvelopeStyle::Dash::Dashed;
+        if (refStyle == QLatin1String("dotted"))
+            refDash = TraceSceneBuilder::EnvelopeStyle::Dash::Dotted;
+        else if (refStyle == QLatin1String("solid"))
+            refDash = TraceSceneBuilder::EnvelopeStyle::Dash::Solid;
+        const auto drawStyled =
+            [&](const std::vector<double>& values, double maximum,
+                bool reference, qreal width, const QColor& color,
+                TraceSceneBuilder::EnvelopeStyle::Dash dash) {
+                if (values.size() < 2 || !primary || primary->size() < 2 ||
+                    maximum <= 0.0)
+                    return;
+                auto sourceFraction = [&](double viewportFrac) -> double {
+                    const double pf = std::clamp(viewportFrac, 0.0, 1.0);
+                    return reference
+                               ? snapshot_.compareFractionForPrimaryFraction(pf)
+                               : pf;
+                };
+                TraceSceneBuilder::EnvelopeStyle style;
+                style.width = width;
+                style.color = color;
+                style.dash = dash;
+                builder_.envelopePolyline(values, sourceFraction, windowStart,
+                                          kWindowFrac, graphRect, 0.0, maximum,
+                                          style, 0.0, 1.0);
+            };
         if (compare) {
-            drawTrace(compare->throttle, 1.0, true, 1.5 * s,
-                      withAlpha(throttleColor_, 150));
-            drawTrace(compare->brake, brakeMax, true, 1.5 * s,
-                      withAlpha(brakeColor_, 150));
+            drawStyled(compare->throttle, 1.0, true, refWidth,
+                       withAlpha(whiteRef ? QColor(Qt::white) : refColor, 200),
+                       refDash);
+            drawStyled(compare->brake, brakeMax, true, refWidth,
+                       withAlpha(whiteRef ? QColor(Qt::white) : refColor, 200),
+                       refDash);
         }
         drawTrace(primaryThrottle, throttleScale, false, 2.5 * s,
                   throttleColor_);

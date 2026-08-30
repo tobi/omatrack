@@ -207,10 +207,19 @@ std::vector<double> pdsDistanceSplits(const std::vector<double>& values,
                                       int freq) {
     std::vector<double> splits;
     if (freq <= 0 || values.size() < 2) return splits;
+    double peak = 0.0;
+    for (double value : values) {
+        if (std::isfinite(value) && value > peak) peak = value;
+    }
+    if (!(peak > 0.0)) return splits;
+    // Half the observed peak, not a hardcoded 300 m: a 4 km oval reported
+    // in kilometres (wrap of ~4) never clears 300, so detectLaps would
+    // invent a single fragment instead of laps.
+    const double dropThreshold = peak * 0.5;
     int lastSplitIndex = -std::max(1, freq);
     int clusterGap = std::max(1, freq / 2);
     for (size_t i = 1; i < values.size(); ++i) {
-        if (values[i - 1] - values[i] > 300 &&
+        if (values[i - 1] - values[i] > dropThreshold &&
             int(i) - lastSplitIndex >= clusterGap) {
             splits.push_back(double(i) / double(freq));
             lastSplitIndex = int(i);
@@ -300,6 +309,23 @@ void markShortCrossingsIncomplete(std::vector<Lap>& laps) {
     }
 }
 
+void restoreRepresentativeCrossings(std::vector<Lap>& laps) {
+    std::vector<double> seconds;
+    for (const Lap& lap : laps) {
+        if (!std::isfinite(lap.timeMs) || !(lap.timeMs > 0.0)) continue;
+        seconds.push_back(lap.timeMs / 1000.0);
+    }
+    if (seconds.empty()) return;
+    std::sort(seconds.begin(), seconds.end());
+    const double median = seconds[seconds.size() / 2];
+    const double minSeconds =
+        seconds.size() >= 3 ? median * 0.5 : std::max(median * 0.5, 30.0);
+    for (Lap& lap : laps) {
+        if (lap.complete) continue;
+        if (lap.timeMs / 1000.0 >= minSeconds) lap.complete = true;
+    }
+}
+
 std::vector<Lap> pdsApplyPreviousLapTimes(
     const std::vector<Lap>& laps,
     const std::vector<double>& previousLapTimeValues, int freq,
@@ -364,7 +390,6 @@ std::vector<Lap> pdsApplyLapDistanceCoverage(
     if (!(sessionRange > 0.0)) return laps;
 
     std::vector<double> coverage(laps.size(), -1.0);
-    double maxCoverage = 0.0;
     for (size_t i = 0; i < laps.size(); ++i) {
         if (!laps[i].complete) continue;
         const size_t begin =
@@ -374,17 +399,25 @@ std::vector<Lap> pdsApplyLapDistanceCoverage(
         if (begin >= lapDistanceValues.size() || end > lapDistanceValues.size())
             continue;
         coverage[i] = range(begin, end) / sessionRange;
-        maxCoverage = std::max(maxCoverage, coverage[i]);
     }
 
+    std::vector<double> typical;
+    typical.reserve(coverage.size());
+    for (double value : coverage)
+        if (value >= 0.0) typical.push_back(value);
+    if (typical.size() < 2) return laps;
+    std::sort(typical.begin(), typical.end());
+    const double medianCoverage = typical[typical.size() / 2];
     // A session-cumulative distance channel cannot validate individual laps:
-    // no one crossing pair spans most of its total range.
-    if (maxCoverage < 0.75) return laps;
+    // no typical crossing pair spans most of its total range. Compare against
+    // the median, not the max: one GPS-spike lap on an oval must not mark
+    // every racing crossing as Frag.
+    if (medianCoverage < 0.75) return laps;
 
     std::vector<Lap> out = laps;
     for (size_t i = 0; i < out.size(); ++i) {
         if (out[i].complete && coverage[i] >= 0.0 &&
-            coverage[i] < maxCoverage * 0.5)
+            coverage[i] < medianCoverage * 0.5)
             out[i].complete = false;
     }
     return out;
@@ -1388,6 +1421,7 @@ std::vector<Lap> TelemetrySource::detectLaps() const {
     if (!sourceLaps_.empty()) {
         std::vector<Lap> laps = sourceLaps_;
         markShortCrossingsIncomplete(laps);
+        restoreRepresentativeCrossings(laps);
         if (!lapDistance.empty())
             laps = pdsApplyLapDistanceCoverage(laps, lapDistance,
                                                std::max(1, distanceFreq));

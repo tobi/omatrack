@@ -45,7 +45,9 @@ std::vector<double> selectLapSplits(const std::vector<double>& beaconSplits,
                                     const std::vector<double>& lapTimeSplits,
                                     const std::vector<double>& distanceSplits);
 
-/// Splits from a cumulative lap-distance channel (detects resets > 300 m).
+/// Splits from a wrapping lap-distance channel. A reset is a drop of more
+/// than half the observed peak, so metre, kilometre, percent, and 0-1
+/// fraction channels all work (a 300 m floor misses a 4 km oval in km).
 std::vector<double> pdsDistanceSplits(const std::vector<double>& values,
                                       int freq);
 
@@ -61,6 +63,12 @@ std::vector<Lap> buildLapsFromSplits(const std::vector<double>& splitTimes,
 /// Used for both heuristic splits and vendor-supplied lap lists so an out-lap
 /// cannot win fastest-lap selection.
 void markShortCrossingsIncomplete(std::vector<Lap>& laps);
+
+/// Promote vendor-incomplete laps whose time matches the session median.
+/// AiM/Pi often flag oval crossings incomplete when the logger's track map
+/// is the road course; upstream still found the laps, so classification
+/// (not a second detector) decides complete vs Out/In/Frag.
+void restoreRepresentativeCrossings(std::vector<Lap>& laps);
 
 /// Override lap times from a "previous lap time" channel when it agrees with
 /// the crossing-derived estimate; heuristic contradictory crossings can be

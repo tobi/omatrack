@@ -120,6 +120,31 @@ public:
     int lastCompareLap() const { return lastCompareLap_; }
     int& lastCompareLap() { return lastCompareLap_; }
 
+    bool eventMode() const { return eventMode_; }
+    void setEventMode(bool enabled) { eventMode_ = enabled; }
+    const QString& eventTrack() const { return eventTrack_; }
+    void setEventTrack(const QString& track) { eventTrack_ = track; }
+    const QString& eventSession() const { return eventSession_; }
+    void setEventSession(const QString& session) { eventSession_ = session; }
+    const QString& eventDate() const { return eventDate_; }
+    void setEventDate(const QString& date) { eventDate_ = date; }
+
+    const QString& usbDest() const { return usbDest_; }
+    void setUsbDest(const QString& dest) { usbDest_ = dest; }
+    const QString& usbFormat() const { return usbFormat_; }
+    void setUsbFormat(const QString& format) { usbFormat_ = format; }
+    const QString& usbRenameScript() const { return usbRenameScript_; }
+    void setUsbRenameScript(const QString& script) {
+        usbRenameScript_ = script;
+    }
+
+    const QString& overlayRefColor() const { return overlayRefColor_; }
+    void setOverlayRefColor(const QString& color) { overlayRefColor_ = color; }
+    const QString& overlayRefStyle() const { return overlayRefStyle_; }
+    void setOverlayRefStyle(const QString& style) { overlayRefStyle_ = style; }
+    bool overlayRefWhite() const { return overlayRefWhite_; }
+    void setOverlayRefWhite(bool enabled) { overlayRefWhite_ = enabled; }
+
 signals:
     void operationError(const QString& title, const QString& message);
 
@@ -146,4 +171,14 @@ private:
     QString lastCompareKey_;
     int lastPrimaryLap_ = -1;
     int lastCompareLap_ = -1;
+    bool eventMode_ = false;
+    QString eventTrack_;
+    QString eventSession_;
+    QString eventDate_;
+    QString usbDest_;
+    QString usbFormat_ = QStringLiteral("{track}/{date}/{session}/{original}");
+    QString usbRenameScript_;
+    QString overlayRefColor_ = QStringLiteral("#e09d7f");
+    QString overlayRefStyle_ = QStringLiteral("dashed");
+    bool overlayRefWhite_ = false;
 };

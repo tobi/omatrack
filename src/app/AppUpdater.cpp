@@ -833,6 +833,8 @@ void AppUpdater::install() {
                     guard.data(),  // null-safe context; the functor re-checks
                     [guard, received, total, value]() {
                         if (!guard) return;
+                        guard->downloadBytes_ = received;
+                        guard->downloadTotal_ = total;
                         guard->setProgress(value);
                         if (total > 0)
                             guard->setPhase(
@@ -919,9 +921,22 @@ void AppUpdater::setPhase(Phase phase, const QString& status,
 }
 
 void AppUpdater::setProgress(double progress) {
-    if (qFuzzyCompare(progress_, progress)) return;
+    if (qFuzzyCompare(progress_, progress) && progress_ == progress) {
+        emit progressChanged();
+        return;
+    }
     progress_ = progress;
     emit progressChanged();
+}
+
+QString AppUpdater::downloadLabel() const {
+    if (downloadTotal_ > 0)
+        return QStringLiteral("%1% · %2 / %3")
+            .arg(int(progress_ * 100.0 + 0.5))
+            .arg(omatrack::formatBytes(downloadBytes_),
+                 omatrack::formatBytes(downloadTotal_));
+    if (downloadBytes_ > 0) return omatrack::formatBytes(downloadBytes_);
+    return {};
 }
 
 void AppUpdater::emitVisibility() { emit bannerVisibleChanged(); }

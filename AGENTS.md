@@ -121,8 +121,10 @@ wins on load. Caches (Track Atlas snapshot) stay outside the file.
   expose `TelemetryStore::loading` so every session-library surface can retain
   its current data and show progress while a replacement snapshot is built.
 - A local file is its own parser path. `openIndex()` reads only what the
-  sidebar needs, so there is no session-index cache and no conversion step;
-  nothing is ever written beside the source or derived from it on disk.
+  sidebar needs. A compact metadata cache lives under
+  `$XDG_CACHE_HOME/omatrack/index/{generation}/`, keyed by POSIX
+  `(dev, ino, size, mtime)` and `omatrack::converterGeneration()`. Failures
+  are not stored. Nothing is written beside the source recording.
   Only remote recordings get a `.telemetry` (below).
 - Dispatch formats through the Rust parser workspace.
 - Infer inexpensive metadata from filenames/folders before parsing samples.
@@ -175,11 +177,13 @@ wins on load. Caches (Track Atlas snapshot) stay outside the file.
   second parallel list. `~/Documents/Telemetry` (resolved through the platform
   Documents location, so Windows OneDrive redirection is honored) is the only
   location on a fresh install and is created if missing.
-- Ready USB-backed volumes are detected automatically and scanned off the UI
-  thread. A mount is a transient `USB — …` library section only when that scan
-  finds a supported telemetry or video file. It is never added to `locations`
-  or otherwise persisted, and detaching it removes the section on the next
-  mount check.
+- Ready USB-backed volumes are detected by wiring `mountedUsbVolumes()` to a
+  `QStorageInfo` poll plus `QFileSystemWatcher` on `/run/media/$USER` and
+  `/media`, then scanned off the UI thread (`AsyncJob`). A mount is a transient
+  `USB — …` library section only when that scan finds a supported telemetry or
+  video file. It is never added to `locations`. Copy is a separate overlay in
+  the video slot, using `usb.dest` / `usb.format` / optional `usb.rename_script`
+  in `omatrack.yml`. Source files stay immutable.
 - Remote connections are synchronized into a local discovery cache containing
   zero-byte source stubs and ETag metadata; source bytes are never retained as
   a second telemetry cache. Before parsing a remote file, lookup uses its ETag
@@ -616,6 +620,9 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
   invent a parallel JSON/Motec sidecar or re-derive it in QML.
 - New cross-format channel or unit rule: `TelemetryEngine` and `UnifiedLap`.
 - New lap/corner comparison metric: C++ analysis in the store/core, exposed as compact view data. A new corner *check* is a `CornerAnalyzer` in `src/core/CornerAnalysis.cpp` — never an inline `if` in the store and never a string built in QML.
+- USB copy rename: optional Lua 5.4 + sol2 in `src/app` (`LuaRename.*`), never
+  in `omatrack_core`. `rename(ctx)` returns a relative path that is jailed
+  under the destination. Example scripts belong in preferences, not plugins.
 - New persistent user preference: a typed field on `PreferencesStore` (or
   `AppUpdater` for update state), loaded in `loadPreferences()` and written by
   the debounced `schedulePreferencesSave()` path into `omatrack.yml`; never
