@@ -200,7 +200,7 @@ wins on load. Caches (Track Atlas snapshot) stay outside the file.
   against a catalog that carries one.
 - `{generation}` is `omatrack::converterGeneration()`: the native format
   version and the pinned `motorsport-telemetry-rs` revision
-  (`10-1b1e6c562cf1`), derived by the bridge's `build.rs` from its own
+  (`10-72224ca366f1`), derived by the bridge's `build.rs` from its own
   `Cargo.toml`. A normalization is only trusted if the converter that wrote
   it is the one this build links, so advancing the pin regenerates every
   cache instead of serving a file an older decoder produced. Other
@@ -251,13 +251,16 @@ wins on load. Caches (Track Atlas snapshot) stay outside the file.
 
 `TelemetryEngine` maps vendor channel names to standard concepts and normalizes them into a 50 Hz lap:
 
-- speed in km/h
+- speed in km/h (automatic mapping rejects declared non-speed units; bare
+  `speed`/`velocity` aliases never substring-match engine speed)
 - throttle, driver throttle, and clutch in `[0, 1]`
 - brake pressure in bar, with pedal-position fallback
 - steering in degrees
 - integer gear
 - monotonic cumulative distance in metres
-- longitudinal acceleration, four dampers, GPS latitude/longitude, and reported GPS position/speed accuracy
+- longitudinal acceleration, four dampers, GPS latitude/longitude in degrees
+  (east-positive longitude, including the angular-minute reader convention),
+  and reported GPS position/speed accuracy
 
 Native lap distance is accepted only when its continuity and total agree with independently integrated velocity. Otherwise wheel/vehicle speed provides short-term propagation, accuracy-weighted GPS speed removes velocity drift, and good positional GPS fixes anchor the cross-lap track-station map. Poor GPS must not inject position jitter; missing optional channels must not make an otherwise useful lap unloadable.
 

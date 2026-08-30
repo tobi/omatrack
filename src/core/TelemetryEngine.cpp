@@ -37,14 +37,16 @@ using AliasTable = std::map<std::string, std::vector<std::string>>;
 const AliasTable& channelMappings() {
     static const AliasTable table = {
         {"speed",
-         {"corr speed", "ground speed", "wheel speed avg", "aero speed",
-          "speed_ref", "vehrefspeed", "speed_wspd_app", "uspeed", "speed"}},
+         {"corr speed", "ground speed", "wheel speed avg", "vehicle speed",
+          "aero speed", "speed_ref", "speed_wspd_app", "vehrefspeed", "uspeed",
+          "speed", "gps speed", "velocity kmh", "velocity"}},
         {"throttle",
          {"tpsreal", "tps", "throttle pos", "aps", "driver throttle pos",
-          "accel pedal pos", "acc pedal pos", "fbwdrivertps", "pps"}},
+          "throttle pedal", "pedal pos", "accel pedal pos", "acc pedal pos",
+          "fbwdrivertps", "pps"}},
         {"brake",
-         {"brake pressure f", "brake pressure fr", "p_f_brake",
-          "p_brake_front"}},
+         {"brake pressure f", "brake pressure fr", "brake pressure front",
+          "p_f_brake", "p_brake_front"}},
         {"clutch", {"clutch pos", "clutch position", "clutch pedal", "clutch"}},
         {"brake_pos", {"brake pos"}},
         {"steering", {"steering angle", "steer"}},
@@ -52,7 +54,9 @@ const AliasTable& channelMappings() {
         {"driver_id",
          {"driverid", "driver_id", "driver id", "activedriverid",
           "x2lnk_driverid"}},
-        {"driver_throttle", {"driver throttle pos", "fbwdrivertps", "pps"}},
+        {"driver_throttle",
+         {"driver throttle pos", "fbwdrivertps", "pps", "throttle pedal",
+          "pedal pos", "accel pedal pos", "acc pedal pos"}},
         {"g_long", {"g force long", "i_accel_long", "fia_accelx"}},
         {"g_lat",
          {"g force lat", "g_force_lat", "i_accel_lat", "fia_accely",
@@ -67,7 +71,7 @@ const AliasTable& channelMappings() {
         {"gps_lon", {"fia_gpslonge", "gps longitude"}},
         {"gps_week", {"gps week"}},
         {"gps_itow", {"gps itow"}},
-        {"gps_speed", {"fia_gpsvel", "gps speed"}},
+        {"gps_speed", {"fia_gpsvel", "gps speed", "velocity kmh", "velocity"}},
         {"gps_position_accuracy", {"gps position accuracy"}},
         {"gps_speed_accuracy", {"gps speed accuracy"}},
         {"fuel",
@@ -1247,7 +1251,23 @@ std::map<std::string, int> TelemetrySource::mapChannels(
         int best = -1;
         for (size_t c = 0; c < channels_.size(); ++c) {
             if (!channels_[c].hasSamples()) continue;
+            if (fieldName == "speed" || fieldName == "gps_speed") {
+                // A name containing "speed" is not evidence of road speed.
+                // Known angular/voltage/etc units must not be treated as
+                // km/h and then clamped into a deceptively stationary trace.
+                // Keep unitless CAN aliases and explicit user overrides.
+                const std::string unit = lowerTrimmed(channels_[c].unit);
+                if (!unit.empty() && !speedUnits().count(unit)) continue;
+            }
             for (size_t a = 0; a < aliases.size(); ++a) {
+                // Bare catch-all names are exact-only: otherwise an earlier
+                // Engine_Speed or Fuel_Probe wins just by file order. Longer
+                // aliases retain the existing descriptive-name matching.
+                const std::string& alias = normalizedAliases[a];
+                if ((alias == "speed" || alias == "velocity" ||
+                     alias == "fuel") &&
+                    normalizedChannels[c] != alias)
+                    continue;
                 const int score = scoreNormalizedChannelMatch(
                     normalizedChannels[c], normalizedAliases[a], int(a));
                 if (score > bestScore) {
@@ -1481,6 +1501,11 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime,
         unitOf("steering") == "rad" ? 180.0 / kPi : 1.0;
     const bool gpsLatRadians = unitOf("gps_lat") == "rad";
     const bool gpsLonRadians = unitOf("gps_lon") == "rad";
+    const auto angularMinutes = [](const std::string& unit) {
+        return unit == "min" || unit == "arcmin" || unit == "arcminute";
+    };
+    const bool gpsLatMinutes = angularMinutes(unitOf("gps_lat"));
+    const bool gpsLonMinutes = angularMinutes(unitOf("gps_lon"));
     double positionAccuracyFactor = 1.0;
     if (unitOf("gps_position_accuracy") == "cm")
         positionAccuracyFactor = 0.01;
@@ -1593,6 +1618,11 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime,
         double rawLon = get("gps_lon", i);
         if (gpsLatRadians) rawLat *= 180.0 / kPi;
         if (gpsLonRadians) rawLon *= 180.0 / kPi;
+        // Coordinate channels marked in angular minutes follow the reader's
+        // west-positive longitude convention. UnifiedLap is always degrees,
+        // east-positive, independent of the source's display/storage unit.
+        if (gpsLatMinutes) rawLat /= 60.0;
+        if (gpsLonMinutes) rawLon /= -60.0;
         unified.gpsLat.push_back(rawLat);
         unified.gpsLon.push_back(rawLon);
         unified.gpsPositionAccuracy.push_back(std::max(

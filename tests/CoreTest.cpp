@@ -736,6 +736,92 @@ private slots:
         QCOMPARE(mapping["gear"], 2);
     }
 
+    void mapDrivingChannelsWithoutConfusingEngineAndVehicleSpeed() {
+        // Names/units observed together in real VBOX CAN logs. Engine_Speed
+        // precedes Vehicle_Speed in file order; a substring "speed" match
+        // used to choose RPM and turn the unified speed trace into zeros.
+        auto channel = [](const std::string& name, const std::string& unit,
+                          double value) {
+            RawChannel ch;
+            ch.name = name;
+            ch.unit = unit;
+            ch.frequencyHz = 2.0;
+            ch.durationSec = 1.0;
+            ch.samples = {value, value};
+            return ch;
+        };
+        TelemetrySource src;
+        src.channels() = {
+            channel("Engine_Speed", "RPM", 6000.0),
+            channel("Throttle_Pedal", "%", 75.0),
+            channel("Vehicle_Speed", "kmh", 250.0),
+            channel("Brake_Pressure_Front", "bar", 40.0),
+        };
+        const auto mapping = src.mapChannels();
+        QVERIFY(mapping.count("speed"));
+        QCOMPARE(mapping.at("speed"), 2);
+        QVERIFY(mapping.count("throttle"));
+        QCOMPARE(mapping.at("throttle"), 1);
+        QVERIFY(mapping.count("driver_throttle"));
+        QCOMPARE(mapping.at("driver_throttle"), 1);
+        QCOMPARE(mapping.at("brake"), 3);
+
+        const UnifiedLap lap = src.unifyLap(0.0, 1.0);
+        QCOMPARE(lap.speed[25], 250.0);
+        QCOMPARE(lap.throttle[25], 0.75);
+        QCOMPARE(lap.driverThrottle[25], 0.75);
+        QCOMPARE(lap.brake[25], 40.0);
+        QVERIFY(lap.distance.back() > 60.0);
+    }
+
+    void mapSpeedRejectsAngularUnitsAndAmbiguousSubstring() {
+        for (const auto& namedUnit :
+             std::vector<std::pair<std::string, std::string>>{
+                 {"Speed", "RPM"},
+                 {"Ground Speed", "rad/s"},
+                 {"Engine_Speed", "RPM"},
+                 {"Engine_Speed", ""}}) {
+            TelemetrySource src;
+            RawChannel channel;
+            channel.name = namedUnit.first;
+            channel.unit = namedUnit.second;
+            channel.samples = {6000.0, 6000.0};
+            src.channels() = {channel};
+            QVERIFY2(!src.mapChannels().count("speed"),
+                     namedUnit.first.c_str());
+        }
+    }
+
+    void mapSpeedFallsBackToGroundVelocityWithoutWheelSpeed() {
+        for (const char* name : {"GPS Speed", "velocity kmh"}) {
+            TelemetrySource src;
+            RawChannel engine;
+            engine.name = "Engine_Speed";
+            engine.unit = "RPM";
+            engine.samples = {6000.0, 6000.0};
+            RawChannel ground;
+            ground.name = name;
+            ground.unit = "km/h";
+            ground.samples = {220.0, 220.0};
+            ground.frequencyHz = 2.0;
+            ground.durationSec = 1.0;
+            src.channels() = {engine, ground};
+            const auto mapping = src.mapChannels();
+            QVERIFY(mapping.count("speed"));
+            QCOMPARE(mapping.at("speed"), 1);
+            QCOMPARE(src.unifyLap(0.0, 1.0).speed[25], 220.0);
+        }
+    }
+
+    void mapFuelDoesNotUseTheRefuellingProbeFlag() {
+        TelemetrySource src;
+        RawChannel probe;
+        probe.name = "Fuel_Probe";
+        probe.samples = {0.0, 1.0};
+        src.channels() = {probe};
+        QVERIFY(!src.mapChannels().count("fuel"));
+    }
+
     void mapChannelsHonorsExplicitOverride() {
         TelemetrySource src;
         RawChannel automatic;
@@ -960,6 +1046,24 @@ private slots:
         const UnifiedLap lap = src.unifyLap(0.0, 1.0);
         QVERIFY(!std::isfinite(lap.gpsLat[0]));
         QVERIFY(!std::isfinite(lap.gpsLon[0]));
+    }
+
+    void unifyLapConvertsAngularMinutesToEastPositiveDegrees() {
+        TelemetrySource src;
+        RawChannel latitude;
+        latitude.name = "latitude";
+        latitude.unit = "min";
+        latitude.samples = {1800.0, 1800.0};
+        latitude.frequencyHz = 2.0;
+        latitude.durationSec = 1.0;
+        RawChannel longitude = latitude;
+        longitude.name = "longitude";
+        longitude.samples = {4800.0, 4800.0};
+        src.channels() = {latitude, longitude};
+
+        const UnifiedLap lap = src.unifyLap(0.0, 1.0);
+        QCOMPARE(lap.gpsLat[25], 30.0);
+        QCOMPARE(lap.gpsLon[25], -80.0);
     }
 
     void unifyLapDoesNotHoldLastGpsAcrossAGap() {

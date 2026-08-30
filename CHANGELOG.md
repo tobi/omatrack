@@ -2,6 +2,32 @@
 
 All notable user-facing changes are documented here.
 
+## 1.6.0 — 2026-08-29
+
+- Updated the telemetry readers to the tested `motorsport-telemetry-rs`
+  revision `72224ca`. Cosworth recordings retain channel start offsets and
+  acquisition gaps rather than compressing missing data; sampling a gap no
+  longer returns values from a later chunk. Raw overlapping samples remain
+  available instead of being silently dropped.
+- VBOX custom units now stay aligned with their channels. GPS crossings of
+  a declared start/finish gate can recover laps after a CAN counter reset;
+  unreliable GPS falls back to counter/timer recovery. GPS-derived boundaries
+  are estimates, not vendor-certified timing.
+- Lap recovery respects declared timer units, ignores large timer resyncs
+  and transient counter spikes, and accounts for slower lap-counter sampling.
+- MoTeC exports that store units in the short-name field regain usable units.
+  Native recording migration releases its old mapping before replacing the
+  file, fixing access-denied failures on Windows.
+- Default driving-channel mapping recognizes vehicle speed and throttle
+  pedal channels without mistaking engine RPM for road speed. Incompatible
+  speed units are rejected, GPS ground velocity can serve as a fallback,
+  and a refuelling-probe flag is not selected as fuel quantity. Angular-minute
+  GPS coordinates are normalized to east-positive degrees rather than passed
+  through as invalid positions. Synthetic mapping/unification regressions
+  cover these real-recording combinations.
+- The converter-generation change invalidates remote normalizations made by
+  the older readers. Source recordings are not changed.
+
 ## 1.5.6 — 2026-08-29
 
 - Filmstrip binds the live lap models, so laps show as soon as a session is
