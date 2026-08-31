@@ -17,13 +17,15 @@ Rectangle {
     signal pointerTooltipMoved(string owner, real x, real y)
     signal pointerTooltipRequested(string owner, string text, real x, real y)
 
-    Layout.fillWidth: true
-    Layout.preferredHeight: visible ? Store.filmstripSessions.count * 33 + 9 : 0
+    clip: true
     color: Style.traceBackgroundColor
+    implicitHeight: Store.filmstripSessions.count > 0 ? Store.filmstripSessions.count * 33 + 9 : 0
     visible: Store.filmstripSessions.count > 0
 
     Menu {
         id: swapReferenceMenu
+
+        objectName: "filmstripSwapMenu"
 
         MenuItem {
             enabled: Store.comparing
@@ -54,6 +56,7 @@ Rectangle {
                         return Store.lapTimeText(key, idx);
                     return sessionStrip.bestTime;
                 }
+                readonly property int selectedOrdinal: sessionStrip.reference ? Store.compareLapOrdinal : Store.primaryLapOrdinal
                 required property string sessionKey
 
                 color: sessionStrip.reference ? Qt.tint(Style.surfaceColor, Qt.rgba(Style.orangeColor.r, Style.orangeColor.g, Style.orangeColor.b, 0.08)) : Style.surfaceColor
@@ -67,24 +70,30 @@ Rectangle {
                     anchors.rightMargin: 4
                     spacing: 5
 
-                    DenseTwoLineRow {
-                        id: stripLabel
-
+                    Item {
+                        Layout.fillHeight: true
                         Layout.maximumWidth: 190
                         Layout.minimumWidth: 190
                         Layout.preferredWidth: 190
-                        detailVisible: false
-                        rightColor: sessionStrip.reference ? Style.orangeColor : Style.accentColor
-                        rightFamily: Style.monoFontFamily
-                        rightSize: 9
-                        rightValue: sessionStrip.selectedLapTime
-                        title: sessionStrip.driverName !== "" && sessionStrip.driverName !== "Unknown" ? sessionStrip.driverName : "Unknown driver"
-                        titleBold: true
-                        titleColor: sessionStrip.reference ? Style.orangeColor : Style.accentColor
-                        titleFamily: Style.monoFontFamily
-                        titleSize: 9
-                        titleSpacing: 4
+                        objectName: sessionStrip.reference ? "referenceFilmstripLabel" : "activeFilmstripLabel"
 
+                        DenseTwoLineRow {
+                            anchors.fill: parent
+                            detailVisible: false
+                            rightColor: sessionStrip.reference ? Style.orangeColor : Style.accentColor
+                            rightFamily: Style.monoFontFamily
+                            rightSize: 9
+                            rightValue: (sessionStrip.selectedOrdinal > 0 ? "L" + sessionStrip.selectedOrdinal + " · " : "") + sessionStrip.selectedLapTime
+                            title: (sessionStrip.reference ? "REF · " : "ACTIVE · ") + (sessionStrip.driverName !== "" && sessionStrip.driverName !== "Unknown" ? sessionStrip.driverName : "Unknown driver")
+                            titleBold: true
+                            titleColor: sessionStrip.reference ? Style.orangeColor : Style.accentColor
+                            titleFamily: Style.monoFontFamily
+                            titleSize: 9
+                            titleSpacing: 4
+                        }
+                        // DenseTwoLineRow's default children go into its
+                        // optional detail layout, which is hidden here. The
+                        // hit target must be a sibling, not one of those rows.
                         MouseArea {
                             acceptedButtons: Qt.RightButton
                             anchors.fill: parent

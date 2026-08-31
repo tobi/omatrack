@@ -2,6 +2,52 @@
 
 All notable user-facing changes are documented here.
 
+## Unreleased
+
+- Rescanning discovery no longer destroys and reloads the active/reference lap
+  objects or resets their cursor, viewport and manual alignment. Startup now
+  restores a reference lap from the same recording as the primary.
+- Swapping roles cancels stale pending file/lap loads, preserves the mapped
+  cursor and viewport (including neighbour-lap overscroll), and inverts manual
+  alignment. Selecting a genuinely different lap pair clears the old tuning.
+  Host changes cancel outstanding sidecar work instead of attaching stale joins.
+- USB import shows a read-only preview when a stick is discovered — every
+  file with its resolved destination and size — and copies only on the button.
+  Copies stream with live progress, are cancellable, never overwrite, and
+  verify the source did not change. Existing targets are skipped and labelled
+  unverified. Fixed a destination-jail escape through a symlink above a
+  not-yet-created folder, silent loss of unknown `{tokens}` in the naming
+  format, and integers rendering as `1.0` in Lua rename scripts.
+- Sidebar, channel list and driver list keep the row under the top edge in
+  place across rescans, metadata arrivals and filter changes (shared
+  `ScrollAnchor`, replacing the numeric scroll-position workaround).
+- Recording metadata follows one precedence rule everywhere: per-recording
+  overrides in `omatrack.yml`, then the folder `TRACK.yml` chain (closest
+  folder wins), then the recording itself. Track and driver names no longer
+  re-read `TRACK.yml` from disk on every sidebar row; a rescan picks up a
+  changed `TRACK.yml` for the recordings below it without reloading laps.
+- Event mode owns the track/day filter: leaving it restores your previous
+  filters instead of leaving the event's track behind, and clearing filters
+  also leaves event mode.
+
+- The same lap filmstrip is available in docked and fullscreen playback,
+  including both roles when comparing two laps from one recording. It uses
+  available letterboxing and reserves a compact lane when needed, without
+  covering the player controls or PiP. Current lap ordinals remain visible.
+- Keep incomplete source intervals out of complete-lap/best-lap classification;
+  duration alone cannot recover missing boundaries. Invalidate index summaries
+  cached with the old promotion heuristic.
+- USB discovery no longer probes every mounted filesystem (including offline
+  NAS mounts). Polling, scans and watch-path discovery run on workers, not the
+  GUI thread, and unchanged mount polls do not rebuild the sidebar.
+- Fix heap corruption in incremental list updates when a recording appears
+  in more than one section. Rows are matched once, file identities include
+  their section, and arriving session metadata does not replace the file row.
+- Keep the embedded Lua 5.4 sandbox symbols private so they cannot interpose
+  libmpv's LuaJIT ABI and crash player initialization.
+- Fix the filmstrip label's hidden right-click target and the Main.qml
+  formatting failure that blocked the 1.6.1 release jobs.
+
 ## 1.6.1 — 2026-08-30
 
 - Header update control shows download percent and bytes next to the icon.

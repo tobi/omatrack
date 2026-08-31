@@ -43,6 +43,7 @@ QHash<int, QByteArray> LibraryModel::roleNames() const {
         {TopQuartileTimeRole, "topQuartileTime"},
         {SessionDayKeyRole, "sessionDayKey"},
         {TrackRole, "track"},
+        {RowIdentityRole, "rowIdentity"},
     };
 }
 
@@ -98,6 +99,7 @@ QVariant LibraryModel::data(const QModelIndex& index, int role) const {
         case TopQuartileTimeRole: return n->topQuartileTime;
         case SessionDayKeyRole: return n->sessionDayKey;
         case TrackRole: return n->track;
+        case RowIdentityRole: return row.identity;
     }
     return {};
 }
@@ -200,12 +202,14 @@ QVector<LibraryModel::FlatRow> LibraryModel::flattenTree(
     const QVector<Node>& roots) const {
     QVector<FlatRow> flat;
     for (const Node& node : roots) {
+        const QString scope = rowIdentity(node);
         const bool expanded = filtering_ || nodeExpanded(node.kind, node.path);
         flat.append({&node, 0, expanded,
                      node.kind == QLatin1String("file") &&
                          !node.key.isEmpty() && node.key == primaryKey_,
                      node.kind == QLatin1String("file") &&
-                         !node.key.isEmpty() && node.key == referenceKey_});
+                         !node.key.isEmpty() && node.key == referenceKey_,
+                     scope});
         if (expanded) {
             // Recurse into children
             QVector<const Node*> stack;
@@ -225,7 +229,8 @@ QVector<LibraryModel::FlatRow> LibraryModel::flattenTree(
                                  current->key == primaryKey_,
                              current->kind == QLatin1String("file") &&
                                  !current->key.isEmpty() &&
-                                 current->key == referenceKey_});
+                                 current->key == referenceKey_,
+                             scope + QChar(0x1f) + rowIdentity(*current)});
                 if (curExpanded) {
                     for (int i = current->children.size() - 1; i >= 0; --i) {
                         stack.append(&current->children[i]);
@@ -240,10 +245,7 @@ QVector<LibraryModel::FlatRow> LibraryModel::flattenTree(
 
 void LibraryModel::applyFlat(QVector<FlatRow> next) {
     replaceByIdentity(
-        flat_, std::move(next),
-        [this](const FlatRow& row) {
-            return row.node ? rowIdentity(*row.node) : QString();
-        },
+        flat_, std::move(next), [](const FlatRow& row) { return row.identity; },
         [](const FlatRow& left, const FlatRow& right) {
             if (!left.node || !right.node) return left.node == right.node;
             const Node& a = *left.node;
@@ -421,9 +423,53 @@ LibraryFilterModel::LibraryFilterModel(QObject* parent)
 }
 
 void LibraryFilterModel::syncFilteringActive() {
+    emit anyFilterActiveChanged();
     if (!source_) return;
     const bool active = !filterText_.isEmpty() || facetsActive();
     source_->setFilteringActive(active);
+}
+
+bool LibraryFilterModel::anyFilterActive() const {
+    return !filterText_.isEmpty() || facetsActive() || eventFilter_;
+}
+
+void LibraryFilterModel::setEventFilter(bool enabled, const QString& track,
+                                        const QString& day) {
+    if (enabled && !eventFilter_) {
+        manualTrack_ = selectedTrack_;
+        manualDay_ = selectedDay_;
+    }
+    const bool changed = eventFilter_ != enabled;
+    eventFilter_ = enabled;
+    if (enabled) {
+        setSelectedTrack(track.trimmed());
+        setSelectedDay(day.trimmed());
+    } else if (changed) {
+        setSelectedTrack(manualTrack_);
+        setSelectedDay(manualDay_);
+        manualTrack_.clear();
+        manualDay_.clear();
+    }
+    if (changed) emit eventFilterChanged();
+    emit anyFilterActiveChanged();
+}
+
+void LibraryFilterModel::clearAllFilters() {
+    // Leaving the event filter first clears the stash, so the manual
+    // facets below are not resurrected by a later restore.
+    if (eventFilter_) {
+        eventFilter_ = false;
+        manualTrack_.clear();
+        manualDay_.clear();
+        emit eventFilterChanged();
+    }
+    setFilterText(QString());
+    setSelectedDrivers({});
+    setSelectedYears({});
+    setSelectedTrack(QString());
+    setSelectedKind(QString());
+    setSelectedDay(QString());
+    emit anyFilterActiveChanged();
 }
 
 void LibraryFilterModel::setSourceModel(QAbstractItemModel* model) {

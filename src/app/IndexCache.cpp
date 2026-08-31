@@ -92,7 +92,9 @@ QString indexCachePath(const FileIdentity& identity) {
     if (!identity.valid || identity.generation.isEmpty()) return {};
     const QString dir =
         QDir(cacheRoot())
-            .filePath(QStringLiteral("index/") + identity.generation);
+            // v2 invalidates summaries whose head/tail fragments were
+            // promoted to complete by the 1.6.1 duration heuristic.
+            .filePath(QStringLiteral("index/v2/") + identity.generation);
     return QDir(dir).filePath(QStringLiteral("%1-%2-%3-%4.json")
                                   .arg(identity.device)
                                   .arg(identity.inode)

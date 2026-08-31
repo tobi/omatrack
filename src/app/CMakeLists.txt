@@ -96,6 +96,7 @@ qt_add_qml_module(omatrack
     AppUpdater.h AppUpdater.cpp
     DamperStripView.h DamperStripView.cpp
     MpvVideoItem.h MpvVideoItem.cpp
+    FilmstripLayout.h
     OmarchyTheme.h OmarchyTheme.cpp
     ComparisonAlignment.h ComparisonAlignment.cpp
     TrackMetadata.h TrackMetadata.cpp
@@ -112,6 +113,8 @@ qt_add_qml_module(omatrack
     TraceSceneBuilder.h TraceSceneBuilder.cpp
     TraceTextCache.h TraceTextCache.cpp
     UsbMedia.h UsbMedia.cpp
+    UsbCopy.h UsbCopy.cpp
+    ScrollAnchor.h ScrollAnchor.cpp
     PathJail.h PathJail.cpp
     IndexCache.h IndexCache.cpp
     LuaRename.h LuaRename.cpp
@@ -127,7 +130,9 @@ qt_add_qml_module(omatrack
     YamlConfig.h YamlConfig.cpp
 )
 if(OMATRACK_ENABLE_AUTOTEST_HARNESS)
-  target_sources(omatrack PRIVATE AutotestHarness.h AutotestHarness.cpp)
+  target_sources(omatrack PRIVATE AutotestHarness.h AutotestHarness.cpp
+    FilmstripAutotest.cpp
+    UsbCopyAutotest.cpp)
   target_compile_definitions(omatrack PRIVATE
     OMATRACK_ENABLE_AUTOTEST_HARNESS=1)
 endif()

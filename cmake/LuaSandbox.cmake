@@ -67,7 +67,11 @@ set(LUA_LIBS
 add_library(lua_sandbox STATIC ${LUA_CORE} ${LUA_LIBS})
 set_target_properties(lua_sandbox PROPERTIES
   C_STANDARD 99
-  POSITION_INDEPENDENT_CODE ON)
+  POSITION_INDEPENDENT_CODE ON
+  # Keep the embedded 5.4 ABI private. libmpv can use LuaJIT 5.1; exporting
+  # these same lua_* symbols from the executable interposes its interpreter
+  # and crashes mpv's built-in script threads at player initialization.
+  C_VISIBILITY_PRESET hidden)
 target_include_directories(lua_sandbox PUBLIC ${lua_src_SOURCE_DIR}/src)
 # The interpreter, compiler, io, os, package, coroutine, and debug libraries
 # stay out of this target on purpose.

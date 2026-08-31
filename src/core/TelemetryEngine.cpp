@@ -309,23 +309,6 @@ void markShortCrossingsIncomplete(std::vector<Lap>& laps) {
     }
 }
 
-void restoreRepresentativeCrossings(std::vector<Lap>& laps) {
-    std::vector<double> seconds;
-    for (const Lap& lap : laps) {
-        if (!std::isfinite(lap.timeMs) || !(lap.timeMs > 0.0)) continue;
-        seconds.push_back(lap.timeMs / 1000.0);
-    }
-    if (seconds.empty()) return;
-    std::sort(seconds.begin(), seconds.end());
-    const double median = seconds[seconds.size() / 2];
-    const double minSeconds =
-        seconds.size() >= 3 ? median * 0.5 : std::max(median * 0.5, 30.0);
-    for (Lap& lap : laps) {
-        if (lap.complete) continue;
-        if (lap.timeMs / 1000.0 >= minSeconds) lap.complete = true;
-    }
-}
-
 std::vector<Lap> pdsApplyPreviousLapTimes(
     const std::vector<Lap>& laps,
     const std::vector<double>& previousLapTimeValues, int freq,
@@ -1420,8 +1403,9 @@ std::vector<Lap> TelemetrySource::detectLaps() const {
 
     if (!sourceLaps_.empty()) {
         std::vector<Lap> laps = sourceLaps_;
+        // Completeness means both boundaries are known. Similar duration
+        // cannot establish a missing boundary or promote a head/tail fragment.
         markShortCrossingsIncomplete(laps);
-        restoreRepresentativeCrossings(laps);
         if (!lapDistance.empty())
             laps = pdsApplyLapDistanceCoverage(laps, lapDistance,
                                                std::max(1, distanceFreq));

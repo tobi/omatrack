@@ -103,6 +103,10 @@ void pushCtx(lua_State* L, const QVariantMap& ctx) {
             case QMetaType::LongLong:
             case QMetaType::UInt:
             case QMetaType::ULongLong:
+                // Integers stay Lua integers so `ctx.index .. '_'` renders
+                // `1_`, not `1.0_`.
+                table[key] = value.toLongLong();
+                break;
             case QMetaType::Double:
             case QMetaType::Float: table[key] = value.toDouble(); break;
             case QMetaType::Bool: table[key] = value.toBool(); break;

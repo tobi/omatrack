@@ -95,6 +95,28 @@ them in root-to-leaf order. Editing folder metadata writes that folder's
 folder or per-video override wins. Individual video overrides remain under
 `recording_metadata` in `omatrack.yml`. Never rewrite telemetry or video files.
 
+#### Recording metadata precedence
+
+There is one rule, implemented once in `TelemetryStore::effectiveMetadata()`,
+and every consumer (sidebar rows, track/driver display, folder consensus, lap
+loads, HUD) goes through it. Higher wins:
+
+1. `recording_metadata[<recording path>]` in `omatrack.yml` — the per-video
+   override the user made in the recording dialog.
+2. The `TRACK.yml` chain, merged root-to-leaf: a closer folder's file
+   overrides its parents, key by key (`track_metadata::merge`).
+3. Per-key preferences that are not path metadata: `tracks.<slug>` overrides,
+   `trackAssignments` (by event date), `driver.mappings` (by driver id).
+4. What the recording itself says (venue, driver id, car fields, laps).
+5. Inference from the filename and folder name.
+
+The index cache (`index/v2`) holds layer 4 only, so layers 1–3 never need
+to invalidate it. Layer 2 is a discovery-time snapshot (`fileMetadata_`),
+refreshed when the app itself writes a `TRACK.yml`, read once and memoized
+for a path opened ahead of its folder scan. It is not re-read per row or per
+frame, and an external hand-edit of `TRACK.yml` shows up on the next scan of
+that folder, not live — by design.
+
 Upstream data is not configuration. Track Atlas is used as-is by default; the
 moment a user edits corner zones for a track, the whole resulting zone list is
 copied out to `tracks.<track>.corners` in `omatrack.yml` and that override
@@ -122,7 +144,7 @@ wins on load. Caches (Track Atlas snapshot) stay outside the file.
   its current data and show progress while a replacement snapshot is built.
 - A local file is its own parser path. `openIndex()` reads only what the
   sidebar needs. A compact metadata cache lives under
-  `$XDG_CACHE_HOME/omatrack/index/{generation}/`, keyed by POSIX
+  `$XDG_CACHE_HOME/omatrack/index/v2/{generation}/`, keyed by POSIX
   `(dev, ino, size, mtime)` and `omatrack::converterGeneration()`. Failures
   are not stored. Nothing is written beside the source recording.
   Only remote recordings get a `.telemetry` (below).
@@ -149,6 +171,30 @@ wins on load. Caches (Track Atlas snapshot) stay outside the file.
   disagrees with its `.mp4` about when something happened is stale and must
   be regenerated — which the converter generation in the cache key does.
 - Classify every detected lap, including vendor-supplied lap lists: leading/trailing recording fragments and crossing pairs implausibly shorter than the session median are incomplete (`Out`/`In`/`Frag`), crossings that cover much less lap-distance than the best pair are incomplete, and complete laps far above the session median are pit in/out laps. Only representative laps (`LapEntry::countsForBest`) feed fastest-lap marks, sidebar best times, and default lap selection.
+- Discovery refresh reconciles the session registry without rebuilding the
+  active/reference snapshots or resetting viewport, cursor, alignment, closed
+  groups or sidecars. Startup selection restoration runs only at startup and
+  supports two laps from the same recording. Missing inactive entries are
+  pruned only when no role load is pending; active loaded snapshots remain
+  usable if a volume temporarily disappears. This is not a claim of automatic
+  hot-reload of changed source bytes or inherited metadata.
+- A role swap cancels pending file/role loads, moves the cursor and viewport
+  to the previous reference position, and inverts manual alignment. An ordinary
+  change to either selected lap clears tuning from the previous pair. Changing
+  the primary host cancels old overlay jobs and invalidates host-specific joins.
+- Every store-backed `ListView` carries a `ScrollAnchor { view; role }`
+  (`src/app/ScrollAnchor.*`). It records the identity-role value of the row
+  under the top edge (plus pixel offset) before any structural model change
+  — insert, remove, move, layout, reset — and re-finds that identity after,
+  falling back to the nearest former neighbour. A numeric `contentY` or a
+  row index is not an anchor: rows above shift both. The library exposes
+  `rowIdentity` (section-scoped) for this; channels and driver mappings use
+  `key`. Do not add per-view `contentY` save/restore timers.
+- The event filter is owned by `LibraryFilterModel::setEventFilter()`:
+  entering event mode stashes the manual track/day facets and applies the
+  event's; leaving restores them; `clearAllFilters()` also leaves the event
+  filter (and the sidebar turns `Store.eventMode` off) while the event's
+  track/date/session stay configured for USB naming.
 - Cache parsed/unified laps lazily per session. Opening and normalizing active
   and reference laps runs on the worker pool; `TelemetryStore::lapLoading`
   drives feedback, and per-role generations discard stale rapid selections.
@@ -177,13 +223,31 @@ wins on load. Caches (Track Atlas snapshot) stay outside the file.
   second parallel list. `~/Documents/Telemetry` (resolved through the platform
   Documents location, so Windows OneDrive redirection is honored) is the only
   location on a fresh install and is created if missing.
-- Ready USB-backed volumes are detected by wiring `mountedUsbVolumes()` to a
-  `QStorageInfo` poll plus `QFileSystemWatcher` on `/run/media/$USER` and
-  `/media`, then scanned off the UI thread (`AsyncJob`). A mount is a transient
+- USB-backed volumes are discovered on an `AsyncJob` worker using Linux
+  mount-table and sysfs data, without statting unrelated network mounts.
+  A GUI timer only schedules the poll; directory checks and scans stay on
+  workers. `QFileSystemWatcher` watches configured roots and USB mount roots.
+  A mount is a transient
   `USB — …` library section only when that scan finds a supported telemetry or
   video file. It is never added to `locations`. Copy is a separate overlay in
-  the video slot, using `usb.dest` / `usb.format` / optional `usb.rename_script`
-  in `omatrack.yml`. Source files stay immutable.
+  the video slot (the slot is shown for it even with no video open), using
+  `usb.dest` / `usb.format` / optional `usb.rename_script` in `omatrack.yml`.
+  A newly discovered mount opens the overlay with a read-only *plan*
+  (`UsbCopy.h`: per file source → jailed destination, size, New / Existing /
+  Invalid) computed on a worker; nothing is written before the button. The
+  plan re-computes when the event, destination, format or script changes.
+  Copying re-validates each source (size + mtime) and destination against the
+  plan, streams into a `.part` temporary in the target directory with a live
+  byte counter, publishes with a create-only rename, and preserves the source
+  mtime/permissions. Cancel stops between chunks and discards the temporary;
+  a target that appears mid-copy is skipped, never overwritten. Existing
+  targets are skipped and reported as *unverified* — contents are not
+  compared. Two sources resolving to one target invalidate the whole plan.
+  `expandCopyFormat()` leaves unknown `{tokens}` in place (the plan reports
+  them) and `jailRelativePath()` canonicalizes the nearest existing ancestor
+  so a symlink above a not-yet-created folder cannot escape the destination.
+  Acceptance builds accept `OMATRACK_AUTOTEST_USB_ROOT` as a stand-in mount.
+  Source files stay immutable.
 - Remote connections are synchronized into a local discovery cache containing
   zero-byte source stubs and ETag metadata; source bytes are never retained as
   a second telemetry cache. Before parsing a remote file, lookup uses its ETag
@@ -271,6 +335,13 @@ Native lap distance is accepted only when its continuity and total agree with in
 ### Trace workspace
 
 - Overlay an active lap and optional reference lap.
+- One `LapFilmstrip` instance moves between docked and fullscreen slots. Both
+  roles remain visible when comparing laps of the same recording. Fullscreen
+  placement uses mpv's reported display aspect ratio and existing letterboxing;
+  when space is insufficient (or PiP would overlap), the video viewport reserves
+  a compact bottom lane. The filmstrip never resets selection when reparented.
+  Incomplete source laps stay incomplete; similar duration does not establish
+  missing boundaries. Index-cache v2 invalidates the older promoted summaries.
 - Show a track-station-aligned cumulative delta that starts at zero. The same selected primary→reference map drives every reference trace, cursor value, synchronized video frame, and delta.
 - Render standard channels plus opt-in raw source channels.
 - Configure channel visibility, color, and lane weight; lanes always fit the pane height with no vertical scrolling or pinning, sized in proportion to channel weight. Right-click a lane for size (double/normal/half) and hide.
@@ -598,7 +669,11 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
     Results are delivered after `running()` has already dropped to false, so a
     callback may start the next run. Never add a bare `QFutureWatcher` or a
     `*Generation_` counter to `TelemetryStore` or its collaborators.
-19. Rows cross into QML as typed models and value types: `QAbstractListModel`
+19. Incremental model updates consume each old row at most once. Duplicate
+    keys must never reuse an already placed prefix row. Library file identity
+    is its section plus stable path, not the metadata-derived session key;
+    the same recording can appear in Recent and a folder simultaneously.
+    Rows cross into QML as typed models and value types: `QAbstractListModel`
     subclasses in `StoreModels.*` (laps, channels, corners, driver mappings,
     sync strategies), the `LibraryModel`/`LibraryFilterModel` tree for the
     session library, and `Q_GADGET` rows in `StoreTypes.h`. Filtering is a
@@ -622,7 +697,10 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
 - New lap/corner comparison metric: C++ analysis in the store/core, exposed as compact view data. A new corner *check* is a `CornerAnalyzer` in `src/core/CornerAnalysis.cpp` — never an inline `if` in the store and never a string built in QML.
 - USB copy rename: optional Lua 5.4 + sol2 in `src/app` (`LuaRename.*`), never
   in `omatrack_core`. `rename(ctx)` returns a relative path that is jailed
-  under the destination. Example scripts belong in preferences, not plugins.
+  under the destination. Embedded Lua symbols must remain hidden: libmpv can
+  use a different Lua ABI (LuaJIT 5.1), and executable-level interposition
+  crashes its script threads. The Lua test links and initializes both runtimes.
+  Example scripts belong in preferences, not plugins.
 - New persistent user preference: a typed field on `PreferencesStore` (or
   `AppUpdater` for update state), loaded in `loadPreferences()` and written by
   the debounced `schedulePreferencesSave()` path into `omatrack.yml`; never
@@ -790,6 +868,26 @@ overlay, damper strip and video HUD comes out blank there.
 
 Add feature flags as needed:
 
+- `OMATRACK_AUTOTEST_FILMSTRIP=/path/to/copied-recording` (two usable laps;
+  optional `OMATRACK_AUTOTEST_FILMSTRIP_VIDEO=/path/to/test-video` exercises
+  native mpv aspect/letterbox placement; uses one real shared filmstrip).
+  The native check verifies docking/fullscreen identity, two same-session
+  roles, label right-click and the swap action. An inactive headless window
+  invokes the real shortcut handler without stealing desktop keyboard focus;
+  that path does not claim to simulate a hardware key in an inactive window.
+- `OMATRACK_AUTOTEST_RESCAN_STATE=1` adds snapshot/cursor/viewport/manual
+  alignment preservation checks to the filmstrip test; it also checks that a
+  new lap pair clears old tuning and that the sidebar row under the top edge
+  survives the rescan (needs a library taller than the window).
+- `OMATRACK_AUTOTEST_USB_ROOT=/scratch/mount` with
+  `OMATRACK_AUTOTEST_USB_DEST=/scratch/dest` verifies that discovery opens
+  the preview with per-file destinations, that nothing is written before the
+  button, and that the button copies exactly the planned set.
+- `OMATRACK_AUTOTEST_PENDING_OPEN=/path/to/another/copied-recording` verifies
+  that a queued file load cannot undo a swap.
+- `OMATRACK_AUTOTEST_RESTORE_STATE=1` with `OMATRACK_AUTOTEST_PRIMARY_LAP`
+  and `OMATRACK_AUTOTEST_REFERENCE_LAP` verifies the scratch configuration's
+  same-recording startup selection before the filmstrip test proceeds.
 - `OMATRACK_AUTOTEST_COMPARE=1`
 - `OMATRACK_AUTOTEST_WINDOWS=1`
 - `OMATRACK_AUTOTEST_SELECTION=1`

@@ -41,6 +41,67 @@ private slots:
         QCOMPARE(model.rowCount(), 3);
     }
 
+    void sameRecordingInTwoSectionsPreservesTheSurvivingRow() {
+        const QVariantMap file{
+            {QStringLiteral("role"), QStringLiteral("file")},
+            {QStringLiteral("path"), QStringLiteral("/data/lap.pds")},
+            {QStringLiteral("key"), QStringLiteral("/data/lap.pds")},
+            {QStringLiteral("name"), QStringLiteral("lap.pds")},
+        };
+        const auto section = [file](const QString& path) {
+            return QVariantMap{
+                {QStringLiteral("role"), QStringLiteral("source")},
+                {QStringLiteral("path"), path},
+                {QStringLiteral("name"), path},
+                {QStringLiteral("children"), QVariantList{file}},
+            };
+        };
+        LibraryModel model;
+        const auto recent = section(QStringLiteral("/recent"));
+        const auto folder = section(QStringLiteral("/data"));
+        model.setTree({recent, folder});
+        QCOMPARE(model.rowCount(), 4);
+        const QPersistentModelIndex folderFile(model.index(3));
+        QSignalSpy reset(&model, &QAbstractItemModel::modelReset);
+        model.setTree({folder});
+        QCOMPARE(model.rowCount(), 2);
+        QVERIFY(folderFile.isValid());
+        QCOMPARE(folderFile.row(), 1);
+        QCOMPARE(reset.size(), 0);
+    }
+
+    void arrivingSessionMetadataDoesNotReplaceTheFileRow() {
+        QVariantMap file{
+            {QStringLiteral("role"), QStringLiteral("file")},
+            {QStringLiteral("path"), QStringLiteral("/data/lap.pds")},
+            {QStringLiteral("name"), QStringLiteral("lap.pds")},
+        };
+        LibraryModel model;
+        model.setTree({file});
+        const QPersistentModelIndex row(model.index(0));
+        QSignalSpy removed(&model, &QAbstractItemModel::rowsRemoved);
+        file.insert(QStringLiteral("key"), QStringLiteral("loaded-session"));
+        file.insert(QStringLiteral("hasSession"), true);
+        model.setTree({file});
+        QVERIFY(row.isValid());
+        QCOMPARE(removed.size(), 0);
+    }
+
+    void duplicateListKeysDoNotMovePastTheEnd() {
+        LapListModel model;
+        LapRow first;
+        first.lapId = 1;
+        first.label = QStringLiteral("first");
+        LapRow second = first;
+        second.label = QStringLiteral("second");
+        model.refresh({first, second});
+        QCOMPARE(model.rowCount(), 2);
+        model.refresh({second, first, second});
+        QCOMPARE(model.rowCount(), 3);
+        model.refresh({first});
+        QCOMPARE(model.rowCount(), 1);
+    }
+
     void setPrimarySelectLapSidebarAgree() {
         LibraryModel library;
         FilmstripSessionListModel filmstrip;
@@ -75,6 +136,64 @@ private slots:
         roles.filmstripKey = filmstrip.primarySessionKey();
         roles.sidebarKey = library.primarySessionKey();
         QVERIFY(roles.agree());
+    }
+
+    void filmstripKeepsBothRolesForOneRecording() {
+        FilmstripSessionListModel model;
+        FilmstripSessionRow primary;
+        primary.sessionKey = QStringLiteral("one-recording.mp4");
+        FilmstripSessionRow reference = primary;
+        reference.reference = true;
+        model.refresh({primary, reference});
+        QCOMPARE(model.rowCount(), 2);
+        const QPersistentModelIndex active(model.index(0));
+        const QPersistentModelIndex compare(model.index(1));
+        QSignalSpy reset(&model, &QAbstractItemModel::modelReset);
+        primary.driverName = QStringLiteral("Updated driver");
+        reference.driverName = primary.driverName;
+        model.refresh({primary, reference});
+        QVERIFY(active.isValid());
+        QVERIFY(compare.isValid());
+        QVERIFY(
+            !active.data(FilmstripSessionListModel::ReferenceRole).toBool());
+        QVERIFY(
+            compare.data(FilmstripSessionListModel::ReferenceRole).toBool());
+        QCOMPARE(reset.size(), 0);
+    }
+
+    void eventFilterOwnsTrackAndDayAndRestoresManualFacets() {
+        LibraryFilterModel filter;
+        filter.setSelectedTrack(QStringLiteral("Sebring"));
+        QVERIFY(filter.anyFilterActive());
+        filter.setEventFilter(true, QStringLiteral("Daytona"),
+                              QStringLiteral("2026-08-30"));
+        QCOMPARE(filter.selectedTrack(), QStringLiteral("Daytona"));
+        QCOMPARE(filter.selectedDay(), QStringLiteral("2026-08-30"));
+        // Event settings change while on: follow them, keep the stash.
+        filter.setEventFilter(true, QStringLiteral("Daytona"),
+                              QStringLiteral("2026-08-31"));
+        QCOMPARE(filter.selectedDay(), QStringLiteral("2026-08-31"));
+        // Leaving restores the manual facets; the event's track does not
+        // linger.
+        filter.setEventFilter(false, QStringLiteral("Daytona"),
+                              QStringLiteral("2026-08-31"));
+        QCOMPARE(filter.selectedTrack(), QStringLiteral("Sebring"));
+        QCOMPARE(filter.selectedDay(), QString());
+        QVERIFY(!filter.eventFilterActive());
+        // Clearing everything while on leaves the event filter and clears the
+        // day.
+        filter.setEventFilter(true, QStringLiteral("Daytona"),
+                              QStringLiteral("2026-08-30"));
+        filter.clearAllFilters();
+        QVERIFY(!filter.eventFilterActive());
+        QVERIFY(!filter.anyFilterActive());
+        QCOMPARE(filter.selectedTrack(), QString());
+        QCOMPARE(filter.selectedDay(), QString());
+        // A later, unrelated exit must not resurrect "Sebring".
+        filter.setEventFilter(true, QStringLiteral("Daytona"),
+                              QStringLiteral("2026-08-30"));
+        filter.setEventFilter(false, {}, {});
+        QCOMPARE(filter.selectedTrack(), QString());
     }
 
     void filterDoesNotReset() {

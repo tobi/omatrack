@@ -7,6 +7,7 @@ Item {
     id: overlay
 
     readonly property real aspectRatio: 0.21
+    property real bottomInset: 0
     property real dragOriginX: 0
     property real dragOriginY: 0
     property real mediaTime: 0
@@ -22,13 +23,18 @@ Item {
     function clampY(value) {
         if (!overlay.parent)
             return 0;
-        return Math.max(0, Math.min(overlay.parent.height - overlay.height, value));
+        return Math.max(0, Math.min(overlay.parent.height - overlay.bottomInset - overlay.height, value));
     }
 
     height: overlay.width * overlay.aspectRatio
     objectName: "videoTelemetryOverlay"
     width: Math.max(0, overlay.unscaledWidth * overlay.scaleFactor)
     z: 8
+
+    onBottomInsetChanged: {
+        if (overlay.userPositioned)
+            overlay.y = overlay.clampY(overlay.y);
+    }
 
     Binding {
         property: "x"
@@ -41,7 +47,7 @@ Item {
         property: "y"
         restoreMode: Binding.RestoreNone
         target: overlay
-        value: Math.max(0, Math.min(overlay.parent.height - overlay.height, overlay.parent.height * 0.9 - overlay.height * 0.5))
+        value: overlay.clampY(overlay.parent.height * 0.9 - overlay.height * 0.5)
         when: !overlay.userPositioned
     }
     VideoTelemetryHud {

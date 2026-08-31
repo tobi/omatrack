@@ -1,4 +1,5 @@
 #include "TelemetryStore.h"
+#include "SessionRefresh.h"
 
 #include "TraceSnapshot.h"
 
@@ -1156,9 +1157,13 @@ struct SessionScanResult {
     QStringList discoveredFilePaths;
     QHash<QString, QString> folderDisplayNames;
     QStringList trackMetadataPaths;
+    /// TRACK.yml path -> modification stamp, so a rescan can tell which
+    /// chains changed and refresh only their descendants' metadata.
+    QHash<QString, qint64> trackMetadataStamps;
     QHash<QString, QString> remoteSourceNames;
     QHash<QString, QString> locationStatuses;
     QHash<QString, int> locationFileCounts;
+    QStringList usbRoots;
     qint64 elapsedMs = 0;
 };
 
@@ -1300,21 +1305,6 @@ struct SessionConfidenceLoadResult {
     std::vector<double> consistency;
     QString error;
 };
-
-QVariantMap configuredRecordingMetadataForPath(
-    const QString& path, const QHash<QString, QVariantMap>& saved) {
-    const QString canonical = canonicalInputPath(path);
-    if (canonical.isEmpty()) return {};
-    QVariantMap result = omatrack::track_metadata::readHierarchy(
-        QFileInfo(canonical).absolutePath());
-    omatrack::track_metadata::merge(&result, saved.value(canonical));
-    return result;
-}
-
-QVariantMap recordingMetadataForPath(const QString& path,
-                                     const QHash<QString, QVariantMap>& saved) {
-    return configuredRecordingMetadataForPath(path, saved);
-}
 
 QVariantList metadataChannelRows(
     const QVariantMap& metadata, const QVariantMap& inheritedMetadata,
@@ -2271,7 +2261,9 @@ std::shared_ptr<SessionScanResult> scanLibraryLocations(
     QElapsedTimer timer;
     timer.start();
     auto result = std::make_shared<SessionScanResult>();
-    QSet<QString> uniquePaths = extraPaths;
+    QSet<QString> uniquePaths;
+    for (const auto& path : extraPaths)
+        if (QFileInfo(path).isFile()) uniquePaths.insert(path);
     QSet<QString> metadataPaths;
     const QStringList filters{
         "*.pds",       "*.PDS",  "*.ld",     "*.LD",  "*.vbo", "*.telemetry",
@@ -2358,6 +2350,8 @@ std::shared_ptr<SessionScanResult> scanLibraryLocations(
     std::sort(result->discoveredFilePaths.begin(),
               result->discoveredFilePaths.end());
     for (const QString& path : result->trackMetadataPaths) {
+        result->trackMetadataStamps.insert(
+            path, QFileInfo(path).lastModified().toMSecsSinceEpoch());
         const QString name =
             nestedText(YamlConfig::readDocument(path),
                        {QStringLiteral("folder"), QStringLiteral("name")});
@@ -2457,7 +2451,10 @@ TelemetryStore::TelemetryStore(QObject* parent)
     : QObject(parent),
       folderMetadataJob_(this),
       scanJob_(this),
+      trackMetadataRefreshJob_(this),
       usbScanJob_(this),
+      libraryWatchJob_(this),
+      usbCopyPlanJob_(this),
       usbCopyJob_(this),
       fileOpenQueue_(this),
       primaryLapJob_(this),
@@ -2560,6 +2557,7 @@ TelemetryStore::TelemetryStore(QObject* parent)
     primaryLapsModel_ = std::make_unique<LapListModel>(this);
     compareLapsModel_ = std::make_unique<LapListModel>(this);
     filmstripSessionsModel_ = std::make_unique<FilmstripSessionListModel>(this);
+    usbCopyModel_ = std::make_unique<UsbCopyListModel>(this);
     channelsModel_ = std::make_unique<ChannelListModel>(this);
     cornersModel_ = std::make_unique<CornerListModel>(this);
     driverMappingsModel_ = std::make_unique<DriverMappingModel>(this);
@@ -2648,7 +2646,7 @@ void TelemetryStore::refreshTrackAtlas() { atlas_->refreshTrackAtlas(); }
 // ── scanning / grouping ─────────────────────────────────────────────
 
 void TelemetryStore::scan() {
-    closedTracks_.clear();
+    // Refresh discovery without undoing the user's closed groups/selection.
     if (loading_) {
         rescanPending_ = true;
         if (const auto c = scanJob_.cancel()) c->store(true);
@@ -2686,14 +2684,77 @@ void TelemetryStore::finishSessionScan(
         return;
     }
 
-    clearSessions();
+    if (!result) return;
+    const bool restoreStartupSelection =
+        !ready_ && !primarySession_ && !fileOpenQueue_.busy();
+    QSet<QString> present(result->discoveredFilePaths.cbegin(),
+                          result->discoveredFilePaths.cend());
+    transientSessionPaths_.intersect(present);
+    // Discovery must not free the lap objects currently used by the views,
+    // even if their volume is temporarily unavailable.
+    for (const auto* session : {primarySession_, compareSession_})
+        if (session) present.insert(session->path());
+    retainDiscoveredSessions(
+        sessions_, present, primarySession_, compareSession_,
+        primaryLapJob_.running() || compareLapJob_.running() ||
+            fileOpenQueue_.busy(),
+        [](const SessionHandle& session) { return session.path(); });
+    sidebarMetadataLoaded_.intersect(present);
+    for (auto it = fileMetadata_.begin(); it != fileMetadata_.end();) {
+        if (!present.contains(it.key()))
+            it = fileMetadata_.erase(it);
+        else
+            ++it;
+    }
+    // Folder aggregates depend on the discovered set, unlike an already
+    // loaded lap snapshot. Leave editors/caches alone on an unchanged scan.
+    if (discoveredFilePaths_ != result->discoveredFilePaths ||
+        folderDisplayNames_ != result->folderDisplayNames ||
+        trackMetadataPaths_ != result->trackMetadataPaths) {
+        folderChannelSampleJob_.reset();
+        folderChannelSamples_.clear();
+        folderChannelSampleRequests_.clear();
+    }
+    // Precedence layer 2 (TRACK.yml chain) is a discovery snapshot. A
+    // TRACK.yml that appeared, vanished or changed since the previous scan
+    // invalidates the snapshot of every recording below its folder; the
+    // lazy sidebar pass re-reads those chains on a worker.
+    QStringList changedMetadataDirs;
+    for (auto it = result->trackMetadataStamps.cbegin();
+         it != result->trackMetadataStamps.cend(); ++it)
+        if (trackMetadataStamps_.value(it.key(), -1) != it.value())
+            changedMetadataDirs.append(QFileInfo(it.key()).absolutePath());
+    for (auto it = trackMetadataStamps_.cbegin();
+         it != trackMetadataStamps_.cend(); ++it)
+        if (!result->trackMetadataStamps.contains(it.key()))
+            changedMetadataDirs.append(QFileInfo(it.key()).absolutePath());
+    trackMetadataStamps_ = result->trackMetadataStamps;
+    QStringList staleMetadataPaths;
+    if (!changedMetadataDirs.isEmpty() && !fileMetadata_.isEmpty()) {
+        for (auto it = fileMetadata_.cbegin(); it != fileMetadata_.cend();
+             ++it) {
+            for (const QString& dir : changedMetadataDirs) {
+                const QString relative = QDir(dir).relativeFilePath(it.key());
+                if (relative != QStringLiteral("..") &&
+                    !relative.startsWith(QStringLiteral("../"))) {
+                    staleMetadataPaths.append(it.key());
+                    break;
+                }
+            }
+        }
+    }
     fileSources_ = result->fileSources;
     discoveredFilePaths_ = result->discoveredFilePaths;
     folderDisplayNames_ = result->folderDisplayNames;
     trackMetadataPaths_ = result->trackMetadataPaths;
     locationStatuses_ = result->locationStatuses;
     locationFileCounts_ = result->locationFileCounts;
-    transientSessionPaths_.clear();
+    if (!staleMetadataPaths.isEmpty()) {
+        qInfo() << "TRACK.yml changed under" << changedMetadataDirs
+                << "- refreshing" << staleMetadataPaths.size()
+                << "recordings' metadata";
+        refreshTrackMetadata(staleMetadataPaths);
+    }
     qInfo() << "File discovery:" << result->elapsedMs
             << "ms; sidebar metadata remains lazy";
     if (!ready_) {
@@ -2702,7 +2763,7 @@ void TelemetryStore::finishSessionScan(
     }
     emit sessionsChanged();
     emit locationsChanged();
-    restoreLastSelection();
+    if (restoreStartupSelection) restoreLastSelection();
 }
 
 void TelemetryStore::cancelFileOpen() {
@@ -2830,8 +2891,7 @@ void TelemetryStore::queueFileOpen(const QString& filePath, FileOpenRole role,
         rescanPending_ = true;
     }
     pauseSidebarMetadataQueue();
-    const QVariantMap metadata =
-        recordingMetadataForPath(telemetryPath, prefs_->recordingMetadata());
+    const QVariantMap metadata = effectiveMetadata(telemetryPath);
     const bool expectTelemetry = role != FileOpenRole::Automatic;
     const LibraryLocation* location = connectionHolding(telemetryPath);
     const RemoteConnection remote =
@@ -2957,7 +3017,9 @@ void TelemetryStore::restoreLastSelection() {
     const int compareLap = prefs_->lastCompareLap();
     if (!primary.isEmpty() && QFileInfo::exists(primary))
         queueFileOpen(primary, FileOpenRole::Primary, primaryLap);
-    if (!compare.isEmpty() && compare != primary && QFileInfo::exists(compare))
+    if (!compare.isEmpty() &&
+        (compare != primary || compareLap != primaryLap) &&
+        QFileInfo::exists(compare))
         queueFileOpen(compare, FileOpenRole::Compare, compareLap);
 }
 
@@ -2971,6 +3033,16 @@ void TelemetryStore::rememberRecentFile(const QString& filePath) {
 }
 
 void TelemetryStore::clearSessions() {
+    cancelSelectionLoads();
+    // Release references before owners, including overlay/background work.
+    primarySession_ = nullptr;
+    compareSession_ = nullptr;
+    primaryLap_ = -1;
+    compareLap_ = -1;
+    overlays_->setPrimarySession(nullptr);
+    overlays_->setCompareSession(nullptr);
+    overlays_->setPrimaryLap(-1);
+    overlays_->clear();
     sessions_.clear();
     sidebarMetadataQueue_.clear();
     sidebarMetadataQueued_.clear();
@@ -3435,6 +3507,36 @@ void TelemetryStore::requestSidebarMetadata(const QString& path, bool visible) {
         });
 }
 
+void TelemetryStore::refreshTrackMetadata(const QStringList& paths) {
+    // Layer 2 only: re-read the TRACK.yml chains on a worker and swap the
+    // snapshots in place. Sessions, laps and caches are untouched; only the
+    // metadata-derived presentation is re-evaluated.
+    trackMetadataRefreshJob_.start(
+        [paths](IoCancel cancel) {
+            QHash<QString, QVariantMap> refreshed;
+            for (const QString& path : paths) {
+                if (ioCancelled(cancel)) return refreshed;
+                refreshed.insert(path, omatrack::track_metadata::readHierarchy(
+                                           QFileInfo(path).absolutePath()));
+            }
+            return refreshed;
+        },
+        [this](QHash<QString, QVariantMap> refreshed) {
+            for (auto it = refreshed.cbegin(); it != refreshed.cend(); ++it) {
+                fileMetadata_.insert(it.key(), it.value());
+                emit sidebarMetadataChanged(it.key(),
+                                            sidebarFileDetails(it.key()));
+            }
+            if (refreshed.isEmpty()) return;
+            refreshLibraryModel();
+            if (primarySession_) {
+                overlays_->setEventLabel(primaryLabel());
+                overlays_->setDriverName(primaryDriverName());
+            }
+            emit selectionChanged();
+        });
+}
+
 void TelemetryStore::pauseSidebarMetadataQueue() {
     sidebarMetadataQueue_.pause();
 }
@@ -3503,9 +3605,7 @@ void TelemetryStore::setFilePinned(const QString& role, const QString& path,
 QVariantMap TelemetryStore::sidebarFileDetails(const QString& path) const {
     SessionHandle* session = findSession(path);
     const bool video = isVideoPath(path);
-    QVariantMap metadata = fileMetadata_.value(path);
-    omatrack::track_metadata::merge(&metadata,
-                                    prefs_->recordingMetadata().value(path));
+    QVariantMap metadata = effectiveMetadata(path);
     const auto metadataOr = [&metadata](const QStringList& field,
                                         const QString& fallback) {
         const QString value = nestedText(metadata, field);
@@ -3841,8 +3941,7 @@ void TelemetryStore::closeTrack(const QString& trackName) {
 
 QString TelemetryStore::driverDisplay(const SessionHandle* session) const {
     if (!session) return QStringLiteral("Unknown driver");
-    const QVariantMap metadata =
-        recordingMetadataForPath(session->path(), prefs_->recordingMetadata());
+    const QVariantMap metadata = effectiveMetadata(session->path());
     const QString recordingName =
         driverNameForId(metadata, session->driverId());
     if (!recordingName.isEmpty()) return recordingName;
@@ -3860,8 +3959,7 @@ QString TelemetryStore::trackAssignmentKey(const SessionHandle* session) {
 
 QString TelemetryStore::assignedTrackSlug(const SessionHandle* session) const {
     if (!session) return QString();
-    const QVariantMap metadata = configuredRecordingMetadataForPath(
-        session->path(), prefs_->recordingMetadata());
+    const QVariantMap metadata = effectiveMetadata(session->path());
     const QString recordingSlug =
         nestedText(metadata, {QStringLiteral("track"), QStringLiteral("slug")})
             .toLower();
@@ -4062,10 +4160,34 @@ QString TelemetryStore::resolvedTrackSlug(const SessionHandle* session) const {
     return assigned.isEmpty() ? detectedAtlasSlug(session) : assigned;
 }
 
+QVariantMap TelemetryStore::effectiveMetadata(const QString& path) const {
+    if (path.isEmpty()) return {};
+    auto it = fileMetadata_.constFind(path);
+    QString key = path;
+    if (it == fileMetadata_.cend()) {
+        key = canonicalInputPath(path);
+        if (key.isEmpty()) return {};
+        it = fileMetadata_.constFind(key);
+    }
+    QVariantMap result;
+    if (it != fileMetadata_.cend()) {
+        result = it.value();
+    } else {
+        // A recording discovery has not described yet (command-line or drop
+        // open ahead of its folder scan): read its chain once and keep it, so
+        // later lookups for the same path never touch the disk again.
+        result = omatrack::track_metadata::readHierarchy(
+            QFileInfo(key).absolutePath());
+        fileMetadata_.insert(key, result);
+    }
+    omatrack::track_metadata::merge(&result,
+                                    prefs_->recordingMetadata().value(key));
+    return result;
+}
+
 QString TelemetryStore::displayTrack(const SessionHandle* session) const {
     if (!session) return QString();
-    const QVariantMap metadata = configuredRecordingMetadataForPath(
-        session->path(), prefs_->recordingMetadata());
+    const QVariantMap metadata = effectiveMetadata(session->path());
     const QString recordingName =
         nestedText(metadata, {QStringLiteral("track"), QStringLiteral("name")});
     if (!recordingName.isEmpty()) return recordingName;
@@ -4178,10 +4300,8 @@ QVariantMap TelemetryStore::folderMetadata(const QString& folderPath) const {
             relative.startsWith(QStringLiteral("../")))
             continue;
 
-        QVariantMap effectiveMetadata = fileMetadata_.value(session->path());
-        omatrack::track_metadata::merge(
-            &effectiveMetadata,
-            prefs_->recordingMetadata().value(session->path()));
+        const QVariantMap effectiveMetadata =
+            this->effectiveMetadata(session->path());
         const auto metadataOr = [&](const QStringList& path,
                                     const QString& fallback) {
             const QString value = nestedText(effectiveMetadata, path);
@@ -4878,8 +4998,7 @@ void TelemetryStore::requestLapLoad(SessionHandle* session, int lapId,
     const QString parserPath = session->telemetryPath();
     const QString sessionKey = session->sessionKey();
     const LapEntry lap = *wanted;
-    const QVariantMap metadata =
-        recordingMetadataForPath(path, prefs_->recordingMetadata());
+    const QVariantMap metadata = effectiveMetadata(path);
     const bool verifyVideo =
         session->isVideo() &&
         session->videoIdentity().status == VideoIdentityStatus::NotChecked;
@@ -4962,8 +5081,35 @@ static void logSelectedLap(const char* role, const SessionHandle* session,
                            << lapText << details;
 }
 
+void TelemetryStore::cancelSelectionLoads() {
+    // A direct role-change intent supersedes every loader that can commit
+    // another selection, including the serialized file-open pipeline.
+    fileOpenQueue_.clear();
+    primaryLapJob_.reset();
+    compareLapJob_.reset();
+    setPrimaryLapLoading(false);
+    setCompareLapLoading(false);
+}
+
+void TelemetryStore::resetPrimarySessionOverlays() {
+    const auto removeSidecarKeys = [](auto& map) {
+        for (auto it = map.begin(); it != map.end();) {
+            if (it.key().startsWith(QStringLiteral("sidecar:")))
+                it = map.erase(it);
+            else
+                ++it;
+        }
+    };
+    removeSidecarKeys(prefs_->channelVisible());
+    removeSidecarKeys(prefs_->channelColors());
+    removeSidecarKeys(prefs_->channelWeights());
+    overlays_->clear();
+    overlays_->discoverSidecarSiblings();
+}
+
 void TelemetryStore::setPrimary(SessionHandle* session, int lapId) {
     const bool sessionChanged = primarySession_ != session;
+    const bool pairChanged = sessionChanged || primaryLap_ != lapId;
     if (sessionChanged && primarySession_ && primarySession_ != session &&
         primarySession_ != compareSession_)
         primarySession_->clearUnifiedCache();
@@ -4981,37 +5127,10 @@ void TelemetryStore::setPrimary(SessionHandle* session, int lapId) {
     prefs_->lastPrimaryLap() = session ? lapId : -1;
     schedulePreferencesSave();
     invalidateExtraChannelCache();
-    if (sessionChanged) setReferenceAlignment(0.0);
+    if (pairChanged) setReferenceAlignment(0.0);
     cursorFrac_ = 0.0;
     loadCornersForPrimary();
-    if (sessionChanged) {
-        // Sidecars are global library entries, not session preferences. A
-        // session switch starts with no attached overlays and refreshes the
-        // matching library for the new host time window.
-        overlays_->clear();
-        for (auto it = prefs_->channelVisible().begin();
-             it != prefs_->channelVisible().end();) {
-            if (it.key().startsWith(QStringLiteral("sidecar:")))
-                it = prefs_->channelVisible().erase(it);
-            else
-                ++it;
-        }
-        for (auto it = prefs_->channelColors().begin();
-             it != prefs_->channelColors().end();) {
-            if (it.key().startsWith(QStringLiteral("sidecar:")))
-                it = prefs_->channelColors().erase(it);
-            else
-                ++it;
-        }
-        for (auto it = prefs_->channelWeights().begin();
-             it != prefs_->channelWeights().end();) {
-            if (it.key().startsWith(QStringLiteral("sidecar:")))
-                it = prefs_->channelWeights().erase(it);
-            else
-                ++it;
-        }
-        overlays_->discoverSidecarSiblings();
-    }
+    if (sessionChanged) resetPrimarySessionOverlays();
     overlays_->resampleOverlays();
     emit cornersChanged();
     emit videoTimeChanged();
@@ -5022,6 +5141,7 @@ void TelemetryStore::setPrimary(SessionHandle* session, int lapId) {
 
 void TelemetryStore::setCompare(SessionHandle* session, int lapId) {
     const bool sessionChanged = compareSession_ != session;
+    const bool pairChanged = sessionChanged || compareLap_ != lapId;
     if (sessionChanged && compareSession_ && compareSession_ != session &&
         compareSession_ != primarySession_)
         compareSession_->clearUnifiedCache();
@@ -5035,7 +5155,10 @@ void TelemetryStore::setCompare(SessionHandle* session, int lapId) {
     damperAlignmentValid_ = false;
     invalidateComparisonAlignment();
     rebuildComparisonAlignment();
-    if (sessionChanged) setReferenceAlignment(0.0);
+    if (pairChanged) {
+        setReferenceAlignment(0.0);
+        invalidateExtraChannelCache();
+    }
     emit selectionChanged();
     emit cursorFracChanged();
     logSelectedLap("select compare", session, lapId);
@@ -5092,8 +5215,7 @@ void TelemetryStore::prefetchLap(const QString& sessionKey, int lapId) {
     const QString parserPath = session->telemetryPath();
     const QString path = session->path();
     const LapEntry lap = *wanted;
-    const QVariantMap metadata =
-        recordingMetadataForPath(path, prefs_->recordingMetadata());
+    const QVariantMap metadata = effectiveMetadata(path);
     lapPrefetchQueue_.enqueue(
         sessionKey + QLatin1Char('#') + QString::number(lapId),
         [parserPath, path, sessionKey, lap, metadata](IoCancel) {
@@ -5159,8 +5281,7 @@ void TelemetryStore::clearCompare() {
 }
 
 void TelemetryStore::clearPrimary() {
-    primaryLapJob_.reset();
-    compareLapJob_.reset();
+    cancelSelectionLoads();
     invalidateExtraChannelCache();
     setPrimaryLapLoading(false);
     setCompareLapLoading(false);
@@ -5172,6 +5293,7 @@ void TelemetryStore::clearPrimary() {
     overlays_->setCompareSession(nullptr);
     overlays_->setEventLabel(QString());
     overlays_->setDriverName(QString());
+    overlays_->clear();
     compareLap_ = -1;
     prefs_->lastPrimaryKey().clear();
     prefs_->lastPrimaryLap() = -1;
@@ -5237,12 +5359,10 @@ QString lapHoverText(const QVector<LapEntry>& laps, const LapEntry& target,
 }
 }  // namespace
 
-QVector<LapRow> TelemetryStore::buildLapRows(SessionHandle* session) const {
+QVector<LapRow> TelemetryStore::buildLapRows(SessionHandle* session,
+                                             int selectedId) const {
     QVector<LapRow> rows;
     if (!session) return rows;
-    const int selectedId = session == primarySession_   ? primaryLap_
-                           : session == compareSession_ ? compareLap_
-                                                        : -1;
     for (const LapEntry& l : session->laps()) {
         LapRow row;
         row.lapId = l.lapId;
@@ -5262,12 +5382,16 @@ QVector<LapRow> TelemetryStore::buildLapRows(SessionHandle* session) const {
 
 QVector<LapRow> TelemetryStore::lapRowsForSession(
     const QString& sessionKey) const {
-    return buildLapRows(findSession(sessionKey));
+    auto* session = findSession(sessionKey);
+    const int selectedId = session == primarySession_   ? primaryLap_
+                           : session == compareSession_ ? compareLap_
+                                                        : -1;
+    return buildLapRows(session, selectedId);
 }
 
 void TelemetryStore::refreshLapModels() {
-    primaryLapsModel_->refresh(buildLapRows(primarySession_));
-    compareLapsModel_->refresh(buildLapRows(compareSession_));
+    primaryLapsModel_->refresh(buildLapRows(primarySession_, primaryLap_));
+    compareLapsModel_->refresh(buildLapRows(compareSession_, compareLap_));
 }
 
 void TelemetryStore::refreshFilmstripModel() {
@@ -5280,7 +5404,9 @@ void TelemetryStore::refreshFilmstripModel() {
         row.reference = false;
         rows.append(row);
     }
-    if (compareSession_ && compareSession_ != primarySession_) {
+    // A reference is a role, not a different recording: comparing two laps
+    // of the same session still needs both selected laps in the filmstrip.
+    if (compareSession_) {
         FilmstripSessionRow row;
         row.sessionKey = compareSession_->sessionKey();
         row.driverName = driverDisplay(compareSession_);
@@ -6245,8 +6371,7 @@ void TelemetryStore::prefetchNeighbourLaps() {
     const QString sessionKey = primarySession_->sessionKey();
     const QString path = primarySession_->path();
     const QString parserPath = primarySession_->telemetryPath();
-    const QVariantMap metadata =
-        recordingMetadataForPath(path, prefs_->recordingMetadata());
+    const QVariantMap metadata = effectiveMetadata(path);
 
     for (const int offset : {-1, 1}) {
         const int lapId = neighbourLapId(offset);
@@ -6477,8 +6602,7 @@ void TelemetryStore::requestTraceConfidence() {
 
     const QString path = primarySession_->path();
     const QString parserPath = primarySession_->telemetryPath();
-    const QVariantMap metadata =
-        recordingMetadataForPath(path, prefs_->recordingMetadata());
+    const QVariantMap metadata = effectiveMetadata(path);
     // start() flips traceConfidenceLoading_ to true through runningChanged.
     traceConfidenceJob_.start(
         [parserPath, key, ranked, metadata, primary](IoCancel) {
@@ -6541,8 +6665,7 @@ void TelemetryStore::requestCornerConsistency() {
 
     const QString path = primarySession_->path();
     const QString parserPath = primarySession_->telemetryPath();
-    const QVariantMap metadata =
-        recordingMetadataForPath(path, prefs_->recordingMetadata());
+    const QVariantMap metadata = effectiveMetadata(path);
     cornerConsistencyJob_.start(
         [parserPath, sessionKey, key, ranked, metadata, startDistance,
          endDistance](IoCancel) {
@@ -7368,8 +7491,7 @@ QString TelemetryStore::primaryDetail() const {
             }
     }
 
-    const QVariantMap metadata = recordingMetadataForPath(
-        primarySession_->path(), prefs_->recordingMetadata());
+    const QVariantMap metadata = effectiveMetadata(primarySession_->path());
     const auto metadataOr = [&metadata](const QStringList& path,
                                         const QString& fallback) {
         const QString value = nestedText(metadata, path).trimmed();
@@ -7845,6 +7967,7 @@ std::shared_ptr<SessionScanResult> scanUsbVolumes(
         QDirIterator it(volume.rootPath, filters, QDir::Files,
                         QDirIterator::Subdirectories);
         while (it.hasNext()) {
+            if (ioCancelled(cancel)) break;
             it.next();
             if (it.fileName() == QStringLiteral("TRACK.yml")) continue;
             const QString path = vendorSourcePath(it.filePath());
@@ -7868,24 +7991,6 @@ std::shared_ptr<SessionScanResult> scanUsbVolumes(
     return result;
 }
 
-QVariantMap copyContext(const QString& path, const QString& track,
-                        const QString& date, const QString& session,
-                        const QString& driver) {
-    const QFileInfo info(path);
-    return QVariantMap{
-        {QStringLiteral("track"),
-         track.isEmpty() ? QStringLiteral("unknown") : track},
-        {QStringLiteral("date"),
-         date.isEmpty() ? QDate::currentDate().toString(Qt::ISODate) : date},
-        {QStringLiteral("session"),
-         session.isEmpty() ? QStringLiteral("session") : session},
-        {QStringLiteral("original"), info.fileName()},
-        {QStringLiteral("driver"), driver},
-        {QStringLiteral("stem"), info.completeBaseName()},
-        {QStringLiteral("ext"), info.suffix()},
-    };
-}
-
 }  // namespace
 
 void TelemetryStore::setupLibraryWatch() {
@@ -7895,6 +8000,21 @@ void TelemetryStore::setupLibraryWatch() {
     usbDebounce_ = new QTimer(this);
     usbDebounce_->setSingleShot(true);
     usbDebounce_->setInterval(400);
+    usbCopyProgressTimer_ = new QTimer(this);
+    usbCopyProgressTimer_->setInterval(100);
+    connect(usbCopyProgressTimer_, &QTimer::timeout, this,
+            &TelemetryStore::updateUsbCopyProgress);
+    connect(&usbCopyPlanJob_, &AsyncJobBase::runningChanged, this,
+            &TelemetryStore::usbChanged);
+    connect(&usbCopyJob_, &AsyncJobBase::runningChanged, this, [this]() {
+        if (usbCopyJob_.running())
+            usbCopyProgressTimer_->start();
+        else
+            usbCopyProgressTimer_->stop();
+        emit usbChanged();
+    });
+    connect(this, &TelemetryStore::eventChanged, this,
+            [this]() { refreshUsbCopyPlan(); });
     connect(usbDebounce_, &QTimer::timeout, this, [this]() {
         if (usbRescanOnly_)
             startUsbScan();
@@ -7910,15 +8030,10 @@ void TelemetryStore::setupLibraryWatch() {
                     slash.startsWith(QStringLiteral("/media/"));
                 usbDebounce_->start();
             });
-    connect(usbPollTimer_, &QTimer::timeout, this, [this]() {
-        const auto volumes = mountedUsbVolumes();
-        QStringList roots;
-        for (const UsbVolume& volume : volumes) roots.append(volume.rootPath);
-        if (roots == usbRoots_) return;
-        usbRoots_ = roots;
-        usbRescanOnly_ = true;
-        usbDebounce_->start();
-    });
+    connect(usbPollTimer_, &QTimer::timeout, this,
+            [this]() { startUsbScan(false); });
+    connect(this, &TelemetryStore::locationsChanged, this,
+            &TelemetryStore::rebuildLibraryWatch);
     rebuildLibraryWatch();
     usbPollTimer_->start();
     startUsbScan();
@@ -7926,33 +8041,62 @@ void TelemetryStore::setupLibraryWatch() {
 
 void TelemetryStore::rebuildLibraryWatch() {
     if (!libraryWatch_) return;
-    const QStringList current = libraryWatch_->directories();
-    if (!current.isEmpty()) libraryWatch_->removePaths(current);
-    QStringList paths;
-    for (const LibraryLocation& location : prefs_->locations()) {
-        if (!location.enabled || location.type != LocationType::Folder)
-            continue;
-        if (QFileInfo(location.target).isDir()) paths.append(location.target);
-    }
-    paths += usbWatchRoots();
-    paths += usbRoots_;
-    paths.removeDuplicates();
-    if (!paths.isEmpty()) libraryWatch_->addPaths(paths);
+    const auto locations = prefs_->locations();
+    const auto usbRoots = usbRoots_;
+    libraryWatchJob_.start(
+        [locations, usbRoots](IoCancel cancel) {
+            QStringList paths;
+            for (const auto& location : locations) {
+                if (ioCancelled(cancel)) return QStringList{};
+                if (location.enabled && location.type == LocationType::Folder &&
+                    QFileInfo(location.target).isDir())
+                    paths.append(location.target);
+            }
+            paths += usbWatchRoots();
+            paths += usbRoots;
+            paths.removeDuplicates();
+            return paths;
+        },
+        [this](const QStringList& paths) {
+            const auto current = libraryWatch_->directories();
+            QStringList removed, added;
+            for (const auto& path : current)
+                if (!paths.contains(path)) removed.append(path);
+            for (const auto& path : paths)
+                if (!current.contains(path)) added.append(path);
+            if (!removed.isEmpty()) libraryWatch_->removePaths(removed);
+            if (!added.isEmpty()) libraryWatch_->addPaths(added);
+        });
 }
 
-void TelemetryStore::startUsbScan() {
-    const QVector<UsbVolume> volumes = mountedUsbVolumes();
-    const QSet<QString> skip = configuredFolderTargets(prefs_->locations());
+void TelemetryStore::startUsbScan(bool force) {
+    // Polls must not cancel a still-running scan or touch mounted filesystems
+    // on the GUI thread. Filesystem events may request a fresh latest-wins
+    // scan.
+    if (!force && usbScanJob_.running()) return;
+    const auto locations = prefs_->locations();
+    const auto knownRoots = usbRoots_;
     usbScanJob_.start(
-        [volumes, skip](IoCancel cancel) {
-            return scanUsbVolumes(volumes, skip, cancel);
+        [locations, knownRoots,
+         force](IoCancel cancel) -> std::shared_ptr<SessionScanResult> {
+            const auto volumes = mountedUsbVolumes();
+            QStringList roots;
+            for (const auto& volume : volumes) roots.append(volume.rootPath);
+            if (ioCancelled(cancel) || (!force && roots == knownRoots))
+                return {};
+            auto result = scanUsbVolumes(
+                volumes, configuredFolderTargets(locations), cancel);
+            result->usbRoots = roots;
+            return result;
         },
         [this](std::shared_ptr<SessionScanResult> result) {
-            finishUsbScan(std::move(result));
+            if (result) finishUsbScan(std::move(result));
         });
 }
 
 void TelemetryStore::finishUsbScan(std::shared_ptr<SessionScanResult> result) {
+    const bool newMount = result && result->usbRoots != usbRoots_;
+    if (result) usbRoots_ = result->usbRoots;
     usbFileSources_.clear();
     usbPresent_ = false;
     usbLabel_.clear();
@@ -7965,6 +8109,8 @@ void TelemetryStore::finishUsbScan(std::shared_ptr<SessionScanResult> result) {
                             .value(QStringLiteral("name"))
                             .toString();
     }
+    if (newMount && usbPresent_) usbCopyVisible_ = true;
+    refreshUsbCopyPlan();
     rebuildLibraryWatch();
     refreshLibraryModel();
     emit usbChanged();
@@ -8020,6 +8166,7 @@ QString TelemetryStore::usbRenameScript() const {
 void TelemetryStore::setUsbDest(const QString& dest) {
     if (prefs_->usbDest() == dest) return;
     prefs_->setUsbDest(dest);
+    refreshUsbCopyPlan();
     schedulePreferencesSave();
     emit usbChanged();
 }
@@ -8027,6 +8174,7 @@ void TelemetryStore::setUsbDest(const QString& dest) {
 void TelemetryStore::setUsbFormat(const QString& format) {
     if (prefs_->usbFormat() == format) return;
     prefs_->setUsbFormat(format);
+    refreshUsbCopyPlan();
     schedulePreferencesSave();
     emit usbChanged();
 }
@@ -8034,6 +8182,7 @@ void TelemetryStore::setUsbFormat(const QString& format) {
 void TelemetryStore::setUsbRenameScript(const QString& script) {
     if (prefs_->usbRenameScript() == script) return;
     prefs_->setUsbRenameScript(script);
+    refreshUsbCopyPlan();
     schedulePreferencesSave();
     emit usbChanged();
 }
@@ -8045,29 +8194,46 @@ QString TelemetryStore::luaRenameExample() const {
 void TelemetryStore::showUsbCopy() {
     if (!usbPresent_) return;
     usbCopyVisible_ = true;
+    refreshUsbCopyPlan();
     emit usbChanged();
 }
 
 void TelemetryStore::hideUsbCopy() {
+    if (usbCopyJob_.running()) {
+        cancelUsbCopy();
+        return;
+    }
     if (!usbCopyVisible_) return;
+    usbCopyPlanJob_.reset();
     usbCopyVisible_ = false;
     emit usbChanged();
 }
 
-void TelemetryStore::copyUsbFiles() {
-    if (usbCopyJob_.running() || usbFileSources_.isEmpty()) return;
-    const QString dest = prefs_->usbDest().trimmed().isEmpty()
-                             ? defaultTelemetryDirectory()
-                             : prefs_->usbDest().trimmed();
-    const QString format = prefs_->usbFormat().trimmed().isEmpty()
-                               ? defaultCopyFormat()
-                               : prefs_->usbFormat();
-    const QString script = prefs_->usbRenameScript();
-    const QString track = prefs_->eventTrack();
-    const QString session = prefs_->eventSession();
-    const QString date = prefs_->eventDate().isEmpty()
-                             ? QDate::currentDate().toString(Qt::ISODate)
-                             : prefs_->eventDate();
+QString TelemetryStore::usbCopySummary() const {
+    return QStringLiteral(
+               "%1 new · %2 existing (unverified) · %3 need attention")
+        .arg(usbCopyPlan_.ready)
+        .arg(usbCopyPlan_.existing)
+        .arg(usbCopyPlan_.invalid);
+}
+
+void TelemetryStore::refreshUsbCopyPlan(bool clearStatus) {
+    if (!usbCopyVisible_ || usbCopyJob_.running()) return;
+    if (clearStatus) {
+        usbCopyStatus_.clear();
+        usbCopyProgress_ = 0.0;
+    }
+    UsbCopyOptions options;
+    options.destination = prefs_->usbDest().trimmed().isEmpty()
+                              ? defaultTelemetryDirectory()
+                              : prefs_->usbDest().trimmed();
+    options.format = prefs_->usbFormat();
+    options.script = prefs_->usbRenameScript();
+    options.track = prefs_->eventTrack();
+    options.session = prefs_->eventSession();
+    options.date = prefs_->eventDate().isEmpty()
+                       ? QDate::currentDate().toString(Qt::ISODate)
+                       : prefs_->eventDate();
     QStringList files;
     const auto collect = [&](auto&& self, const QVariantList& nodes) -> void {
         for (const QVariant& node : nodes) {
@@ -8082,74 +8248,115 @@ void TelemetryStore::copyUsbFiles() {
         }
     };
     collect(collect, usbFileSources_);
-    usbCopyStatus_ = QStringLiteral("Copying…");
-    usbCopyProgress_ = 0.0;
-    emit usbChanged();
-    usbCopyJob_.start(
-        [dest, format, script, track, session, date, files](IoCancel cancel) {
-            QString error;
-            int copied = 0;
-            for (int i = 0; i < files.size(); ++i) {
-                if (ioCancelled(cancel)) {
-                    error = QStringLiteral("Cancelled");
-                    break;
-                }
-                const QString source = files.at(i);
-                QVariantMap ctx = copyContext(source, track, date, session, {});
-                QString relative = expandCopyFormat(format, ctx);
-                if (!script.trimmed().isEmpty()) {
-                    const LuaRenameResult lua = runLuaRename(script, ctx);
-                    if (!lua.ok) {
-                        error = lua.error;
-                        break;
-                    }
-                    if (!lua.relativePath.trimmed().isEmpty())
-                        relative = lua.relativePath;
-                }
-                const PathJailResult jailed = jailRelativePath(dest, relative);
-                if (!jailed.ok) {
-                    error = jailed.error;
-                    break;
-                }
-                QDir().mkpath(QFileInfo(jailed.absolutePath).absolutePath());
-                if (QFileInfo::exists(jailed.absolutePath)) {
-                    ++copied;
-                    continue;
-                }
-                if (!QFile::copy(source, jailed.absolutePath)) {
-                    error = QStringLiteral("Could not copy %1")
-                                .arg(QFileInfo(source).fileName());
-                    break;
-                }
-                ++copied;
-            }
-            return QVariantMap{{QStringLiteral("error"), error},
-                               {QStringLiteral("copied"), copied},
-                               {QStringLiteral("dest"), dest}};
+    usbCopyPlanJob_.start(
+        [files, options](IoCancel cancel) {
+            return planUsbCopy(files, options,
+                               [cancel]() { return ioCancelled(cancel); });
         },
-        [this](QVariantMap result) {
-            const QString error =
-                result.value(QStringLiteral("error")).toString();
-            usbCopyProgress_ = 1.0;
-            if (!error.isEmpty()) {
-                usbCopyStatus_ = error;
-                emit operationError(QStringLiteral("USB copy"), error);
-            } else {
-                usbCopyStatus_ =
-                    QStringLiteral("Copied %1 files")
-                        .arg(result.value(QStringLiteral("copied")).toInt());
-                usbCopyVisible_ = false;
-                const QString dest =
-                    result.value(QStringLiteral("dest")).toString();
-                if (!dest.isEmpty()) appendFolderLocation(dest, false);
-                scan();
+        [this](UsbCopyPlan plan) {
+            usbCopyPlan_ = std::move(plan);
+            QVector<UsbCopyRow> rows;
+            for (const auto& entry : usbCopyPlan_.entries) {
+                UsbCopyRow row;
+                row.sourcePath = entry.source;
+                row.targetPath = entry.destination;
+                row.statusText = entry.message;
+                row.sizeText = QStringLiteral("%1 MiB").arg(
+                    double(entry.size) / (1024 * 1024), 0, 'f', 1);
+                row.ready = entry.state == UsbCopyEntry::State::Ready;
+                rows.append(std::move(row));
             }
+            usbCopyModel_->refresh(rows);
             emit usbChanged();
         });
 }
 
+void TelemetryStore::updateUsbCopyProgress() {
+    if (!usbCopyBytes_) return;
+    const qint64 done = usbCopyBytes_->load();
+    usbCopyProgress_ =
+        usbCopyPlan_.totalBytes > 0
+            ? std::clamp(double(done) / double(usbCopyPlan_.totalBytes), 0.0,
+                         1.0)
+            : 0.0;
+    if (usbCopyJob_.running() && !ioCancelled(usbCopyJob_.cancel()))
+        usbCopyStatus_ =
+            QStringLiteral("Copying · %1 / %2 MiB")
+                .arg(double(done) / (1024 * 1024), 0, 'f', 1)
+                .arg(double(usbCopyPlan_.totalBytes) / (1024 * 1024), 0, 'f',
+                     1);
+    emit usbChanged();
+}
+
+void TelemetryStore::cancelUsbCopy() {
+    if (!usbCopyJob_.running()) return;
+    if (const auto cancel = usbCopyJob_.cancel()) cancel->store(true);
+    usbCopyStatus_ =
+        QStringLiteral("Cancelling… waiting for the current I/O chunk");
+    emit usbChanged();
+}
+
+void TelemetryStore::copyUsbFiles() {
+    if (usbCopyJob_.running() || usbCopyPlanJob_.running() ||
+        !usbCopyVisible_ || !usbCopyPlan_.ready || usbCopyPlan_.invalid)
+        return;
+    const auto plan = usbCopyPlan_;
+    usbCopyBytes_ = std::make_shared<std::atomic<qint64>>(0);
+    const auto progress = usbCopyBytes_;
+    usbCopyStatus_ = QStringLiteral("Copying…");
+    usbCopyProgress_ = 0.0;
+    usbCopyJob_.start(
+        [plan, progress](IoCancel cancel) {
+            return executeUsbCopy(
+                plan, [cancel]() { return ioCancelled(cancel); },
+                [progress](qint64 bytes) { progress->store(bytes); });
+        },
+        [this, destination = plan.options.destination](UsbCopyResult result) {
+            updateUsbCopyProgress();
+            if (!result.cancelled && result.error.isEmpty())
+                usbCopyProgress_ = 1.0;
+            usbCopyStatus_ =
+                QStringLiteral(
+                    "%1Copied %2 · skipped %3 existing (not verified)")
+                    .arg(result.cancelled ? QStringLiteral("Cancelled. ")
+                                          : QString())
+                    .arg(result.copied)
+                    .arg(result.skipped);
+            if (!result.error.isEmpty()) {
+                usbCopyStatus_ += QStringLiteral(" · ") + result.error;
+                emit operationError(QStringLiteral("USB copy"), usbCopyStatus_);
+            }
+            if (result.copied > 0) {
+                appendFolderLocation(destination, false);
+                scan();
+            }
+            refreshUsbCopyPlan(false);
+            emit usbChanged();
+        });
+    emit usbChanged();
+}
+
 bool TelemetryStore::swapPrimaryWithReference() {
-    if (!omatrack::swapRolesPossible(compareSession_ != nullptr)) return false;
+    if (!primarySession_ || primaryLap_ < 0 || compareLap_ < 0 ||
+        !omatrack::swapRolesPossible(compareSession_ != nullptr))
+        return false;
+    const double nextCursor = compareFractionForPrimaryFraction(cursorFrac_);
+    const auto mapView = [this](double fraction) {
+        return omatrack::swappedViewportFraction(
+            fraction,
+            effectiveComparisonSyncStrategy_ ==
+                QStringLiteral("manual-dampers"),
+            referenceAlignment_, [this](double value) {
+                return compareFractionForPrimaryFraction(value);
+            });
+    };
+    const double nextViewStart = mapView(viewStart_);
+    const double nextViewEnd = mapView(viewEnd_);
+    const double nextFocusStart = mapView(focusReturnStart_);
+    const double nextFocusEnd = mapView(focusReturnEnd_);
+    const double nextAlignment = -referenceAlignment_;
+    cancelSelectionLoads();
+    invalidateExtraChannelCache();
     SessionHandle* primary = primarySession_;
     SessionHandle* compare = compareSession_;
     const int primaryLap = primaryLap_;
@@ -8158,6 +8365,18 @@ bool TelemetryStore::swapPrimaryWithReference() {
     primaryLap_ = compareLap;
     compareSession_ = primary;
     compareLap_ = primaryLap;
+    // Keep the old reference's station as the new primary cursor. Manual
+    // alignment is a fractional translation and its inverse changes sign.
+    cursorFrac_ = nextCursor;
+    if (nextViewEnd > nextViewStart) {
+        viewStart_ = nextViewStart;
+        viewEnd_ = nextViewEnd;
+    }
+    if (nextFocusEnd > nextFocusStart) {
+        focusReturnStart_ = nextFocusStart;
+        focusReturnEnd_ = nextFocusEnd;
+    }
+    referenceAlignment_ = nextAlignment;
     overlays_->setPrimarySession(primarySession_);
     overlays_->setPrimaryLap(primaryLap_);
     overlays_->setCompareSession(compareSession_);
@@ -8175,13 +8394,14 @@ bool TelemetryStore::swapPrimaryWithReference() {
     prefs_->lastCompareLap() = compareLap_;
     schedulePreferencesSave();
     loadCornersForPrimary();
+    if (primary != compare) resetPrimarySessionOverlays();
     overlays_->resampleOverlays();
     emit cornersChanged();
     emit videoTimeChanged();
     emit selectionChanged();
     emit cursorFracChanged();
-    refreshLapModels();
-    libraryModel_->updateSelection(primarySessionKey(), compareSessionKey());
+    emit viewChanged();
+    emit referenceAlignmentChanged();
     return true;
 }
 

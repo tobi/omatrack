@@ -17,6 +17,33 @@
 #include <QVector>
 #include <QtQml/qqmlregistration.h>
 
+class UsbCopyListModel : public IdentityListModel {
+    Q_OBJECT
+    QML_ANONYMOUS
+    Q_PROPERTY(int count READ count NOTIFY refreshed)
+public:
+    enum Role {
+        SourcePathRole = Qt::UserRole,
+        TargetPathRole,
+        StatusTextRole,
+        SizeTextRole,
+        ReadyRole
+    };
+    Q_ENUM(Role)
+    explicit UsbCopyListModel(QObject* parent = nullptr)
+        : IdentityListModel(parent) {}
+    int rowCount(const QModelIndex& parent = {}) const override;
+    QVariant data(const QModelIndex& index, int role) const override;
+    QHash<int, QByteArray> roleNames() const override;
+    void refresh(const QVector<UsbCopyRow>& rows);
+    int count() const { return rows_.size(); }
+signals:
+    void refreshed();
+
+private:
+    QVector<UsbCopyRow> rows_;
+};
+
 // ── lap list model ──────────────────────────────────────────────────
 
 class LapListModel : public IdentityListModel {

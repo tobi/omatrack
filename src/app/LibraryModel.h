@@ -63,6 +63,7 @@ public:
         TopQuartileTimeRole,
         SessionDayKeyRole,
         TrackRole,
+        RowIdentityRole,  // section-scoped stable identity (ScrollAnchor)
     };
     Q_ENUM(Role)
 
@@ -141,11 +142,15 @@ private:
         bool expanded;
         bool isPrimary;
         bool isReference;
+        QString identity;
     };
 
     static Node fromVariantMap(const QVariantMap& vm);
     QString rowIdentity(const Node& node) const {
-        return node.kind + QChar(0) + node.path + QChar(0) + node.key;
+        // A metadata arrival can fill/change the session key. The visible
+        // file is still the same row; identity follows its stable path.
+        return node.kind + QChar(0) +
+               (node.path.isEmpty() ? node.title : node.path);
     }
     QVector<FlatRow> flattenTree(const QVector<Node>& roots) const;
     void applyFlat(QVector<FlatRow> next);
@@ -186,6 +191,10 @@ class LibraryFilterModel : public FilterChangeProxyModel {
                    NOTIFY selectedKindChanged)
     Q_PROPERTY(QString selectedDay READ selectedDay WRITE setSelectedDay NOTIFY
                    selectedDayChanged)
+    Q_PROPERTY(
+        bool eventFilterActive READ eventFilterActive NOTIFY eventFilterChanged)
+    Q_PROPERTY(
+        bool anyFilterActive READ anyFilterActive NOTIFY anyFilterActiveChanged)
 public:
     explicit LibraryFilterModel(QObject* parent = nullptr);
 
@@ -207,6 +216,19 @@ public:
     QString selectedDay() const { return selectedDay_; }
     void setSelectedDay(const QString& day);
 
+    /// Event mode owns the track and day facets while it is on. Entering
+    /// stashes the user's manual track/day; leaving restores them. Changing
+    /// the event's track or day while on re-applies without touching the
+    /// stash.
+    Q_INVOKABLE void setEventFilter(bool enabled, const QString& track,
+                                    const QString& day);
+    bool eventFilterActive() const { return eventFilter_; }
+    /// Text, facets, day or event filter.
+    bool anyFilterActive() const;
+    /// Clears every facet and the text. Also leaves the event filter, since
+    /// the event filter is a facet preset, not a mode outside the filters.
+    Q_INVOKABLE void clearAllFilters();
+
     bool filterAcceptsRow(int sourceRow,
                           const QModelIndex& sourceParent) const override;
 
@@ -221,6 +243,8 @@ signals:
     void selectedTrackChanged();
     void selectedKindChanged();
     void selectedDayChanged();
+    void eventFilterChanged();
+    void anyFilterActiveChanged();
 
 private:
     void syncFilteringActive();
@@ -233,5 +257,8 @@ private:
     QString selectedTrack_;
     QString selectedKind_;
     QString selectedDay_;
+    bool eventFilter_ = false;
+    QString manualTrack_;
+    QString manualDay_;
     LibraryModel* source_ = nullptr;
 };

@@ -25,6 +25,8 @@ class MpvVideoItem : public QQuickFramebufferObject {
     Q_PROPERTY(bool seeking READ seeking NOTIFY seekingChanged)
     Q_PROPERTY(double position READ position NOTIFY positionChanged)
     Q_PROPERTY(double duration READ duration NOTIFY durationChanged)
+    Q_PROPERTY(double videoAspectRatio READ videoAspectRatio NOTIFY
+                   videoAspectRatioChanged)
     Q_PROPERTY(double volume READ volume WRITE setVolume NOTIFY volumeChanged)
     Q_PROPERTY(double playbackRate READ playbackRate WRITE setPlaybackRate
                    NOTIFY playbackRateChanged)
@@ -53,6 +55,11 @@ public:
         return pendingSeekTarget_.value_or(position_);
     }
     double duration() const { return duration_; }
+    double videoAspectRatio() const {
+        return displayWidth_ > 0 && displayHeight_ > 0
+                   ? double(displayWidth_) / double(displayHeight_)
+                   : 0.0;
+    }
     double volume() const { return volume_; }
     double playbackRate() const { return playbackRate_; }
     int exactSeekCount() const { return exactSeekCount_; }
@@ -86,6 +93,7 @@ signals:
     void seekingChanged();
     void positionChanged();
     void durationChanged();
+    void videoAspectRatioChanged();
     void volumeChanged();
     void playbackRateChanged();
     void titleChanged();
@@ -108,6 +116,7 @@ private:
 
     static void wakeup(void* context);
     void loadPendingMedia();
+    void setDisplaySize(qint64 width, qint64 height);
     void setError(const QString& message);
     int command(const QList<QByteArray>& arguments);
 
@@ -118,6 +127,8 @@ private:
     QString errorString_;
     double position_ = 0.0;
     double duration_ = 0.0;
+    qint64 displayWidth_ = 0;
+    qint64 displayHeight_ = 0;
     double volume_ = 75.0;
     double playbackRate_ = 1.0;
     int exactSeekCount_ = 0;

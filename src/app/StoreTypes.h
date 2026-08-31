@@ -12,6 +12,22 @@
 #include <QVariantList>
 #include <QtQml/qqmlregistration.h>
 
+class UsbCopyRow {
+    Q_GADGET
+    QML_ANONYMOUS
+    Q_PROPERTY(QString sourcePath MEMBER sourcePath)
+    Q_PROPERTY(QString targetPath MEMBER targetPath)
+    Q_PROPERTY(QString statusText MEMBER statusText)
+    Q_PROPERTY(QString sizeText MEMBER sizeText)
+    Q_PROPERTY(bool ready MEMBER ready)
+public:
+    QString sourcePath;
+    QString targetPath;
+    QString statusText;
+    QString sizeText;
+    bool ready = false;
+};
+
 // ── lap row ─────────────────────────────────────────────────────────
 
 class LapRow {

@@ -548,6 +548,7 @@ ApplicationWindow {
             readonly property real pipWidth: Math.round(width * 0.3)
             readonly property real splitWidth: Math.max(0, (width - videoComposeHost.gap) / 2)
 
+            anchors.bottomMargin: root.videoFullscreen && Store.filmstripSessions.count > 0 ? FilmstripLayout.reservedHeight(videoStage.width, videoStage.height, videoPlayer.videoAspectRatio, videoReferenceLoader.player ? videoReferenceLoader.player.videoAspectRatio : 0, videoComposeHost.composeMode, lapFilmstrip.implicitHeight, videoControls.height) : 0
             anchors.fill: parent
             z: 0
 
@@ -883,7 +884,6 @@ ApplicationWindow {
 
             HoverHandler {
                 id: videoControlsHover
-
             }
             MouseArea {
                 anchors.fill: parent
@@ -1072,9 +1072,24 @@ ApplicationWindow {
                 }
             }
         }
+        Item {
+            id: fullscreenFilmstripSlot
+
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: videoControls.height + 8
+            anchors.left: parent.left
+            anchors.leftMargin: 8
+            anchors.right: parent.right
+            anchors.rightMargin: 8
+            height: lapFilmstrip.implicitHeight
+            objectName: "fullscreenFilmstripSlot"
+            visible: root.videoFullscreen && Store.filmstripSessions.count > 0
+            z: 11
+        }
         VideoTelemetryOverlay {
             id: videoTelemetryOverlay
 
+            bottomInset: fullscreenFilmstripSlot.visible ? fullscreenFilmstripSlot.height + videoControls.height + 16 : 0
             mediaTime: videoPlayer.position
             visible: root.videoFullscreen && root.videoOverlayVisible && root.telemetryVideoActive && videoPlayer.loaded
         }
@@ -1344,11 +1359,9 @@ ApplicationWindow {
     }
     ChannelsWindow {
         id: channelsWindow
-
     }
     PreferencesWindow {
         id: settingsWindow
-
     }
     ToolTip {
         id: pointerTooltip
@@ -1368,17 +1381,31 @@ ApplicationWindow {
         titleText: trace.spanHoverTitle
         visible: trace.spanHoverVisible
     }
+    // One filmstrip instance, two homes. Reparenting never replaces its
+    // models, delegates or selected primary/reference roles.
+    LapFilmstrip {
+        id: lapFilmstrip
+
+        anchors.fill: parent
+        objectName: "lapFilmstrip"
+        parent: root.videoFullscreen ? fullscreenFilmstripSlot : dockedFilmstripSlot
+
+        onPointerTooltipDismissed: owner => root.dismissPointerTooltip(owner)
+        onPointerTooltipMoved: (owner, x, y) => root.movePointerTooltip(owner, x, y)
+        onPointerTooltipRequested: (owner, text, x, y) => root.showPointerTooltip(owner, text, x, y)
+    }
     // ══ body ════════════════════════════════════════════════════════
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
 
-        LapFilmstrip {
-            id: lapFilmstrip
+        Item {
+            id: dockedFilmstripSlot
 
-            onPointerTooltipDismissed: owner => root.dismissPointerTooltip(owner)
-            onPointerTooltipMoved: (owner, x, y) => root.movePointerTooltip(owner, x, y)
-            onPointerTooltipRequested: (owner, text, x, y) => root.showPointerTooltip(owner, text, x, y)
+            Layout.fillWidth: true
+            Layout.preferredHeight: visible ? lapFilmstrip.implicitHeight : 0
+            objectName: "dockedFilmstripSlot"
+            visible: !root.videoFullscreen && Store.filmstripSessions.count > 0
         }
         SplitView {
             Layout.fillHeight: true
@@ -1452,7 +1479,9 @@ ApplicationWindow {
                     color: Style.traceBackgroundColor
                     focus: visible
                     objectName: "videoPane"
-                    visible: root.videoVisible
+                    // The USB import preview borrows the embedded video slot
+                    // when a stick is discovered, even with no video open.
+                    visible: root.videoVisible || Store.usbCopyVisible
 
                     Shortcut {
                         enabled: videoPane.visible && videoPlayer.loaded

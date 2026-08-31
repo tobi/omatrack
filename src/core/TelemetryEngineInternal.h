@@ -64,12 +64,6 @@ std::vector<Lap> buildLapsFromSplits(const std::vector<double>& splitTimes,
 /// cannot win fastest-lap selection.
 void markShortCrossingsIncomplete(std::vector<Lap>& laps);
 
-/// Promote vendor-incomplete laps whose time matches the session median.
-/// AiM/Pi often flag oval crossings incomplete when the logger's track map
-/// is the road course; upstream still found the laps, so classification
-/// (not a second detector) decides complete vs Out/In/Frag.
-void restoreRepresentativeCrossings(std::vector<Lap>& laps);
-
 /// Override lap times from a "previous lap time" channel when it agrees with
 /// the crossing-derived estimate; heuristic contradictory crossings can be
 /// rejected without downgrading authoritative lap-counter boundaries.

@@ -250,6 +250,11 @@ ApplicationWindow {
                     }
                 }
             }
+
+            ScrollAnchor {
+                role: "key"
+                view: channelListView
+            }
         }
         RowLayout {
             Layout.fillWidth: true

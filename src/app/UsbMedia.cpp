@@ -3,7 +3,6 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QStorageInfo>
 
 #include <algorithm>
 
@@ -15,12 +14,20 @@ bool removableFlag(const QString& path) {
     return file.open(QIODevice::ReadOnly) && file.readAll().trimmed() == "1";
 }
 
-QString displayName(const QStorageInfo& storage) {
-    QString name = storage.name().trimmed();
-    if (name.isEmpty()) name = storage.displayName().trimmed();
-    if (name.isEmpty() || name == storage.rootPath())
-        name = QFileInfo(storage.rootPath()).fileName();
-    return name.isEmpty() ? QStringLiteral("USB storage") : name;
+QByteArray mountField(const QByteArray& field) {
+    QByteArray decoded;
+    for (qsizetype i = 0; i < field.size(); ++i) {
+        if (field[i] == '\\' && i + 3 < field.size() && field[i + 1] >= '0' &&
+            field[i + 1] <= '7' && field[i + 2] >= '0' && field[i + 2] <= '7' &&
+            field[i + 3] >= '0' && field[i + 3] <= '7') {
+            decoded += char((field[i + 1] - '0') * 64 +
+                            (field[i + 2] - '0') * 8 + field[i + 3] - '0');
+            i += 3;
+        } else {
+            decoded += field[i];
+        }
+    }
+    return decoded;
 }
 
 }  // namespace
@@ -58,16 +65,28 @@ bool isUsbBlockDevice(const QByteArray& device,
     return removableFlag(parent.filePath(QStringLiteral("removable")));
 }
 
-QVector<UsbVolume> mountedUsbVolumes() {
+QVector<UsbVolume> usbVolumesFromMountInfo(const QByteArray& mountInfo,
+                                           const QString& sysClassBlockRoot) {
     QVector<UsbVolume> result;
-    const QList<QStorageInfo> volumes = QStorageInfo::mountedVolumes();
-    result.reserve(volumes.size());
-    for (const QStorageInfo& storage : volumes) {
-        if (!storage.isValid() || !storage.isReady() || storage.isRoot() ||
-            storage.rootPath().isEmpty() || !isUsbBlockDevice(storage.device()))
+    for (const QByteArray& line : mountInfo.split('\n')) {
+        const auto fields = line.simplified().split(' ');
+        const auto separator = fields.indexOf("-");
+        if (fields.size() < 7 || separator < 6 ||
+            separator + 2 >= fields.size())
             continue;
-        result.append(UsbVolume{QDir::cleanPath(storage.rootPath()),
-                                displayName(storage), storage.device()});
+        const QByteArray device = mountField(fields[separator + 2]);
+        // Filter by local sysfs before touching any mount. QStorageInfo's
+        // mountedVolumes() stats every filesystem, including an offline NAS.
+        if (!device.startsWith("/dev/") ||
+            !isUsbBlockDevice(device, sysClassBlockRoot))
+            continue;
+        const QString root =
+            QDir::cleanPath(QString::fromLocal8Bit(mountField(fields[4])));
+        if (root.isEmpty() || root == QStringLiteral("/")) continue;
+        const QString name = QFileInfo(root).fileName();
+        result.append(UsbVolume{
+            root, name.isEmpty() ? QStringLiteral("USB storage") : name,
+            device});
     }
     std::sort(result.begin(), result.end(),
               [](const UsbVolume& left, const UsbVolume& right) {
@@ -75,6 +94,25 @@ QVector<UsbVolume> mountedUsbVolumes() {
               });
     result.erase(std::unique(result.begin(), result.end()), result.end());
     return result;
+}
+
+QVector<UsbVolume> mountedUsbVolumes() {
+#ifdef OMATRACK_ENABLE_AUTOTEST_HARNESS
+    // Acceptance builds only: a scratch folder stands in for a stick so the
+    // preview/copy overlay can be exercised without real removable media.
+    const QString fake = qEnvironmentVariable("OMATRACK_AUTOTEST_USB_ROOT");
+    if (!fake.isEmpty()) {
+        if (!QFileInfo(fake).isDir()) return {};
+        return {UsbVolume{QDir::cleanPath(fake), QStringLiteral("AUTOTEST-USB"),
+                          QByteArrayLiteral("/dev/autotest")}};
+    }
+#endif
+#ifdef Q_OS_LINUX
+    QFile mounts(QStringLiteral("/proc/self/mountinfo"));
+    if (mounts.open(QIODevice::ReadOnly))
+        return usbVolumesFromMountInfo(mounts.readAll());
+#endif
+    return {};
 }
 
 }  // namespace omatrack

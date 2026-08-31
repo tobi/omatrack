@@ -7,6 +7,19 @@
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Test)
 
+qt_add_executable(filmstrip-layout-test FilmstripLayoutTest.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/FilmstripLayout.h)
+target_include_directories(filmstrip-layout-test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(filmstrip-layout-test PRIVATE Qt6::Test Qt6::Qml omatrack_warnings)
+add_test(NAME filmstrip-layout-test COMMAND filmstrip-layout-test)
+set_tests_properties(filmstrip-layout-test PROPERTIES LABELS unit)
+
+qt_add_executable(session-refresh-test SessionRefreshTest.cpp)
+target_include_directories(session-refresh-test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(session-refresh-test PRIVATE Qt6::Test omatrack_warnings)
+add_test(NAME session-refresh-test COMMAND session-refresh-test)
+set_tests_properties(session-refresh-test PROPERTIES LABELS unit)
+
 # ── core-test ───────────────────────────────────────────────────────
 # Tests pure free functions, detail-namespace lap helpers, and
 # TelemetrySource with synthetic channels. No QCoreApplication needed.
@@ -145,9 +158,29 @@ target_link_libraries(lua-rename-test PRIVATE
   Qt6::Core
   lua_sandbox
   sol2_headers
+  omatrack_mpv
   omatrack_warnings)
 add_test(NAME lua-rename-test COMMAND lua-rename-test)
 set_tests_properties(lua-rename-test PROPERTIES LABELS unit)
+
+qt_add_executable(scroll-anchor-test ScrollAnchorTest.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/ScrollAnchor.cpp)
+target_include_directories(scroll-anchor-test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(scroll-anchor-test PRIVATE Qt6::Test Qt6::Core Qt6::Gui
+  Qt6::Qml Qt6::Quick omatrack_warnings)
+add_test(NAME scroll-anchor-test COMMAND scroll-anchor-test)
+set_tests_properties(scroll-anchor-test PROPERTIES LABELS unit
+  ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+qt_add_executable(usb-copy-test UsbCopyTest.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/UsbCopy.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/PathJail.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/LuaRename.cpp)
+target_include_directories(usb-copy-test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(usb-copy-test PRIVATE Qt6::Test Qt6::Core
+  lua_sandbox sol2_headers omatrack_warnings)
+add_test(NAME usb-copy-test COMMAND usb-copy-test)
+set_tests_properties(usb-copy-test PROPERTIES LABELS unit)
 
 qt_add_executable(index-cache-test IndexCacheTest.cpp
   ${CMAKE_SOURCE_DIR}/src/app/IndexCache.cpp)

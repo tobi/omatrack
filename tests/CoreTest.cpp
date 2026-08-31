@@ -556,16 +556,27 @@ private slots:
         QVERIFY(checked[2].complete);
         QVERIFY(checked[3].complete);
     }
-    void restorePromotesVendorIncompleteRacingLaps() {
-        std::vector<Lap> laps{Lap{1, 0.0, 80.0, 80000.0, false},
-                              Lap{2, 80.0, 160.0, 80000.0, false},
-                              Lap{3, 160.0, 241.0, 81000.0, false},
-                              Lap{4, 241.0, 260.0, 19000.0, false}};
-        restoreRepresentativeCrossings(laps);
-        QVERIFY(laps[0].complete);
+    void similarDurationDoesNotEstablishMissingLapBoundaries() {
+        TelemetrySource source;
+        source.sourceLaps() = {Lap{1, 0.0, 80.0, 80000.0, false},
+                               Lap{2, 80.0, 160.0, 80000.0, false},
+                               Lap{3, 160.0, 241.0, 81000.0, false},
+                               Lap{4, 241.0, 260.0, 19000.0, false}};
+        const auto laps = source.detectLaps();
+        for (const auto& lap : laps) QVERIFY(!lap.complete);
+    }
+    void longHeadAndTailFragmentsRemainIncomplete() {
+        TelemetrySource source;
+        source.sourceLaps() = {Lap{1, 0.0, 60.0, 60000.0, false},
+                               Lap{2, 60.0, 160.0, 100000.0, true},
+                               Lap{3, 160.0, 260.0, 100000.0, true},
+                               Lap{4, 260.0, 330.0, 70000.0, false}};
+        const auto laps = source.detectLaps();
+        QCOMPARE(laps.size(), size_t(4));
+        QVERIFY(!laps.front().complete);
         QVERIFY(laps[1].complete);
         QVERIFY(laps[2].complete);
-        QVERIFY(!laps[3].complete);
+        QVERIFY(!laps.back().complete);
     }
 };
 
@@ -1226,19 +1237,17 @@ private slots:
         QVERIFY(!laps[0].sourceNumber.has_value());
     }
 
-    void detectLapsRestoresVendorIncompleteRacingLaps() {
+    void classificationDoesNotPromoteIncompleteSourceIntervals() {
         TelemetrySource src;
         src.sourceLaps() = {Lap{1, 0.0, 80.0, 80000.0, false},
                             Lap{2, 80.0, 160.0, 80000.0, false},
                             Lap{3, 160.0, 241.0, 81000.0, false},
                             Lap{4, 241.0, 260.0, 19000.0, false}};
 
-        const std::vector<Lap> laps = src.detectLaps();
+        std::vector<Lap> laps = src.detectLaps();
+        classifyLaps(laps);
         QCOMPARE(laps.size(), size_t(4));
-        QVERIFY(laps[0].complete);
-        QVERIFY(laps[1].complete);
-        QVERIFY(laps[2].complete);
-        QVERIFY(!laps[3].complete);
+        for (const auto& lap : laps) QVERIFY(!lap.complete);
     }
 
     void unifyLapNormalizesSyntheticChannels() {

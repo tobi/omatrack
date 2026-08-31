@@ -229,11 +229,20 @@ OverlayManager::OverlayManager(QObject* parent)
       sidecarDiscoveryJob_(this) {}
 
 void OverlayManager::clear() {
+    // A host change invalidates pending joins/resamples as well as the
+    // visible arrays. Old completions must not attach to the new host.
+    overlayResampleJob_.reset();
+    overlayAttachQueue_.clear();
+    sidecarLibraryQueue_.clear();
+    sidecarDiscoveryJob_.reset();
     overlays_.clear();
     overlayChannelCache_.clear();
     overlayLoading_.clear();
     sidecarLibrary_.clear();
     sidecarLibraryLoading_.clear();
+    emit overlaysChanged();
+    emit sidecarLibraryChanged();
+    emit channelConfigChanged();
 }
 
 bool OverlayManager::isMtxSidecarPath(const QString& filePath) {

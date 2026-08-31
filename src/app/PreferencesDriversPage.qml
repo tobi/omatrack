@@ -226,6 +226,11 @@ Item {
                                 }
                             }
                         }
+
+                        ScrollAnchor {
+                            role: "key"
+                            view: mappingList
+                        }
                     }
                 }
             }

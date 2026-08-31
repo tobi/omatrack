@@ -23,7 +23,14 @@ bool isUsbBlockDevice(
     const QByteArray& device,
     const QString& sysClassBlockRoot = QStringLiteral("/sys/class/block"));
 
-/// Ready USB filesystems currently mounted by the operating system.
+/// Parse Linux mount metadata without probing network filesystems. The
+/// injectable sysfs tree keeps discovery tests independent of real devices.
+QVector<UsbVolume> usbVolumesFromMountInfo(
+    const QByteArray& mountInfo,
+    const QString& sysClassBlockRoot = QStringLiteral("/sys/class/block"));
+
+/// USB filesystems listed by the Linux kernel; call from an I/O worker.
+/// Other platforms retain the existing unsupported-discovery behavior.
 QVector<UsbVolume> mountedUsbVolumes();
 
 }  // namespace omatrack

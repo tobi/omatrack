@@ -22,10 +22,11 @@ Pane {
 
     function clearFilters(): void {
         fileFilter.clear();
-        filterModel.selectedDrivers = [];
-        filterModel.selectedYears = [];
-        filterModel.selectedTrack = "";
-        filterModel.selectedKind = "";
+        filterModel.clearAllFilters();
+        // The event filter is a facet preset: clearing the sidebar leaves it.
+        // Event track/date/session stay configured for USB naming.
+        if (Store.eventMode)
+            Store.eventMode = false;
     }
     function toggleDriver(name: string): void {
         const current = filterModel.selectedDrivers;
@@ -50,13 +51,7 @@ Pane {
         color: Style.darkBackgroundColor
     }
 
-    Component.onCompleted: {
-        if (Store.eventMode) {
-            if (Store.eventTrack !== "")
-                filterModel.selectedTrack = Store.eventTrack;
-            filterModel.selectedDay = Store.eventDate;
-        }
-    }
+    Component.onCompleted: filterModel.setEventFilter(Store.eventMode, Store.eventTrack, Store.eventDate)
 
     LibraryFilterModel {
         id: filterModel
@@ -65,13 +60,7 @@ Pane {
     }
     Connections {
         function onEventChanged(): void {
-            if (Store.eventMode) {
-                if (Store.eventTrack !== "")
-                    filterModel.selectedTrack = Store.eventTrack;
-                filterModel.selectedDay = Store.eventDate;
-            } else {
-                filterModel.selectedDay = "";
-            }
+            filterModel.setEventFilter(Store.eventMode, Store.eventTrack, Store.eventDate);
         }
         function onSelectionChanged(): void {
             filterModel.revealSession(Store.primarySessionKey);
@@ -342,19 +331,11 @@ Pane {
             Layout.fillHeight: true
             Layout.fillWidth: true
 
-            Timer {
-                id: restoreScrollTimer
-
-                property int savedFirst: -1
-                property real savedY: 0
-
-                interval: 0
-
-                onTriggered: {
-                    if (restoreScrollTimer.savedFirst >= 0)
-                        tree.positionViewAtIndex(restoreScrollTimer.savedFirst, ListView.Beginning);
-                    tree.contentY = restoreScrollTimer.savedY;
-                }
+            // The row under the top edge stays put across rescans, metadata
+            // arrivals, filter changes and folder toggles.
+            ScrollAnchor {
+                role: "rowIdentity"
+                view: tree
             }
             ListView {
                 id: tree
@@ -364,6 +345,7 @@ Pane {
                 clip: true
                 highlightFollowsCurrentItem: false
                 model: filterModel
+                objectName: "libraryTree"
                 reuseItems: true
 
                 ScrollBar.vertical: ThinScrollBar {
@@ -402,32 +384,6 @@ Pane {
                     onSetActiveRequested: key => browser.setActiveRequested(key)
                     onSetReferenceRequested: key => browser.setReferenceRequested(key)
                     onToggleNodeRequested: (role, path) => filterModel.toggleNode(role, path)
-                }
-
-                Connections {
-                    function onLayoutAboutToBeChanged(): void {
-                        restoreScrollTimer.savedY = tree.contentY;
-                        restoreScrollTimer.savedFirst = tree.indexAt(1, tree.contentY + 1);
-                    }
-                    function onLayoutChanged(): void {
-                        restoreScrollTimer.restart();
-                    }
-                    function onRowsAboutToBeInserted(): void {
-                        restoreScrollTimer.savedY = tree.contentY;
-                        restoreScrollTimer.savedFirst = tree.indexAt(1, tree.contentY + 1);
-                    }
-                    function onRowsAboutToBeRemoved(): void {
-                        restoreScrollTimer.savedY = tree.contentY;
-                        restoreScrollTimer.savedFirst = tree.indexAt(1, tree.contentY + 1);
-                    }
-                    function onRowsInserted(): void {
-                        restoreScrollTimer.restart();
-                    }
-                    function onRowsRemoved(): void {
-                        restoreScrollTimer.restart();
-                    }
-
-                    target: filterModel
                 }
             }
             Column {
@@ -491,11 +447,11 @@ Pane {
                     ToolButton {
                         Layout.preferredHeight: 20
                         Layout.preferredWidth: 20
-                        ToolTip.text: "Clear filters"
+                        ToolTip.text: filterModel.eventFilterActive ? "Clear filters and leave event mode" : "Clear filters"
                         ToolTip.visible: hovered
                         font.pixelSize: 11
                         text: "×"
-                        visible: filterModel.selectedDrivers.length > 0 || filterModel.selectedYears.length > 0 || filterModel.selectedTrack !== ""
+                        visible: filterModel.anyFilterActive
 
                         onClicked: browser.clearFilters()
                     }

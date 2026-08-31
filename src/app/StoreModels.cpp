@@ -3,6 +3,40 @@
 #include <QString>
 #include <algorithm>
 
+int UsbCopyListModel::rowCount(const QModelIndex& parent) const {
+    return parent.isValid() ? 0 : rows_.size();
+}
+QVariant UsbCopyListModel::data(const QModelIndex& index, int role) const {
+    if (!checkIndex(index, CheckIndexOption::IndexIsValid)) return {};
+    const auto& row = rows_[index.row()];
+    switch (role) {
+        case SourcePathRole: return row.sourcePath;
+        case TargetPathRole: return row.targetPath;
+        case StatusTextRole: return row.statusText;
+        case SizeTextRole: return row.sizeText;
+        case ReadyRole: return row.ready;
+    }
+    return {};
+}
+QHash<int, QByteArray> UsbCopyListModel::roleNames() const {
+    return {{SourcePathRole, "sourcePath"},
+            {TargetPathRole, "targetPath"},
+            {StatusTextRole, "statusText"},
+            {SizeTextRole, "sizeText"},
+            {ReadyRole, "ready"}};
+}
+void UsbCopyListModel::refresh(const QVector<UsbCopyRow>& rows) {
+    replaceByIdentity(
+        rows_, rows, [](const UsbCopyRow& row) { return row.sourcePath; },
+        [](const UsbCopyRow& a, const UsbCopyRow& b) {
+            return a.sourcePath == b.sourcePath &&
+                   a.targetPath == b.targetPath &&
+                   a.statusText == b.statusText && a.sizeText == b.sizeText &&
+                   a.ready == b.ready;
+        });
+    emit refreshed();
+}
+
 // ── LapListModel ────────────────────────────────────────────────────
 
 LapListModel::LapListModel(QObject* parent) : IdentityListModel(parent) {}

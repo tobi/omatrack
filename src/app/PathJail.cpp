@@ -23,11 +23,27 @@ bool hasDotDotComponent(const QString& cleaned) {
     return parts.contains(QStringLiteral(".."));
 }
 
-QString destCanonical(const QString& destRoot) {
-    const QString absolute =
-        QDir::cleanPath(QFileInfo(destRoot).absoluteFilePath());
-    const QString canonical = QFileInfo(absolute).canonicalFilePath();
-    return canonical.isEmpty() ? absolute : canonical;
+QString canonicalDirectoryWithMissingTail(const QString& path) {
+    QString ancestor = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+    QStringList tail;
+    for (;;) {
+        const QFileInfo info(ancestor);
+        if (info.exists() || info.isSymbolicLink()) {
+            // Resolve the nearest existing ancestor, not just the immediate
+            // parent: canonicalFilePath() is empty for a missing tail and
+            // otherwise conceals symlinks above it. Broken links fail closed.
+            const QString canonical = info.canonicalFilePath();
+            if (canonical.isEmpty() || !info.isDir()) return {};
+            QString resolved = canonical;
+            for (const auto& part : tail)
+                resolved = QDir(resolved).filePath(part);
+            return QDir::cleanPath(resolved);
+        }
+        const QString parent = info.absolutePath();
+        if (parent == ancestor) return {};
+        tail.prepend(info.fileName());
+        ancestor = parent;
+    }
 }
 
 bool staysUnder(const QString& parent, const QString& dest) {
@@ -53,6 +69,7 @@ QString expandCopyFormat(const QString& format, const QVariantMap& ctx) {
     for (int i = matches.size() - 1; i >= 0; --i) {
         const QRegularExpressionMatch match = matches.at(i);
         const QString key = match.captured(1);
+        if (!ctx.contains(key)) continue;
         const QString value = ctx.value(key).toString();
         result.replace(match.capturedStart(), match.capturedLength(), value);
     }
@@ -99,21 +116,26 @@ PathJailResult jailRelativePath(const QString& destRoot,
         return result;
     }
 
-    const QString dest = destCanonical(destRoot);
+    const QString dest = canonicalDirectoryWithMissingTail(destRoot);
+    if (dest.isEmpty()) {
+        result.error =
+            QStringLiteral("Destination is not a resolvable directory");
+        return result;
+    }
     const QString full = QDir::cleanPath(QDir(dest).filePath(cleanedRelative));
     if (full == dest) {
         result.error = QStringLiteral("Rename targeted the destination root");
         return result;
     }
     const QString parent = QFileInfo(full).path();
-    QString parentCanon = QFileInfo(parent).canonicalFilePath();
-    if (parentCanon.isEmpty()) parentCanon = QDir::cleanPath(parent);
-    if (!staysUnder(parentCanon, dest)) {
+    const QString parentCanon = canonicalDirectoryWithMissingTail(parent);
+    if (parentCanon.isEmpty() || !staysUnder(parentCanon, dest)) {
         result.error = QStringLiteral("Rename escaped the destination");
         return result;
     }
     result.ok = true;
-    result.absolutePath = full;
+    result.absolutePath =
+        QDir(parentCanon).filePath(QFileInfo(full).fileName());
     result.relativePath = cleanedRelative;
     return result;
 }

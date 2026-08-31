@@ -247,6 +247,10 @@ MpvVideoItem::MpvVideoItem(QQuickItem* parent)
     mpv_observe_property(state_->handle, 6, "media-title", MPV_FORMAT_STRING);
     mpv_observe_property(state_->handle, 7, "seeking", MPV_FORMAT_FLAG);
     mpv_observe_property(state_->handle, 8, "speed", MPV_FORMAT_DOUBLE);
+    mpv_observe_property(state_->handle, 9, "video-out-params/dw",
+                         MPV_FORMAT_INT64);
+    mpv_observe_property(state_->handle, 10, "video-out-params/dh",
+                         MPV_FORMAT_INT64);
     mpv_set_wakeup_callback(state_->handle, &MpvVideoItem::wakeup, this);
 }
 
@@ -273,6 +277,7 @@ void MpvVideoItem::processEvents() {
 
         switch (event->event_id) {
             case MPV_EVENT_START_FILE:
+                setDisplaySize(0, 0);
                 if (loaded_) {
                     loaded_ = false;
                     emit loadedChanged();
@@ -381,6 +386,16 @@ void MpvVideoItem::processEvents() {
                         seeking_ = value;
                         emit seekingChanged();
                     }
+                } else if (std::strcmp(property->name, "video-out-params/dw") ==
+                               0 &&
+                           property->format == MPV_FORMAT_INT64) {
+                    setDisplaySize(*static_cast<int64_t*>(property->data),
+                                   displayHeight_);
+                } else if (std::strcmp(property->name, "video-out-params/dh") ==
+                               0 &&
+                           property->format == MPV_FORMAT_INT64) {
+                    setDisplaySize(displayWidth_,
+                                   *static_cast<int64_t*>(property->data));
                 } else if (std::strcmp(property->name, "speed") == 0 &&
                            property->format == MPV_FORMAT_DOUBLE) {
                     const double value = *static_cast<double*>(property->data);
@@ -413,6 +428,15 @@ void MpvVideoItem::processEvents() {
             default: break;
         }
     }
+}
+
+void MpvVideoItem::setDisplaySize(qint64 width, qint64 height) {
+    width = std::max<qint64>(0, width);
+    height = std::max<qint64>(0, height);
+    if (displayWidth_ == width && displayHeight_ == height) return;
+    displayWidth_ = width;
+    displayHeight_ = height;
+    emit videoAspectRatioChanged();
 }
 
 void MpvVideoItem::requestVideoFrame() { update(); }
@@ -497,6 +521,7 @@ void MpvVideoItem::loadPendingMedia() {
 }
 
 void MpvVideoItem::closeMedia() {
+    setDisplaySize(0, 0);
     pendingSource_ = QUrl();
     autoplayPending_ = false;
     resumePosition_ = 0.0;

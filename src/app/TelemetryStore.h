@@ -10,6 +10,7 @@
 #include "AsyncJob.h"
 #include "LibraryModel.h"
 #include "StoreModels.h"
+#include "UsbCopy.h"
 // Extracted collaborators (plain QObjects owned by the store).
 class PreferencesStore;
 class TrackAtlasManager;
@@ -481,6 +482,14 @@ class TelemetryStore : public QObject {
     Q_PROPERTY(bool usbCopyVisible READ usbCopyVisible NOTIFY usbChanged)
     Q_PROPERTY(QString usbCopyStatus READ usbCopyStatus NOTIFY usbChanged)
     Q_PROPERTY(double usbCopyProgress READ usbCopyProgress NOTIFY usbChanged)
+    Q_PROPERTY(bool usbCopyBusy READ usbCopyBusy NOTIFY usbChanged)
+    Q_PROPERTY(bool usbPreviewLoading READ usbPreviewLoading NOTIFY usbChanged)
+    Q_PROPERTY(int usbCopyReadyCount READ usbCopyReadyCount NOTIFY usbChanged)
+    Q_PROPERTY(
+        int usbCopyInvalidCount READ usbCopyInvalidCount NOTIFY usbChanged)
+    Q_PROPERTY(QString usbCopySummary READ usbCopySummary NOTIFY usbChanged)
+    Q_PROPERTY(QString usbCopyTarget READ usbCopyTarget NOTIFY usbChanged)
+    Q_PROPERTY(UsbCopyListModel* usbCopyModel READ usbCopyModel CONSTANT)
     Q_PROPERTY(QString usbDest READ usbDest WRITE setUsbDest NOTIFY usbChanged)
     Q_PROPERTY(
         QString usbFormat READ usbFormat WRITE setUsbFormat NOTIFY usbChanged)
@@ -519,6 +528,13 @@ public:
     bool usbCopyVisible() const { return usbCopyVisible_; }
     QString usbCopyStatus() const { return usbCopyStatus_; }
     double usbCopyProgress() const { return usbCopyProgress_; }
+    bool usbCopyBusy() const { return usbCopyJob_.running(); }
+    bool usbPreviewLoading() const { return usbCopyPlanJob_.running(); }
+    int usbCopyReadyCount() const { return usbCopyPlan_.ready; }
+    int usbCopyInvalidCount() const { return usbCopyPlan_.invalid; }
+    QString usbCopySummary() const;
+    QString usbCopyTarget() const { return usbCopyPlan_.options.destination; }
+    UsbCopyListModel* usbCopyModel() const { return usbCopyModel_.get(); }
     QString usbDest() const;
     QString usbFormat() const;
     QString usbRenameScript() const;
@@ -528,6 +544,7 @@ public:
     Q_INVOKABLE void showUsbCopy();
     Q_INVOKABLE void hideUsbCopy();
     Q_INVOKABLE void copyUsbFiles();
+    Q_INVOKABLE void cancelUsbCopy();
     Q_INVOKABLE QString luaRenameExample() const;
     QString overlayRefColor() const;
     QString overlayRefStyle() const;
@@ -935,6 +952,8 @@ private:
         const QString& path) const;
     void startNextVideoDownload();
     void setVideoDownloadStatus(const QString& status);
+    void cancelSelectionLoads();
+    void resetPrimarySessionOverlays();
     void setPrimary(SessionHandle* session, int lapId);
     void setCompare(SessionHandle* session, int lapId);
     void requestLapLoad(SessionHandle* session, int lapId, bool compare);
@@ -949,8 +968,11 @@ private:
     void finishSessionScan(std::shared_ptr<SessionScanResult> result);
     void setupLibraryWatch();
     void rebuildLibraryWatch();
-    void startUsbScan();
+    void startUsbScan(bool force = true);
     void finishUsbScan(std::shared_ptr<SessionScanResult> result);
+    void refreshTrackMetadata(const QStringList& paths);
+    void refreshUsbCopyPlan(bool clearStatus = true);
+    void updateUsbCopyProgress();
     int sidebarPinIndex(const QString& kind, const QString& path) const;
     void rememberRecentFile(const QString& filePath);
     QString driverDisplay(const SessionHandle* session) const;
@@ -958,6 +980,12 @@ private:
     QString assignedTrackSlug(const SessionHandle* session) const;
     QString detectedAtlasSlug(const SessionHandle* session) const;
     QString resolvedTrackSlug(const SessionHandle* session) const;
+    /// The one metadata precedence rule (see AGENTS.md "Recording metadata
+    /// precedence"): `recording_metadata[path]` from omatrack.yml over the
+    /// root-to-leaf TRACK.yml chain. Served from the discovery snapshot
+    /// (`fileMetadata_`), read once and memoized for a path discovery has
+    /// not seen yet; never re-read per row or per frame.
+    QVariantMap effectiveMetadata(const QString& path) const;
     QString displayTrack(const SessionHandle* session) const;
     static QString trackAssignmentKey(const SessionHandle* session);
     void schedulePreferencesSave();
@@ -998,7 +1026,8 @@ private:
     void refreshDriverMappingsModel();
     void refreshSyncStrategyModel();
     void refreshLibraryModel();
-    QVector<LapRow> buildLapRows(SessionHandle* session) const;
+    QVector<LapRow> buildLapRows(SessionHandle* session,
+                                 int selectedLapId) const;
     QVector<ChannelRow> buildChannelRows() const;
     QVector<CornerRow> buildCornerRows() const;
     QVector<DriverMappingRow> buildDriverMappingRows() const;
@@ -1016,14 +1045,22 @@ private:
     QHash<QString, std::shared_ptr<const FolderChannelSample>>
         folderChannelSamples_;
     QSet<QString> folderChannelSampleRequests_;
-    QHash<QString, QVariantMap> fileMetadata_;
+    /// Root-to-leaf TRACK.yml merge per recording path, filled by discovery
+    /// and the sidebar metadata pass, refreshed by the app's own TRACK.yml
+    /// writes, memoized on demand for undiscovered paths.
+    mutable QHash<QString, QVariantMap> fileMetadata_;
     /// TRACK.yml writer: saveFolderMetadata() serialises on the GUI thread and
     /// writes on a worker; the completion applies state and reports failure
     /// through operationError.
     AsyncJob<FolderMetadataWrite> folderMetadataJob_;
     AsyncJob<std::shared_ptr<SessionScanResult>> scanJob_;
+    AsyncJob<QHash<QString, QVariantMap>> trackMetadataRefreshJob_;
     AsyncJob<std::shared_ptr<SessionScanResult>> usbScanJob_;
-    AsyncJob<QVariantMap> usbCopyJob_;
+    AsyncJob<QStringList> libraryWatchJob_;
+    AsyncJob<omatrack::UsbCopyPlan> usbCopyPlanJob_;
+    AsyncJob<omatrack::UsbCopyResult> usbCopyJob_;
+    omatrack::UsbCopyPlan usbCopyPlan_;
+    std::shared_ptr<std::atomic<qint64>> usbCopyBytes_;
     SerialJobQueue<std::shared_ptr<FileOpenResult>> fileOpenQueue_;
     QString fileOpenPath_;
     QSet<QString> transientSessionPaths_;
@@ -1049,6 +1086,7 @@ private:
     /// query string, which is the part a signature lives in.
     mutable QHash<QString, QString> streamedPaths_;
     QStringList trackMetadataPaths_;
+    QHash<QString, qint64> trackMetadataStamps_;
     std::vector<std::unique_ptr<SessionHandle>> sessions_;
     SessionHandle* primarySession_ = nullptr;
     AsyncJob<std::shared_ptr<SessionLapLoadResult>> primaryLapJob_;
@@ -1119,6 +1157,7 @@ private:
     std::unique_ptr<LapListModel> primaryLapsModel_;
     std::unique_ptr<LapListModel> compareLapsModel_;
     std::unique_ptr<FilmstripSessionListModel> filmstripSessionsModel_;
+    std::unique_ptr<UsbCopyListModel> usbCopyModel_;
     std::unique_ptr<ChannelListModel> channelsModel_;
     std::unique_ptr<CornerListModel> cornersModel_;
     std::unique_ptr<DriverMappingModel> driverMappingsModel_;
@@ -1127,6 +1166,7 @@ private:
     QFileSystemWatcher* libraryWatch_ = nullptr;
     QTimer* usbPollTimer_ = nullptr;
     QTimer* usbDebounce_ = nullptr;
+    QTimer* usbCopyProgressTimer_ = nullptr;
     QStringList usbRoots_;
     QVariantList usbFileSources_;
     bool usbPresent_ = false;
