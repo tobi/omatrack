@@ -253,9 +253,12 @@ UsbCopyResult executeUsbCopy(const UsbCopyPlan& plan, CopyCancelled cancelled,
             result.error = QStringLiteral("Destination changed during copy");
             break;
         }
-        // QFile::rename is create-only. The temporary lives in the same
-        // directory so a complete recording is published in one rename.
-        if (!QFile::rename(temporary.fileName(), entry.destination)) {
+        // Rename is create-only (an existing target makes it fail). The
+        // temporary lives in the same directory so a complete recording is
+        // published in one rename. It must be the QTemporaryFile's own
+        // rename(): on Windows the object keeps the handle until it is
+        // destroyed, and a QFile::rename() by name fails against it.
+        if (!temporary.rename(entry.destination)) {
             if (occupied(entry.destination)) {
                 ++result.skipped;
                 continue;

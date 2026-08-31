@@ -309,6 +309,10 @@ set_tests_properties(headless-contract PROPERTIES LABELS unit
 # debugger through OutputDebugString instead and a failing test reports
 # no output at all — the CI log shows "***Failed" and nothing else.
 # Forcing stderr logging puts the assertion back in the log.
+# ENVIRONMENT is a list property that set_tests_properties() replaces, so
+# append per test to keep e.g. scroll-anchor-test's QT_QPA_PLATFORM.
 get_property(omatrack_tests DIRECTORY PROPERTY TESTS)
-set_tests_properties(${omatrack_tests} PROPERTIES
-  ENVIRONMENT QT_FORCE_STDERR_LOGGING=1)
+foreach(omatrack_test IN LISTS omatrack_tests)
+  set_property(TEST ${omatrack_test} APPEND PROPERTY
+    ENVIRONMENT QT_FORCE_STDERR_LOGGING=1)
+endforeach()
