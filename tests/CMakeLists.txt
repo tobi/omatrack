@@ -122,6 +122,31 @@ target_link_libraries(remote-cache-test PRIVATE
 add_test(NAME remote-cache-test COMMAND remote-cache-test)
 set_tests_properties(remote-cache-test PROPERTIES LABELS unit)
 
+# ── Lua trace-group plugins ────────────────────────────────────────────────
+qt_add_executable(plugin-host-test PluginHostTest.cpp PluginHostTestScripts.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/AsyncJob.h
+  ${CMAKE_SOURCE_DIR}/src/app/PluginHost.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/PathJail.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/RemoteCache.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/VerboseLog.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/WebDavBackend.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/S3Backend.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/SigV4.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/LibraryLocation.cpp)
+target_include_directories(plugin-host-test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(plugin-host-test PRIVATE
+  Qt6::Test Qt6::Core Qt6::Network Qt6::Concurrent
+  lua_sandbox sol2_headers omatrack_core omatrack_warnings)
+add_test(NAME plugin-host-test COMMAND plugin-host-test)
+set_tests_properties(plugin-host-test PROPERTIES LABELS unit)
+
+qt_add_executable(overlay-resample-test OverlayResampleTest.cpp)
+target_include_directories(overlay-resample-test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(overlay-resample-test PRIVATE
+  Qt6::Test Qt6::Core Qt6::Gui Qt6::Qml omatrack_warnings)
+add_test(NAME overlay-resample-test COMMAND overlay-resample-test)
+set_tests_properties(overlay-resample-test PROPERTIES LABELS unit)
+
 # ── Attached USB telemetry volumes ──────────────────────────────────
 qt_add_executable(usb-media-test UsbMediaTest.cpp
   ${CMAKE_SOURCE_DIR}/src/app/UsbMedia.cpp)

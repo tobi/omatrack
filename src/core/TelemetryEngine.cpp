@@ -1517,13 +1517,8 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime,
         brakeUnit != brakeUnits().end() ? brakeUnit->second : 1.0;
     const double steeringFactor =
         unitOf("steering") == "rad" ? 180.0 / kPi : 1.0;
-    const bool gpsLatRadians = unitOf("gps_lat") == "rad";
-    const bool gpsLonRadians = unitOf("gps_lon") == "rad";
-    const auto angularMinutes = [](const std::string& unit) {
-        return unit == "min" || unit == "arcmin" || unit == "arcminute";
-    };
-    const bool gpsLatMinutes = angularMinutes(unitOf("gps_lat"));
-    const bool gpsLonMinutes = angularMinutes(unitOf("gps_lon"));
+    const std::string gpsLatUnit = unitOf("gps_lat");
+    const std::string gpsLonUnit = unitOf("gps_lon");
     double positionAccuracyFactor = 1.0;
     if (unitOf("gps_position_accuracy") == "cm")
         positionAccuracyFactor = 0.01;
@@ -1632,17 +1627,12 @@ UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime,
         unified.damperRR.push_back(get("damper_rr", i));
 
         // GPS coordinates and quality metadata
-        double rawLat = get("gps_lat", i);
-        double rawLon = get("gps_lon", i);
-        if (gpsLatRadians) rawLat *= 180.0 / kPi;
-        if (gpsLonRadians) rawLon *= 180.0 / kPi;
-        // Coordinate channels marked in angular minutes follow the reader's
-        // west-positive longitude convention. UnifiedLap is always degrees,
-        // east-positive, independent of the source's display/storage unit.
-        if (gpsLatMinutes) rawLat /= 60.0;
-        if (gpsLonMinutes) rawLon /= -60.0;
-        unified.gpsLat.push_back(rawLat);
-        unified.gpsLon.push_back(rawLon);
+        // UnifiedLap is always degrees, east-positive, independent of the
+        // source's storage unit (rad / arc-minutes west-positive / degrees).
+        unified.gpsLat.push_back(
+            gpsCoordinateDegrees(get("gps_lat", i), gpsLatUnit, false));
+        unified.gpsLon.push_back(
+            gpsCoordinateDegrees(get("gps_lon", i), gpsLonUnit, true));
         unified.gpsPositionAccuracy.push_back(std::max(
             0.0, get("gps_position_accuracy", i) * positionAccuracyFactor));
         unified.gpsSpeedAccuracy.push_back(std::max(

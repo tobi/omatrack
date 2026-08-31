@@ -72,6 +72,21 @@ struct Lap {
     std::optional<std::uint64_t> firstVideoFrame;
 };
 
+// ── GPS coordinate units ────────────────────────────────────────────
+
+/// Convert one raw GPS coordinate sample to degrees, east-positive, from the
+/// channel's declared unit: `rad`; angular minutes (`min`, `arcmin`,
+/// `arcminute`) in the reader's west-positive longitude convention; anything
+/// else is already degrees. The single rule for unify and for the sidebar's
+/// session location, so a VBO is placed the same way everywhere.
+inline double gpsCoordinateDegrees(double raw, const std::string& unit,
+                                   bool longitude) {
+    if (unit == "rad") return raw * (180.0 / 3.14159265358979323846);
+    if (unit == "min" || unit == "arcmin" || unit == "arcminute")
+        return longitude ? raw / -60.0 : raw / 60.0;
+    return raw;
+}
+
 // ── unified 50 Hz lap ───────────────────────────────────────────────
 
 enum class DistanceSource {

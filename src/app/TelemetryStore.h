@@ -42,6 +42,10 @@ class OverlayManager;
 class SessionHandle;
 class TelemetryStore;
 class QNetworkAccessManager;
+namespace omatrack {
+class PluginHost;
+struct PluginSamplesResult;
+}  // namespace omatrack
 class QTimer;
 class QFileSystemWatcher;
 class QQmlEngine;
@@ -336,11 +340,17 @@ struct OverlayChannel {
     qint64 t0HostNs = 0;
     qint64 periodNs = 0;
     std::shared_ptr<std::vector<double>> samples;
+    /// Explicit host-relative sample instants (plugin series). When set, the
+    /// channel is resampled from memory by interpolation instead of through
+    /// the sidecar file.
+    std::shared_ptr<std::vector<qint64>> times;
 };
 
 struct OverlayGroup {
     QString path;
     QString id;
+    /// Non-empty for a Lua plugin group: `path` is then `plugin:<id>`.
+    QString pluginId;
     QString name;
     QString timezone;
     bool expanded = true;
@@ -572,6 +582,12 @@ public:
     /// Sidecars discovered in configured folders that overlap the active
     /// session's time window. Attachments are session state, not preferences.
     Q_INVOKABLE QVariantList sidecarLibrary() const;
+    /// Lua trace-group plugins (PluginHost). Rows: id, name, version,
+    /// directory, status, error, channelCount, enabled, loading.
+    Q_INVOKABLE QVariantList pluginLibrary() const;
+    Q_INVOKABLE void setPluginEnabled(const QString& id, bool enabled);
+    Q_INVOKABLE void reloadPlugins();
+    Q_INVOKABLE QString pluginDirectory() const;
 
     const QVector<OverlayGroup>& overlayGroups() const;
     Q_INVOKABLE bool directoryExists(const QString& dirPath) const;
@@ -929,6 +945,7 @@ signals:
     void operationError(const QString& title, const QString& message);
     void overlaysChanged();
     void sidecarLibraryChanged();
+    void pluginsChanged();
 
 private:
     enum class FileOpenRole { Automatic, Primary, Compare };
@@ -1152,6 +1169,8 @@ private:
     PreferencesStore* prefs_ = nullptr;
     TrackAtlasManager* atlas_ = nullptr;
     OverlayManager* overlays_ = nullptr;
+    omatrack::PluginHost* plugins_ = nullptr;
+    void updatePluginSession();
     // Typed list models backing the Q_PROPERTYs that replace QVariantList
     // builders. Owned by the store; refreshed on the matching store signal.
     std::unique_ptr<LapListModel> primaryLapsModel_;

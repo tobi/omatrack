@@ -4,6 +4,23 @@ All notable user-facing changes are documented here.
 
 ## Unreleased
 
+- Lua trace-group plugins: drop `plugin.lua` into
+  `~/.config/omatrack/plugins/<name>/`, enable it under Channels… → PLUGINS,
+  and its channels join the trace workspace as an overlay group. Plugins see
+  the open session (track, GPS location, wall-clock window, lap) and have
+  `http`, jailed `io`, `json` and a persisted `kv` cache; every call runs
+  sandboxed on a worker. Example: `plugins/weather` — Open-Meteo temperature,
+  precipitation, wind, humidity and pressure across the session.
+- Racelogic VBO sessions now report their GPS location to the sidebar (track
+  detection, Track Atlas, plugins): the session-location sampler only
+  converted radians and rejected arc-minute coordinates as out of range. One
+  `gpsCoordinateDegrees()` rule is now shared with unification.
+- Parser pinned to `motorsport-telemetry-rs` `c1ac439`: Racelogic VBO files
+  now carry a wall clock (`utc_start_ns` from the header date plus the UTC
+  time-of-day column, and `File created on … @ …` headers parse), so
+  sidecars and plugins can place against them. The converter generation
+  advances, so remote `.telemetry` caches regenerate.
+
 - Rescanning discovery no longer destroys and reloads the active/reference lap
   objects or resets their cursor, viewport and manual alignment. Startup now
   restores a reference lap from the same recording as the primary.

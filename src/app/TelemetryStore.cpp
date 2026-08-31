@@ -14,6 +14,7 @@
 #include "RemoteCache.h"
 #include "VerboseLog.h"
 #include "OverlayManager.h"
+#include "PluginHost.h"
 #include "PreferencesStore.h"
 #include "TrackAtlasManager.h"
 #include "IndexCache.h"
@@ -886,15 +887,16 @@ void SessionHandle::captureGpsLocation(const TelemetrySource& source) {
         std::min(latitudeChannel.durationSec, longitudeChannel.durationSec);
     if (!(duration > 0.0)) return;
 
-    const bool latitudeRadians =
+    const std::string latitudeUnit =
         QString::fromStdString(latitudeChannel.unit)
             .trimmed()
-            .compare(QStringLiteral("rad"), Qt::CaseInsensitive) == 0;
-    const bool longitudeRadians =
+            .toLower()
+            .toStdString();
+    const std::string longitudeUnit =
         QString::fromStdString(longitudeChannel.unit)
             .trimmed()
-            .compare(QStringLiteral("rad"), Qt::CaseInsensitive) == 0;
-    constexpr double kDegreesPerRadian = 180.0 / 3.14159265358979323846;
+            .toLower()
+            .toStdString();
     std::vector<double> latitudes;
     std::vector<double> longitudes;
     for (int sample = 1; sample <= 19; ++sample) {
@@ -904,8 +906,8 @@ void SessionHandle::captureGpsLocation(const TelemetrySource& source) {
         if (!source.sampleAt(size_t(latitudeId), time, &latitude) ||
             !source.sampleAt(size_t(longitudeId), time, &longitude))
             continue;
-        if (latitudeRadians) latitude *= kDegreesPerRadian;
-        if (longitudeRadians) longitude *= kDegreesPerRadian;
+        latitude = gpsCoordinateDegrees(latitude, latitudeUnit, false);
+        longitude = gpsCoordinateDegrees(longitude, longitudeUnit, true);
         if (!std::isfinite(latitude) || !std::isfinite(longitude) ||
             std::fabs(latitude) > 90.0 || std::fabs(longitude) > 180.0 ||
             (std::fabs(latitude) < 0.001 && std::fabs(longitude) < 0.001))
@@ -2548,6 +2550,55 @@ TelemetryStore::TelemetryStore(QObject* parent)
             });
     connect(overlays_, &OverlayManager::operationError, this,
             &TelemetryStore::operationError);
+    plugins_ = new omatrack::PluginHost(this);
+    plugins_->setEnabled(prefs_->enabledPlugins());
+    connect(plugins_, &omatrack::PluginHost::pluginsChanged, this,
+            &TelemetryStore::pluginsChanged);
+    connect(plugins_, &omatrack::PluginHost::operationError, this,
+            &TelemetryStore::operationError);
+    connect(
+        plugins_, &omatrack::PluginHost::samplesReady, this,
+        [this](const omatrack::PluginSamplesResult& result) {
+            if (!plugins_->enabled().contains(result.pluginId)) return;
+            const omatrack::PluginOffer* offer = nullptr;
+            for (const omatrack::PluginOffer& candidate : plugins_->offers())
+                if (candidate.plugin.id == result.pluginId) offer = &candidate;
+            if (!offer || result.series.isEmpty()) return;
+            OverlayGroup group;
+            group.pluginId = result.pluginId;
+            group.name = offer->plugin.name;
+            group.utcStartNs = result.session.utcStartNs;
+            group.durationNs = result.session.endNs - result.session.startNs;
+            group.shiftNs = 0;  // series arrive host-relative
+            group.timezone = result.session.timezone;
+            for (const omatrack::PluginSeries& series : result.series) {
+                OverlayChannel channel;
+                channel.name = series.key;
+                for (const omatrack::PluginChannelOffer& offered :
+                     offer->channels) {
+                    if (offered.key != series.key) continue;
+                    channel.name = offered.name;
+                    channel.unit = offered.unit;
+                    channel.defaultVisible = offered.defaultVisible;
+                }
+                channel.times = series.times;
+                channel.samples = series.values;
+                if (!series.times->empty()) {
+                    channel.t0HostNs = series.times->front();
+                    if (series.times->size() > 1)
+                        channel.periodNs =
+                            (series.times->back() - series.times->front()) /
+                            qint64(series.times->size() - 1);
+                }
+                group.channels.append(std::move(channel));
+            }
+            overlays_->attachPluginGroup(std::move(group));
+        });
+    // The plugin session follows the active selection; equality inside the
+    // host dedups the frequent selectionChanged bursts.
+    connect(this, &TelemetryStore::selectionChanged, this,
+            &TelemetryStore::updatePluginSession);
+    plugins_->discover();
     // Flush any pending preference write synchronously at shutdown.
     connect(qApp, &QCoreApplication::aboutToQuit, this,
             [this]() { flushPreferences(); });
@@ -2831,6 +2882,62 @@ bool TelemetryStore::hostWindowNs(qint64* startNs, qint64* endNs,
 
 bool TelemetryStore::videoClipWindowNs(qint64* startNs, qint64* endNs) const {
     return overlays_->videoClipWindowNs(startNs, endNs);
+}
+
+QVariantList TelemetryStore::pluginLibrary() const {
+    return plugins_->library();
+}
+
+QString TelemetryStore::pluginDirectory() const {
+    return omatrack::PluginPaths::defaults().pluginRoot;
+}
+
+void TelemetryStore::reloadPlugins() { plugins_->discover(); }
+
+void TelemetryStore::setPluginEnabled(const QString& id, bool enabled) {
+    QStringList ids = plugins_->enabled();
+    if (enabled == ids.contains(id)) return;
+    if (enabled)
+        ids.append(id);
+    else
+        ids.removeAll(id);
+    plugins_->setEnabled(ids);
+    prefs_->setEnabledPlugins(ids);
+    schedulePreferencesSave();
+    if (enabled)
+        plugins_->requestSamples(id);
+    else
+        overlays_->removePluginGroup(id);
+}
+
+void TelemetryStore::updatePluginSession() {
+    omatrack::PluginSession session;
+    if (primarySession_) {
+        session.path = primarySession_->path();
+        session.name = primarySession_->stem();
+        session.track = displayTrack(primarySession_);
+        session.driver = driverDisplay(primarySession_);
+        session.date = primarySession_->date();
+        session.utcStartNs = primarySession_->utcStartNs();
+        session.startNs = primarySession_->startNs();
+        session.endNs = primarySession_->durationNs();
+        session.hasLocation = primarySession_->hasGpsLocation();
+        session.latitude = primarySession_->gpsLatitude();
+        session.longitude = primarySession_->gpsLongitude();
+        session.lapId = primaryLap_;
+        for (const LapEntry& lap : primarySession_->laps()) {
+            if (lap.lapId != primaryLap_) continue;
+            session.lapStartNs = qint64(std::llround(lap.startTime * 1e9));
+            session.lapEndNs = qint64(std::llround(lap.endTime * 1e9));
+        }
+        if (session.utcStartNs >= 0) {
+            const QVariantMap metadata = effectiveMetadata(session.path);
+            session.timezone = nestedText(
+                metadata,
+                {QStringLiteral("track"), QStringLiteral("timezone")});
+        }
+    }
+    plugins_->setSession(session);
 }
 
 QVariantList TelemetryStore::sidecarLibrary() const {

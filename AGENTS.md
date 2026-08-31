@@ -268,7 +268,7 @@ wins on load. Caches (Track Atlas snapshot) stay outside the file.
   against a catalog that carries one.
 - `{generation}` is `omatrack::converterGeneration()`: the native format
   version and the pinned `motorsport-telemetry-rs` revision
-  (`10-72224ca366f1`), derived by the bridge's `build.rs` from its own
+  (`10-c1ac439d99d9`), derived by the bridge's `build.rs` from its own
   `Cargo.toml`. A normalization is only trusted if the converter that wrote
   it is the one this build links, so advancing the pin regenerates every
   cache instead of serving a file an older decoder produced. Other
@@ -695,6 +695,26 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
   invent a parallel JSON/Motec sidecar or re-derive it in QML.
 - New cross-format channel or unit rule: `TelemetryEngine` and `UnifiedLap`.
 - New lap/corner comparison metric: C++ analysis in the store/core, exposed as compact view data. A new corner *check* is a `CornerAnalyzer` in `src/core/CornerAnalysis.cpp` — never an inline `if` in the store and never a string built in QML.
+- Trace-group plugins: `src/app/PluginHost.*`. A plugin is
+  `$XDG_CONFIG_HOME/omatrack/plugins/<dir>/plugin.lua` returning
+  `{ id, name, version, channels(session), samples(session, keys) }`
+  (contract and globals documented at the top of `PluginHost.h`; example in
+  `plugins/weather/`). Every call runs in a fresh sandboxed Lua state on an
+  `AsyncJob` worker (latest-wins per plugin); nothing Lua ever runs on the
+  GUI thread, and state survives only through the plugin's `kv` store
+  (`$XDG_CACHE_HOME/omatrack/plugins/<id>/kv.json`). `http.get` blocks the
+  worker on the shared I/O thread (`sendFollowing`); `io` is jailed to the
+  plugin folder (read) and its cache folder (read/write) through
+  `jailRelativePath`. A plugin's result is an `OverlayGroup` with
+  `pluginId` set and `sidecar:`-prefixed keys, so lanes, colours,
+  visibility and the renderer are the sidecar path unchanged; only
+  `OverlayResample.h` (linear interpolation of explicit-time series onto the
+  50 Hz grid) is plugin-specific. Enabled ids persist under
+  `plugins.enabled` in `omatrack.yml`; a host change clears the group and
+  the new session's `channels()` → `samples()` re-attaches it. Time is
+  integer nanoseconds: `t` file-relative or `utc_ns` Unix epoch, converted
+  through `session.utc_start_ns`; a recording without a wall clock offers
+  plugins no absolute time and they must return `{}`.
 - USB copy rename: optional Lua 5.4 + sol2 in `src/app` (`LuaRename.*`), never
   in `omatrack_core`. `rename(ctx)` returns a relative path that is jailed
   under the destination. Embedded Lua symbols must remain hidden: libmpv can
@@ -888,6 +908,12 @@ Add feature flags as needed:
 - `OMATRACK_AUTOTEST_RESTORE_STATE=1` with `OMATRACK_AUTOTEST_PRIMARY_LAP`
   and `OMATRACK_AUTOTEST_REFERENCE_LAP` verifies the scratch configuration's
   same-recording startup selection before the filmstrip test proceeds.
+- `OMATRACK_AUTOTEST_PLUGIN=<id>` with `OMATRACK_AUTOTEST_PLUGIN_FILE=` a
+  copied recording carrying GPS and a wall clock (the Daytona VBO fixture),
+  `XDG_CONFIG_HOME` holding the plugin under `omatrack/plugins/<id>/`: waits
+  for `channels()`, enables the plugin, and requires finite resampled values
+  on the lap grid plus the group listed last. The weather example makes a
+  live Open-Meteo request, so this check needs the network.
 - `OMATRACK_AUTOTEST_COMPARE=1`
 - `OMATRACK_AUTOTEST_WINDOWS=1`
 - `OMATRACK_AUTOTEST_SELECTION=1`

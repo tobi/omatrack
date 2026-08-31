@@ -11,10 +11,10 @@ name = "omatrack_bridge"
 crate-type = ["staticlib"]
 
 [dependencies]
-aim-telemetry = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "72224ca366f13e97857d7515506e5f52abb9ae39" }
+aim-telemetry = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "c1ac439d99d924be5e6663e15abd335c56b30bc0" }
 blake3 = "=1.5.5"
-cosworth-telemetry = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "72224ca366f13e97857d7515506e5f52abb9ae39" }
-motec-telemetry = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "72224ca366f13e97857d7515506e5f52abb9ae39" }
-motorsport-telemetry-core = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "72224ca366f13e97857d7515506e5f52abb9ae39" }
-racelogic-telemetry = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "72224ca366f13e97857d7515506e5f52abb9ae39" }
-telemetry-format = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "72224ca366f13e97857d7515506e5f52abb9ae39" }
+cosworth-telemetry = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "c1ac439d99d924be5e6663e15abd335c56b30bc0" }
+motec-telemetry = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "c1ac439d99d924be5e6663e15abd335c56b30bc0" }
+motorsport-telemetry-core = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "c1ac439d99d924be5e6663e15abd335c56b30bc0" }
+racelogic-telemetry = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "c1ac439d99d924be5e6663e15abd335c56b30bc0" }
+telemetry-format = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "c1ac439d99d924be5e6663e15abd335c56b30bc0" }

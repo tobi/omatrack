@@ -114,6 +114,8 @@ qt_add_qml_module(omatrack
     TraceTextCache.h TraceTextCache.cpp
     UsbMedia.h UsbMedia.cpp
     UsbCopy.h UsbCopy.cpp
+    OverlayResample.h
+    PluginHost.h PluginHost.cpp
     ScrollAnchor.h ScrollAnchor.cpp
     PathJail.h PathJail.cpp
     IndexCache.h IndexCache.cpp
@@ -132,7 +134,8 @@ qt_add_qml_module(omatrack
 if(OMATRACK_ENABLE_AUTOTEST_HARNESS)
   target_sources(omatrack PRIVATE AutotestHarness.h AutotestHarness.cpp
     FilmstripAutotest.cpp
-    UsbCopyAutotest.cpp)
+    UsbCopyAutotest.cpp
+    PluginAutotest.cpp)
   target_compile_definitions(omatrack PRIVATE
     OMATRACK_ENABLE_AUTOTEST_HARNESS=1)
 endif()

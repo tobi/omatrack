@@ -53,6 +53,11 @@ static int cmdParse(const std::string& path) {
     }
 
     printf("format: %s\n", src->formatName().c_str());
+    if (src->utcStartNs() >= 0)
+        printf("utc start: %lld ns (Unix epoch)\n",
+               static_cast<long long>(src->utcStartNs()));
+    else
+        printf("utc start: unknown (no wall clock in this recording)\n");
     if (const auto offset = src->videoPresentationOffsetSec())
         printf("video presentation offset: %.6f s\n", *offset);
     printf("channels: %zu\n", src->channels().size());

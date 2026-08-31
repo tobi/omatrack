@@ -8,4 +8,6 @@ bool install(QQmlApplicationEngine& engine, TelemetryStore& store);
 bool installFilmstrip(QQmlApplicationEngine& engine, TelemetryStore& store);
 // Synthetic-mount USB preview/copy check; false unless requested.
 bool installUsbCopy(QQmlApplicationEngine& engine, TelemetryStore& store);
+// Lua plugin round trip on a copied GPS recording; false unless requested.
+bool installPlugin(QQmlApplicationEngine& engine, TelemetryStore& store);
 }  // namespace omatrack::autotest

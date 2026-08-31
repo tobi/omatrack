@@ -11,10 +11,12 @@ ApplicationWindow {
 
     property int cursorTick: 0
     property string filterText: ""
+    property var pluginRows: []
     property var sidecarRows: []
 
     function refresh(): void {
         channelsWindow.sidecarRows = Store.sidecarLibrary();
+        channelsWindow.pluginRows = Store.pluginLibrary();
     }
 
     Material.accent: Style.accentColor
@@ -42,6 +44,9 @@ ApplicationWindow {
     Connections {
         function onCursorFracChanged(): void {
             ++channelsWindow.cursorTick;
+        }
+        function onPluginsChanged(): void {
+            channelsWindow.pluginRows = Store.pluginLibrary();
         }
         function onSelectionChanged(): void {
             channelsWindow.refresh();
@@ -150,6 +155,93 @@ ApplicationWindow {
                             text: sidecarRow.sidecar.attached ? "Added" : "Add"
 
                             onClicked: Store.attachSidecar(sidecarRow.sidecar.path)
+                        }
+                    }
+                }
+            }
+        }
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: pluginList.visible ? Math.min(112, 34 + channelsWindow.pluginRows.length * 38) : 0
+            border.color: Style.borderColor
+            color: Style.surfaceColor
+            radius: 3
+            visible: channelsWindow.pluginRows.length > 0
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: 6
+                spacing: 2
+
+                RowLayout {
+                    Layout.fillWidth: true
+
+                    Label {
+                        Layout.fillWidth: true
+                        color: Style.accentColor
+                        elide: Text.ElideMiddle
+                        font.bold: true
+                        font.family: Style.monoFontFamily
+                        font.pixelSize: 9
+                        text: "PLUGINS · " + Store.pluginDirectory()
+                    }
+                    CompactButton {
+                        text: "Reload"
+
+                        onClicked: Store.reloadPlugins()
+                    }
+                }
+                ListView {
+                    id: pluginList
+
+                    Layout.fillHeight: true
+                    Layout.fillWidth: true
+                    clip: true
+                    interactive: channelsWindow.pluginRows.length > 3
+                    model: channelsWindow.pluginRows.length
+
+                    delegate: RowLayout {
+                        id: pluginRow
+
+                        required property int index
+                        readonly property var plugin: channelsWindow.pluginRows[pluginRow.index]
+
+                        height: 34
+                        spacing: 7
+                        width: ListView.view.width
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 0
+
+                            Label {
+                                Layout.fillWidth: true
+                                color: Style.foregroundColor
+                                elide: Text.ElideRight
+                                font.bold: true
+                                text: pluginRow.plugin.name + (pluginRow.plugin.version > 0 ? "  v" + pluginRow.plugin.version : "")
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                color: pluginRow.plugin.error !== "" ? Style.orangeColor : Style.mutedTextColor
+                                elide: Text.ElideRight
+                                font.family: Style.monoFontFamily
+                                font.pixelSize: 8
+                                text: pluginRow.plugin.error !== "" ? pluginRow.plugin.error : pluginRow.plugin.status
+                            }
+                        }
+                        BusyIndicator {
+                            Layout.preferredHeight: 18
+                            Layout.preferredWidth: 18
+                            running: pluginRow.plugin.loading
+                            visible: pluginRow.plugin.loading
+                        }
+                        CompactButton {
+                            Layout.preferredWidth: 76
+                            enabled: pluginRow.plugin.error === "" && (pluginRow.plugin.enabled || pluginRow.plugin.channelCount > 0)
+                            text: pluginRow.plugin.enabled ? "Remove" : "Add"
+
+                            onClicked: Store.setPluginEnabled(pluginRow.plugin.id, !pluginRow.plugin.enabled)
                         }
                     }
                 }

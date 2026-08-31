@@ -305,6 +305,10 @@ void PreferencesStore::loadPreferences() {
     overlayRefWhite_ =
         overlay.value(QStringLiteral("ref_white"), false).toBool();
 
+    const QVariantMap plugins = config.map({QStringLiteral("plugins")});
+    enabledPlugins_ = plugins.value(QStringLiteral("enabled")).toStringList();
+    enabledPlugins_.removeDuplicates();
+
     const QVariantMap mappings =
         config.map({QStringLiteral("driver_mappings")});
     for (auto it = mappings.cbegin(); it != mappings.cend(); ++it)
@@ -534,6 +538,11 @@ void PreferencesStore::scheduleSave() {
                   QVariantMap{{QStringLiteral("ref_color"), overlayRefColor_},
                               {QStringLiteral("ref_style"), overlayRefStyle_},
                               {QStringLiteral("ref_white"), overlayRefWhite_}});
+    config.setMap(
+        {QStringLiteral("plugins")},
+        QVariantMap{{QStringLiteral("enabled"),
+                     enabledPlugins_.isEmpty() ? QVariant()
+                                               : QVariant(enabledPlugins_)}});
 
     QVariantMap mappings;
     for (auto it = driverMappings_.cbegin(); it != driverMappings_.cend(); ++it)

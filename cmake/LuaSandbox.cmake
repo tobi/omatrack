@@ -62,7 +62,10 @@ set(LUA_LIBS
   ${lua_src_SOURCE_DIR}/src/lmathlib.c
   ${lua_src_SOURCE_DIR}/src/lstrlib.c
   ${lua_src_SOURCE_DIR}/src/ltablib.c
-  ${lua_src_SOURCE_DIR}/src/lutf8lib.c)
+  ${lua_src_SOURCE_DIR}/src/lutf8lib.c
+  # os.time/os.date/os.clock for plugins; PluginHost strips execute, exit,
+  # getenv, remove, rename, setlocale and tmpname before any script runs.
+  ${lua_src_SOURCE_DIR}/src/loslib.c)
 
 add_library(lua_sandbox STATIC ${LUA_CORE} ${LUA_LIBS})
 set_target_properties(lua_sandbox PROPERTIES

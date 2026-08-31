@@ -54,6 +54,10 @@ public:
 
     // ── overlay management ───────────────────────────────────────────
     void attachSidecar(const QString& filePath, bool fromOpen, bool silent);
+    /// Adopt a plugin's group (channels carry explicit times and values).
+    /// Replaces a previous group of the same plugin; resamples onto the lap.
+    void attachPluginGroup(OverlayGroup group);
+    void removePluginGroup(const QString& pluginId);
     void discoverSidecarSiblings();
     void resampleOverlays();
     void removeOverlay(const QString& id);

@@ -1,4 +1,5 @@
 #include "OverlayManager.h"
+#include "OverlayResample.h"
 
 #include "core/TelemetryEngine.h"
 #include "RemoteCache.h"
@@ -424,6 +425,33 @@ void OverlayManager::attachSidecar(const QString& filePath, bool fromOpen,
         });
 }
 
+void OverlayManager::attachPluginGroup(OverlayGroup group) {
+    if (group.pluginId.isEmpty()) return;
+    group.path = QStringLiteral("plugin:") + group.pluginId;
+    group.id = QStringLiteral("plugin-") + group.pluginId;
+    for (OverlayChannel& channel : group.channels)
+        channel.key = QStringLiteral("sidecar:") + group.id + QLatin1Char(':') +
+                      channel.name;
+    bool replaced = false;
+    for (int index = 0; index < overlays_.size(); ++index) {
+        if (overlays_[index].id != group.id) continue;
+        group.expanded = overlays_[index].expanded;
+        for (const OverlayChannel& channel : overlays_[index].channels)
+            overlayChannelCache_.remove(channel.key);
+        overlays_[index] = std::move(group);
+        replaced = true;
+        break;
+    }
+    if (!replaced) overlays_.append(std::move(group));  // groups go last
+    emit overlaysChanged();
+    emit channelConfigChanged();
+    resampleOverlays();
+}
+
+void OverlayManager::removePluginGroup(const QString& pluginId) {
+    removeOverlay(QStringLiteral("plugin-") + pluginId);
+}
+
 void OverlayManager::discoverSidecarSiblings() {
     sidecarLibrary_.clear();
     emit sidecarLibraryChanged();
@@ -581,6 +609,9 @@ void OverlayManager::resampleOverlays() {
         qint64 shiftNs = 0;
         QStringList keys;
         QStringList names;
+        bool inMemory = false;
+        QVector<std::shared_ptr<std::vector<qint64>>> times;
+        QVector<std::shared_ptr<std::vector<double>>> values;
     };
     QVector<Job> jobs;
     jobs.reserve(overlays_.size());
@@ -589,9 +620,12 @@ void OverlayManager::resampleOverlays() {
         job.path = group.path;
         job.id = group.id;
         job.shiftNs = group.shiftNs;
+        job.inMemory = !group.pluginId.isEmpty();
         for (const OverlayChannel& channel : group.channels) {
             job.keys.append(channel.key);
             job.names.append(channel.name);
+            job.times.append(channel.times);
+            job.values.append(channel.samples);
         }
         jobs.append(std::move(job));
     }
@@ -613,6 +647,18 @@ void OverlayManager::resampleOverlays() {
             UnifiedLap unified;
             unified.time = times;
             for (const Job& job : jobs) {
+                if (job.inMemory) {
+                    for (int index = 0; index < job.keys.size(); ++index) {
+                        if (!job.times.at(index) || !job.values.at(index))
+                            continue;
+                        samples.insert(
+                            job.keys.at(index),
+                            resampleSeriesOntoLap(
+                                *job.times.at(index), *job.values.at(index),
+                                lap, unified.time, clipStartNs, clipEndNs, 0));
+                    }
+                    continue;
+                }
                 std::string error;
                 auto source =
                     TelemetrySource::open(job.path.toStdString(), &error);

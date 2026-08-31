@@ -144,6 +144,8 @@ public:
     void setOverlayRefStyle(const QString& style) { overlayRefStyle_ = style; }
     bool overlayRefWhite() const { return overlayRefWhite_; }
     void setOverlayRefWhite(bool enabled) { overlayRefWhite_ = enabled; }
+    QStringList enabledPlugins() const { return enabledPlugins_; }
+    void setEnabledPlugins(const QStringList& ids) { enabledPlugins_ = ids; }
 
 signals:
     void operationError(const QString& title, const QString& message);
@@ -181,4 +183,5 @@ private:
     QString overlayRefColor_ = QStringLiteral("#e09d7f");
     QString overlayRefStyle_ = QStringLiteral("dashed");
     bool overlayRefWhite_ = false;
+    QStringList enabledPlugins_;
 };

@@ -46,6 +46,14 @@ through braking, turn-in, apex, and throttle pickup.
   reused without downloads, and available offline. Onboard video plays over
   the network rather than being downloaded, or is downloaded on request for a
   flight.
+- Extend the trace workspace with Lua plugins: a `plugin.lua` under
+  `~/.config/omatrack/plugins/<name>/` offers channels for the open session
+  (it sees the track, GPS location, wall-clock window and lap; it gets
+  `http`, jailed `io`, `json` and a persisted `kv` cache) and, once enabled
+  under Channels… → PLUGINS, is drawn as an overlay group like an MTX sidecar.
+  `plugins/weather/` is the worked example: Open-Meteo temperature,
+  precipitation, wind, humidity and pressure across the session. The contract
+  is documented at the top of `src/app/PluginHost.h`.
 - Inspect parsing, channel mapping, lap detection, unification and corner analysis headlessly: `omatrack parse|unify|corners|compare` run before Qt starts, with no window and no configuration.
 
 ## Architecture
@@ -196,6 +204,11 @@ AppImage, Windows Velopack install, or macOS app may also request
 `api.github.com/repos/tobi/omatrack/releases/latest`
 once a day; Later snoozes the prompt for a week. Turn the check off under
 Preferences → Updates. No session paths are sent.
+
+Plugins are opt-in code you install yourself. An enabled plugin may make the
+HTTP requests it is written to make (the bundled weather example calls
+`open-meteo.com` with the session's rounded coordinates and date, cached for
+a day or 90 days); nothing is enabled until you press Add.
 
 Server connections are opt-in and configured in Preferences. WebDAV uses
 authenticated `PROPFIND` discovery; `s3://` and `gs://` buckets use

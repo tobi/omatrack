@@ -29,6 +29,21 @@ using namespace omatrack::detail;
 class NormalizeChannelNameTest : public QObject {
     Q_OBJECT
 private slots:
+    void gpsCoordinateUnitsShareOneRule() {
+        // Racelogic: arc-minutes, longitude west-positive.
+        // Daytona 29.19N 81.07W.
+        QVERIFY(std::abs(
+                    omatrack::gpsCoordinateDegrees(29.19 * 60.0, "min", false) -
+                    29.19) < 1e-9);
+        QVERIFY(
+            std::abs(omatrack::gpsCoordinateDegrees(81.07 * 60.0, "min", true) +
+                     81.07) < 1e-9);
+        QVERIFY(std::abs(omatrack::gpsCoordinateDegrees(
+                             3.14159265358979323846 / 2, "rad", false) -
+                         90.0) < 1e-9);
+        QCOMPARE(omatrack::gpsCoordinateDegrees(-81.07, "deg", true), -81.07);
+        QCOMPARE(omatrack::gpsCoordinateDegrees(-81.07, "", true), -81.07);
+    }
     void lowercasesLetters() {
         QCOMPARE(normalizeChannelName("GroundSpeed"), "groundspeed");
     }
