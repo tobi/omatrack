@@ -709,8 +709,11 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
   `pluginId` set and `sidecar:`-prefixed keys, so lanes, colours,
   visibility and the renderer are the sidecar path unchanged; only
   `OverlayResample.h` (linear interpolation of explicit-time series onto the
-  50 Hz grid) is plugin-specific. Enabled ids persist under
-  `plugins.enabled` in `omatrack.yml`; a host change clears the group and
+  50 Hz grid) is plugin-specific. Example plugins are bundled as resources
+  (`:/plugins/<id>/plugin.lua`, `qt_add_resources` in
+  `src/app/CMakeLists.txt`); Preferences → Plugins installs one into the
+  user's plugin folder and never overwrites an existing `plugin.lua`.
+  Enabled ids persist under `plugins.enabled` in `omatrack.yml`; a host change clears the group and
   the new session's `channels()` → `samples()` re-attaches it. Time is
   integer nanoseconds: `t` file-relative or `utc_ns` Unix epoch, converted
   through `session.utc_start_ns`; a recording without a wall clock offers
@@ -912,7 +915,10 @@ Add feature flags as needed:
   copied recording carrying GPS and a wall clock (the Daytona VBO fixture),
   `XDG_CONFIG_HOME` holding the plugin under `omatrack/plugins/<id>/`: waits
   for `channels()`, enables the plugin, and requires finite resampled values
-  on the lap grid plus the group listed last. The weather example makes a
+  on the lap grid plus the group listed last, then screenshots Preferences →
+  Plugins. `OMATRACK_AUTOTEST_PLUGIN_INSTALL=1` first installs the bundled
+  example through `installExamplePlugin()` into the (empty) scratch plugin
+  folder and checks a second install is refused. The weather example makes a
   live Open-Meteo request, so this check needs the network.
 - `OMATRACK_AUTOTEST_COMPARE=1`
 - `OMATRACK_AUTOTEST_WINDOWS=1`

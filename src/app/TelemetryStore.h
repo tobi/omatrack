@@ -588,6 +588,12 @@ public:
     Q_INVOKABLE void setPluginEnabled(const QString& id, bool enabled);
     Q_INVOKABLE void reloadPlugins();
     Q_INVOKABLE QString pluginDirectory() const;
+    /// Example plugins bundled as resources (`:/plugins/<id>/plugin.lua`).
+    Q_INVOKABLE QStringList examplePlugins() const;
+    /// Copy a bundled example into the plugin folder; never overwrites an
+    /// existing plugin.lua. Returns a user-facing status line and rescans.
+    Q_INVOKABLE QString installExamplePlugin(const QString& id);
+    Q_INVOKABLE void openPluginDirectory();
 
     const QVector<OverlayGroup>& overlayGroups() const;
     Q_INVOKABLE bool directoryExists(const QString& dirPath) const;

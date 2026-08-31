@@ -2894,6 +2894,45 @@ QString TelemetryStore::pluginDirectory() const {
 
 void TelemetryStore::reloadPlugins() { plugins_->discover(); }
 
+QStringList TelemetryStore::examplePlugins() const {
+    return QDir(QStringLiteral(":/plugins"))
+        .entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+}
+
+QString TelemetryStore::installExamplePlugin(const QString& id) {
+    if (!examplePlugins().contains(id))
+        return QStringLiteral("No bundled example named '%1'").arg(id);
+    const QString root = pluginDirectory();
+    const QString target = QDir(root).filePath(id);
+    const QString destination =
+        QDir(target).filePath(QStringLiteral("plugin.lua"));
+    if (QFileInfo::exists(destination)) {
+        plugins_->discover();
+        return QStringLiteral(
+                   "'%1' is already installed at %2 — left untouched")
+            .arg(id, target);
+    }
+    if (!QDir().mkpath(target))
+        return QStringLiteral("Could not create %1").arg(target);
+    QFile source(QStringLiteral(":/plugins/%1/plugin.lua").arg(id));
+    if (!source.open(QIODevice::ReadOnly))
+        return QStringLiteral("Bundled example '%1' is unreadable").arg(id);
+    QSaveFile out(destination);
+    if (!out.open(QIODevice::WriteOnly) || out.write(source.readAll()) < 0 ||
+        !out.commit())
+        return QStringLiteral("Could not write %1").arg(destination);
+    plugins_->discover();
+    return QStringLiteral(
+               "Installed '%1' into %2 — enable it under Channels… → "
+               "PLUGINS or below")
+        .arg(id, target);
+}
+
+void TelemetryStore::openPluginDirectory() {
+    QDir().mkpath(pluginDirectory());
+    QDesktopServices::openUrl(QUrl::fromLocalFile(pluginDirectory()));
+}
+
 void TelemetryStore::setPluginEnabled(const QString& id, bool enabled) {
     QStringList ids = plugins_->enabled();
     if (enabled == ids.contains(id)) return;

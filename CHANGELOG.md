@@ -2,8 +2,11 @@
 
 All notable user-facing changes are documented here.
 
-## Unreleased
+## 1.7.0 — 2026-08-31
 
+- Preferences → Plugins: plugin folder, enable/disable, reload, and an
+  “Install weather example” button that copies the bundled example into
+  the plugin folder (never overwriting an existing plugin).
 - Lua trace-group plugins: drop `plugin.lua` into
   `~/.config/omatrack/plugins/<name>/`, enable it under Channels… → PLUGINS,
   and its channels join the trace workspace as an overlay group. Plugins see

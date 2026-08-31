@@ -13,6 +13,7 @@
 #include <QCoreApplication>
 #include <QDebug>
 #include <QQmlApplicationEngine>
+#include <QQuickItem>
 #include <QQuickWindow>
 #include <QTimer>
 
@@ -53,6 +54,21 @@ bool omatrack::autotest::installPlugin(QQmlApplicationEngine& engine,
             };
             if (*phase == 0) {
                 if (!store.ready()) return;
+                if (qEnvironmentVariableIsSet(
+                        "OMATRACK_AUTOTEST_PLUGIN_INSTALL")) {
+                    // The Preferences button path: bundled resource → plugin
+                    // folder → rediscovery. The scratch config starts empty.
+                    const QString status = store.installExamplePlugin(pluginId);
+                    if (!status.startsWith(QStringLiteral("Installed")))
+                        return fail(QStringLiteral("installExamplePlugin: ") +
+                                    status);
+                    const QString again = store.installExamplePlugin(pluginId);
+                    if (!again.contains(QStringLiteral("already installed")))
+                        return fail(
+                            QStringLiteral("second install did not refuse: ") +
+                            again);
+                    qWarning() << "AUTOTEST plugin:" << status;
+                }
                 store.openFile(file);
                 *phase = 1;
                 *ticks = 0;
@@ -134,6 +150,21 @@ bool omatrack::autotest::installPlugin(QQmlApplicationEngine& engine,
                     return fail(QStringLiteral(
                         "plugin group is not the last overlay group"));
                 window->grabWindow().save(shot);
+                // Preferences → Plugins page, for the eye: shows the
+                // installed plugin enabled with its status line.
+                if (auto* settings = rootObject->findChild<QQuickWindow*>(
+                        QStringLiteral("settingsWindow"))) {
+                    settings->setProperty("currentSection", 5);
+                    settings->show();
+                    QTimer::singleShot(1500, settings, [settings, shot]() {
+                        settings->grabWindow().save(
+                            shot + QStringLiteral(".prefs.png"));
+                        qWarning() << "AUTOTEST plugin: saved preferences page";
+                        QCoreApplication::exit(0);
+                    });
+                    timer->stop();
+                    return;
+                }
                 timer->stop();
                 qWarning().noquote() << "AUTOTEST plugin:" << pluginId
                                      << "attached:" << report.join("; ");

@@ -85,6 +85,7 @@ qt_add_qml_module(omatrack
     VideoDeltaBar.qml
     UsbCopyOverlay.qml
     PreferencesEventPage.qml
+    PreferencesPluginsPage.qml
     PreferencesOverlayPage.qml
   SOURCES
     AsyncJob.h
@@ -156,6 +157,13 @@ qt_add_resources(omatrack "omatrack_branding"
   FILES
     ${CMAKE_SOURCE_DIR}/assets/omatrack.svg
     ${CMAKE_SOURCE_DIR}/assets/omatrack.ico)
+# Example plugins ship inside the binary so Preferences → Plugins can install
+# them into the user's plugin folder from an AppImage or installer.
+qt_add_resources(omatrack "omatrack_plugin_examples"
+  PREFIX "/"
+  BASE ${CMAKE_SOURCE_DIR}
+  FILES
+    ${CMAKE_SOURCE_DIR}/plugins/weather/plugin.lua)
 
 target_link_libraries(omatrack PRIVATE
   lua_sandbox

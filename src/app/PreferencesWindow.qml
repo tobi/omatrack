@@ -170,6 +170,10 @@ ApplicationWindow {
                                 label: "Overlay"
                             }
                             ListElement {
+                                detail: "Lua trace groups"
+                                label: "Plugins"
+                            }
+                            ListElement {
                                 detail: "GitHub AppImage"
                                 label: "Updates"
                             }
@@ -206,6 +210,8 @@ ApplicationWindow {
                 PreferencesEventPage {
                 }
                 PreferencesOverlayPage {
+                }
+                PreferencesPluginsPage {
                 }
                 PreferencesUpdatesPage {
                 }
