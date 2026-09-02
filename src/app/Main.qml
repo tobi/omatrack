@@ -1090,7 +1090,7 @@ ApplicationWindow {
             id: videoTelemetryOverlay
 
             bottomInset: fullscreenFilmstripSlot.visible ? fullscreenFilmstripSlot.height + videoControls.height + 16 : 0
-            mediaTime: videoPlayer.position
+            mediaTime: videoSync.sampledMediaTime
             visible: root.videoFullscreen && root.videoOverlayVisible && root.telemetryVideoActive && videoPlayer.loaded
         }
         VideoDeltaBar {

@@ -5617,6 +5617,7 @@ void TelemetryStore::setCursorFrac(double v) {
                                  << primaryVideoTime() << "s";
     }
     emit cursorFracChanged();
+    emit cursorReadoutChanged();
     emit videoTimeChanged();
 }
 
@@ -7494,11 +7495,6 @@ CursorReadout TelemetryStore::cursorReadout() const {
     auto sampleAt = [&](const std::vector<double>& arr, double frac) {
         return omatrack::interpolateFraction(arr, frac);
     };
-    auto sampleQtAt = [&](const QVector<double>& arr, double frac) {
-        if (arr.isEmpty()) return 0.0;
-        return omatrack::interpolateFraction(
-            std::vector<double>(arr.begin(), arr.end()), frac);
-    };
     const double frac = cursorFrac_;
     out.dist = sampleAt(u->distance, frac) -
                (u->distance.empty() ? 0.0 : u->distance.front());
@@ -7511,7 +7507,8 @@ CursorReadout TelemetryStore::cursorReadout() const {
     // Δ vs compare lap (array from the shared cached deltaTrace())
     const QVector<double>& d = deltaTrace();
     if (!d.isEmpty()) {
-        out.delta = sampleQtAt(d, frac);
+        out.delta = omatrack::interpolateFraction(d.constData(),
+                                                  size_t(d.size()), frac);
         out.hasDelta = true;
     }
     return out;

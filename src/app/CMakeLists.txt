@@ -130,6 +130,7 @@ qt_add_qml_module(omatrack
     TraceView.h TraceView.cpp
     VideoTelemetryHud.h VideoTelemetryHud.cpp
     VideoSyncController.h VideoSyncController.cpp
+    DeadlineQueue.h DeadlineQueue.cpp
     YamlConfig.h YamlConfig.cpp
 )
 if(OMATRACK_ENABLE_AUTOTEST_HARNESS)

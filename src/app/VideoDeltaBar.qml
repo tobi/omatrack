@@ -102,7 +102,7 @@ OverlayCard {
         when: !deltaBar.userPositioned
     }
     Connections {
-        function onCursorFracChanged(): void {
+        function onCursorReadoutChanged(): void {
             deltaBar.refresh();
         }
         function onReferenceAlignmentChanged(): void {

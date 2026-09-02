@@ -68,7 +68,7 @@ ToolBar {
     }
 
     Connections {
-        function onCursorFracChanged(): void {
+        function onCursorReadoutChanged(): void {
             readout.refresh();
         }
         function onRecentFilesChanged(): void {

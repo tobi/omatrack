@@ -62,24 +62,27 @@ struct MonotonicView {
 /// Clamps to the endpoints. Returns y[0] (or 0) for degenerate inputs.
 inline double interpolate(const std::vector<double>& x,
                           const std::vector<double>& y, double xq) {
-    if (x.size() != y.size() || x.size() < 2)
-        return y.empty() ? 0.0 : y[0];
+    if (x.size() != y.size() || x.size() < 2) return y.empty() ? 0.0 : y[0];
     MonotonicView view{x.data(), y.data(), x.size()};
     return view.at(xq);
 }
 
-/// Interpolate a uniformly-spaced y vector at fractional position [0,1].
+/// Interpolate a uniformly-spaced y array at fractional position [0,1].
 /// Equivalent to MonotonicView over x=[0,1,...,n-1], y=data,
-/// query=fraction*(n-1). Clamps fraction to [0,1].
+/// query=fraction*(n-1). Clamps fraction to [0,1]. Does not allocate.
+inline double interpolateFraction(const double* y, size_t n, double fraction) {
+    if (!y || n == 0) return 0.0;
+    if (n == 1) return y[0];
+    fraction = std::clamp(fraction, 0.0, 1.0);
+    const double position = fraction * double(n - 1);
+    const size_t lo = size_t(std::floor(position));
+    const size_t hi = std::min(lo + 1, n - 1);
+    return y[lo] + (y[hi] - y[lo]) * (position - double(lo));
+}
+
 inline double interpolateFraction(const std::vector<double>& y,
                                   double fraction) {
-    if (y.empty()) return 0.0;
-    if (y.size() == 1) return y[0];
-    fraction = std::clamp(fraction, 0.0, 1.0);
-    const double position = fraction * double(y.size() - 1);
-    const size_t lo = size_t(std::floor(position));
-    const size_t hi = std::min(lo + 1, y.size() - 1);
-    return y[lo] + (y[hi] - y[lo]) * (position - double(lo));
+    return interpolateFraction(y.data(), y.size(), fraction);
 }
 
 /// Inverse of interpolateFraction: given a y value, return the fraction

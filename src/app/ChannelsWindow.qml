@@ -42,8 +42,14 @@ ApplicationWindow {
         sourceModel: Store.channels
     }
     Connections {
-        function onCursorFracChanged(): void {
+        function onChannelsCursorTick(): void {
+            if (!channelsWindow.visible)
+                return;
             ++channelsWindow.cursorTick;
+        }
+        function onCursorFracChanged(): void {
+            if (!channelsWindow.visible)
+                return;
         }
         function onPluginsChanged(): void {
             channelsWindow.pluginRows = Store.pluginLibrary();

@@ -231,6 +231,15 @@ target_link_libraries(overlay-style-test PRIVATE
 add_test(NAME overlay-style-test COMMAND overlay-style-test)
 set_tests_properties(overlay-style-test PROPERTIES LABELS unit)
 
+qt_add_executable(deadline-queue-test DeadlineQueueTest.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/DeadlineQueue.cpp)
+target_include_directories(deadline-queue-test PRIVATE
+  ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(deadline-queue-test PRIVATE
+  Qt6::Test Qt6::Core omatrack_warnings)
+add_test(NAME deadline-queue-test COMMAND deadline-queue-test)
+set_tests_properties(deadline-queue-test PROPERTIES LABELS unit)
+
 qt_add_executable(swap-roles-test SwapRolesTest.cpp)
 target_include_directories(swap-roles-test PRIVATE
   ${CMAKE_SOURCE_DIR}/src)
