@@ -2,6 +2,17 @@
 
 All notable user-facing changes are documented here.
 
+## 1.7.2 — 2026-09-02
+
+- Corner editing is a dedicated mode (A, header Edit corners…, or the
+  trace Corners button): drag zone edges on the traces, rename/add/
+  auto-generate/delete in one overlay, Save writes the local override,
+  Cancel restores the snapshot from enter.
+- Hover tooltips are gone — they were in the way.
+- Zoomed traces draw a polyline through the samples instead of stretching
+  column bars like a zoomed image.
+- Two-finger horizontal trackpad scroll pans the viewport.
+
 ## 1.7.1 — 2026-09-02
 
 - Video publishes its position; overlay, header and traces sample it through
