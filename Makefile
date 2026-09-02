@@ -18,7 +18,7 @@ CLI    := $(BUILD_DIR)/omatrack-cli
 PREFIX  ?= /usr/local
 DESTDIR ?=
 
-.PHONY: all build check lint install run run-debug clean distclean help
+.PHONY: all build check lint memcheck install run run-debug clean distclean help
 
 all: build
 
@@ -38,6 +38,15 @@ check: build
 # Just the formatting / qmllint / rust_clippy gates.
 lint: build
 	ctest --test-dir $(BUILD_DIR) -L lint --output-on-failure
+
+# -- memcheck --------------------------------------------------------------
+# ASan+UBSan unit tests. Valgrind is the wrong tool here: Qt Quick, libmpv,
+# and the process-lifetime NetworkIo/CacheIndex objects drown it in noise.
+# Skips headless-contract (needs the GUI binary).
+memcheck:
+	@test -f build-asan/build.ninja || cmake --preset asan
+	cmake --build build-asan --parallel --target unit_tests
+	ctest --preset asan -L unit -E headless-contract --output-on-failure
 
 # -- install --------------------------------------------------------------
 #   make install                  -> /usr/local
@@ -80,6 +89,6 @@ distclean: clean
 	cmake -E remove_directory build-ci
 
 help:
-	@echo "omatrack targets: all build check lint install run run-debug clean distclean help"
+	@echo "omatrack targets: all build check lint memcheck install run run-debug clean distclean help"
 	@echo "presets:         PRESET=release|acceptance|debug|asan|ci (default release)"
 	@echo "run args:        ARGS=\"~/Documents/Telemetry\""

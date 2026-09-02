@@ -1,0 +1,11 @@
+# LeakSanitizer suppressions for `make memcheck` / the asan test preset.
+# A leak whose stack is in omatrack source (other than the names below) is a bug.
+
+# QObject that has lived on a worker thread cannot be destroyed after that
+# thread has stopped (RemoteCache.cpp). One NetworkIo and one CacheIndex per
+# connection, process lifetime.
+leak:cacheIndexFor
+leak:NetworkIo::instance
+
+# Qt Quick ListView attached-property cache in offscreen QTest fixtures.
+leak:qmlAttachedPropertiesObject

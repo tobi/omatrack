@@ -312,6 +312,36 @@ add_test(NAME headless-contract
 set_tests_properties(headless-contract PROPERTIES LABELS unit
   ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# Build every unit-test binary (and omatrack-cli) without the GUI. Used by
+# `make memcheck` so ASan/UBSan can run the suite without compiling omatrack.
+add_custom_target(unit_tests
+  DEPENDS
+    filmstrip-layout-test
+    session-refresh-test
+    core-test
+    corner-analysis-test
+    yamlconfig-test
+    appupdate-test
+    apptypes-test
+    sigv4-test
+    remote-cache-test
+    plugin-host-test
+    overlay-resample-test
+    usb-media-test
+    library-model-test
+    lua-rename-test
+    scroll-anchor-test
+    usb-copy-test
+    index-cache-test
+    overlay-style-test
+    deadline-queue-test
+    swap-roles-test
+    omarchy-theme-test
+    alignment-test
+    track-atlas-spatial-test
+    omatrack-cli
+  COMMENT "Unit-test binaries (no GUI)")
+
 # ── Make failures readable on Windows ───────────────────────────────
 # QTest only writes to stdout when stderr has a console attached. Under
 # CTest it never does, so on Windows every PASS/FAIL line goes to the

@@ -573,7 +573,7 @@ Track Atlas JSONL -----------------------> src/app/TelemetryStore
 
 CMake is driven through `CMakePresets.json` (Ninja + ccache, GUI precompiled headers, lld when available): `release` builds
 into `./build`, `debug` into `./build-debug` with `QT_QML_DEBUG`, `asan` into
-`./build-asan`, and `acceptance` into `./build-acceptance` with the
+`./build-asan` (ASan+UBSan; `make memcheck` runs the unit tests there with leak detection), and `acceptance` into `./build-acceptance` with the
 state-mutating GUI acceptance harness explicitly enabled. Production builds
 must not contain that harness. `third_party/CMakeLists.txt` compiles the local
 bridge and its Git-pinned `motorsport-telemetry-rs` dependency into a

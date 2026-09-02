@@ -79,7 +79,14 @@
     {
       "name": "asan",
       "configurePreset": "asan",
-      "output": { "outputOnFailure": true }
+      "output": { "outputOnFailure": true },
+      "environment": {
+        "ASAN_OPTIONS": "detect_leaks=1:halt_on_error=1",
+        "LSAN_OPTIONS": "suppressions=${sourceDir}/cmake/lsan.supp",
+        "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1",
+        "QT_QPA_PLATFORM": "offscreen",
+        "QT_QPA_PLATFORMTHEME": "minimal"
+      }
     },
     {
       "name": "ci",
