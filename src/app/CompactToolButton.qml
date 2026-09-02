@@ -1,9 +1,7 @@
 pragma ComponentBehavior: Bound
 
-// ToolButton with a wired ToolTip. The raw ToolButton repeats
-// `ToolTip.text` / `ToolTip.visible: hovered` on every call site in the
-// toolbar and header; this component folds that into a single `tip` property
-// so the callers read as intent, not boilerplate.
+// Compact toolbar button. `tip` is the accessible name; it is not shown as a
+// hover tooltip.
 
 import QtQuick
 import QtQuick.Controls
@@ -13,6 +11,5 @@ ToolButton {
 
     property string tip: ""
 
-    ToolTip.text: control.tip
-    ToolTip.visible: hovered && control.tip !== ""
+    Accessible.name: control.tip !== "" ? control.tip : control.text
 }

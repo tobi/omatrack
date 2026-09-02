@@ -131,9 +131,6 @@ signals:
 
     void cursorChangedFromCanvas();
     void cornerEdited();
-    void cornerRenameRequested(int index);
-    void cornerMenuRequested(int cornerIndex, const QString& cornerName,
-                             double fraction, qreal x, qreal y);
     void channelMenuRequested(const QString& key, const QString& title,
                               double weight, qreal x, qreal y);
     void overlayChanged();

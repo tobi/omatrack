@@ -5970,6 +5970,11 @@ void TelemetryStore::autoGenerateCorners() {
         z.end = double(end) / double(n - 1);
         corners_.append(z);
     }
+    if (focusedCorner_ >= 0) {
+        focusedCorner_ = -1;
+        markers_.clear();
+        emit cornerFocusChanged();
+    }
     emit cornersChanged();
 }
 
@@ -5998,6 +6003,16 @@ void TelemetryStore::saveCorners() {
 QString TelemetryStore::cornerName(int index) const {
     if (index < 0 || index >= corners_.size()) return QString();
     return corners_[index].name;
+}
+
+double TelemetryStore::cornerStart(int index) const {
+    if (index < 0 || index >= corners_.size()) return 0.0;
+    return corners_[index].start;
+}
+
+double TelemetryStore::cornerEnd(int index) const {
+    if (index < 0 || index >= corners_.size()) return 0.0;
+    return corners_[index].end;
 }
 QVector<CornerRow> TelemetryStore::buildCornerRows() const {
     QVector<CornerRow> out;
@@ -6950,15 +6965,20 @@ int TelemetryStore::addCorner(double start, double end) {
                                        }) -
                           corners_.cbegin());
     emit cornersChanged();
-    saveCorners();
     return index;
 }
 
 void TelemetryStore::deleteCorner(int index) {
     if (index < 0 || index >= corners_.size()) return;
+    if (focusedCorner_ == index) {
+        focusedCorner_ = -1;
+        markers_.clear();
+        emit cornerFocusChanged();
+    } else if (focusedCorner_ > index) {
+        --focusedCorner_;
+    }
     corners_.removeAt(index);
     emit cornersChanged();
-    saveCorners();
 }
 
 void TelemetryStore::setCornerName(int index, const QString& name) {
@@ -6970,7 +6990,6 @@ void TelemetryStore::setCornerName(int index, const QString& name) {
     sanitized.replace('\r', ' ').replace('\n', ' ');
     corners_[index].name = sanitized;
     emit cornersChanged();
-    saveCorners();
 }
 
 void TelemetryStore::updateCorner(int index, double start, double end) {
@@ -6987,9 +7006,46 @@ void TelemetryStore::updateCorner(int index, double start, double end) {
 }
 
 void TelemetryStore::setEditingCorners(bool editing) {
-    if (editingCorners_ == editing) return;
-    editingCorners_ = editing;
+    if (editing)
+        beginCornerEdit();
+    else
+        cancelCornerEdit();
+}
+
+void TelemetryStore::beginCornerEdit() {
+    if (editingCorners_ || !primarySession_) return;
+    cornerEditBaseline_ = corners_;
+    editingCorners_ = true;
+    if (focusedCorner_ >= 0) clearCornerFocus();
     emit editingCornersChanged();
+}
+
+void TelemetryStore::commitCornerEdit() {
+    if (!editingCorners_) return;
+    if (corners_ != cornerEditBaseline_) saveCorners();
+    editingCorners_ = false;
+    cornerEditBaseline_.clear();
+    emit editingCornersChanged();
+    if (focusedCorner_ >= corners_.size()) {
+        focusedCorner_ = -1;
+        markers_.clear();
+        emit cornerFocusChanged();
+    }
+}
+
+void TelemetryStore::cancelCornerEdit() {
+    if (!editingCorners_) return;
+    const bool changed = corners_ != cornerEditBaseline_;
+    if (changed) corners_ = cornerEditBaseline_;
+    editingCorners_ = false;
+    cornerEditBaseline_.clear();
+    emit editingCornersChanged();
+    if (focusedCorner_ >= corners_.size()) {
+        focusedCorner_ = -1;
+        markers_.clear();
+        emit cornerFocusChanged();
+    }
+    if (changed) emit cornersChanged();
 }
 
 QString TelemetryStore::cornerNameAt(double frac) const {

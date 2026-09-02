@@ -166,10 +166,9 @@ ColumnLayout {
                     visible: mappingDelegate.row.wildcard === true || mappingDelegate.row.detected === true
                 }
                 ToolButton {
+                    Accessible.name: mappingDelegate.row.inheritedValue ? "Revert to inherited driver name" : "Remove mapping"
                     Layout.preferredHeight: Style.controlHeight
                     Layout.preferredWidth: Style.controlHeight
-                    ToolTip.text: mappingDelegate.row.inheritedValue ? "Revert to inherited driver name" : "Remove mapping"
-                    ToolTip.visible: hovered
                     enabled: driverNameEditor.text !== "" || !mappingDelegate.row.inheritedValue
                     text: "×"
 
@@ -191,8 +190,6 @@ ColumnLayout {
                         required property int index
                         required property var modelData
 
-                        ToolTip.text: nameSuggestion.modelData.historicalCount > 0 ? "Used by " + nameSuggestion.modelData.historicalCount + (nameSuggestion.modelData.historicalCount === 1 ? " TRACK.yml file" : " TRACK.yml files") : "Suggested driver name"
-                        ToolTip.visible: hovered
                         font.pixelSize: Style.smallFontSize
                         implicitHeight: Style.smallControlHeight
                         objectName: "driverNameSuggestion" + mappingDelegate.index + "_" + nameSuggestion.index

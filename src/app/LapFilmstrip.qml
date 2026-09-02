@@ -13,10 +13,6 @@ import QtQuick.Layouts
 Rectangle {
     id: filmstrip
 
-    signal pointerTooltipDismissed(string owner)
-    signal pointerTooltipMoved(string owner, real x, real y)
-    signal pointerTooltipRequested(string owner, string text, real x, real y)
-
     clip: true
     color: Style.traceBackgroundColor
     implicitHeight: Store.filmstripSessions.count > 0 ? Store.filmstripSessions.count * 33 + 9 : 0
@@ -132,7 +128,6 @@ Rectangle {
 
                                     readonly property bool confidenceLap: !sessionStrip.reference && Store.traceConfidenceMode && Store.traceConfidenceIncludesLap(sessionStrip.sessionKey, proportionalLap.lapId)
                                     required property bool countsForBest
-                                    required property string hoverText
                                     required property bool isComplete
                                     required property bool isFastest
                                     required property string label
@@ -140,7 +135,6 @@ Rectangle {
                                     property bool selectedLap: sessionStrip.reference ? sessionStrip.sessionKey === Store.compareSessionKey && proportionalLap.lapId === Store.compareLapIndex : sessionStrip.sessionKey === Store.primarySessionKey && proportionalLap.lapId === Store.primaryLapIndex
                                     required property int timeMs
                                     required property string timeText
-                                    readonly property string tooltipOwner: "lap:" + sessionStrip.sessionKey + ":" + proportionalLap.lapId + ":" + sessionStrip.reference
 
                                     // Bound to the Row, not `parent`:
                                     // a delegate evaluates its
@@ -185,7 +179,6 @@ Rectangle {
 
                                         onClicked: mouse => {
                                             if (mouse.button === Qt.RightButton) {
-                                                filmstrip.pointerTooltipDismissed(proportionalLap.tooltipOwner);
                                                 Store.compareLap(sessionStrip.sessionKey, proportionalLap.lapId);
                                                 return;
                                             }
@@ -193,15 +186,6 @@ Rectangle {
                                                 Store.compareLap(sessionStrip.sessionKey, proportionalLap.lapId);
                                             else
                                                 Store.selectLap(sessionStrip.sessionKey, proportionalLap.lapId);
-                                        }
-                                        onEntered: {
-                                            const point = proportionalLapMouse.mapToItem(Overlay.overlay, proportionalLapMouse.mouseX, proportionalLapMouse.mouseY);
-                                            filmstrip.pointerTooltipRequested(proportionalLap.tooltipOwner, proportionalLap.hoverText + (proportionalLap.confidenceLap ? " · Consistency cohort" : ""), point.x, point.y);
-                                        }
-                                        onExited: filmstrip.pointerTooltipDismissed(proportionalLap.tooltipOwner)
-                                        onPositionChanged: mouse => {
-                                            const point = proportionalLapMouse.mapToItem(Overlay.overlay, mouse.x, mouse.y);
-                                            filmstrip.pointerTooltipMoved(proportionalLap.tooltipOwner, point.x, point.y);
                                         }
                                     }
                                 }

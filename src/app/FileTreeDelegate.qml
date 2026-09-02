@@ -47,52 +47,15 @@ Item {
     required property string title
     readonly property color titleColor: !row.available ? Style.redColor : row.activeFile ? Style.accentColor : row.referenceFile ? Style.orangeColor : Style.foregroundColor
     readonly property string titleText: row.sessionName !== "" && row.driver !== "" ? row.sessionName + " " + row.driver : row.sessionName || row.driver || "Untitled"
-    readonly property string tooltipOwner: "file:" + row.path
     required property string topQuartileTime
     readonly property bool videoFile: row.kind === "file" && row.isVideo
 
     signal contextMenuRequested(string role, string path, string key, bool hasSession, bool isVideo, string mappingKey, string driver, bool pinned)
     signal fileActivated(string path, string key, bool hasSession)
-    signal pointerTooltipDismissed(string owner)
-    signal pointerTooltipMoved(string owner, real x, real y)
-    signal pointerTooltipRequested(string owner, string text, real x, real y)
     signal setActiveRequested(string key)
     signal setReferenceRequested(string key)
     signal toggleNodeRequested(string role, string path)
 
-    function hoverText(): string {
-        if (row.role === "folder")
-            return "";
-        if (row.role === "day")
-            return row.name;
-        if (row.role !== "file")
-            return row.path;
-        const lines = [];
-        if (row.hasSession) {
-            if (row.sessionName !== "")
-                lines.push("Session: " + row.sessionName);
-            lines.push("Driver: " + (row.driver !== "" ? row.driver : "—"));
-            lines.push("Best lap: " + (row.bestTime !== "" ? row.bestTime : "—"));
-            lines.push("Avg fastest 25%: " + (row.topQuartileTime !== "" ? row.topQuartileTime : "—"));
-            lines.push("Drive time: " + (row.driveTime !== "" ? row.driveTime : "—"));
-            lines.push("Laps: " + row.lapCount);
-            lines.push("Car class: " + (row.carClass !== "" ? row.carClass : "—"));
-            lines.push("Series: " + (row.seriesName !== "" ? row.seriesName : "—"));
-            lines.push("Date: " + (row.sessionDate !== "" ? row.sessionDate : "—"));
-        } else {
-            if (row.sessionName !== "")
-                lines.push("Session: " + row.sessionName);
-            if (row.driver !== "")
-                lines.push("Driver: " + row.driver);
-            if (row.carClass !== "")
-                lines.push("Car class: " + row.carClass);
-            if (row.seriesName !== "")
-                lines.push("Series: " + row.seriesName);
-            if (row.sessionDate !== "")
-                lines.push("Date: " + row.sessionDate);
-        }
-        return (lines.length > 0 ? lines.join("\n") : "No telemetry metadata available") + "\n\n" + row.name;
-    }
     function requestVisibleMetadata(): void {
         if (row.role === "file")
             Store.requestSidebarMetadata(row.path, row.metadataInViewport);
@@ -215,7 +178,6 @@ Item {
 
         onClicked: mouse => {
             if (mouse.button === Qt.RightButton) {
-                row.pointerTooltipDismissed(row.tooltipOwner);
                 if (row.role === "file" || row.role === "source" || row.role === "folder")
                     row.contextMenuRequested(row.role, row.path, row.key, row.hasSession, row.videoFile, row.mappingKey, row.driver, row.pinned);
                 return;
@@ -224,20 +186,6 @@ Item {
                 row.toggleNodeRequested(row.role, row.path);
             else if (row.role === "file")
                 row.fileActivated(row.path, row.key, row.hasSession);
-        }
-        onEntered: {
-            const text = row.hoverText();
-            if (text === "")
-                return;
-            const point = rowMouse.mapToItem(Overlay.overlay, rowMouse.mouseX, rowMouse.mouseY);
-            row.pointerTooltipRequested(row.tooltipOwner, text, point.x, point.y);
-        }
-        onExited: row.pointerTooltipDismissed(row.tooltipOwner)
-        onPositionChanged: mouse => {
-            if (row.hoverText() === "")
-                return;
-            const point = rowMouse.mapToItem(Overlay.overlay, mouse.x, mouse.y);
-            row.pointerTooltipMoved(row.tooltipOwner, point.x, point.y);
         }
     }
 }

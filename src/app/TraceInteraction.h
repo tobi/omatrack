@@ -63,7 +63,6 @@ public:
     void updateZoneHoverCursor(const QPointF& position);
 
     // Menus (emit callbacks).
-    void showCornerMenu(const QPointF& position);
     void showChannelMenu(const QPointF& position);
 
     // Event handlers. Return false when the base-class handler should run.
@@ -104,8 +103,6 @@ public:
     // Callbacks — TraceView wires these to its QML-facing signals.
     std::function<void()> onCursorChangedFromCanvas;
     std::function<void()> onCornerEdited;
-    std::function<void(int, const QString&, double, qreal, qreal)>
-        onCornerMenuRequested;
     std::function<void(const QString&, const QString&, double, qreal, qreal)>
         onChannelMenuRequested;
     std::function<void()> onOverlayChanged;

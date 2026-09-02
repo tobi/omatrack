@@ -36,13 +36,9 @@ Item {
     // ── model roles ───────────────────────────────────────────────
     required property string role
     required property string stem
-    readonly property string tooltipOwner: "session:" + row.key
     readonly property bool videoSession: row.role === "session" && row.isVideo
 
     signal driverRenameRequested(string mappingKey, string driver)
-    signal pointerTooltipDismissed(string owner)
-    signal pointerTooltipMoved(string owner, real x, real y)
-    signal pointerTooltipRequested(string owner, string text, real x, real y)
     signal sessionActivated(string key)
     signal sessionIsolated(string key)
     signal setActiveRequested(string key)
@@ -212,7 +208,6 @@ Item {
 
         onClicked: mouse => {
             if (mouse.button === Qt.RightButton) {
-                row.pointerTooltipDismissed(row.tooltipOwner);
                 if (row.role === "session") {
                     sessionMenu.setVideoMetadataAvailable(row.videoSession);
                     sessionMenu.x = mouse.x;
@@ -228,19 +223,6 @@ Item {
             } else if (row.role === "session") {
                 row.sessionActivated(row.key);
             }
-        }
-        onEntered: {
-            if (row.role !== "session")
-                return;
-            const point = rowMouse.mapToItem(Overlay.overlay, rowMouse.mouseX, rowMouse.mouseY);
-            row.pointerTooltipRequested(row.tooltipOwner, row.stem, point.x, point.y);
-        }
-        onExited: row.pointerTooltipDismissed(row.tooltipOwner)
-        onPositionChanged: mouse => {
-            if (row.role !== "session")
-                return;
-            const point = rowMouse.mapToItem(Overlay.overlay, mouse.x, mouse.y);
-            row.pointerTooltipMoved(row.tooltipOwner, point.x, point.y);
         }
     }
 }

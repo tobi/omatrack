@@ -27,10 +27,6 @@ ApplicationWindow {
     // Rapid selection changes update one pending source instead of queuing
     // stale callLater closures that can reopen the previous recording.
     property url pendingVideoSource: ""
-    property string pointerTooltipOwner: ""
-    property string pointerTooltipText: ""
-    property real pointerTooltipX: 0
-    property real pointerTooltipY: 0
     readonly property string referenceSessionKey: Store.compareSessionKey
     property string referenceSessionName: ""
     property bool sidebarVisible: true
@@ -64,10 +60,6 @@ ApplicationWindow {
     function dismissCornerPopover() {
         Store.clearCornerFocus();
     }
-    function dismissPointerTooltip(owner: string): void {
-        if (root.pointerTooltipOwner === owner)
-            root.pointerTooltipOwner = "";
-    }
     function formatMediaTime(seconds) {
         if (!isFinite(seconds) || seconds < 0)
             seconds = 0;
@@ -91,19 +83,6 @@ ApplicationWindow {
             videoPlayer.closeMedia();
         root.telemetryVideoActive = false;
         root.videoVisible = false;
-    }
-    function movePointerTooltip(owner: string, x: real, y: real): void {
-        if (root.pointerTooltipOwner !== owner)
-            return;
-        root.pointerTooltipX = Math.max(8, Math.min(root.width - pointerTooltip.implicitWidth - 8, x + 14));
-        root.pointerTooltipY = Math.max(8, Math.min(root.height - pointerTooltip.implicitHeight - 8, y + 14));
-    }
-    function openCornerRename(index: int): void {
-        if (index < 0 || index >= Store.corners.rowCount)
-            return;
-        cornerRenameDialog.cornerIndex = index;
-        cornerRenameDialog.fieldValue = Store.cornerName(index);
-        cornerRenameDialog.open();
     }
     function openDriverRename(mappingKey: string, driver: string): void {
         driverRenameDialog.mappingKey = mappingKey;
@@ -190,11 +169,6 @@ ApplicationWindow {
             return;
         root.videoFullscreenLayout = layout;
         root.revealVideoControls();
-    }
-    function showPointerTooltip(owner: string, text: string, x: real, y: real): void {
-        root.pointerTooltipOwner = owner;
-        root.pointerTooltipText = text;
-        root.movePointerTooltip(owner, x, y);
     }
     function showVideo(source, telemetryLinked) {
         root.telemetryVideoActive = telemetryLinked === true;
@@ -801,8 +775,6 @@ ApplicationWindow {
                     required property string label
                     required property string strategyId
 
-                    ToolTip.text: referenceSyncItem.detail
-                    ToolTip.visible: referenceSyncItem.hovered
                     checkable: true
                     checked: Store.comparisonSyncStrategy === referenceSyncItem.strategyId
                     text: referenceSyncItem.label
@@ -815,8 +787,7 @@ ApplicationWindow {
             }
         }
         ToolButton {
-            ToolTip.text: videoPlayer.muted ? "Enable audio (M)" : "Mute audio (M)"
-            ToolTip.visible: hovered
+            Accessible.name: videoPlayer.muted ? "Enable audio (M)" : "Mute audio (M)"
             anchors.left: parent.left
             anchors.margins: 6
             anchors.top: parent.top
@@ -841,8 +812,7 @@ ApplicationWindow {
             }
         }
         ToolButton {
-            ToolTip.text: "Close video"
-            ToolTip.visible: hovered
+            Accessible.name: "Close video"
             anchors.margins: 6
             anchors.right: parent.right
             anchors.top: parent.top
@@ -942,9 +912,8 @@ ApplicationWindow {
                     spacing: 3
 
                     ToolButton {
+                        Accessible.name: "Back 2 seconds (Left)"
                         Layout.preferredWidth: 42
-                        ToolTip.text: "Back 2 seconds (Left)"
-                        ToolTip.visible: hovered
                         font.capitalization: Font.MixedCase
                         font.pixelSize: Style.smallFontSize
                         objectName: "videoSeekBackButton"
@@ -954,9 +923,8 @@ ApplicationWindow {
                         onClicked: videoSync.seekRelative(-2)
                     }
                     ToolButton {
+                        Accessible.name: root.dualVideo ? "Play/pause both recordings (Space)" : "Play/pause (Space)"
                         Layout.preferredWidth: 54
-                        ToolTip.text: root.dualVideo ? "Play/pause both recordings (Space)" : "Play/pause (Space)"
-                        ToolTip.visible: hovered
                         font.capitalization: Font.MixedCase
                         font.pixelSize: Style.smallFontSize
                         objectName: "videoPlayPauseButton"
@@ -968,9 +936,8 @@ ApplicationWindow {
                         }
                     }
                     ToolButton {
+                        Accessible.name: root.comparisonSyncValue("detail", "Reference synchronization")
                         Layout.preferredWidth: 130
-                        ToolTip.text: root.comparisonSyncValue("detail", "Reference synchronization")
-                        ToolTip.visible: hovered
                         font.capitalization: Font.MixedCase
                         font.pixelSize: Style.smallFontSize
                         objectName: "referenceSyncButton"
@@ -986,9 +953,8 @@ ApplicationWindow {
                         }
                     }
                     ToolButton {
+                        Accessible.name: "Forward 2 seconds (Right)"
                         Layout.preferredWidth: 42
-                        ToolTip.text: "Forward 2 seconds (Right)"
-                        ToolTip.visible: hovered
                         font.capitalization: Font.MixedCase
                         font.pixelSize: Style.smallFontSize
                         objectName: "videoSeekForwardButton"
@@ -1009,8 +975,7 @@ ApplicationWindow {
                                 required property int index
                                 required property string modelData
 
-                                ToolTip.text: modelData + " (" + (index + 1) + ")"
-                                ToolTip.visible: hovered
+                                Accessible.name: modelData + " (" + (index + 1) + ")"
                                 checkable: true
                                 checked: root.videoFullscreenLayout === index + 1
                                 font.capitalization: Font.MixedCase
@@ -1024,9 +989,8 @@ ApplicationWindow {
                         }
                     }
                     ToolButton {
+                        Accessible.name: root.videoOverlayVisible ? "Hide telemetry overlay (O)" : "Show telemetry overlay (O)"
                         Layout.preferredWidth: 42
-                        ToolTip.text: root.videoOverlayVisible ? "Hide telemetry overlay (O)" : "Show telemetry overlay (O)"
-                        ToolTip.visible: hovered
                         checkable: true
                         checked: root.videoOverlayVisible
                         font.capitalization: Font.MixedCase
@@ -1056,9 +1020,8 @@ ApplicationWindow {
                         Layout.fillWidth: !root.standaloneVideoActive
                     }
                     ToolButton {
+                        Accessible.name: root.videoFullscreen ? "Leave fullscreen (Esc)" : "Fullscreen (F)"
                         Layout.preferredWidth: 42
-                        ToolTip.text: root.videoFullscreen ? "Leave fullscreen (Esc)" : "Fullscreen (F)"
-                        ToolTip.visible: hovered
                         font.capitalization: Font.MixedCase
                         font.pixelSize: Style.smallFontSize
                         objectName: "videoFullscreenButton"
@@ -1344,33 +1307,11 @@ ApplicationWindow {
         x: Math.round((parent.width - width) / 2)
         y: Math.round((parent.height - height) / 2)
     }
-    TextInputDialog {
-        id: cornerRenameDialog
-
-        property int cornerIndex: -1
-
-        fieldObjectName: "cornerRenameField"
-        objectName: "cornerRenameDialog"
-        parent: Overlay.overlay
-        placeholderText: "Corner name"
-        title: "Rename corner zone"
-
-        onAccepted: Store.setCornerName(cornerIndex, cornerRenameDialog.fieldValue)
-    }
     ChannelsWindow {
         id: channelsWindow
     }
     PreferencesWindow {
         id: settingsWindow
-    }
-    ToolTip {
-        id: pointerTooltip
-
-        parent: Overlay.overlay
-        text: root.pointerTooltipText
-        visible: root.pointerTooltipOwner !== ""
-        x: root.pointerTooltipX
-        y: root.pointerTooltipY
     }
     SpanHoverCard {
         id: spanHoverCard
@@ -1389,10 +1330,6 @@ ApplicationWindow {
         anchors.fill: parent
         objectName: "lapFilmstrip"
         parent: root.videoFullscreen ? fullscreenFilmstripSlot : dockedFilmstripSlot
-
-        onPointerTooltipDismissed: owner => root.dismissPointerTooltip(owner)
-        onPointerTooltipMoved: (owner, x, y) => root.movePointerTooltip(owner, x, y)
-        onPointerTooltipRequested: (owner, text, x, y) => root.showPointerTooltip(owner, text, x, y)
     }
     // ══ body ════════════════════════════════════════════════════════
     ColumnLayout {
@@ -1435,9 +1372,6 @@ ApplicationWindow {
                 }
                 onFileIsolated: key => root.useSessionAlone(key)
                 onFolderMetadataRequested: path => videoMetadataDialog.openForFolder(path)
-                onPointerTooltipDismissed: owner => root.dismissPointerTooltip(owner)
-                onPointerTooltipMoved: (owner, x, y) => root.movePointerTooltip(owner, x, y)
-                onPointerTooltipRequested: (owner, text, x, y) => root.showPointerTooltip(owner, text, x, y)
                 onSetActiveRequested: key => root.setSessionActive(key)
                 onSetReferenceRequested: key => root.setSessionReference(key)
                 onTrackAssignmentRequested: key => trackAssignmentDialog.openForSession(key)
@@ -1652,13 +1586,6 @@ ApplicationWindow {
                             channelsWindow.show();
                             channelsWindow.raise();
                         }
-                        onCornerMenuRequested: (cornerIndex, cornerName, fraction, x, y) => {
-                            cornerMenu.cornerIndex = cornerIndex;
-                            cornerMenu.cornerName = cornerName;
-                            cornerMenu.fraction = fraction;
-                            cornerMenu.popup(trace, x, y);
-                        }
-                        onCornerRenameRequested: index => root.openCornerRename(index)
                         onSpanHoverChanged: {
                             if (trace.spanHoverVisible)
                                 spanHoverCard.follow(trace, trace.spanHoverX, trace.spanHoverY);
@@ -1671,55 +1598,22 @@ ApplicationWindow {
                             onActivated: Store.clearCompare()
                         }
                         Shortcut {
-                            enabled: tracePane.visible
+                            enabled: tracePane.visible && !Store.editingCorners
                             sequence: "A"
 
-                            onActivated: Store.setEditingCorners(!Store.editingCorners)
+                            onActivated: Store.beginCornerEdit()
                         }
-                        Menu {
-                            id: cornerMenu
+                        Shortcut {
+                            enabled: Store.editingCorners
+                            sequence: "Escape"
 
-                            property int cornerIndex: -1
-                            property string cornerName: ""
-                            property real fraction: 0
+                            onActivated: Store.cancelCornerEdit()
+                        }
+                        Shortcut {
+                            enabled: Store.editingCorners
+                            sequence: "Ctrl+S"
 
-                            objectName: "cornerMenu"
-
-                            MenuItem {
-                                text: "Add zone here"
-
-                                onTriggered: {
-                                    const index = trace.addCornerAt(cornerMenu.fraction);
-                                    if (index >= 0)
-                                        root.openCornerRename(index);
-                                }
-                            }
-                            MenuItem {
-                                enabled: cornerMenu.cornerIndex >= 0
-                                height: enabled ? implicitHeight : 0
-                                text: "Rename " + cornerMenu.cornerName + "…"
-                                visible: enabled
-
-                                onTriggered: root.openCornerRename(cornerMenu.cornerIndex)
-                            }
-                            MenuItem {
-                                enabled: cornerMenu.cornerIndex >= 0
-                                height: enabled ? implicitHeight : 0
-                                text: "Delete " + cornerMenu.cornerName
-                                visible: enabled
-
-                                onTriggered: Store.deleteCorner(cornerMenu.cornerIndex)
-                            }
-                            MenuSeparator {
-                            }
-                            MenuItem {
-                                text: "Auto-generate zones"
-
-                                onTriggered: {
-                                    Store.autoGenerateCorners();
-                                    Store.saveCorners();
-                                }
-                            }
+                            onActivated: Store.commitCornerEdit()
                         }
                         Menu {
                             id: channelMenu
@@ -1831,6 +1725,15 @@ ApplicationWindow {
                         height: Math.min(implicitHeight, tracePane.height - 16)
                         width: Math.min(260, Math.max(220, tracePane.width * 0.28))
                         z: 4
+                    }
+                    CornerEditOverlay {
+                        anchors.right: tracePane.right
+                        anchors.rightMargin: 8
+                        anchors.top: trace.top
+                        anchors.topMargin: 8
+                        height: Math.min(implicitHeight, tracePane.height - 16)
+                        width: Math.min(300, Math.max(240, tracePane.width * 0.32))
+                        z: 5
                     }
                 }
             }
@@ -1948,8 +1851,6 @@ ApplicationWindow {
                         property real pressX: 0
                         property real startOffset: 0
 
-                        ToolTip.text: "Drag the orange reference trace; double-click to reset"
-                        ToolTip.visible: containsMouse
                         anchors.fill: parent
                         cursorShape: Qt.SizeHorCursor
                         hoverEnabled: true

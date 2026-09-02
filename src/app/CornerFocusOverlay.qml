@@ -105,7 +105,7 @@ OverlayCard {
     color: Style.surfaceColor
     implicitHeight: overlayBody.implicitHeight + 20
     objectName: "cornerFocusOverlay"
-    opacity: Store.focusedCorner >= 0 ? 1 : 0
+    opacity: Store.focusedCorner >= 0 && !Store.editingCorners ? 1 : 0
     radius: 6
     visible: overlay.opacity > 0
 

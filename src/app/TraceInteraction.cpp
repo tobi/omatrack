@@ -100,6 +100,10 @@ int TraceInteraction::focusedZoneHandleAt(const QPointF& position) const {
 
 void TraceInteraction::updateZoneHoverCursor(const QPointF& position) {
     if (dragging_ || panning_ || selecting_) return;
+    if (!store_ || !store_->editingCorners()) {
+        if (onUnsetCursor) onUnsetCursor();
+        return;
+    }
     switch (focusedZoneHandleAt(position)) {
         case 1:
         case 2:
@@ -158,24 +162,6 @@ void TraceInteraction::updateHoveredSpan(const QPointF& position) {
     if (onSpanHoverChanged) onSpanHoverChanged();
 }
 
-void TraceInteraction::showCornerMenu(const QPointF& position) {
-    if (!store_) return;
-    const double fraction = fracForX(position.x());
-    int cornerIndex = -1;
-    for (int index = 0; index < store_->corners().size(); ++index) {
-        const CornerZone& corner = store_->corners()[index];
-        if (corner.start <= fraction && fraction <= corner.end) {
-            cornerIndex = index;
-            break;
-        }
-    }
-    if (onCornerMenuRequested)
-        onCornerMenuRequested(
-            cornerIndex,
-            cornerIndex >= 0 ? store_->corners()[cornerIndex].name : QString(),
-            fraction, position.x(), position.y());
-}
-
 void TraceInteraction::showChannelMenu(const QPointF& position) {
     const int index = channelIndexAt(position);
     const auto& specs = layout_->channelSpecs();
@@ -218,9 +204,7 @@ void TraceInteraction::mousePressEvent(QMouseEvent* event) {
     const double x = event->position().x();
     const double fraction = fracForX(x);
     if (event->button() == Qt::RightButton) {
-        if (store_->editingCorners() || event->position().y() < kTopPad)
-            showCornerMenu(event->position());
-        else
+        if (event->position().y() >= kTopPad)
             showChannelMenu(event->position());
         event->accept();
         return;
@@ -245,7 +229,8 @@ void TraceInteraction::mousePressEvent(QMouseEvent* event) {
         return;
     }
 
-    const int focusHandle = focusedZoneHandleAt(event->position());
+    const int focusHandle =
+        store_->editingCorners() ? focusedZoneHandleAt(event->position()) : 0;
     if (focusHandle > 0) {
         dragCorner_ = store_->focusedCorner();
         dragCornerMove_ = focusHandle == 3;
@@ -261,7 +246,7 @@ void TraceInteraction::mousePressEvent(QMouseEvent* event) {
     }
 
     const int cornerIndex = cornerIndexAt(event->position());
-    if (cornerIndex >= 0) {
+    if (cornerIndex >= 0 && !store_->editingCorners()) {
         store_->focusCorner(cornerIndex);
         event->accept();
         return;
@@ -351,7 +336,6 @@ void TraceInteraction::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void TraceInteraction::mouseReleaseEvent(QMouseEvent* event) {
-    if (dragging_ && dragCorner_ >= 0 && store_) store_->saveCorners();
     dragging_ = false;
     panning_ = false;
     dragCorner_ = -1;
@@ -368,21 +352,30 @@ void TraceInteraction::mouseReleaseEvent(QMouseEvent* event) {
 
 void TraceInteraction::wheelEvent(QWheelEvent* event) {
     if (!store_ || !store_->primaryUnified()) return;
-    double delta = event->angleDelta().y();
-    if (delta == 0.0) delta = event->pixelDelta().y();
-    if (delta == 0.0) return;
+    const QPoint pixel = event->pixelDelta();
+    const QPoint angle = event->angleDelta();
+    const double dx = pixel.x() != 0 ? double(pixel.x()) : double(angle.x());
+    const double dy = pixel.y() != 0 ? double(pixel.y()) : double(angle.y());
+    if (dx == 0.0 && dy == 0.0) return;
+    if (std::abs(dx) > std::abs(dy)) {
+        const double dataWidth =
+            std::max(1.0, itemWidth_ - layout_->labelWidth());
+        store_->pan(-dx / dataWidth * store_->viewSpan());
+        event->accept();
+        return;
+    }
     if (!layout_->fitChannels()) {
         layout_->layoutLanes();
         const qreal maxScroll =
             std::max<qreal>(0.0, layout_->contentHeight() - itemHeight_);
         layout_->setVerticalScroll(
-            std::clamp(layout_->verticalScroll() - qreal(delta / 120.0 * 48.0),
+            std::clamp(layout_->verticalScroll() - qreal(dy / 120.0 * 48.0),
                        qreal(0.0), maxScroll));
         if (onLaneLayoutChanged) onLaneLayoutChanged();
         if (onInvalidateScene) onInvalidateScene();
     } else {
         const double anchor = fracForX(event->position().x());
-        store_->zoomAt(anchor, std::pow(0.8, delta / 120.0));
+        store_->zoomAt(anchor, std::pow(0.8, dy / 120.0));
     }
     event->accept();
 }
@@ -395,7 +388,10 @@ bool TraceInteraction::keyPressEvent(QKeyEvent* event) {
         case Qt::Key_Right: steps = kCursorSamplesPerStep; break;
         case Qt::Key_Escape:
             event->accept();
-            store_->clearCornerFocus();
+            if (store_->editingCorners())
+                store_->cancelCornerEdit();
+            else
+                store_->clearCornerFocus();
             return true;
         case Qt::Key_Home:
             event->accept();

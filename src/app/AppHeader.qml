@@ -8,7 +8,7 @@ import Omatrack
 // Component.onCompleted drive readout.refresh() so Main.qml never has to poke
 // it. Actions that open sibling windows or toggle root state are emitted as
 // signals; the only root-window state read back is sidebarVisible (for the
-// toggle tooltip). Portable AppImage updates come from the Updater singleton.
+// toggle label). Portable AppImage updates come from the Updater singleton.
 
 import QtQuick
 import QtQuick.Controls
@@ -19,8 +19,6 @@ ToolBar {
     id: appBar
 
     property list<string> recentFileRows: []
-
-    // Root-window state the tooltip text reads.
     required property bool sidebarVisible
     property var sidecarRows: []
 
@@ -354,8 +352,6 @@ ToolBar {
 
                     required property string modelData
 
-                    ToolTip.text: recentFileItem.modelData
-                    ToolTip.visible: recentFileItem.hovered
                     text: appBar.recentFileLabel(recentFileItem.modelData)
 
                     onTriggered: Store.openFile(recentFileItem.modelData)
@@ -379,8 +375,6 @@ ToolBar {
 
                     required property var modelData
 
-                    ToolTip.text: sidecarItem.modelData.path
-                    ToolTip.visible: sidecarItem.hovered
                     text: sidecarItem.modelData.name || sidecarItem.modelData.path
 
                     onTriggered: Store.attachSidecar(sidecarItem.modelData.path)
@@ -403,21 +397,10 @@ ToolBar {
             onTriggered: appBar.cornersRequested()
         }
         MenuItem {
-            checkable: true
-            checked: Store.editingCorners
-            text: "Edit corner zones"
+            enabled: Store.primaryLabel !== ""
+            text: "Edit corners…"
 
-            onTriggered: Store.setEditingCorners(checked)
-        }
-        MenuItem {
-            text: "Auto-generate corners"
-
-            onTriggered: Store.autoGenerateCorners()
-        }
-        MenuItem {
-            text: "Save corners"
-
-            onTriggered: Store.saveCorners()
+            onTriggered: Store.beginCornerEdit()
         }
         MenuSeparator {
         }

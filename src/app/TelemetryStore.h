@@ -124,6 +124,10 @@ struct CornerZone {
     double start = 0.0;  // 0-1 lap fraction
     double end = 0.0;
     double mid() const { return (start + end) / 2.0; }
+    bool operator==(const CornerZone& other) const {
+        return name == other.name && std::abs(start - other.start) < 1.0e-9 &&
+               std::abs(end - other.end) < 1.0e-9;
+    }
 };
 
 // ── lap node (leaf of the sidebar tree) ─────────────────────────────
@@ -383,6 +387,7 @@ class TelemetryStore : public QObject {
     Q_PROPERTY(bool comparing READ comparing NOTIFY selectionChanged)
     Q_PROPERTY(bool editingCorners READ editingCorners WRITE setEditingCorners
                    NOTIFY editingCornersChanged)
+    Q_PROPERTY(int cornerCount READ cornerCount NOTIFY cornersChanged)
     Q_PROPERTY(int focusedCorner READ focusedCorner NOTIFY cornerFocusChanged)
     Q_PROPERTY(
         QString highlightedCornerMarker READ highlightedCornerMarker WRITE
@@ -736,6 +741,9 @@ public:
     static QStringList cornerConfigPath(const QString& track);
     Q_INVOKABLE void setCornerName(int index, const QString& name);
     Q_INVOKABLE QString cornerName(int index) const;
+    Q_INVOKABLE double cornerStart(int index) const;
+    Q_INVOKABLE double cornerEnd(int index) const;
+    int cornerCount() const { return corners_.size(); }
     // Corner focus: the workspace zooms onto one corner instead of opening a
     // second window. focusCorner() remembers the viewport it replaced,
     // clearCornerFocus() puts it back.
@@ -762,6 +770,9 @@ public:
     Q_INVOKABLE int addCorner(double start, double end);
     Q_INVOKABLE void deleteCorner(int index);
     Q_INVOKABLE void setEditingCorners(bool editing);
+    Q_INVOKABLE void beginCornerEdit();
+    Q_INVOKABLE void commitCornerEdit();
+    Q_INVOKABLE void cancelCornerEdit();
 
     // ── channel config ─────────────────────────────────────────────
     Q_INVOKABLE bool channelVisible(const QString& key) const;
@@ -1140,6 +1151,7 @@ private:
     double viewStart_ = 0.0;
     double viewEnd_ = 1.0;
     bool editingCorners_ = false;
+    QVector<CornerZone> cornerEditBaseline_;
     bool ready_ = false;
     std::optional<bool> videoMutedOverride_;
     bool loading_ = false;

@@ -70,16 +70,10 @@ Rectangle {
                 required property string statusText
                 required property string targetPath
 
-                ToolTip.delay: 400
-                ToolTip.text: row.sourcePath + "\n→ " + row.targetPath + "\n" + row.statusText
-                ToolTip.visible: hover.hovered
                 color: Style.backgroundColor
                 height: 58
                 width: preview.width - 10
 
-                HoverHandler {
-                    id: hover
-                }
                 ColumnLayout {
                     anchors.fill: parent
                     anchors.margins: 4

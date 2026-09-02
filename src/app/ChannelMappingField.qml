@@ -64,20 +64,6 @@ Item {
         const count = row.historicalCount > 0 ? "  ×" + row.historicalCount : "";
         return prefix + row.value + unit + count;
     }
-    function suggestionTip(row: var): string {
-        let parts = [];
-        if (row.automatic)
-            parts.push(mappingField.folderScope ? "Automatic match from sampled recordings" : "Automatic match for this video");
-        if (row.unit)
-            parts.push("Source unit " + row.unit);
-        if (row.examples && row.examples.length > 0)
-            parts.push("Examples " + row.examples.join(", "));
-        if (row.historicalCount > 0)
-            parts.push("Used by " + row.historicalCount + (row.historicalCount === 1 ? " TRACK.yml file" : " TRACK.yml files"));
-        if (!row.available)
-            parts.push(mappingField.folderScope ? "Not present in sampled recordings" : "Not present in this video");
-        return parts.join(" · ");
-    }
 
     Layout.fillWidth: true
     implicitHeight: mappingGrid.implicitHeight
@@ -158,10 +144,9 @@ Item {
                 onClicked: mappingField.browseChannels()
             }
             ToolButton {
+                Accessible.name: mappingField.inheritedValue !== "" ? "Use inherited mapping" : "Use automatic mapping"
                 Layout.preferredHeight: Style.controlHeight
                 Layout.preferredWidth: Style.controlHeight
-                ToolTip.text: mappingField.inheritedValue !== "" ? "Use inherited mapping" : "Use automatic mapping"
-                ToolTip.visible: hovered
                 enabled: mappingEditor.text !== ""
                 text: "×"
 
@@ -190,8 +175,6 @@ Item {
 
                     required property var modelData
 
-                    ToolTip.text: mappingField.suggestionTip(suggestionButton.modelData)
-                    ToolTip.visible: hovered
                     font.family: Style.monoFontFamily
                     font.pixelSize: Style.smallFontSize
                     implicitHeight: Style.smallControlHeight

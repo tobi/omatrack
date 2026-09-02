@@ -623,10 +623,19 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                             added >= 0 && store.corners().value(added).name ==
                                               QStringLiteral("Autotest Kink");
                         store.deleteCorner(added);
-                        // A right-click must open the Material
-                        // menu: a QWidget QMenu would abort
-                        // this process.
+                        bool overlayReady = false;
                         bool menuReady = false;
+                        store.beginCornerEdit();
+                        QCoreApplication::processEvents();
+                        if (QObject* overlay = root->findChild<QObject*>(
+                                QStringLiteral("cornerEditOverlay"))) {
+                            overlayReady =
+                                overlay->property("visible").toBool();
+                            qWarning() << "AUTOTEST corner edit overlay:"
+                                       << overlayReady;
+                        }
+                        store.cancelCornerEdit();
+                        QCoreApplication::processEvents();
                         if (auto* trace = root->findChild<TraceView*>(
                                 QStringLiteral("traceView"))) {
                             if (trace->width() > 0 && trace->height() > 0) {
@@ -636,40 +645,22 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
                                     QEvent::MouseButtonPress, spot, spot, spot,
                                     Qt::RightButton, Qt::RightButton,
                                     Qt::NoModifier);
-                                auto popupVisible = [&](const char* name) {
-                                    QCoreApplication::sendEvent(trace, &press);
-                                    // Opening runs through
-                                    // the event loop;
-                                    // sample after it
-                                    // settles.
-                                    QCoreApplication::processEvents();
-                                    QObject* popup = root->findChild<QObject*>(
-                                        QLatin1String(name));
-                                    const bool shown =
-                                        popup &&
-                                        popup->property("visible").toBool();
-                                    if (popup)
-                                        QMetaObject::invokeMethod(popup,
-                                                                  "close");
-                                    QCoreApplication::processEvents();
-                                    return shown;
-                                };
-                                store.setEditingCorners(false);
-                                const bool channelReady =
-                                    popupVisible("channelMenu");
-                                store.setEditingCorners(true);
-                                const bool cornerReady =
-                                    popupVisible("cornerMenu");
+                                QCoreApplication::sendEvent(trace, &press);
+                                QCoreApplication::processEvents();
+                                QObject* popup = root->findChild<QObject*>(
+                                    QStringLiteral("channelMenu"));
+                                menuReady = popup &&
+                                            popup->property("visible").toBool();
+                                if (popup)
+                                    QMetaObject::invokeMethod(popup, "close");
+                                QCoreApplication::processEvents();
                                 qWarning()
-                                    << "AUTOTEST channel menu:" << channelReady
-                                    << "corner menu:" << cornerReady;
-                                menuReady = channelReady && cornerReady;
+                                    << "AUTOTEST channel menu:" << menuReady;
                             }
                         }
-                        qWarning() << "AUTOTEST corner menu:" << menuReady;
                         root->setProperty("cornerEditAutotestReady",
                                           addedReady && renamedReady &&
-                                              menuReady &&
+                                              overlayReady && menuReady &&
                                               store.corners().size() == before);
                     }
                     if (autotestAlignment && comparisonSelected)

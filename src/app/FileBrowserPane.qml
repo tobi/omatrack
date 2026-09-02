@@ -12,9 +12,6 @@ Pane {
     signal fileActivated(string path, string key, bool hasSession)
     signal fileIsolated(string key)
     signal folderMetadataRequested(string path)
-    signal pointerTooltipDismissed(string owner)
-    signal pointerTooltipMoved(string owner, real x, real y)
-    signal pointerTooltipRequested(string owner, string text, real x, real y)
     signal setActiveRequested(string key)
     signal setReferenceRequested(string key)
     signal trackAssignmentRequested(string key)
@@ -267,10 +264,9 @@ Pane {
                     onTextEdited: filterTimer.restart()
                 }
                 ToolButton {
+                    Accessible.name: "Clear file filter"
                     Layout.preferredHeight: 28
                     Layout.preferredWidth: 28
-                    ToolTip.text: "Clear file filter"
-                    ToolTip.visible: hovered
                     font.pixelSize: 11
                     text: "×"
                     visible: fileFilter.text !== ""
@@ -287,10 +283,9 @@ Pane {
                     visible: running
                 }
                 ToolButton {
+                    Accessible.name: "Rescan file sources"
                     Layout.preferredHeight: 28
                     Layout.preferredWidth: 28
-                    ToolTip.text: "Rescan file sources"
-                    ToolTip.visible: hovered
                     enabled: !Store.loading
                     font.pixelSize: 13
                     text: "↻"
@@ -378,9 +373,6 @@ Pane {
                         }
                     }
                     onFileActivated: (path, key, hasSession) => browser.fileActivated(path, key, hasSession)
-                    onPointerTooltipDismissed: owner => browser.pointerTooltipDismissed(owner)
-                    onPointerTooltipMoved: (owner, x, y) => browser.pointerTooltipMoved(owner, x, y)
-                    onPointerTooltipRequested: (owner, text, x, y) => browser.pointerTooltipRequested(owner, text, x, y)
                     onSetActiveRequested: key => browser.setActiveRequested(key)
                     onSetReferenceRequested: key => browser.setReferenceRequested(key)
                     onToggleNodeRequested: (role, path) => filterModel.toggleNode(role, path)
@@ -445,10 +437,9 @@ Pane {
                         Layout.fillWidth: true
                     }
                     ToolButton {
+                        Accessible.name: filterModel.eventFilterActive ? "Clear filters and leave event mode" : "Clear filters"
                         Layout.preferredHeight: 20
                         Layout.preferredWidth: 20
-                        ToolTip.text: filterModel.eventFilterActive ? "Clear filters and leave event mode" : "Clear filters"
-                        ToolTip.visible: hovered
                         font.pixelSize: 11
                         text: "×"
                         visible: filterModel.anyFilterActive

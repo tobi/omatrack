@@ -92,8 +92,8 @@ public:
         QColor fillColor;
     };
     /// Decimates `series` to fit `rect`: when samples outnumber device pixels
-    /// it emits a min/max vertical envelope per column; otherwise a polyline
-    /// through interpolated sample points. `sourceFraction` maps a viewport
+    /// it emits a connected min/max ribbon; otherwise a polyline through the
+    /// samples in view. `sourceFraction` maps a viewport
     /// fraction in [xStart, xStart+xSpan] onto a series index fraction in
     /// [0, 1]. `clipLow`/`clipHigh` mask columns outside [clipLow, clipHigh]
     /// on the viewport axis (neighbour-lap windows). Replaces the three

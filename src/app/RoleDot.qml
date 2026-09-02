@@ -8,7 +8,6 @@ import Omatrack
 // than as decoration.
 
 import QtQuick
-import QtQuick.Controls
 
 Item {
     id: dot
@@ -54,8 +53,6 @@ Item {
     MouseArea {
         id: dotMouse
 
-        ToolTip.text: dot.tip
-        ToolTip.visible: containsMouse && dot.tip !== ""
         anchors.fill: parent
         hoverEnabled: true
 

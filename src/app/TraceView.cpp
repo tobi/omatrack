@@ -110,10 +110,6 @@ TraceView::TraceView(QQuickItem* parent) : QQuickItem(parent) {
         emit cursorChangedFromCanvas();
     };
     interaction_.onCornerEdited = [this]() { emit cornerEdited(); };
-    interaction_.onCornerMenuRequested = [this](int idx, const QString& name,
-                                                double frac, qreal x, qreal y) {
-        emit cornerMenuRequested(idx, name, frac, x, y);
-    };
     interaction_.onChannelMenuRequested =
         [this](const QString& key, const QString& title, double weight, qreal x,
                qreal y) {

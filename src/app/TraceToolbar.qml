@@ -78,6 +78,18 @@ Item {
         }
         CompactToolButton {
             Layout.fillHeight: true
+            Layout.maximumWidth: 72
+            Layout.minimumWidth: 72
+            Layout.preferredWidth: 72
+            enabled: Store.primaryLabel !== ""
+            objectName: "editCornersButton"
+            text: Store.editingCorners ? "Editing" : "Corners"
+            tip: "Edit corner zones"
+
+            onClicked: Store.beginCornerEdit()
+        }
+        CompactToolButton {
+            Layout.fillHeight: true
             Layout.maximumWidth: 48
             Layout.minimumWidth: 48
             Layout.preferredWidth: 48
