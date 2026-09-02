@@ -348,7 +348,7 @@ Native lap distance is accepted only when its continuity and total agree with in
 - Render standard channels plus opt-in raw source channels.
 - Configure channel visibility, color, and lane weight; lanes always fit the pane height with no vertical scrolling or pinning, sized in proportion to channel weight. Right-click a lane for size (double/normal/half) and hide.
 - Share one cursor/readout across traces.
-- Left-drag selects a range; middle-drag pans; wheel, shift+wheel, and ctrl+wheel zoom; double-click resets zoom; on-screen zoom icons back the gestures. Navigate with mouse and keyboard.
+- Left-drag selects a range; middle-drag pans; two-finger horizontal trackpad scroll pans; wheel, shift+wheel, and ctrl+wheel zoom; double-click resets zoom; on-screen zoom icons back the gestures. Navigate with mouse and keyboard.
 - Keep corner/complex ranges visible without obscuring the data.
 - Manual damper alignment is one explicit reference-sync strategy. Offer it only when both laps carry front-damper data; selecting it reveals the compact damper strip and applies its offset through the same shared map lookup as traces, delta, cursor values, and video.
 
@@ -421,7 +421,7 @@ Native lap distance is accepted only when its continuity and total agree with in
 - Treat individual `corner_ranges` and grouped `corner_complexes` as distinct first-class analysis scopes.
 - Preserve complex membership and any Track Atlas landmarks instead of reconstructing them in QML.
 - Provide single-lap and primary/reference summaries: time, entry/apex/exit speed, gear, steering, brake/lift/turn-in/apex/throttle points, deltas, and trace excerpts.
-- Support automatic brake-zone fallback, direct range editing, add/rename/delete of zones, and local user overrides when authoritative data is unavailable.
+- Corner and track-zone editing is a dedicated mode (`A`, header **Edit corners…**, or the trace **Corners** button). Drag zone edges on the traces; rename, add, auto-generate, and delete in the edit overlay; **Save** writes the local `omatrack.yml` override and leaves the mode, **Cancel** / Escape restores the snapshot taken on enter. Analysis click-to-focus, the channel context menu, and Track Atlas defaults stay outside the mode.
 - Inspect corners in place in the trace workspace: clicking a corner in the trace ruler zooms the viewport onto that corner (centred in the middle of the left half of the trace area), dims the traces outside the corner range, and annotates the zoomed view with brake / turn-in / apex / throttle-pickup markers — small ticks along the bottom that become full-height lines on hover.
 - Keep the corner in that position even at start/finish. The viewport is
   allowed to run past the lap, and what lies beyond is either the
@@ -571,7 +571,7 @@ Track Atlas JSONL -----------------------> src/app/TelemetryStore
 
 ### Build graph
 
-CMake is driven through `CMakePresets.json` (Ninja + ccache): `release` builds
+CMake is driven through `CMakePresets.json` (Ninja + ccache, GUI precompiled headers, lld when available): `release` builds
 into `./build`, `debug` into `./build-debug` with `QT_QML_DEBUG`, `asan` into
 `./build-asan`, and `acceptance` into `./build-acceptance` with the
 state-mutating GUI acceptance harness explicitly enabled. Production builds
@@ -1000,10 +1000,10 @@ Embedded libmpv playback must be verified on the native Linux/Omarchy OpenGL sce
   — no warning, no error, just missing traces. Declaring 32-bit indices keeps
   the node out of that merge path. Do not "simplify" it back to unindexed
   triangles.
-- `TraceView` draws a device-pixel min/max envelope when a column covers
-  more than one sample. Once there is less than one sample per device
-  pixel it switches to a polyline through the samples, so a zoomed slope
-  is a line instead of a staircase of axis-aligned bars. Only each
+- `TraceView` draws a connected min/max ribbon when a column covers more
+  than about two samples. Once there are fewer samples than that per device
+  pixel it switches to a polyline through the samples in view, so a zoomed
+  slope is a line instead of a stretched column raster. Only each
   channel's vertical range is cached.
 - Measured on a full-height Sebring lap, seven lanes, 1280×800 at dpr 1.94
   (`OMATRACK_AUTOTEST_ZOOM=1`, `OMATRACK_AUTOTEST_HOVER=1`): geometry build

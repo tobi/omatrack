@@ -31,7 +31,31 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
 find_program(CCACHE_PROGRAM ccache)
 if(CCACHE_PROGRAM)
-  set(CMAKE_CXX_COMPILER_LAUNCHER ${CCACHE_PROGRAM})
+  # pch_defines/time_macros: ccache otherwise treats every PCH-backed object
+  # as a miss. include_file_mtime/ctime: GCC's PCH validation uses those.
+  set(CMAKE_CXX_COMPILER_LAUNCHER
+    ${CMAKE_COMMAND} -E env
+    CCACHE_SLOPPINESS=pch_defines,time_macros,include_file_mtime,include_file_ctime
+    ${CCACHE_PROGRAM})
+endif()
+
+option(OMATRACK_ENABLE_PCH
+  "Precompile the common Qt/STL headers for the GUI target" ON)
+if(OMATRACK_ENABLE_PCH)
+  set(CMAKE_PCH_INSTANTIATE_TEMPLATES ON)
+endif()
+
+# Ninja already rebuilds only dirty TUs; this makes the link of those TUs
+# cheaper. GNU ld is the bottleneck on the Qt+Rust executable. mold if
+# present, else lld (packaged with clang). Apple ld64 is left alone.
+if(NOT MSVC AND NOT APPLE)
+  find_program(OMATRACK_MOLD mold)
+  find_program(OMATRACK_LLD ld.lld)
+  if(OMATRACK_MOLD)
+    add_link_options(-fuse-ld=mold)
+  elseif(OMATRACK_LLD)
+    add_link_options(-fuse-ld=lld)
+  endif()
 endif()
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS

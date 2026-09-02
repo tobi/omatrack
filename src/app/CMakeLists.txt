@@ -61,6 +61,7 @@ qt_add_qml_module(omatrack
     ChannelsWindow.qml
     LapFilmstrip.qml
     CornerFocusOverlay.qml
+    CornerEditOverlay.qml
     DriverMetadataSection.qml
     FileAssociationsDialog.qml
     FileBrowserPane.qml
@@ -182,6 +183,11 @@ target_link_libraries(omatrack PRIVATE
   Qt6::Network)
 if(WIN32)
   target_link_libraries(omatrack PRIVATE dwmapi shell32)
+endif()
+
+# After link libraries so the PCH sees the same include dirs as the TUs.
+if(OMATRACK_ENABLE_PCH)
+  target_precompile_headers(omatrack PRIVATE omatrack_pch.h)
 endif()
 
 # qmlprofiler and qmlpreview can only attach to a QML-debug-enabled binary.
