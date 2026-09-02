@@ -3,8 +3,22 @@
 #include "MpvVideoItem.h"
 #include "TelemetryStore.h"
 
+#include <QDeadlineTimer>
+#include <QQuickItem>
+#include <QQuickWindow>
 #include <QUrl>
 #include <QtMath>
+
+#include <chrono>
+
+namespace {
+
+QDeadlineTimer deadlineFrom(bool immediate, std::chrono::milliseconds delay) {
+    if (immediate) return QDeadlineTimer();
+    return QDeadlineTimer(delay);
+}
+
+}  // namespace
 
 VideoSyncController::VideoSyncController(QObject* parent) : QObject(parent) {
     continuousSyncTimer_.setInterval(100);
@@ -35,6 +49,7 @@ void VideoSyncController::setPrimaryPlayer(MpvVideoItem* player) {
     disconnectPrimary();
     primaryPlayer_ = player;
     connectPrimary();
+    attachDisplayPump();
     updateContinuousSyncTimer();
     emit primaryPlayerChanged();
 }
@@ -91,6 +106,9 @@ void VideoSyncController::connectPrimary() {
     primaryPausedConn_ =
         QObject::connect(primaryPlayer_, &MpvVideoItem::pausedChanged, this,
                          &VideoSyncController::onPrimaryPausedChanged);
+    primaryWindowConn_ =
+        QObject::connect(primaryPlayer_, &QQuickItem::windowChanged, this,
+                         [this](QQuickWindow*) { attachDisplayPump(); });
 }
 
 void VideoSyncController::disconnectPrimary() {
@@ -98,6 +116,9 @@ void VideoSyncController::disconnectPrimary() {
     if (primaryPositionConn_) QObject::disconnect(primaryPositionConn_);
     if (primarySeekingConn_) QObject::disconnect(primarySeekingConn_);
     if (primaryPausedConn_) QObject::disconnect(primaryPausedConn_);
+    if (primaryWindowConn_) QObject::disconnect(primaryWindowConn_);
+    if (displayTickConn_) QObject::disconnect(displayTickConn_);
+    displayWindow_.clear();
 }
 
 void VideoSyncController::connectReference() {
@@ -231,7 +252,8 @@ void VideoSyncController::realignPausedVideos() {
         return;
     if (!store_) return;
 
-    store_->setCursorFromVideoTime(primaryPlayer_->position());
+    enqueueTelemetry(true);
+    queue_.pump();
     const double target = store_->compareVideoTime();
     referenceSyncPauseAttempts_ = 0;
     if (target <= 0) {
@@ -262,7 +284,8 @@ void VideoSyncController::verifyPausedVideoAlignment() {
         return;
     }
 
-    store_->setCursorFromVideoTime(primaryPlayer_->position());
+    enqueueTelemetry(true);
+    queue_.pump();
     const double target = store_->compareVideoTime();
     if (target <= 0) {
         setReferenceSyncState(QStringLiteral("NO MAP"));
@@ -335,7 +358,8 @@ void VideoSyncController::seekRelative(double seconds) {
     const double target =
         std::max(0.0, primaryPlayer_->targetPosition() + seconds);
     primaryPlayer_->seek(target);
-    if (telemetryVideoActive_ && store_) store_->setCursorFromVideoTime(target);
+    lastPrimaryMediaTime_ = target;
+    enqueueTelemetry(true);
     if (dualVideo()) syncReferenceVideo(true);
 }
 
@@ -428,20 +452,26 @@ void VideoSyncController::onPrimaryLoadedChanged() {
 
 void VideoSyncController::onPrimaryPositionChanged() {
     if (!primaryPlayer_ || !primaryPlayer_->loaded()) return;
-    if (telemetryVideoActive_ && !primaryPlayer_->paused()) {
-        if (store_) store_->setCursorFromVideoTime(primaryPlayer_->position());
-    } else if (dualVideo() && primaryPlayer_->paused() &&
-               referenceSyncPauseAttempts_ > 0) {
+    lastPrimaryMediaTime_ = primaryPlayer_->position();
+    // Store-only plus a coalesced upsert. The pump (QTimer / afterAnimating)
+    // runs the work; this must not call setCursorFromVideoTime.
+    if (telemetryVideoActive_ && !primaryPlayer_->paused() &&
+        !primaryPlayer_->seeking())
+        enqueueTelemetry(false);
+    else if (dualVideo() && primaryPlayer_->paused() &&
+             referenceSyncPauseAttempts_ > 0)
         pausedAlignmentTimer_.start();
-    }
 }
 
 void VideoSyncController::onPrimarySeekingChanged() {
-    if (primaryPlayer_ && !primaryPlayer_->seeking()) tryResumeLapAdvance();
+    if (!primaryPlayer_) return;
+    if (primaryPlayer_->seeking()) enqueueTelemetry(true);
+    if (!primaryPlayer_->seeking()) tryResumeLapAdvance();
 }
 
 void VideoSyncController::onPrimaryPausedChanged() {
     if (!primaryPlayer_) return;
+    enqueueTelemetry(true);
     if (!referencePlayer_ || !referencePlayer_->loaded()) return;
     if (referencePlayer_->paused() != primaryPlayer_->paused())
         referencePlayer_->setPaused(primaryPlayer_->paused());
@@ -519,4 +549,57 @@ void VideoSyncController::setLapAdvanceCount(int count) {
     if (lapAdvanceCount_ == count) return;
     lapAdvanceCount_ = count;
     emit lapAdvanceCountChanged();
+}
+
+double VideoSyncController::sampledPlayerTime() const {
+    if (!primaryPlayer_) return lastPrimaryMediaTime_;
+    return primaryPlayer_->targetPosition();
+}
+
+void VideoSyncController::applySampledCursor() {
+    if (!primaryPlayer_ || !primaryPlayer_->loaded()) return;
+    const double t = sampledPlayerTime();
+    lastPrimaryMediaTime_ = t;
+    if (!qFuzzyCompare(sampledMediaTime_ + 1.0, t + 1.0)) {
+        sampledMediaTime_ = t;
+        emit sampledMediaTimeChanged();
+    }
+    if (telemetryVideoActive_ && store_) store_->setCursorFromVideoTime(t);
+}
+
+void VideoSyncController::enqueueTelemetry(bool immediate) {
+    if (!telemetryVideoActive_ || !store_) return;
+    queue_.upsert(QStringLiteral("cursor"), DeadlineQueue::Priority::High,
+                  deadlineFrom(immediate, std::chrono::milliseconds(16)),
+                  [this]() { applySampledCursor(); });
+    queue_.upsert(QStringLiteral("readout"), DeadlineQueue::Priority::Normal,
+                  deadlineFrom(immediate, std::chrono::milliseconds(40)),
+                  [this]() {
+                      if (store_) store_->notifyCursorReadout();
+                  });
+    queue_.upsert(QStringLiteral("channels"), DeadlineQueue::Priority::Low,
+                  deadlineFrom(immediate, std::chrono::milliseconds(50)),
+                  [this]() {
+                      if (store_) store_->notifyChannelsCursorTick();
+                  });
+}
+
+void VideoSyncController::attachDisplayPump() {
+    QQuickWindow* window = primaryPlayer_ ? primaryPlayer_->window() : nullptr;
+    if (window == displayWindow_) return;
+    if (displayTickConn_) QObject::disconnect(displayTickConn_);
+    displayWindow_ = window;
+    if (!displayWindow_) return;
+    displayTickConn_ =
+        QObject::connect(displayWindow_, &QQuickWindow::afterAnimating, this,
+                         &VideoSyncController::onDisplayTick);
+}
+
+void VideoSyncController::onDisplayTick() {
+    if (telemetryVideoActive_ && primaryPlayer_ && primaryPlayer_->loaded() &&
+        !primaryPlayer_->paused() && !primaryPlayer_->seeking()) {
+        lastPrimaryMediaTime_ = primaryPlayer_->position();
+        enqueueTelemetry(false);
+    }
+    queue_.pump();
 }

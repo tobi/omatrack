@@ -1921,6 +1921,16 @@ private slots:
         QVERIFY(std::abs(interpolateFraction(y, 0.25) - 7.5) < 1e-9);
     }
 
+    void interpolateFractionPointerSpan() {
+        const double y[] = {0.0, 10.0, 20.0, 30.0};
+        QCOMPARE(interpolateFraction(y, 4, 0.0), 0.0);
+        QCOMPARE(interpolateFraction(y, 4, 1.0), 30.0);
+        QVERIFY(std::abs(interpolateFraction(y, 4, 0.5) - 15.0) < 1e-9);
+        QCOMPARE(
+            interpolateFraction(static_cast<const double*>(nullptr), 0, 0.5),
+            0.0);
+    }
+
     void interpolateFractionClamps() {
         const std::vector<double> y{0.0, 10.0, 20.0};
         QCOMPARE(interpolateFraction(y, -0.5), 0.0);

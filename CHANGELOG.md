@@ -2,6 +2,13 @@
 
 All notable user-facing changes are documented here.
 
+## 1.7.1 — 2026-09-02
+
+- Video publishes its position; overlay, header and traces sample it through
+  a deadline queue at display refresh and never run inside the player
+  callback, so Windows laptops stop dropping frames. USB, import and plugins
+  are unchanged.
+
 ## 1.7.0 — 2026-08-31
 
 - Preferences → Plugins: plugin folder, enable/disable, reload, and an

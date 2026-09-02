@@ -253,47 +253,40 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
         };
 
         const bool whiteRef = store_ && store_->overlayRefWhite();
-        const QString refStyle =
-            store_ ? store_->overlayRefStyle() : QStringLiteral("dashed");
         const QColor refColor =
             whiteRef ? QColor(Qt::white)
                      : QColor(store_ && !store_->overlayRefColor().isEmpty()
                                   ? store_->overlayRefColor()
                                   : QStringLiteral("#e09d7f"));
         const qreal refWidth = whiteRef ? 2.4 * s : 1.5 * s;
-        auto refDash = TraceSceneBuilder::EnvelopeStyle::Dash::Dashed;
-        if (refStyle == QLatin1String("dotted"))
-            refDash = TraceSceneBuilder::EnvelopeStyle::Dash::Dotted;
-        else if (refStyle == QLatin1String("solid"))
-            refDash = TraceSceneBuilder::EnvelopeStyle::Dash::Solid;
-        const auto drawStyled =
-            [&](const std::vector<double>& values, double maximum,
-                bool reference, qreal width, const QColor& color,
-                TraceSceneBuilder::EnvelopeStyle::Dash dash) {
-                if (values.size() < 2 || !primary || primary->size() < 2 ||
-                    maximum <= 0.0)
-                    return;
-                auto sourceFraction = [&](double viewportFrac) -> double {
-                    const double pf = std::clamp(viewportFrac, 0.0, 1.0);
-                    return reference
-                               ? snapshot_.compareFractionForPrimaryFraction(pf)
-                               : pf;
-                };
-                TraceSceneBuilder::EnvelopeStyle style;
-                style.width = width;
-                style.color = color;
-                style.dash = dash;
-                builder_.envelopePolyline(values, sourceFraction, windowStart,
-                                          kWindowFrac, graphRect, 0.0, maximum,
-                                          style, 0.0, 1.0);
+        // Video HUD rebuilds a 10% scrolling window every frame. Dashed
+        // envelopePolyline flushes a polyline per gap, exploding QSG nodes
+        // at display rate. Style still applies on TraceView (invalidateScene).
+        const auto drawStyled = [&](const std::vector<double>& values,
+                                    double maximum, bool reference, qreal width,
+                                    const QColor& color) {
+            if (values.size() < 2 || !primary || primary->size() < 2 ||
+                maximum <= 0.0)
+                return;
+            auto sourceFraction = [&](double viewportFrac) -> double {
+                const double pf = std::clamp(viewportFrac, 0.0, 1.0);
+                return reference
+                           ? snapshot_.compareFractionForPrimaryFraction(pf)
+                           : pf;
             };
+            TraceSceneBuilder::EnvelopeStyle style;
+            style.width = width;
+            style.color = color;
+            style.dash = TraceSceneBuilder::EnvelopeStyle::Dash::Solid;
+            builder_.envelopePolyline(values, sourceFraction, windowStart,
+                                      kWindowFrac, graphRect, 0.0, maximum,
+                                      style, 0.0, 1.0);
+        };
         if (compare) {
             drawStyled(compare->throttle, 1.0, true, refWidth,
-                       withAlpha(whiteRef ? QColor(Qt::white) : refColor, 200),
-                       refDash);
+                       withAlpha(whiteRef ? QColor(Qt::white) : refColor, 200));
             drawStyled(compare->brake, brakeMax, true, refWidth,
-                       withAlpha(whiteRef ? QColor(Qt::white) : refColor, 200),
-                       refDash);
+                       withAlpha(whiteRef ? QColor(Qt::white) : refColor, 200));
         }
         drawTrace(primaryThrottle, throttleScale, false, 2.5 * s,
                   throttleColor_);

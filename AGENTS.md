@@ -51,6 +51,8 @@ Interactive rendering targets 60–120 fps. A frame is 16.67 ms at 60 Hz and 8.3
 - Cache normalized laps, raw-channel resamples, delta arrays, geometry, and overview rasters; invalidate them only when their inputs change.
 - Bound draw work to the viewport and pixel budget. Do not submit every source sample when fewer points can produce the same image.
 - Avoid per-frame heap allocation and avoid copies of full telemetry arrays.
+  libmpv `time-pos` must not fan out into store/HUD/header/trace work; enqueue
+  it on `DeadlineQueue` and pump independently of the player callback.
 - Benchmark hover and zoom paths before and after renderer changes. A visually correct regression that misses the frame budget is not complete.
 
 ### Native Linux and Omarchy are deliberate
@@ -357,8 +359,12 @@ Native lap distance is accepted only when its continuity and total agree with in
 - Place video in the resizable section above the traces. Playback chrome stays minimal: the top-left speaker button toggles persisted audio mute, Space toggles playback, and Left/Right skip the primary recording by 2 seconds. Store the mute preference under `video.muted` in `omatrack.yml`. Fullscreen dual-video compose is split, active-with-reference pip, reference-with-active pip, active only, or reference only (keys 1–5). In pip layouts the main recording is inset so it is not confused with a single full-frame video. `S` toggles 0.25× slow motion on the primary clock (the reference follows). The top bar shows the layout name, then driver / lap N/M / fuel for the active and reference recordings.
 - Selecting an AiM video session selects its fastest lap and pauses at the
   telemetry cursor. The primary recording is the clock: it always plays at
-  1×, each frame advances the telemetry cursor and traces, and it is never
-  rate-corrected or sought to chase telemetry during play. An explicit cursor
+  1×, publishes `time-pos` into `MpvVideoItem::position_`, and is never
+  rate-corrected or sought to chase telemetry during play. Overlay, header
+  and traces sample that position through `DeadlineQueue` (latest-wins per
+  key, priority, deadline) pumped from `QTimer` / `QQuickWindow::afterAnimating`,
+  never from `processEvents`. Seek and pause upsert the same keys with
+  deadline-now. An explicit cursor
   jump still seeks both recordings. Reaching the end of the current lap
   pauses, shows a short next-lap 3-2-1, then selects the next lap in the same
   session and resumes; the reference lap is not changed. Primary/reference
@@ -592,8 +598,8 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
 | App updates | `src/app/AppUpdate.*`, `src/app/AppUpdater.*`, `src/app/WindowsAssociations.*` | GitHub latest-release parse, SHA-256 verify, AppImage replace, Velopack `Update.exe` apply, macOS dmg stage-and-swap, Windows file associations, header/preferences state | Telemetry, Track Atlas |
 | Remote protocols | `src/app/WebDavBackend.cpp`, `src/app/S3Backend.cpp`, `src/app/SigV4.*` | Listing a server and signing a request — PROPFIND/XML, ListObjectsV2, AWS Signature Version 4 | Cache layout, eviction policy, anything that outlives one request |
 | Renderer | `src/app/TraceView.*`, `src/app/TraceLaneLayout.*`, `src/app/TraceInteraction.*`, `src/app/TraceSceneBuilder.*`, `src/app/TraceTextCache.*`, `src/app/TraceSnapshot.h` | Scene-graph geometry generation for the trace surfaces (one shared `envelopePolyline` decimator), lane layout, direct trace interaction; every surface reads store state through the read-only `TraceSnapshot` | Parsing, network access, persistent product state, `friend` access into the store |
-| Video sync | `src/app/VideoSyncController.*` | Primary/reference playback timing: reference rate, hard seeks, slow motion, next-lap countdown | Layout, media decoding, alignment math |
-| Video renderer | `src/app/MpvVideoItem.*` | libmpv lifecycle, OpenGL FBO rendering, playback state, and exact seek | Telemetry extraction, session association, or QML layout policy |
+| Video sync | `src/app/VideoSyncController.*`, `src/app/DeadlineQueue.*` | Primary/reference playback timing: reference rate, hard seeks, slow motion, next-lap countdown; GUI-thread deadline queue that samples published video position for cursor/HUD/header/channels | Layout, media decoding, alignment math, overlay work inside `MpvVideoItem::processEvents` |
+| Video renderer | `src/app/MpvVideoItem.*` | libmpv lifecycle, OpenGL FBO rendering, playback state, and exact seek | Telemetry extraction, session association, QML layout policy, or `setCursorFromVideoTime` |
 | QML UI | `src/app/*.qml` | Material windows, layout, delegates, controls, high-level orchestration | Full telemetry loops, duplicated analysis, format branches |
 | Bootstrap | `src/app/main.cpp`, `src/app/SingleInstance.*` | Qt startup, style, fonts, store ownership, initial properties, module load, single-instance path hand-off; headless command dispatch before Qt | Product analysis, autotest behaviour |
 | Session/store | `src/app/TelemetryStore.*` + collaborators `PreferencesStore.*`, `TrackAtlasManager.*`, `OverlayManager.*`, `LibraryModel.*`, `StoreModels.*`/`StoreTypes.h`, `AsyncJob.h` | Lazy session handles, ETag-keyed normalized telemetry cache for remote recordings, selection, cached selectable primary→reference alignment, comparison, viewport; preferences (debounced `omatrack.yml` writer), Track Atlas, MTX overlays, the library tree model and typed row models/gadgets handed to QML; every background pipeline is an `AsyncJob`/`SerialJobQueue` | Pixel-level paint loops, vendor byte parsing, self-update, hand-rolled `QFutureWatcher`/generation counters |

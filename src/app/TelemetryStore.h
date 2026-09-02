@@ -800,6 +800,13 @@ public:
     const QVector<CornerZone>& corners() const { return corners_; }
     QString cornerNameAt(double frac) const;
     Q_INVOKABLE CursorReadout cursorReadout() const;
+    /// Header / delta-bar refresh. Video playback emits this from a queued
+    /// deadline job, not from every cursorFracChanged. Pointer/keyboard
+    /// cursor motion still emits it immediately from setCursorFrac().
+    void notifyCursorReadout() { emit cursorReadoutChanged(); }
+    /// Channels window playhead samples. No-op in QML when the window is
+    /// hidden; the video path only enqueues this at a low-priority deadline.
+    void notifyChannelsCursorTick() { emit channelsCursorTick(); }
     /// Accumulated primary−reference time at the cursor station. NaN when
     /// there is no compare lap. Negative is ahead.
     Q_INVOKABLE double cursorTimeDelta() const;
@@ -922,6 +929,8 @@ signals:
     void selectionChanged();
     void editingCornersChanged();
     void cursorFracChanged();
+    void cursorReadoutChanged();
+    void channelsCursorTick();
     void viewChanged();
     void sessionsChanged();
     void cornersChanged();

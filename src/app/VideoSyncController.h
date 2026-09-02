@@ -9,15 +9,23 @@
 // MpvVideoItem pointers QML assigns after creation. It connects to player and
 // store signals itself, so QML no longer needs nested Connections blocks or
 // hand-rolled Timers for sync.
+//
+// libmpv time-pos only stores the last media time. Overlay, header, traces
+// and channels are enqueued on DeadlineQueue with deadlines and pumped from
+// QTimer / QQuickWindow::afterAnimating — never from processEvents.
 
 #pragma once
 
+#include "DeadlineQueue.h"
+
 #include <QObject>
+#include <QPointer>
 #include <QQmlEngine>
 #include <QString>
 #include <QTimer>
 
 class MpvVideoItem;
+class QQuickWindow;
 class TelemetryStore;
 
 class VideoSyncController : public QObject {
@@ -48,6 +56,8 @@ class VideoSyncController : public QObject {
         int lapAdvanceCount READ lapAdvanceCount NOTIFY lapAdvanceCountChanged)
     Q_PROPERTY(QString lapAdvanceNextLabel READ lapAdvanceNextLabel NOTIFY
                    lapAdvanceCountChanged)
+    Q_PROPERTY(double sampledMediaTime READ sampledMediaTime NOTIFY
+                   sampledMediaTimeChanged)
 
 public:
     explicit VideoSyncController(QObject* parent = nullptr);
@@ -64,6 +74,7 @@ public:
     double referenceSyncBaseRate() const { return referenceSyncBaseRate_; }
     int lapAdvanceCount() const { return lapAdvanceCount_; }
     QString lapAdvanceNextLabel() const { return lapAdvanceNextLabel_; }
+    double sampledMediaTime() const { return sampledMediaTime_; }
 
     void setPrimaryPlayer(MpvVideoItem* player);
     void setReferencePlayer(MpvVideoItem* player);
@@ -90,6 +101,7 @@ signals:
     void dualVideoChanged();
     void referenceSyncStateChanged();
     void lapAdvanceCountChanged();
+    void sampledMediaTimeChanged();
 
 private slots:
     void onPrimaryLoadedChanged();
@@ -106,6 +118,7 @@ private slots:
     void onContinuousSyncTick();
     void onPausedAlignmentTick();
     void onLapAdvanceTick();
+    void onDisplayTick();
 
 private:
     void connectPrimary();
@@ -127,10 +140,15 @@ private:
     void tryResumeLapAdvance();
     void setReferenceSyncState(const QString& state);
     void setLapAdvanceCount(int count);
+    void attachDisplayPump();
+    void enqueueTelemetry(bool immediate);
+    void applySampledCursor();
+    double sampledPlayerTime() const;
 
     MpvVideoItem* primaryPlayer_ = nullptr;
     MpvVideoItem* referencePlayer_ = nullptr;
     TelemetryStore* store_ = nullptr;
+    QPointer<QQuickWindow> displayWindow_;
 
     bool telemetryVideoActive_ = false;
     bool videoFullscreen_ = false;
@@ -142,12 +160,15 @@ private:
     double referenceSyncLastPrimary_ = -1;
     double referenceSyncLastTarget_ = -1;
     int referenceSyncPauseAttempts_ = 0;
+    double sampledMediaTime_ = 0.0;
+    double lastPrimaryMediaTime_ = 0.0;
 
     int lapAdvanceCount_ = 0;
     int lapAdvanceNextId_ = -1;
     QString lapAdvanceNextLabel_;
     bool lapAdvanceResume_ = false;
 
+    DeadlineQueue queue_;
     QTimer continuousSyncTimer_;
     QTimer pausedAlignmentTimer_;
     QTimer lapAdvanceTimer_;
@@ -156,6 +177,8 @@ private:
     QMetaObject::Connection primaryPositionConn_;
     QMetaObject::Connection primarySeekingConn_;
     QMetaObject::Connection primaryPausedConn_;
+    QMetaObject::Connection primaryWindowConn_;
+    QMetaObject::Connection displayTickConn_;
     QMetaObject::Connection referenceLoadedConn_;
     QMetaObject::Connection referencePausedConn_;
     QMetaObject::Connection storeVideoTimeConn_;
