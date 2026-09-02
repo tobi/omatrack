@@ -161,15 +161,19 @@ void TraceView::setStore(TelemetryStore* store) {
         });
         connect(store_, &TelemetryStore::cursorFracChanged, this,
                 [this]() { emit overlayChanged(); });
+        connect(store_, &TelemetryStore::overlayCursorTick, this,
+                [this]() { emit overlayChanged(); });
+        connect(store_, &TelemetryStore::cornerGeometryChanged, this,
+                [this]() { emit overlayChanged(); });
         connect(store_, &TelemetryStore::viewChanged, this,
                 &TraceView::invalidateScene);
         connect(store_, &TelemetryStore::cornersChanged, this,
-                &TraceView::invalidateScene);
+                [this]() { emit overlayChanged(); });
         connect(store_, &TelemetryStore::editingCornersChanged, this,
-                &TraceView::invalidateScene);
+                [this]() { emit overlayChanged(); });
         connect(store_, &TelemetryStore::cornerFocusChanged, this, [this]() {
             interaction_.resetHover();
-            invalidateScene();
+            emit overlayChanged();
         });
         connect(store_, &TelemetryStore::highlightedCornerMarkerChanged, this,
                 [this]() { emit overlayChanged(); });
@@ -337,8 +341,6 @@ void TraceView::buildScene(TraceSceneBuilder& builder) {
     const double traceHeight = std::max(0.0, height() - kTopPad - kBottomPad);
     const QRectF traceRect(labelWidth(), kTopPad, width() - labelWidth(),
                            traceHeight);
-    buildCornerZones(builder, traceRect);
-    buildCornerFocus(builder, traceRect);
     buildOutOfLap(builder, traceRect);
 
     setCursorTop(kTopPad - 3);
@@ -838,9 +840,9 @@ void TraceView::buildDelta(TraceSceneBuilder& builder, const QRectF& rect) {
 
 void TraceView::buildCornerZones(TraceSceneBuilder& builder,
                                  const QRectF& totalRect) {
-    if (!store_ || snapshot_.corners->isEmpty()) return;
+    if (!store_ || store_->corners().isEmpty()) return;
     const bool editing = store_->editingCorners();
-    const auto& corners = *snapshot_.corners;
+    const auto& corners = store_->corners();
     for (const CornerZone& corner : corners) {
         const double x1 = xForFrac(corner.start);
         const double x2 = xForFrac(corner.end);
@@ -879,8 +881,8 @@ void TraceView::buildCornerFocus(TraceSceneBuilder& builder,
                                  const QRectF& totalRect) {
     if (!store_) return;
     const int focused = store_->focusedCorner();
-    if (focused < 0 || focused >= snapshot_.corners->size()) return;
-    const CornerZone& corner = (*snapshot_.corners)[focused];
+    if (focused < 0 || focused >= store_->corners().size()) return;
+    const CornerZone& corner = store_->corners()[focused];
     const double x1 =
         std::clamp(xForFrac(corner.start), totalRect.left(), totalRect.right());
     const double x2 =
@@ -1051,6 +1053,11 @@ void TraceView::buildCursorScene(TraceSceneBuilder& builder) {
         }
     }
 
+    const double traceHeight = std::max(0.0, height() - kTopPad - kBottomPad);
+    const QRectF traceRect(labelWidth(), kTopPad, width() - labelWidth(),
+                           traceHeight);
+    buildCornerZones(builder, traceRect);
+    buildCornerFocus(builder, traceRect);
     buildCornerMarkers(builder);
     buildHoveredCornerDelta(builder);
 }
@@ -1123,7 +1130,7 @@ void TraceView::buildSelection(TraceSceneBuilder& builder) {
 void TraceView::buildHoveredCornerDelta(TraceSceneBuilder& builder) {
     if (!store_ || !store_->comparing() || interaction_.hoveredCorner() < 0)
         return;
-    const auto& corners = *snapshot_.corners;
+    const auto& corners = store_->corners();
     if (interaction_.hoveredCorner() >= corners.size()) return;
     const QVector<double>& delta = *snapshot_.deltaTrace;
     if (delta.size() < 2) return;

@@ -807,6 +807,11 @@ public:
     /// Channels window playhead samples. No-op in QML when the window is
     /// hidden; the video path only enqueues this at a low-priority deadline.
     void notifyChannelsCursorTick() { emit channelsCursorTick(); }
+    /// Video HUD paint. Separate from cursorFracChanged so playhead
+    /// sampling does not retrace the HUD at mpv rate.
+    void notifyHudCursor() { emit hudCursorTick(); }
+    /// Trace cursor overlay paint. Same split: video samples this key.
+    void notifyTraceOverlay() { emit overlayCursorTick(); }
     /// Accumulated primary−reference time at the cursor station. NaN when
     /// there is no compare lap. Negative is ahead.
     Q_INVOKABLE double cursorTimeDelta() const;
@@ -931,9 +936,13 @@ signals:
     void cursorFracChanged();
     void cursorReadoutChanged();
     void channelsCursorTick();
+    void hudCursorTick();
+    void overlayCursorTick();
     void viewChanged();
     void sessionsChanged();
     void cornersChanged();
+    /// Live corner drag/hover geometry. Overlay only; not a full model rebuild.
+    void cornerGeometryChanged();
     void cornerFocusChanged();
     void highlightedCornerMarkerChanged();
     void cornerConsistencyChanged();

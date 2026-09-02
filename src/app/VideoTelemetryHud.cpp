@@ -66,6 +66,8 @@ void VideoTelemetryHud::setStore(TelemetryStore* store) {
         // compare-fraction map / brake peak, so it must not dirty the snapshot.
         connect(store_, &TelemetryStore::cursorFracChanged, this,
                 [this]() { update(); });
+        connect(store_, &TelemetryStore::hudCursorTick, this,
+                [this]() { update(); });
         connect(store_, &TelemetryStore::selectionChanged, this, [this]() {
             snapshotDirty_ = true;
             update();
@@ -96,7 +98,6 @@ void VideoTelemetryHud::setMediaTime(double mediaTime) {
     if (qFuzzyCompare(mediaTime_ + 1.0, mediaTime + 1.0)) return;
     mediaTime_ = mediaTime;
     emit mediaTimeChanged();
-    update();
 }
 
 QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,

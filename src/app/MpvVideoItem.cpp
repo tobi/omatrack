@@ -165,7 +165,9 @@ private:
     }
 
     void requestUpdate() {
-        if (item_)
+        if (!item_) return;
+        bool expected = false;
+        if (item_->frameRequested_.compare_exchange_strong(expected, true))
             QMetaObject::invokeMethod(item_, "requestVideoFrame",
                                       Qt::QueuedConnection);
     }
@@ -239,7 +241,6 @@ MpvVideoItem::MpvVideoItem(QQuickItem* parent)
     // account needed when a load stalls or a seek lands on the wrong frame.
     mpv_request_log_messages(state_->handle,
                              omatrack::isVerbose() ? "info" : "warn");
-    mpv_observe_property(state_->handle, 1, "time-pos", MPV_FORMAT_DOUBLE);
     mpv_observe_property(state_->handle, 2, "duration", MPV_FORMAT_DOUBLE);
     mpv_observe_property(state_->handle, 3, "pause", MPV_FORMAT_FLAG);
     mpv_observe_property(state_->handle, 4, "mute", MPV_FORMAT_FLAG);
@@ -261,6 +262,16 @@ MpvVideoItem::~MpvVideoItem() {
 
 QQuickFramebufferObject::Renderer* MpvVideoItem::createRenderer() const {
     return new MpvVideoRenderer(state_, const_cast<MpvVideoItem*>(this));
+}
+
+double MpvVideoItem::position() const {
+    if (state_ && state_->handle) {
+        double value = 0.0;
+        if (mpv_get_property(state_->handle, "time-pos", MPV_FORMAT_DOUBLE,
+                             &value) >= 0)
+            position_ = std::max(0.0, value);
+    }
+    return position_;
 }
 
 void MpvVideoItem::wakeup(void* context) {
@@ -336,15 +347,8 @@ void MpvVideoItem::processEvents() {
                 const auto* property =
                     static_cast<mpv_event_property*>(event->data);
                 if (!property || !property->name || !property->data) break;
-                if (std::strcmp(property->name, "time-pos") == 0 &&
+                if (std::strcmp(property->name, "duration") == 0 &&
                     property->format == MPV_FORMAT_DOUBLE) {
-                    const double value = *static_cast<double*>(property->data);
-                    if (!qFuzzyCompare(position_ + 1.0, value + 1.0)) {
-                        position_ = std::max(0.0, value);
-                        emit positionChanged();
-                    }
-                } else if (std::strcmp(property->name, "duration") == 0 &&
-                           property->format == MPV_FORMAT_DOUBLE) {
                     const double value = *static_cast<double*>(property->data);
                     if (!qFuzzyCompare(duration_ + 1.0, value + 1.0)) {
                         duration_ = std::max(0.0, value);
@@ -439,7 +443,10 @@ void MpvVideoItem::setDisplaySize(qint64 width, qint64 height) {
     emit videoAspectRatioChanged();
 }
 
-void MpvVideoItem::requestVideoFrame() { update(); }
+void MpvVideoItem::requestVideoFrame() {
+    frameRequested_.store(false);
+    update();
+}
 
 void MpvVideoItem::markRendererReady() {
     if (ready_) return;

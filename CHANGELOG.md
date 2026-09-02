@@ -2,6 +2,16 @@
 
 All notable user-facing changes are documented here.
 
+## 1.7.2 — 2026-09-02
+
+- Corner drag and hover stay on the cursor overlay. Live geometry no longer
+  rebuilds static traces, comparison alignment, the corners inspector, or
+  video time on every mouse move. Alignment and inspector stats commit when
+  the edit is saved.
+- Video playhead is sampled on an 80 ms timer, not libmpv `time-pos`. QML
+  binds `sampledMediaTime`. HUD and trace overlay are separate deadline-queue
+  keys. USB, import, plugins, filmstrip and event mode are unchanged.
+
 ## 1.7.1 — 2026-09-02
 
 - Video publishes its position; overlay, header and traces sample it through

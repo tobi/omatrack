@@ -217,6 +217,46 @@ private slots:
         QCOMPARE(filter.rowCount(), 0);
         QCOMPARE(reset.size(), 0);
     }
+
+    void cornerUpdateGeometryDoesNotReset() {
+        CornerListModel model;
+        QVector<CornerRow> rows(2);
+        rows[0].name = QStringLiteral("Turn 1");
+        rows[0].start = 0.10;
+        rows[0].end = 0.20;
+        rows[1].name = QStringLiteral("Turn 2");
+        rows[1].start = 0.40;
+        rows[1].end = 0.55;
+        model.refresh(rows);
+
+        QSignalSpy reset(&model, &QAbstractItemModel::modelReset);
+        QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+        model.updateGeometry(0, 0.12, 0.22);
+        QCOMPARE(reset.size(), 0);
+        QCOMPARE(changed.size(), 1);
+        QCOMPARE(model.rowCount(), 2);
+        QCOMPARE(
+            model.data(model.index(0), CornerListModel::StartRole).toDouble(),
+            0.12);
+        QCOMPARE(
+            model.data(model.index(0), CornerListModel::EndRole).toDouble(),
+            0.22);
+        QCOMPARE(
+            model.data(model.index(1), CornerListModel::StartRole).toDouble(),
+            0.40);
+    }
+
+    void cornerUpdateGeometryNoOpWhenUnchanged() {
+        CornerListModel model;
+        QVector<CornerRow> rows(1);
+        rows[0].name = QStringLiteral("Turn 1");
+        rows[0].start = 0.1;
+        rows[0].end = 0.2;
+        model.refresh(rows);
+        QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+        model.updateGeometry(0, 0.1, 0.2);
+        QCOMPARE(changed.size(), 0);
+    }
 };
 
 QTEST_GUILESS_MAIN(LibraryModelTest)

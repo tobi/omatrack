@@ -2504,10 +2504,11 @@ TelemetryStore::TelemetryStore(QObject* parent)
     // longer contains the focused zone drops the focus, and a new lap
     // selection recomputes its markers.
     connect(this, &TelemetryStore::cornersChanged, this, [this]() {
+        // Structural add/delete/load/commit only. Live drag uses
+        // cornerGeometryChanged and must not rebuild alignment, seek
+        // video, or fan cursorFracChanged per pixel.
         invalidateComparisonAlignment();
         rebuildComparisonAlignment();
-        emit cursorFracChanged();
-        emit videoTimeChanged();
         if (focusedCorner_ < 0) return;
         if (focusedCorner_ >= corners_.size())
             clearCornerFocus();
@@ -5840,7 +5841,8 @@ void TelemetryStore::setCursorFromVideoTime(double mediaTime) {
             return;
         }
         cursorFrac_ = fraction;
-        emit cursorFracChanged();
+        // Video path: HUD and traces overlay sample via deadline-queue keys,
+        // not this signal. Pointer/keyboard still emit from setCursorFrac().
         if (fraction >= 0.999 && !wasAtEnd) emit primaryLapPlaybackEnded();
         return;
     }
@@ -5974,7 +5976,10 @@ void TelemetryStore::autoGenerateCorners() {
 }
 
 void TelemetryStore::saveCorners() {
-    if (!primarySession_) return;
+    if (!primarySession_) {
+        emit cornersChanged();
+        return;
+    }
     auto sorted = corners_;
     std::sort(sorted.begin(), sorted.end(),
               [](const CornerZone& a, const CornerZone& b) {
@@ -5993,6 +5998,7 @@ void TelemetryStore::saveCorners() {
         assignedSlug.isEmpty() ? primarySession_->track() : assignedSlug;
     config.setValue(cornerConfigPath(cornerTrack), zones);
     schedulePreferencesSave();
+    emit cornersChanged();
 }
 
 QString TelemetryStore::cornerName(int index) const {
@@ -6949,7 +6955,6 @@ int TelemetryStore::addCorner(double start, double end) {
                                            return candidate.name == corner.name;
                                        }) -
                           corners_.cbegin());
-    emit cornersChanged();
     saveCorners();
     return index;
 }
@@ -6957,7 +6962,6 @@ int TelemetryStore::addCorner(double start, double end) {
 void TelemetryStore::deleteCorner(int index) {
     if (index < 0 || index >= corners_.size()) return;
     corners_.removeAt(index);
-    emit cornersChanged();
     saveCorners();
 }
 
@@ -6969,7 +6973,6 @@ void TelemetryStore::setCornerName(int index, const QString& name) {
     QString sanitized = trimmed;
     sanitized.replace('\r', ' ').replace('\n', ' ');
     corners_[index].name = sanitized;
-    emit cornersChanged();
     saveCorners();
 }
 
@@ -6982,8 +6985,8 @@ void TelemetryStore::updateCorner(int index, double start, double end) {
         return;
     corners_[index].start = nextStart;
     corners_[index].end = nextEnd;
-    emit cornersChanged();
-    if (index == focusedCorner_) rebuildCornerMarkers();
+    if (cornersModel_) cornersModel_->updateGeometry(index, nextStart, nextEnd);
+    emit cornerGeometryChanged();
 }
 
 void TelemetryStore::setEditingCorners(bool editing) {

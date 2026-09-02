@@ -10,9 +10,9 @@
 // store signals itself, so QML no longer needs nested Connections blocks or
 // hand-rolled Timers for sync.
 //
-// libmpv time-pos only stores the last media time. Overlay, header, traces
-// and channels are enqueued on DeadlineQueue with deadlines and pumped from
-// QTimer / QQuickWindow::afterAnimating — never from processEvents.
+// libmpv time-pos is not observed. A 80 ms QTimer samples position() and
+// upserts overlay/header/HUD/traces onto DeadlineQueue. afterAnimating
+// pumps due jobs and never enqueues. Seek/pause use deadline-now.
 
 #pragma once
 
@@ -105,7 +105,6 @@ signals:
 
 private slots:
     void onPrimaryLoadedChanged();
-    void onPrimaryPositionChanged();
     void onPrimarySeekingChanged();
     void onPrimaryPausedChanged();
     void onReferenceLoadedChanged();
@@ -119,6 +118,8 @@ private slots:
     void onPausedAlignmentTick();
     void onLapAdvanceTick();
     void onDisplayTick();
+    void onSampleTick();
+    void updateSampleTimer();
 
 private:
     void connectPrimary();
@@ -173,8 +174,8 @@ private:
     QTimer pausedAlignmentTimer_;
     QTimer lapAdvanceTimer_;
 
+    QTimer sampleTimer_;
     QMetaObject::Connection primaryLoadedConn_;
-    QMetaObject::Connection primaryPositionConn_;
     QMetaObject::Connection primarySeekingConn_;
     QMetaObject::Connection primaryPausedConn_;
     QMetaObject::Connection primaryWindowConn_;

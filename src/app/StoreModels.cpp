@@ -1,6 +1,7 @@
 #include "StoreModels.h"
 
 #include <QString>
+#include <QtGlobal>
 #include <algorithm>
 
 int UsbCopyListModel::rowCount(const QModelIndex& parent) const {
@@ -344,6 +345,18 @@ QHash<int, QByteArray> CornerListModel::roleNames() const {
         {NotesRole, "notes"},
         {NoteRole, "note"},
     };
+}
+
+void CornerListModel::updateGeometry(int index, double start, double end) {
+    if (index < 0 || index >= rows_.size()) return;
+    CornerRow& row = rows_[index];
+    if (qFuzzyCompare(row.start + 1.0, start + 1.0) &&
+        qFuzzyCompare(row.end + 1.0, end + 1.0))
+        return;
+    row.start = start;
+    row.end = end;
+    const QModelIndex idx = this->index(index);
+    emit dataChanged(idx, idx, {StartRole, EndRole});
 }
 
 void CornerListModel::refresh(const QVector<CornerRow>& rows) {
