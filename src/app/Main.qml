@@ -884,6 +884,7 @@ ApplicationWindow {
 
             HoverHandler {
                 id: videoControlsHover
+
             }
             MouseArea {
                 anchors.fill: parent
@@ -904,7 +905,7 @@ ApplicationWindow {
                     objectName: "videoSeekSlider"
                     stepSize: 0.1
                     to: Math.max(0.1, videoPlayer.duration)
-                    value: videoPlayer.position
+                    value: videoSync.sampledMediaTime
                     visible: root.standaloneVideoActive
 
                     background: Rectangle {
@@ -1050,7 +1051,7 @@ ApplicationWindow {
                         color: Style.foregroundColor
                         font.family: Style.monoFontFamily
                         font.pixelSize: Style.smallFontSize
-                        text: root.formatMediaTime(videoPlayer.position) + " / " + root.formatMediaTime(videoPlayer.duration)
+                        text: root.formatMediaTime(videoSync.sampledMediaTime) + " / " + root.formatMediaTime(videoPlayer.duration)
                     }
                     Item {
                         Layout.fillWidth: !root.standaloneVideoActive
@@ -1359,9 +1360,11 @@ ApplicationWindow {
     }
     ChannelsWindow {
         id: channelsWindow
+
     }
     PreferencesWindow {
         id: settingsWindow
+
     }
     ToolTip {
         id: pointerTooltip

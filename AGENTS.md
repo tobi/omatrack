@@ -51,8 +51,10 @@ Interactive rendering targets 60–120 fps. A frame is 16.67 ms at 60 Hz and 8.3
 - Cache normalized laps, raw-channel resamples, delta arrays, geometry, and overview rasters; invalidate them only when their inputs change.
 - Bound draw work to the viewport and pixel budget. Do not submit every source sample when fewer points can produce the same image.
 - Avoid per-frame heap allocation and avoid copies of full telemetry arrays.
-  libmpv `time-pos` must not fan out into store/HUD/header/trace work; enqueue
-  it on `DeadlineQueue` and pump independently of the player callback.
+  libmpv `time-pos` must not fan out into store/HUD/header/trace work; sample
+  it on a timer onto `DeadlineQueue` and pump independently of the player
+  callback. Corner drag/hover stays on the overlay path: do not rebuild
+  static traces, comparison alignment, or emit `videoTimeChanged` per pixel.
 - Benchmark hover and zoom paths before and after renderer changes. A visually correct regression that misses the frame budget is not complete.
 
 ### Native Linux and Omarchy are deliberate

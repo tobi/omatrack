@@ -37,6 +37,9 @@ public:
 
     bool isEmpty() const { return items_.isEmpty(); }
     int size() const { return items_.size(); }
+    /// True while a job for key is waiting. Callers that would only
+    /// replace it with an equivalent latest-spot reader skip allocating.
+    bool contains(const QString& key) const { return items_.contains(key); }
 
     /// Tests call pump() themselves. Production leaves auto-pump on so a
     /// QTimer(0) fires while anything is due, else a single-shot for the

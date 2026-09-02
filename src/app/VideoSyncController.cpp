@@ -10,6 +10,7 @@
 #include <QtMath>
 
 #include <chrono>
+#include <utility>
 
 namespace {
 
@@ -33,6 +34,10 @@ VideoSyncController::VideoSyncController(QObject* parent) : QObject(parent) {
     lapAdvanceTimer_.setInterval(500);
     QObject::connect(&lapAdvanceTimer_, &QTimer::timeout, this,
                      &VideoSyncController::onLapAdvanceTick);
+
+    sampleTimer_.setInterval(80);
+    QObject::connect(&sampleTimer_, &QTimer::timeout, this,
+                     &VideoSyncController::onSampleTick);
 }
 
 // ── properties ───────────────────────────────────────────────────
@@ -51,6 +56,7 @@ void VideoSyncController::setPrimaryPlayer(MpvVideoItem* player) {
     connectPrimary();
     attachDisplayPump();
     updateContinuousSyncTimer();
+    updateSampleTimer();
     emit primaryPlayerChanged();
 }
 
@@ -97,9 +103,6 @@ void VideoSyncController::connectPrimary() {
     primaryLoadedConn_ =
         QObject::connect(primaryPlayer_, &MpvVideoItem::loadedChanged, this,
                          &VideoSyncController::onPrimaryLoadedChanged);
-    primaryPositionConn_ =
-        QObject::connect(primaryPlayer_, &MpvVideoItem::positionChanged, this,
-                         &VideoSyncController::onPrimaryPositionChanged);
     primarySeekingConn_ =
         QObject::connect(primaryPlayer_, &MpvVideoItem::seekingChanged, this,
                          &VideoSyncController::onPrimarySeekingChanged);
@@ -113,7 +116,6 @@ void VideoSyncController::connectPrimary() {
 
 void VideoSyncController::disconnectPrimary() {
     if (primaryLoadedConn_) QObject::disconnect(primaryLoadedConn_);
-    if (primaryPositionConn_) QObject::disconnect(primaryPositionConn_);
     if (primarySeekingConn_) QObject::disconnect(primarySeekingConn_);
     if (primaryPausedConn_) QObject::disconnect(primaryPausedConn_);
     if (primaryWindowConn_) QObject::disconnect(primaryWindowConn_);
@@ -436,6 +438,7 @@ void VideoSyncController::tryResumeLapAdvance() {
 // ── signal handlers ──────────────────────────────────────────────
 
 void VideoSyncController::onPrimaryLoadedChanged() {
+    updateSampleTimer();
     if (!primaryPlayer_ || !primaryPlayer_->loaded() || !telemetryVideoActive_)
         return;
     // Qt.callLater equivalent: defer until the next event-loop turn so the
@@ -450,19 +453,6 @@ void VideoSyncController::onPrimaryLoadedChanged() {
         Qt::QueuedConnection);
 }
 
-void VideoSyncController::onPrimaryPositionChanged() {
-    if (!primaryPlayer_ || !primaryPlayer_->loaded()) return;
-    lastPrimaryMediaTime_ = primaryPlayer_->position();
-    // Store-only plus a coalesced upsert. The pump (QTimer / afterAnimating)
-    // runs the work; this must not call setCursorFromVideoTime.
-    if (telemetryVideoActive_ && !primaryPlayer_->paused() &&
-        !primaryPlayer_->seeking())
-        enqueueTelemetry(false);
-    else if (dualVideo() && primaryPlayer_->paused() &&
-             referenceSyncPauseAttempts_ > 0)
-        pausedAlignmentTimer_.start();
-}
-
 void VideoSyncController::onPrimarySeekingChanged() {
     if (!primaryPlayer_) return;
     if (primaryPlayer_->seeking()) enqueueTelemetry(true);
@@ -471,6 +461,7 @@ void VideoSyncController::onPrimarySeekingChanged() {
 
 void VideoSyncController::onPrimaryPausedChanged() {
     if (!primaryPlayer_) return;
+    updateSampleTimer();
     enqueueTelemetry(true);
     if (!referencePlayer_ || !referencePlayer_->loaded()) return;
     if (referencePlayer_->paused() != primaryPlayer_->paused())
@@ -568,20 +559,34 @@ void VideoSyncController::applySampledCursor() {
 }
 
 void VideoSyncController::enqueueTelemetry(bool immediate) {
+    const auto tryUpsert = [this, immediate](const QString& key,
+                                             DeadlineQueue::Priority priority,
+                                             std::chrono::milliseconds delay,
+                                             DeadlineQueue::Job job) {
+        if (!immediate && queue_.contains(key)) return;
+        queue_.upsert(key, priority, deadlineFrom(immediate, delay),
+                      std::move(job));
+    };
+    tryUpsert(QStringLiteral("cursor"), DeadlineQueue::Priority::High,
+              std::chrono::milliseconds(16),
+              [this]() { applySampledCursor(); });
     if (!telemetryVideoActive_ || !store_) return;
-    queue_.upsert(QStringLiteral("cursor"), DeadlineQueue::Priority::High,
-                  deadlineFrom(immediate, std::chrono::milliseconds(16)),
-                  [this]() { applySampledCursor(); });
-    queue_.upsert(QStringLiteral("readout"), DeadlineQueue::Priority::Normal,
-                  deadlineFrom(immediate, std::chrono::milliseconds(40)),
-                  [this]() {
-                      if (store_) store_->notifyCursorReadout();
-                  });
-    queue_.upsert(QStringLiteral("channels"), DeadlineQueue::Priority::Low,
-                  deadlineFrom(immediate, std::chrono::milliseconds(50)),
-                  [this]() {
-                      if (store_) store_->notifyChannelsCursorTick();
-                  });
+    tryUpsert(QStringLiteral("hud"), DeadlineQueue::Priority::Normal,
+              std::chrono::milliseconds(64), [this]() {
+                  if (store_) store_->notifyHudCursor();
+              });
+    tryUpsert(QStringLiteral("traces"), DeadlineQueue::Priority::Normal,
+              std::chrono::milliseconds(64), [this]() {
+                  if (store_) store_->notifyTraceOverlay();
+              });
+    tryUpsert(QStringLiteral("readout"), DeadlineQueue::Priority::Normal,
+              std::chrono::milliseconds(40), [this]() {
+                  if (store_) store_->notifyCursorReadout();
+              });
+    tryUpsert(QStringLiteral("channels"), DeadlineQueue::Priority::Low,
+              std::chrono::milliseconds(50), [this]() {
+                  if (store_) store_->notifyChannelsCursorTick();
+              });
 }
 
 void VideoSyncController::attachDisplayPump() {
@@ -595,11 +600,21 @@ void VideoSyncController::attachDisplayPump() {
                          &VideoSyncController::onDisplayTick);
 }
 
-void VideoSyncController::onDisplayTick() {
-    if (telemetryVideoActive_ && primaryPlayer_ && primaryPlayer_->loaded() &&
-        !primaryPlayer_->paused() && !primaryPlayer_->seeking()) {
-        lastPrimaryMediaTime_ = primaryPlayer_->position();
-        enqueueTelemetry(false);
-    }
-    queue_.pump();
+void VideoSyncController::onDisplayTick() { queue_.pump(); }
+
+void VideoSyncController::updateSampleTimer() {
+    const bool shouldRun =
+        primaryPlayer_ && primaryPlayer_->loaded() && !primaryPlayer_->paused();
+    if (shouldRun == sampleTimer_.isActive()) return;
+    if (shouldRun)
+        sampleTimer_.start();
+    else
+        sampleTimer_.stop();
+}
+
+void VideoSyncController::onSampleTick() {
+    if (!primaryPlayer_ || !primaryPlayer_->loaded()) return;
+    lastPrimaryMediaTime_ = primaryPlayer_->position();
+    if (primaryPlayer_->seeking()) return;
+    enqueueTelemetry(false);
 }

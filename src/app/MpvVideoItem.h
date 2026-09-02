@@ -9,6 +9,7 @@
 #include <QtQml/qqmlregistration.h>
 #include <QUrl>
 
+#include <atomic>
 #include <memory>
 #include <optional>
 
@@ -45,7 +46,7 @@ public:
     bool paused() const { return paused_; }
     bool muted() const { return muted_; }
     bool seeking() const { return seeking_; }
-    double position() const { return position_; }
+    double position() const;
     /// Where the playhead is, or is about to be: the target of an exact seek
     /// mpv has not finished yet, else the last reported position. Relative
     /// skips must start from this — an exact seek into a multi-gigabyte
@@ -125,7 +126,8 @@ private:
     QUrl pendingSource_;
     QString title_;
     QString errorString_;
-    double position_ = 0.0;
+    mutable double position_ = 0.0;
+    std::atomic<bool> frameRequested_{false};
     double duration_ = 0.0;
     qint64 displayWidth_ = 0;
     qint64 displayHeight_ = 0;
