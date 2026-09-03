@@ -537,6 +537,10 @@ public:
     Q_INVOKABLE void setEventTrack(const QString& track);
     Q_INVOKABLE void setEventSession(const QString& session);
     Q_INVOKABLE void setEventDate(const QString& date);
+    /// "track · date · session" from the non-empty event fields, or empty
+    /// when nothing is configured. Shared by the title-bar and sidebar
+    /// event state so the two cannot describe it differently.
+    Q_INVOKABLE QString eventSummary() const;
     bool usbPresent() const { return usbPresent_; }
     QString usbLabel() const { return usbLabel_; }
     QString manualUsbSource() const { return manualUsbSource_; }

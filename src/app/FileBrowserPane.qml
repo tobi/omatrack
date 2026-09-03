@@ -299,6 +299,33 @@ Pane {
             Layout.fillWidth: true
             Layout.preferredHeight: 28
             color: Style.surfaceColor
+            visible: Store.eventMode
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 8
+                anchors.rightMargin: 4
+                spacing: 6
+
+                Label {
+                    Layout.fillWidth: true
+                    color: Style.accentColor
+                    elide: Text.ElideRight
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: 10
+                    text: Store.eventSummary() !== "" ? "Event · " + Store.eventSummary() : "Event · nothing configured"
+                }
+                CompactButton {
+                    text: "Off"
+
+                    onClicked: Store.eventMode = false
+                }
+            }
+        }
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 28
+            color: Style.surfaceColor
             visible: Store.usbPresent || Store.manualUsbSource !== ""
 
             RowLayout {

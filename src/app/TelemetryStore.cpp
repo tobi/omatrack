@@ -8461,6 +8461,16 @@ bool TelemetryStore::eventMode() const { return prefs_->eventMode(); }
 QString TelemetryStore::eventTrack() const { return prefs_->eventTrack(); }
 QString TelemetryStore::eventSession() const { return prefs_->eventSession(); }
 QString TelemetryStore::eventDate() const { return prefs_->eventDate(); }
+QString TelemetryStore::eventSummary() const {
+    QStringList parts;
+    if (!prefs_->eventTrack().trimmed().isEmpty())
+        parts.append(prefs_->eventTrack().trimmed());
+    if (!prefs_->eventDate().trimmed().isEmpty())
+        parts.append(prefs_->eventDate().trimmed());
+    if (!prefs_->eventSession().trimmed().isEmpty())
+        parts.append(prefs_->eventSession().trimmed());
+    return parts.join(QStringLiteral(" · "));
+}
 
 void TelemetryStore::setEventMode(bool enabled) {
     if (prefs_->eventMode() == enabled) return;

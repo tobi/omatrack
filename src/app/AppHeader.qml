@@ -2,7 +2,8 @@ pragma ComponentBehavior: Bound
 import Omatrack
 
 // Application header bar: brand, live session context (track / driver / lap /
-// comparison), the imperative cursor readout, and the overflow actions menu.
+// comparison), event-mode toggle and state, the cursor position and delta
+// readout, and the overflow actions menu.
 //
 // Owns its cursor-readout refresh: a Connections block on Store plus
 // Component.onCompleted drive readout.refresh() so Main.qml never has to poke
@@ -189,6 +190,29 @@ ToolBar {
             }
         }
         CompactToolButton {
+            id: eventButton
+
+            Layout.preferredHeight: 28
+            checkable: true
+            checked: Store.eventMode
+            objectName: "headerEventMode"
+            text: "Event"
+            tip: Store.eventMode ? (Store.eventSummary() !== "" ? "Filtering to " + Store.eventSummary() + " — turn off for the full library" : "Event filter is on but track and day are empty — turn off for the full library") : "Filter the library to one track and day"
+
+            onClicked: Store.eventMode = eventButton.checked
+        }
+        Label {
+            id: eventSummaryLabel
+
+            Layout.maximumWidth: 200
+            color: Style.accentColor
+            elide: Text.ElideRight
+            font.family: Style.monoFontFamily
+            font.pixelSize: 10
+            text: Store.eventSummary()
+            visible: Store.eventMode && eventSummaryLabel.text !== ""
+        }
+        CompactToolButton {
             Layout.preferredHeight: 28
             Layout.preferredWidth: appBar.width >= 900 ? implicitWidth : 30
             display: appBar.width >= 900 ? AbstractButton.TextBesideIcon : AbstractButton.IconOnly
@@ -223,25 +247,6 @@ ToolBar {
 
                 onClicked: updateMenu.open()
             }
-            Label {
-                color: Style.accentColor
-                font.family: Style.monoFontFamily
-                font.pixelSize: 10
-                text: Updater.latestVersion
-                visible: Updater.bannerVisible && !Updater.busy && appBar.width >= 780
-            }
-            CompactButton {
-                text: "Update"
-                visible: Updater.bannerVisible && !Updater.busy && appBar.width >= 780
-
-                onClicked: Updater.install()
-            }
-            CompactButton {
-                text: "Later"
-                visible: Updater.bannerVisible && !Updater.busy && appBar.width >= 780
-
-                onClicked: Updater.snooze()
-            }
             ProgressBar {
                 Layout.preferredWidth: 88
                 from: 0
@@ -270,14 +275,6 @@ ToolBar {
                 let parts = [];
                 if (r.time !== undefined)
                     parts.push(r.time.toFixed(1) + "s");
-                if (r.dist !== undefined)
-                    parts.push(Math.round(r.dist) + "m");
-                if (r.speed !== undefined)
-                    parts.push(Math.round(r.speed) + " km/h");
-                if (r.gear !== undefined)
-                    parts.push("G" + r.gear);
-                if (r.corner)
-                    parts.push(r.corner);
                 if (Store.comparing && r.hasDelta)
                     parts.push("Δ " + r.delta.toFixed(3) + "s");
                 readout.text = parts.join("  ·  ");
