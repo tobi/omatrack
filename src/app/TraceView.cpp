@@ -1,4 +1,5 @@
 #include "TraceView.h"
+#include "TraceDecimator.h"
 
 #include "StoreModels.h"
 #include "TelemetryStore.h"
@@ -239,7 +240,7 @@ QVariantMap TraceView::benchmarkGeometry(int frames) {
     for (int i = 0; i < frames; ++i) {
         // A null window skips texture creation: text is cached across frames
         // in the real renderer, so the measurement is the geometry work.
-        scratch.begin(nullptr);
+        scratch.begin(nullptr, devicePixelRatio());
         buildScene(scratch);
         quads = scratch.quadCount();
     }
@@ -359,9 +360,9 @@ int TraceView::deviceColumns(const QRectF& rect) const {
 void TraceView::buildSeries(TraceSceneBuilder& builder,
                             const std::vector<double>* values,
                             const QRectF& rect, const ChannelRange& range,
-                            const QColor& color, bool fill, bool alignCompare,
-                            double shift, qreal width, double clipLow,
-                            double clipHigh) {
+                            const QColor& color, double fillOpacity,
+                            bool alignCompare, double shift, qreal width,
+                            double clipLow, double clipHigh) {
     if (!values || values->size() < 2 || rect.width() < 2.0) return;
     const double span = std::max(1.0e-12, range.max - range.min);
     const double viewStart = store_->viewStart();
@@ -376,9 +377,10 @@ void TraceView::buildSeries(TraceSceneBuilder& builder,
 
     TraceSceneBuilder::EnvelopeStyle style;
     style.width = width;
-    style.fill = fill;
+    style.fill = fillOpacity > 0.0;
     style.color = color;
-    style.fillColor = alpha(color, 42);
+    style.fillColor = color;
+    style.fillColor.setAlphaF(fillOpacity);
     builder.envelopePolyline(*values, sourceFraction, viewStart, viewSpan, rect,
                              range.min, span, style, clipLow, clipHigh);
 }
@@ -558,6 +560,7 @@ void TraceView::buildChannel(TraceSceneBuilder& builder,
     QColor traceColor(store_->channelColor(spec.key));
     if (!traceColor.isValid()) traceColor = spec.color;
     const ChannelRange& range = rangeFor(spec, primary, compare);
+    const ChannelAppearance appearance = store_->channelAppearance(spec.key);
 
     builder.vLine(rect.left() - 1, rect.top(), rect.bottom(), 1.0,
                   alpha(kGridStrong, 110));
@@ -571,7 +574,8 @@ void TraceView::buildChannel(TraceSceneBuilder& builder,
 
     for (int grid = 1; grid < 4; ++grid) {
         const double y = dataRect.top() + dataRect.height() * grid / 4.0;
-        builder.hLine(y, dataRect.left(), dataRect.right(), 1.0, kGrid);
+        builder.hLine(y, dataRect.left(), dataRect.right(), 1.0,
+                      alpha(kGrid, 110));
     }
     if (range.min < 0 && range.max > 0)
         builder.dashedHLine(toY(0), dataRect.left(), dataRect.right(),
@@ -584,14 +588,14 @@ void TraceView::buildChannel(TraceSceneBuilder& builder,
         if (const UnifiedLap* previous = snapshot_.neighbourPrev) {
             const std::vector<double>* data = fieldFor(*previous, spec.field);
             buildSeries(builder, data, dataRect, range, alpha(traceColor, 150),
-                        false, false, -1.0, 1.2, -1.0, 0.0);
+                        0.0, false, -1.0, appearance.strokeWidth, -1.0, 0.0);
         }
     }
     if (store_->viewEnd() > 1.0) {
         if (const UnifiedLap* next = snapshot_.neighbourNext) {
             const std::vector<double>* data = fieldFor(*next, spec.field);
             buildSeries(builder, data, dataRect, range, alpha(traceColor, 150),
-                        false, false, 1.0, 1.2, 1.0, 2.0);
+                        0.0, false, 1.0, appearance.strokeWidth, 1.0, 2.0);
         }
     }
     if (store_->traceConfidenceMode())
@@ -599,14 +603,31 @@ void TraceView::buildChannel(TraceSceneBuilder& builder,
                             dataRect, range);
     // Keep the reference trace visually distinct from the active trace. It
     // is drawn first, so the active line still wins at exact overlap points.
-    buildSeries(builder, compareData, dataRect, range, alpha(kOrange, 230),
-                false, true, 0.0, 2.2);
-    buildSeries(builder, primaryData, dataRect, range, traceColor, spec.filled,
-                false, 0.0, 1.8);
+    primaryPath_.clear();
+    if (primaryData)
+        trace::decimate(
+            *primaryData, [](double f) { return std::clamp(f, 0.0, 1.0); },
+            store_->viewStart(), store_->viewSpan(), dataRect, range.min, span,
+            devicePixelRatio(), 0.0, 1.0, primaryPath_);
+    TraceSceneBuilder::EnvelopeStyle style;
+    style.width = 0.0;
+    style.fill = appearance.fillOpacity > 0;
+    style.color = traceColor;
+    style.fillColor = traceColor;
+    style.fillColor.setAlphaF(appearance.fillOpacity);
+    if (style.fill)
+        builder.seriesPath(primaryPath_, dataRect, range.min, span, style);
+    buildSeries(builder, compareData, dataRect, range,
+                alpha(appearance.referenceColor, 220), 0.0, true, 0.0,
+                appearance.strokeWidth);
+    style.fill = false;
+    style.width = appearance.strokeWidth;
+    builder.seriesPath(primaryPath_, dataRect, range.min, span, style);
 
     if (!range.empty || sidecarChannel)
         cursorLanes_.append(CursorLane{spec.field, dataRect, range.min,
-                                       range.max, traceColor, range.gear});
+                                       range.max, traceColor, range.gear,
+                                       appearance.referenceColor});
 }
 
 void TraceView::buildGroupHeader(TraceSceneBuilder& builder,
@@ -766,10 +787,18 @@ void TraceView::buildDelta(TraceSceneBuilder& builder, const QRectF& rect) {
     builder.reserveQuads(columns * 2);
     QVector<QPointF> points;
     points.reserve(columns + 1);
+    const auto appearance = store_->channelAppearance(QStringLiteral("delta"));
+    TraceSceneBuilder::EnvelopeStyle style;
+    style.width = appearance.strokeWidth;
+    style.color = QColor(store_->channelColor(QStringLiteral("delta")));
+    style.fill = appearance.fillOpacity > 0;
+    style.fillColor = kRed;
+    style.fillColor.setAlphaF(appearance.fillOpacity);
+    style.negativeFillColor = kGreen;
+    style.negativeFillColor.setAlphaF(appearance.fillOpacity);
     auto flushStroke = [&]() {
-        if (points.size() >= 2)
-            builder.polyline(points.constData(), points.size(), 1.8,
-                             kForeground);
+        builder.seriesPath(points, rect, -layout_.deltaMaxAbsRef(),
+                           2.0 * layout_.deltaMaxAbsRef(), style);
         points.clear();
     };
     for (int column = 0; column < columns; ++column) {
@@ -790,11 +819,6 @@ void TraceView::buildDelta(TraceSceneBuilder& builder, const QRectF& rect) {
         }
         const double y = std::clamp(toY(value), rect.top(), rect.bottom());
         const double x = rect.left() + columnWidth * column;
-
-        const QColor band = alpha(value < 0.0 ? kGreen : kRed, 48);
-        builder.rect(
-            QRectF(x, std::min(y, zeroY), columnWidth, std::fabs(zeroY - y)),
-            band);
 
         points.append(QPointF(x + columnWidth * 0.5, y));
     }
@@ -1018,9 +1042,10 @@ void TraceView::buildCursorScene(TraceSceneBuilder& builder) {
             const int compareSample = std::min(
                 int(compareData->size()) - 1,
                 int(compareFraction * double(compareData->size() - 1)));
-            builder.dot(
-                QPointF(cursorX, toY((*compareData)[size_t(compareSample)])),
-                1.8, alpha(kMuted, 190));
+            const double compareValue = (*compareData)[size_t(compareSample)];
+            if (std::isfinite(compareValue))
+                builder.dot(QPointF(cursorX, toY(compareValue)), 1.8,
+                            alpha(lane.referenceColor, 220));
         }
     }
 

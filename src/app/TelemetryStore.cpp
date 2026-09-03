@@ -5271,6 +5271,7 @@ void TelemetryStore::resetPrimarySessionOverlays() {
     removeSidecarKeys(prefs_->channelVisible());
     removeSidecarKeys(prefs_->channelColors());
     removeSidecarKeys(prefs_->channelWeights());
+    removeSidecarKeys(prefs_->channelAppearance());
     overlays_->clear();
     overlays_->discoverSidecarSiblings();
 }
@@ -5860,8 +5861,13 @@ void TelemetryStore::setViewEnd(double v) {
 }
 
 void TelemetryStore::zoomAt(double anchorFrac, double factor) {
+    if (!std::isfinite(anchorFrac) || !std::isfinite(factor) || factor <= 0)
+        return;
     double span = viewSpan();
-    double newSpan = qBound(0.002, span * factor, 1.0);
+    if (span <= 0) return;
+    // Sub-sample inspection is useful; avoid the old 500x hard stop. Keep a
+    // numerical floor, not a fixed number of samples stretched across a pane.
+    double newSpan = qBound(1.0e-7, span * factor, 1.0);
     double anchor = qBound(0.0, anchorFrac, 1.0);
     double fracOfView = (anchor - viewStart_) / span;
     double ns = anchor - fracOfView * newSpan;
@@ -7274,7 +7280,6 @@ void TelemetryStore::invalidateExtraChannelCache() {
 QVector<ChannelRow> TelemetryStore::buildChannelRows() const {
     QVector<ChannelRow> out;
     for (const QString& key : prefs_->channelOrder()) {
-        if (key == QStringLiteral("delta")) continue;
         const auto meta = channelMetadata(key);
         ChannelRow row;
         row.key = key;
@@ -7323,6 +7328,12 @@ QVector<ChannelRow> TelemetryStore::buildChannelRows() const {
             row.sidecar = true;
             out.append(row);
         }
+    }
+    for (ChannelRow& row : out) {
+        const ChannelAppearance style = channelAppearance(row.key);
+        row.strokeWidth = style.strokeWidth;
+        row.fillOpacity = style.fillOpacity;
+        row.referenceColor = style.referenceColor.name(QColor::HexRgb);
     }
     return out;
 }
@@ -7453,6 +7464,35 @@ void TelemetryStore::setChannelWeight(const QString& key, double weight) {
         schedulePreferencesSave();
     }
     emit channelConfigChanged();
+}
+
+ChannelAppearance TelemetryStore::channelAppearance(const QString& key) const {
+    return prefs_->channelAppearance().value(key,
+                                             ChannelAppearance::defaults(key));
+}
+
+void TelemetryStore::setChannelAppearance(const QString& key,
+                                          double strokeWidth,
+                                          double fillOpacity,
+                                          const QString& referenceColor) {
+    const QColor color(referenceColor);
+    if (!std::isfinite(strokeWidth) || !std::isfinite(fillOpacity) ||
+        !color.isValid())
+        return;
+    ChannelAppearance style;
+    style.strokeWidth = std::clamp(strokeWidth, 0.5, 4.0);
+    style.fillOpacity = std::clamp(fillOpacity, 0.0, 1.0);
+    style.referenceColor = color;
+    if (style == channelAppearance(key)) return;
+    prefs_->channelAppearance().insert(key, style);
+    if (!key.startsWith(QStringLiteral("sidecar:"))) schedulePreferencesSave();
+    emit channelConfigChanged();
+}
+
+void TelemetryStore::resetChannelAppearance(const QString& key) {
+    const auto style = ChannelAppearance::defaults(key);
+    setChannelAppearance(key, style.strokeWidth, style.fillOpacity,
+                         style.referenceColor.name(QColor::HexRgb));
 }
 
 QStringList TelemetryStore::channelOrder() const {

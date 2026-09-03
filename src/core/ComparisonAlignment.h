@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -62,6 +63,8 @@ std::string confidenceLabel(const std::string& basis, int gpsAnchors);
 // Look up the compare-lap fraction for a primary-lap fraction. An empty or
 // degenerate map is identity: the caller must not treat "not yet aligned"
 // as "the reference is at the start of the lap".
+double interpolateFraction(const double* map, size_t count,
+                           double primaryFraction);
 double interpolateFraction(const std::vector<double>& map,
                            double primaryFraction);
 

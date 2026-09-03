@@ -45,7 +45,6 @@ public:
         QString unit;
         QColor color;
         Clamp clamp;
-        bool filled = false;
         // which UnifiedLap field to read; empty = derived
         QString field;
         Kind kind = Kind::Sample;

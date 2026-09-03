@@ -8,6 +8,7 @@
 #pragma once
 
 #include "AsyncJob.h"
+#include "ChannelAppearance.h"
 #include "LibraryModel.h"
 #include "StoreModels.h"
 #include "UsbCopy.h"
@@ -802,6 +803,12 @@ public:
     Q_INVOKABLE void setChannelColor(const QString& key, const QString& color);
     Q_INVOKABLE QString channelExample(const QString& key);
     Q_INVOKABLE double channelWeight(const QString& key) const;
+    ChannelAppearance channelAppearance(const QString& key) const;
+    Q_INVOKABLE void setChannelAppearance(const QString& key,
+                                          double strokeWidth,
+                                          double fillOpacity,
+                                          const QString& referenceColor);
+    Q_INVOKABLE void resetChannelAppearance(const QString& key);
     Q_INVOKABLE void setChannelWeight(const QString& key, double weight);
 
     Q_INVOKABLE QStringList channelOrder() const;
@@ -883,7 +890,7 @@ public:
     double viewEnd() const { return viewEnd_; }
     void setViewEnd(double v);
     double viewSpan() const {
-        return qBound(0.001, viewEnd_ - viewStart_, 1.0);
+        return qBound(1.0e-7, viewEnd_ - viewStart_, 1.0);
     }
     double referenceAlignment() const { return referenceAlignment_; }
     void setReferenceAlignment(double fraction);

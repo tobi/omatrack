@@ -364,7 +364,7 @@ Native lap distance is accepted only when its continuity and total agree with in
   missing boundaries. Index-cache v2 invalidates the older promoted summaries.
 - Show a track-station-aligned cumulative delta that starts at zero. The same selected primary→reference map drives every reference trace, cursor value, synchronized video frame, and delta.
 - Render standard channels plus opt-in raw source channels.
-- Configure channel visibility, color, and lane weight; lanes always fit the pane height with no vertical scrolling or pinning, sized in proportion to channel weight. Right-click a lane for size (double/normal/half) and hide.
+- Configure channel visibility, active/reference colors, stroke width, area opacity, and lane weight in Channels. **Style…** expands the per-channel width/fill controls; Reset style restores their defaults. `channels.<key>.stroke_width` is in logical screen pixels (default 1.25, range 0.5–4), `fill_opacity` is peak gradient alpha (0–1; throttle/brake/clutch default 0.28), and `reference_color` is a color in `omatrack.yml`. Source-channel settings persist too; sidecar settings retain the existing host-local lifetime. Lanes always fit the pane height with no vertical scrolling or pinning, sized in proportion to channel weight. Right-click a lane for size (double/normal/half) and hide.
 - Share one cursor/readout across traces.
 - Left-drag selects a range; middle-drag pans; two-finger horizontal trackpad scroll pans; wheel, shift+wheel, and ctrl+wheel zoom; double-click resets zoom; on-screen zoom icons back the gestures. Navigate with mouse and keyboard.
 - Keep corner/complex ranges visible without obscuring the data.
@@ -1003,14 +1003,15 @@ Embedded libmpv playback must be verified on the native Linux/Omarchy OpenGL sce
   is a `QQuickItem` that builds its frame in `updatePaintNode()` through
   `TraceSceneBuilder`. Do not add a `Canvas` or a painted item: JavaScript and
   QPainter both draw on a CPU thread and cannot hold the frame budget.
-- `TraceSceneBuilder` is the one drawing convention. It batches every
-  flat-coloured quad of a surface into a single `QSGGeometryNode`
-  (`QSGVertexColorMaterial`, `DrawTriangles`) — one draw call per surface — and
-  composites text as `QSGTexture` quads cached by `TraceTextCache` on
-  (string, font, colour). Lines are expanded to quads because OpenGL core
-  profile clamps `glLineWidth` to 1; edge antialiasing comes from the 4×
-  multisample format requested in `main()`. Rotated text goes through
-  `rotatedText()`, which parents the quad to a `QSGTransformNode`.
+- `TraceSceneBuilder` is the one drawing convention. It batches flat fills,
+  premultiplied gradients, and joined coverage strokes into a single
+  `QSGGeometryNode` (`QSGVertexColorMaterial`, `DrawTriangles`) per surface.
+  A stroke shares four vertices per joint and has a one-device-pixel
+  transparent fringe: antialiasing does not depend on the window granting
+  the 4× MSAA request. Width is screen-space, never scaled with the lap.
+  No square joint stamps, per-segment translucent caps, or raster enlargement.
+  Text remains `QSGTexture` quads cached by `TraceTextCache` on (string, font,
+  colour); rotated text uses a `QSGTransformNode`.
 - The batch geometry is **indexed with `QSGGeometry::UnsignedIntType`, and that
   is load-bearing**. The scene graph's batch renderer merges compatible
   geometry into 16-bit indexed batches; a zoomed workspace passes 65535
@@ -1018,19 +1019,25 @@ Embedded libmpv playback must be verified on the native Linux/Omarchy OpenGL sce
   — no warning, no error, just missing traces. Declaring 32-bit indices keeps
   the node out of that merge path. Do not "simplify" it back to unindexed
   triangles.
-- `TraceView` draws a connected min/max ribbon when a column covers more
-  than about two samples. Once there are fewer samples than that per device
-  pixel it switches to a polyline through the samples in view, so a zoomed
-  slope is a line instead of a stretched column raster. Only each
-  channel's vertical range is cached.
-- Measured on a full-height Sebring lap, seven lanes, 1280×800 at dpr 1.94
-  (`OMATRACK_AUTOTEST_ZOOM=1`, `OMATRACK_AUTOTEST_HOVER=1`): geometry build
-  **0.32 ms average, 0.74 ms worst** for ~4900 quads, and **0.006 ms** for the
-  cursor overlay's 78 quads. The same lap through QPainter cost 12.6 ms.
-  `QSG_RENDER_TIMING=1` reports `sync=0, render=0` per frame — the frame is
-  bounded by presentation, not by drawing. The harness therefore benchmarks
-  `benchmarkGeometry()`, the CPU half of the renderer, because the GPU half no
-  longer registers.
+- `TraceDecimator` selects min/max samples in source order at their actual
+  sub-column positions, with one continuous path rule at every zoom. NaNs
+  break the path, including gaps narrower than a device column. Reference
+  positions invert the shared alignment map locally (within a device pixel),
+  never by the lap's endpoints. A linear-time slope corridor removes only
+  subpixel detail, bounded to 0.1 physical pixel vertically. Area and stroke
+  use the same path; the primary is decimated once, then painted as area →
+  reference → active so a strong fill cannot bury the reference. Zoom can
+  inspect below one sample (numerical floor 1e-7 lap fraction), but does not
+  imply more source resolution.
+- Renderer rationale, measurements, and remaining limits are in
+  `docs/TRACE_RENDERING.md`. The zoom microbenchmark now uses the real DPR;
+  older numbers used DPR 1 even on a high-DPI window and are not comparable.
+  `OMATRACK_AUTOTEST_TRACE_RENDERING=/path/to/copied-multi-lap-file` runs an
+  actual frame-paced 10,000× zoom sweep, reports frame-callback percentiles,
+  and captures overview, zoom, sub-sample detail, custom style, and Channels.
+  Use `OMATRACK_HEADLESS_MODE=2560x1600@120` for the 120 Hz check. The wrapper
+  routes to the headless output's actual active workspace if a desktop's
+  monitor-restoration hook replaces its requested default.
 - The scene-graph **software** adaptation cannot render custom geometry nodes;
   it is what `QT_QPA_PLATFORM=offscreen` falls back to without a GL context.
   `TraceSceneBuilder` detects it and emits nothing, so offscreen runs still

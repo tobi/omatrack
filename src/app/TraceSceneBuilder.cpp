@@ -1,4 +1,5 @@
 #include "TraceSceneBuilder.h"
+#include "TraceDecimator.h"
 
 #include <QQuickWindow>
 #include <QSGGeometryNode>
@@ -12,7 +13,17 @@
 
 namespace {
 
-constexpr int kCircleSegments = 10;
+constexpr double kCircleErrorPixels = 0.1;
+
+QSGGeometry::ColoredPoint2D vertexColor(const QColor& color) {
+    QSGGeometry::ColoredPoint2D vertex{};
+    const float alpha = float(color.alphaF());
+    vertex.r = uchar(std::lround(color.redF() * alpha * 255.0));
+    vertex.g = uchar(std::lround(color.greenF() * alpha * 255.0));
+    vertex.b = uchar(std::lround(color.blueF() * alpha * 255.0));
+    vertex.a = uchar(std::lround(alpha * 255.0));
+    return vertex;
+}
 
 // The software adaptation of the scene graph cannot render custom geometry
 // nodes — it crashes on them. It is what the offscreen platform falls back to
@@ -29,51 +40,67 @@ bool supportsGeometryNodes(QQuickWindow* window) {
 
 TraceSceneBuilder::TraceSceneBuilder() = default;
 
-void TraceSceneBuilder::begin(QQuickWindow* window) {
+void TraceSceneBuilder::begin(QQuickWindow* window, qreal benchmarkDpr) {
     // A null window is also the benchmark path: geometry is built, text is
     // skipped because textures may only be created with a live scene graph.
     softwareFallback_ = window && !supportsGeometryNodes(window);
     window_ = softwareFallback_ ? nullptr : window;
+    dpr_ = window_ ? window_->effectiveDevicePixelRatio() : benchmarkDpr;
+    dpr_ = std::max(1.0, dpr_);
     vertices_.clear();
     indices_.clear();
     texts_.clear();
 }
 
 void TraceSceneBuilder::reserveQuads(int quads) {
-    vertices_.reserve(vertices_.size() + quads * 4);
-    indices_.reserve(indices_.size() + quads * 6);
+    const qsizetype vertexNeed = vertices_.size() + quads * 4;
+    const qsizetype indexNeed = indices_.size() + quads * 6;
+    if (vertexNeed > vertices_.capacity())
+        vertices_.reserve(std::max(vertexNeed, vertices_.capacity() * 2));
+    if (indexNeed > indices_.capacity())
+        indices_.reserve(std::max(indexNeed, indices_.capacity() * 2));
 }
 
-qreal TraceSceneBuilder::devicePixelRatio() const {
-    return window_ ? std::max(1.0, window_->effectiveDevicePixelRatio()) : 1.0;
-}
-
-int TraceSceneBuilder::deviceColumns(const QRectF& rect) const {
-    return std::max(2, int(std::lround(rect.width() * devicePixelRatio())));
-}
+qreal TraceSceneBuilder::devicePixelRatio() const { return dpr_; }
 
 void TraceSceneBuilder::quad(const QPointF& a, const QPointF& b,
                              const QPointF& c, const QPointF& d,
                              const QColor& color) {
     if (!color.isValid() || color.alpha() == 0) return;
-    // Vertex colours are premultiplied: QSGVertexColorMaterial blends with
-    // ONE, ONE_MINUS_SRC_ALPHA.
-    const float alpha = float(color.alphaF());
-    const uchar r = uchar(std::lround(color.redF() * alpha * 255.0));
-    const uchar g = uchar(std::lround(color.greenF() * alpha * 255.0));
-    const uchar b8 = uchar(std::lround(color.blueF() * alpha * 255.0));
-    const uchar a8 = uchar(std::lround(alpha * 255.0));
+    const quint32 base = quint32(vertices_.size());
+    auto vertex = vertexColor(color);
+    vertices_.resize(base + 4);
+    auto* target = vertices_.data() + base;
+    for (const QPointF& p : {a, b, c, d}) {
+        vertex.x = float(p.x());
+        vertex.y = float(p.y());
+        *target++ = vertex;
+    }
+    const int firstIndex = int(indices_.size());
+    indices_.resize(firstIndex + 6);
+    auto* index = indices_.data() + firstIndex;
+    for (quint32 offset : {0u, 1u, 2u, 0u, 2u, 3u}) *index++ = base + offset;
+}
 
+void TraceSceneBuilder::gradientQuad(const QPointF& a, const QPointF& b,
+                                     const QPointF& c, const QPointF& d,
+                                     const QColor& ca, const QColor& cb,
+                                     const QColor& cc, const QColor& cd) {
     const quint32 base = quint32(vertices_.size());
     const QPointF corners[4] = {a, b, c, d};
-    for (const QPointF& point : corners) {
+    const QColor colors[4] = {ca, cb, cc, cd};
+    for (int i = 0; i < 4; ++i) {
+        // Premultiply BEFORE interpolation, including the transparent edge.
+        // Otherwise low-coverage pixels acquire a dark or coloured halo.
+        const QColor& color = colors[i];
+        const float alpha = float(color.alphaF());
         QSGGeometry::ColoredPoint2D vertex{};
-        vertex.x = float(point.x());
-        vertex.y = float(point.y());
-        vertex.r = r;
-        vertex.g = g;
-        vertex.b = b8;
-        vertex.a = a8;
+        vertex.x = float(corners[i].x());
+        vertex.y = float(corners[i].y());
+        vertex.r = uchar(std::lround(color.redF() * alpha * 255.0));
+        vertex.g = uchar(std::lround(color.greenF() * alpha * 255.0));
+        vertex.b = uchar(std::lround(color.blueF() * alpha * 255.0));
+        vertex.a = uchar(std::lround(alpha * 255.0));
         vertices_.append(vertex);
     }
     for (const quint32 offset : {0u, 1u, 2u, 0u, 2u, 3u})
@@ -94,18 +121,8 @@ void TraceSceneBuilder::fillQuad(const QPointF& a, const QPointF& b,
 
 void TraceSceneBuilder::line(const QPointF& from, const QPointF& to,
                              qreal width, const QColor& color) {
-    const qreal dx = to.x() - from.x();
-    const qreal dy = to.y() - from.y();
-    const qreal length = std::hypot(dx, dy);
-    if (length < 1.0e-9) {
-        rect(QRectF(from.x() - width * 0.5, from.y() - width * 0.5, width,
-                    width),
-             color);
-        return;
-    }
-    const qreal half = std::max(0.5, width * 0.5);
-    const QPointF normal(-dy / length * half, dx / length * half);
-    quad(from + normal, to + normal, to - normal, from - normal, color);
+    const QPointF points[] = {from, to};
+    polyline(points, 2, width, color);
 }
 
 void TraceSceneBuilder::vLine(qreal x, qreal top, qreal bottom, qreal width,
@@ -126,34 +143,108 @@ void TraceSceneBuilder::hLine(qreal y, qreal left, qreal right, qreal width,
 
 void TraceSceneBuilder::polyline(const QPointF* points, int count, qreal width,
                                  const QColor& color) {
-    if (!points || count < 2) return;
-    reserveQuads(count);
-    const qreal half = std::max(0.5, width * 0.5);
+    if (!points || count < 2 || width <= 0 || color.alpha() == 0) return;
+    // One cross-section (four vertices) per sample; indices have three
+    // quads per segment. Keep both buffers geometrically grown.
+    reserveQuads(count + 2);
+    const qsizetype indexNeed = indices_.size() + (count - 1) * 18 + 12;
+    if (indexNeed > indices_.capacity())
+        indices_.reserve(std::max(indexNeed, indices_.capacity() * 2));
+    const qreal pixel = 1.0 / devicePixelRatio();
+    const qreal inner = std::max(0.0, (width - pixel) * 0.5);
+    const qreal outer = inner + pixel;
+    QColor solid = color;
+    solid.setAlphaF(color.alphaF() * std::min(1.0, width / pixel));
+    QColor clear = color;
+    clear.setAlpha(0);
+    normalsScratch_.resize(count - 1);
+    QPointF* normalData = normalsScratch_.data();
+    for (int i = 0; i + 1 < count; ++i) {
+        const QPointF delta = points[i + 1] - points[i];
+        const qreal length = std::sqrt(QPointF::dotProduct(delta, delta));
+        normalData[i] = length > 1.0e-9
+                            ? QPointF(-delta.y() / length, delta.x() / length)
+                            : QPointF();
+    }
+    auto join = [&](int i) {
+        if (i == 0) return normalData[0];
+        if (i == count - 1) return normalData[count - 2];
+        const QPointF a = normalData[i - 1];
+        const QPointF b = normalData[i];
+        const QPointF sum = a + b;
+        const qreal denominator = 1.0 + QPointF::dotProduct(a, b);
+        // Bounded joins: no square stamps at samples, no huge miter spikes
+        // at a noisy reversal. Shared cross-sections avoid alpha overdraw.
+        if (denominator < 1.0e-8) return b;
+        const qreal divisor = denominator >= 0.5
+                                  ? denominator
+                                  : std::sqrt(2.0 * denominator) * 0.5;
+        return sum / divisor;
+    };
+    // Four shared vertices per joint, not twelve per segment. Convert the
+    // two colours once per path, and resize buffers once: QColor conversion
+    // and QVector append/detach in every vertex dominated zoom on laptops.
+    const auto solidVertex = vertexColor(solid);
+    const auto clearVertex = vertexColor(clear);
+    const quint32 base = quint32(vertices_.size());
+    vertices_.resize(base + count * 4);
+    auto* vertex = vertices_.data() + base;
+    for (int i = 0; i < count; ++i) {
+        const QPointF normal = join(i);
+        const qreal offsets[] = {outer, inner, -inner, -outer};
+        for (int edge = 0; edge < 4; ++edge) {
+            *vertex = edge == 0 || edge == 3 ? clearVertex : solidVertex;
+            const QPointF p = points[i] + normal * offsets[edge];
+            vertex->x = float(p.x());
+            vertex->y = float(p.y());
+            ++vertex;
+        }
+    }
+    const int firstIndex = int(indices_.size());
+    indices_.resize(firstIndex + (count - 1) * 18);
+    auto* index = indices_.data() + firstIndex;
     for (int i = 1; i < count; ++i) {
-        const QPointF& from = points[i - 1];
-        const QPointF& to = points[i];
-        const qreal dx = to.x() - from.x();
-        const qreal dy = to.y() - from.y();
-        const qreal length = std::hypot(dx, dy);
-        if (length < 1.0e-9) continue;
-        const QPointF normal(-dy / length * half, dx / length * half);
-        quad(from + normal, to + normal, to - normal, from - normal, color);
-        // Square joint: without it, direction changes leave a notch.
-        if (i + 1 < count)
-            rect(QRectF(to.x() - half, to.y() - half, half * 2.0, half * 2.0),
-                 color);
+        const quint32 a = base + (i - 1) * 4;
+        for (quint32 edge = 0; edge < 3; ++edge) {
+            for (quint32 offset :
+                 {edge, edge + 4, edge + 5, edge, edge + 5, edge + 1})
+                *index++ = a + offset;
+        }
+    }
+    // Feather the two butt caps; internal joins never get separate caps.
+    for (int end : {0, count - 1}) {
+        const QPointF normal = join(end);
+        const QPointF tangent(normal.y(), -normal.x());
+        const QPointF p = points[end];
+        const QPointF q = p + tangent * (end == 0 ? -pixel * 0.5 : pixel * 0.5);
+        gradientQuad(p + normal * inner, p - normal * inner, q - normal * outer,
+                     q + normal * outer, solid, solid, clear, clear);
     }
 }
 
 void TraceSceneBuilder::dot(const QPointF& center, qreal radius,
                             const QColor& color) {
-    if (radius <= 0.0) return;
-    QPointF previous(center.x() + radius, center.y());
-    for (int i = 1; i <= kCircleSegments; ++i) {
-        const double angle = 2.0 * M_PI * double(i) / double(kCircleSegments);
-        const QPointF point(center.x() + std::cos(angle) * radius,
-                            center.y() + std::sin(angle) * radius);
-        quad(center, previous, point, point, color);
+    if (radius <= 0.0 || !std::isfinite(radius) || !std::isfinite(center.x()) ||
+        !std::isfinite(center.y()))
+        return;
+    const int segments =
+        std::clamp(int(std::ceil(M_PI * std::sqrt(radius * devicePixelRatio() /
+                                                  (2.0 * kCircleErrorPixels)))),
+                   16, 256);
+    const qreal fringe = 0.5 / devicePixelRatio();
+    const qreal inner = std::max(0.0, radius - fringe);
+    const qreal outer = radius + fringe;
+    QColor clear = color;
+    clear.setAlpha(0);
+    QPointF previous(1.0, 0.0);
+    for (int i = 1; i <= segments; ++i) {
+        const double angle = 2.0 * M_PI * double(i) / double(segments);
+        const QPointF point(std::cos(angle), std::sin(angle));
+        quad(center, center + previous * inner, center + point * inner, center,
+             color);
+        gradientQuad(center + previous * inner, center + point * inner,
+                     center + point * outer, center + previous * outer, color,
+                     color, clear, clear);
         previous = point;
     }
 }
@@ -230,124 +321,61 @@ void TraceSceneBuilder::envelopePolyline(
     const std::function<double(double)>& sourceFraction, double xStart,
     double xSpan, const QRectF& rect, double yMin, double ySpan,
     const EnvelopeStyle& style, double clipLow, double clipHigh) {
-    if (series.size() < 2 || rect.width() < 2.0 || xSpan <= 0.0 || ySpan <= 0.0)
-        return;
+    trace::decimate(series, sourceFraction, xStart, xSpan, rect, yMin, ySpan,
+                    devicePixelRatio(), clipLow, clipHigh, pointsScratch_);
+    seriesPath(pointsScratch_, rect, yMin, ySpan, style);
+}
 
-    const int valueLast = int(series.size()) - 1;
-    const int columns = deviceColumns(rect);
-    const auto toY = [&](double value) {
-        return rect.top() + (1.0 - (value - yMin) / ySpan) * rect.height();
+void TraceSceneBuilder::seriesPath(const QVector<QPointF>& path,
+                                   const QRectF& rect, double yMin,
+                                   double ySpan, const EnvelopeStyle& style) {
+    if (path.isEmpty() || ySpan <= 0) return;
+    const QPointF* points = path.constData();
+    const int count = int(path.size());
+    const double baseline =
+        std::clamp(rect.bottom() + yMin / ySpan * rect.height(), rect.top(),
+                   rect.bottom());
+    const double fadeHeight = std::max(
+        1.0, std::max(baseline - rect.top(), rect.bottom() - baseline));
+    QColor clear = style.fillColor;
+    clear.setAlpha(0);
+    auto fillSegment = [&](const QPointF& a, const QPointF& b) {
+        const QColor negative = style.negativeFillColor.isValid()
+                                    ? style.negativeFillColor
+                                    : style.fillColor;
+        QColor ca = a.y() > baseline ? negative : style.fillColor;
+        QColor cb = b.y() > baseline ? negative : style.fillColor;
+        ca.setAlphaF(ca.alphaF() * std::abs(a.y() - baseline) / fadeHeight);
+        cb.setAlphaF(cb.alphaF() * std::abs(b.y() - baseline) / fadeHeight);
+        gradientQuad(a, b, QPointF(b.x(), baseline), QPointF(a.x(), baseline),
+                     ca, cb, clear, clear);
     };
-
-    const double series0 = sourceFraction(xStart);
-    const double series1 = sourceFraction(xStart + xSpan);
-    const double seriesSpan = series1 - series0;
-
-    const bool warped = std::fabs(seriesSpan) > 1.0e-12;
-    // One tight stroke for every zoom level: each device column contributes
-    // the exact min/max of the samples it covers, so extremes survive
-    // decimation without ever rendering a filled band or a stretched raster.
-    // A column holding a single sample plots that sample's exact position,
-    // so a zoomed slope is a line through the data. Gaps (no finite sample,
-    // clipped column) break the stroke; nothing is invented across them.
-    pointsScratch_.clear();
-    auto flush = [&]() {
-        if (pointsScratch_.size() >= 2)
-            polyline(pointsScratch_.constData(), int(pointsScratch_.size()),
-                     style.width, style.color);
-        else if (pointsScratch_.size() == 1)
-            dot(pointsScratch_.constData()[0], style.width * 0.5, style.color);
-        pointsScratch_.clear();
-    };
-    reserveQuads(columns);
-
-    // Fill chains along the top edge of the stroke, column to column, exactly
-    // like the stroke itself: no band, no stretching, just area under the
-    // tight line for channels that ask for it.
-    bool fillOpen = false;
-    double fillX = 0.0;
-    double fillTop = 0.0;
-    for (int column = 0; column < columns; ++column) {
-        const double startFraction =
-            xStart + xSpan * double(column) / double(columns);
-        const double endFraction =
-            xStart + xSpan * double(column + 1) / double(columns);
-        const double centre = (startFraction + endFraction) * 0.5;
-        if (centre < clipLow || centre > clipHigh) {
-            flush();
-            fillOpen = false;
-            continue;
-        }
-        double from = sourceFraction(startFraction) * valueLast;
-        double to = sourceFraction(endFraction) * valueLast;
-        if (to < from) std::swap(from, to);
-
-        double low = std::numeric_limits<double>::infinity();
-        double high = -std::numeric_limits<double>::infinity();
-        int finite = 0;
-        double singleFrac = 0.0;
-        const int firstIndex = std::clamp(int(std::floor(from)), 0, valueLast);
-        const int lastIndex = std::clamp(int(std::ceil(to)), 0, valueLast);
-        if (lastIndex - firstIndex >= 2) {
-            for (int i = firstIndex; i <= lastIndex; ++i) {
-                const double value = series[size_t(i)];
-                if (!std::isfinite(value)) continue;
-                if (finite == 0) singleFrac = double(i) / double(valueLast);
-                ++finite;
-                low = std::min(low, value);
-                high = std::max(high, value);
-            }
-        } else {
-            const int lower = firstIndex;
-            const int upper = std::min(lower + 1, valueLast);
-            const double value =
-                series[size_t(lower)] +
-                (series[size_t(upper)] - series[size_t(lower)]) *
-                    (from - double(lower));
-            if (std::isfinite(value)) {
-                finite = 1;
-                singleFrac = from / double(valueLast);
-                low = high = value;
+    // Paint the entire area first, then the outline. Adjacent trapezoids
+    // share edges and interpolate premultiplied colour: no vertical bars,
+    // overdraw stripes, or fill covering the reference's own stroke joints.
+    if (style.fill && style.fillColor.alpha() > 0) {
+        for (int i = 1; i < count; ++i) {
+            const QPointF a = points[i - 1], b = points[i];
+            if (!std::isfinite(a.x()) || !std::isfinite(b.x())) continue;
+            if ((a.y() - baseline) * (b.y() - baseline) < 0) {
+                const QPointF crossing(a.x() + (b.x() - a.x()) *
+                                                   (baseline - a.y()) /
+                                                   (b.y() - a.y()),
+                                       baseline);
+                fillSegment(a, crossing);
+                fillSegment(crossing, b);
+            } else {
+                fillSegment(a, b);
             }
         }
-        if (finite == 0) {
-            flush();
-            fillOpen = false;
-            continue;
-        }
-
-        double x = rect.left() +
-                   rect.width() * (double(column) + 0.5) / double(columns);
-        if (finite == 1) {
-            // One sample in this column: plot its exact position instead of
-            // the column centre. x is the linear inverse of sourceFraction
-            // between the viewport endpoints — exact for an unwarped lap,
-            // and locally close once GPS alignment is linear.
-            const double t = warped ? (singleFrac - series0) / seriesSpan
-                                    : (centre - xStart) / xSpan;
-            if (t < -0.02 || t > 1.02) {
-                flush();
-                fillOpen = false;
-                continue;
-            }
-            x = rect.left() + t * rect.width();
-        }
-        const double top = std::clamp(toY(high), rect.top(), rect.bottom());
-        const double bottom = std::clamp(toY(low), rect.top(), rect.bottom());
-
-        if (style.fill) {
-            if (fillOpen)
-                fillQuad(QPointF(fillX, fillTop), QPointF(x, top),
-                         QPointF(x, rect.bottom()),
-                         QPointF(fillX, rect.bottom()), style.fillColor);
-            fillX = x;
-            fillTop = top;
-            fillOpen = true;
-        }
-        pointsScratch_.append(QPointF(x, top));
-        if (bottom - top > 1.0e-9) pointsScratch_.append(QPointF(x, bottom));
     }
-    flush();
+    if (style.width <= 0.0) return;
+    int first = 0;
+    for (int i = 0; i <= count; ++i) {
+        if (i < count && std::isfinite(points[i].x())) continue;
+        polyline(points + first, i - first, style.width, style.color);
+        first = i + 1;
+    }
 }
 
 void TraceSceneBuilder::commit(QSGNode* root) {

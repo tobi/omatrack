@@ -80,6 +80,23 @@ bool bounded(const QVector<double>& values, double low, double high) {
 class StrategyTest : public QObject {
     Q_OBJECT
 private slots:
+    void nonOwningLookupMatchesVectorAndFallback() {
+        const std::vector<double> map{0.03, 0.2, 0.7, 0.98};
+        for (double fraction : {-0.1, 0.0, 0.15, 0.5, 0.95, 1.1})
+            QCOMPARE(omatrack::alignment::interpolateFraction(
+                         map.data(), map.size(), fraction),
+                     omatrack::alignment::interpolateFraction(map, fraction));
+        QCOMPARE(omatrack::alignment::interpolateFraction(nullptr, 0, 0.3),
+                 0.3);
+        const double constant[] = {0.2, 0.2};
+        QCOMPARE(omatrack::alignment::interpolateFraction(constant, 2, 0.3),
+                 0.3);
+        const double invalid[] = {0.2,
+                                  std::numeric_limits<double>::quiet_NaN()};
+        QCOMPARE(omatrack::alignment::interpolateFraction(invalid, 2, 0.3),
+                 0.3);
+    }
+
     void lapPercentageIgnoresSpeedFusedDistanceDrift() {
         constexpr int kSamples = 1000;
         auto primary = makeLap(kSamples);

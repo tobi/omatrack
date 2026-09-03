@@ -571,6 +571,13 @@ void PreferencesStore::scheduleSave() {
                 {QStringLiteral("color"),
                  channelColors_.value(key).name(QColor::HexRgb)},
                 {QStringLiteral("weight"), channelWeights_.value(key, 1.0)}});
+    for (auto it = channelAppearance_.cbegin(); it != channelAppearance_.cend();
+         ++it) {
+        if (it.key().startsWith(QStringLiteral("sidecar:"))) continue;
+        QVariantMap entry = channels.value(it.key()).toMap();
+        it.value().writeTo(entry);
+        channels.insert(it.key(), entry);
+    }
     config.setMap({QStringLiteral("channels")}, channels);
 
     if (prefsTimer_ && !saveJob_.running()) prefsTimer_->start();
@@ -598,6 +605,10 @@ void PreferencesStore::loadChannelsConfig() {
         config.setMap({QStringLiteral("channels")}, channels);
         config.save();
     }
+    channelAppearance_.clear();
+    for (auto it = channels.cbegin(); it != channels.cend(); ++it)
+        channelAppearance_.insert(
+            it.key(), ChannelAppearance::fromMap(it.key(), it.value().toMap()));
     for (const QString& k : channelOrder_) {
         const bool defaultVisible = k != "delta" && k != "clutch" &&
                                     k != "driver_throttle" && k != "gps_lat" &&

@@ -33,7 +33,7 @@ void TraceLaneLayout::invalidateRanges() {
 void TraceLaneLayout::rebuildChannelSpecs() {
     channelSpecs_.clear();
     auto add = [&](const QString& key, const QString& title,
-                   const QString& unit, QColor color, Clamp clamp, bool filled,
+                   const QString& unit, QColor color, Clamp clamp,
                    const QString& field) {
         ChannelSpec s;
         s.key = key;
@@ -41,34 +41,32 @@ void TraceLaneLayout::rebuildChannelSpecs() {
         s.unit = unit;
         s.color = color;
         s.clamp = clamp;
-        s.filled = filled;
         s.field = field;
         channelSpecs_.append(s);
     };
-    add("delta", "Δ Time", "s", QColor("#83c092"), Clamp{0, 0, true, true},
-        true, "");
+    add("delta", "Δ Time", "s", QColor("#83c092"), Clamp{0, 0, true, true}, "");
     add("speed", "Speed", "km/h", QColor("#a7c080"), Clamp{0, 0, true, false},
-        false, "speed");
+        "speed");
     add("throttle", "Throttle", "%", QColor("#a7c080"),
-        Clamp{0, 1, false, false}, true, "throttle");
+        Clamp{0, 1, false, false}, "throttle");
     add("brake", "Brake", "bar", QColor("#e67e80"), Clamp{0, 0, true, false},
-        true, "brake");
+        "brake");
     add("steering", "Steering", "deg", QColor("#dbbc7f"),
-        Clamp{0, 0, true, true}, false, "steering");
-    add("gear", "Gear", "", QColor("#d699b6"), Clamp{0, 7, false, false}, false,
+        Clamp{0, 0, true, true}, "steering");
+    add("gear", "Gear", "", QColor("#d699b6"), Clamp{0, 7, false, false},
         "gear");
     add("dampers", "Dampers", "mm", QColor("#7fbbb3"), Clamp{0, 0, true, true},
-        false, "damperFL");
+        "damperFL");
     add("g_long", "G Long", "g", QColor("#e09d7f"), Clamp{0, 0, true, true},
-        false, "gForceLong");
+        "gForceLong");
     add("clutch", "Clutch", "%", QColor("#d3c6aa"), Clamp{0, 1, false, false},
-        true, "clutch");
+        "clutch");
     add("driver_throttle", "Driver throttle", "%", QColor("#9da9a0"),
-        Clamp{0, 1, false, false}, false, "driverThrottle");
+        Clamp{0, 1, false, false}, "driverThrottle");
     add("gps_lat", "GPS latitude", "°", QColor("#83c092"),
-        Clamp{0, 0, true, false}, false, "gpsLat");
+        Clamp{0, 0, true, false}, "gpsLat");
     add("gps_lon", "GPS longitude", "°", QColor("#e09d7f"),
-        Clamp{0, 0, true, false}, false, "gpsLon");
+        Clamp{0, 0, true, false}, "gpsLon");
     if (store_) {
         if (const SessionHandle* session = store_->primarySession()) {
             for (const SourceChannelSummary& channel :
@@ -77,7 +75,7 @@ void TraceLaneLayout::rebuildChannelSpecs() {
                 QColor color(store_->channelColor(key));
                 if (!color.isValid()) color = QColor("#9da9a0");
                 add(key, channel.name, channel.unit, color,
-                    Clamp{0, 0, true, false}, false, key);
+                    Clamp{0, 0, true, false}, key);
             }
         }
         for (const OverlayGroup& group : store_->overlayGroups()) {

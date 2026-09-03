@@ -53,6 +53,16 @@ if ! hyprctl monitors -j | jq -e --arg n "$OUTPUT" '.[] | select(.name == $n)' >
     sleep 0.5
 fi
 
+# A desktop's monitor-restoration hook can replace the default workspace
+# during hotplug. Route to the workspace actually shown on the headless
+# output, rather than leaving the test on an inactive one with no frame
+# callbacks. This does not focus a monitor or switch the user's workspace.
+active_workspace=$(hyprctl monitors -j | jq -r --arg n "$OUTPUT" \
+    '.[] | select(.name == $n) | .activeWorkspace.name')
+if [[ -n "$active_workspace" && "$active_workspace" != null ]]; then
+    hyprctl eval "o.window({ class = \"^(omatrack-autotest)$\" }, { workspace = \"name:$active_workspace silent\", no_initial_focus = true })" >/dev/null
+fi
+
 export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-wayland}"
 export QT_FORCE_STDERR_LOGGING=1
 "$@"

@@ -7,9 +7,9 @@
 // textures. Nothing goes through QPainter on the frame path, so the renderer
 // is GPU-bound instead of rasterisation-bound.
 //
-// Lines are expanded to quads on purpose: OpenGL core profile clamps
-// glLineWidth to 1, so a 2 px trace has to be geometry. Edge antialiasing
-// comes from the window's multisample format, set in main().
+// Strokes are joined coverage meshes, with a one-device-pixel transparent
+// fringe. Their width is in logical screen pixels, never telemetry space.
+// Antialiasing does not depend on the window granting the MSAA request.
 //
 // Usage, from updatePaintNode() only (render thread):
 //     builder.begin(window());
@@ -43,7 +43,7 @@ public:
     TraceSceneBuilder();
 
     /// Starts a frame. Clears the accumulated geometry, keeps the text cache.
-    void begin(QQuickWindow* window);
+    void begin(QQuickWindow* window, qreal benchmarkDpr = 1.0);
 
     void rect(const QRectF& rect, const QColor& color);
     void line(const QPointF& from, const QPointF& to, qreal width,
@@ -83,29 +83,29 @@ public:
         bool fill = false;
         QColor color;
         QColor fillColor;
+        QColor negativeFillColor;  // optional diverging fill (delta)
     };
-    /// One tight stroke for `series` across `rect`, exact at every zoom:
-    /// each device column contributes the min/max of the samples it covers
-    /// (a lone sample plots at its exact position), so extremes survive
-    /// decimation without a filled band or a stretched raster. `fill`
-    /// chains area under the stroke's top edge for channels that ask for
-    /// it. `sourceFraction` maps a viewport
-    /// fraction in [xStart, xStart+xSpan] onto a series index fraction in
-    /// [0, 1]. `clipLow`/`clipHigh` break the stroke outside [clipLow,
-    /// clipHigh] on the viewport axis (neighbour-lap windows), as do
-    /// columns with no finite sample. Replaces the three per-surface
-    /// decimators that did the same job three ways.
+    /// Viewport-bounded, source-ordered path through TraceDecimator. Width
+    /// stays in screen pixels; optional area fades to zero at the baseline.
+    /// sourceFraction is the forward viewport→sample alignment map. Clip
+    /// limits are on the viewport axis (including neighbour-lap windows).
+    /// No source or display-clock resampling occurs on cursor movement.
     void envelopePolyline(const std::vector<double>& series,
                           const std::function<double(double)>& sourceFraction,
                           double xStart, double xSpan, const QRectF& rect,
                           double yMin, double ySpan, const EnvelopeStyle& style,
                           double clipLow = 0.0, double clipHigh = 1.0);
 
+    /// Paint an already decimated path. Allows area → reference → active
+    /// ordering without decimating the primary twice.
+    void seriesPath(const QVector<QPointF>& points, const QRectF& rect,
+                    double yMin, double ySpan, const EnvelopeStyle& style);
+
     /// Writes the frame into `root`, reusing its child nodes.
     void commit(QSGNode* root);
     void releaseResources();
 
-    int quadCount() const { return vertices_.size() / 6; }
+    int quadCount() const { return indices_.size() / 6; }
 
 private:
     struct TextQuad {
@@ -125,8 +125,10 @@ private:
 
     void quad(const QPointF& a, const QPointF& b, const QPointF& c,
               const QPointF& d, const QColor& color);
+    void gradientQuad(const QPointF& a, const QPointF& b, const QPointF& c,
+                      const QPointF& d, const QColor& ca, const QColor& cb,
+                      const QColor& cc, const QColor& cd);
     qreal devicePixelRatio() const;
-    int deviceColumns(const QRectF& rect) const;
 
     QVector<QSGGeometry::ColoredPoint2D> vertices_;
     QVector<quint32> indices_;
@@ -139,4 +141,6 @@ private:
     QQuickWindow* window_ = nullptr;
     TraceTextCache cache_;
     QVector<QPointF> pointsScratch_;
+    QVector<QPointF> normalsScratch_;
+    qreal dpr_ = 1.0;
 };

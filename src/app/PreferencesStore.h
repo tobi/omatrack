@@ -5,6 +5,7 @@
 #pragma once
 
 #include "AsyncJob.h"
+#include "ChannelAppearance.h"
 
 #include "TelemetryStore.h"  // SidebarPin, cornerConfigPath, SessionHandle fwd
 
@@ -100,6 +101,13 @@ public:
     }
     QHash<QString, double>& channelWeights() { return channelWeights_; }
 
+    const QHash<QString, ChannelAppearance>& channelAppearance() const {
+        return channelAppearance_;
+    }
+    QHash<QString, ChannelAppearance>& channelAppearance() {
+        return channelAppearance_;
+    }
+
     const QVector<omatrack::LibraryLocation>& locations() const {
         return locations_;
     }
@@ -167,6 +175,7 @@ private:
     QHash<QString, bool> channelVisible_;
     QHash<QString, QColor> channelColors_;
     QHash<QString, double> channelWeights_;
+    QHash<QString, ChannelAppearance> channelAppearance_;
     QVector<omatrack::LibraryLocation> locations_;
     QString lastPrimaryKey_;
     QString lastCompareKey_;

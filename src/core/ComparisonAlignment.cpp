@@ -522,10 +522,16 @@ bool alignmentMapUsable(const std::vector<double>& map) {
 }
 }  // namespace
 
+double interpolateFraction(const double* map, size_t count,
+                           double primaryFraction) {
+    if (!map || count < 2 || !(map[count - 1] - map[0] >= 0.01))
+        return std::clamp(primaryFraction, 0.0, 1.0);
+    return omatrack::interpolateFraction(map, count, primaryFraction);
+}
+
 double interpolateFraction(const std::vector<double>& map,
                            double primaryFraction) {
-    if (!alignmentMapUsable(map)) return std::clamp(primaryFraction, 0.0, 1.0);
-    return omatrack::interpolateFraction(map, primaryFraction);
+    return interpolateFraction(map.data(), map.size(), primaryFraction);
 }
 
 double invertFraction(const std::vector<double>& map,

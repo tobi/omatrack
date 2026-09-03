@@ -45,7 +45,7 @@ QString comparisonAlignmentConfidenceLabel(const QString& basis,
 double interpolateAlignmentFraction(const QVector<double>& map,
                                     double primaryFraction) {
     return omatrack::alignment::interpolateFraction(
-        std::vector<double>(map.begin(), map.end()), primaryFraction);
+        map.constData(), size_t(map.size()), primaryFraction);
 }
 
 double invertAlignmentFraction(const QVector<double>& map,

@@ -67,6 +67,9 @@ class ChannelRow {
     Q_PROPERTY(bool visible MEMBER visible)
     Q_PROPERTY(QString color MEMBER color)
     Q_PROPERTY(double weight MEMBER weight)
+    Q_PROPERTY(double strokeWidth MEMBER strokeWidth)
+    Q_PROPERTY(double fillOpacity MEMBER fillOpacity)
+    Q_PROPERTY(QString referenceColor MEMBER referenceColor)
     Q_PROPERTY(bool source MEMBER source)
     Q_PROPERTY(bool sidecar MEMBER sidecar)
     Q_PROPERTY(bool span MEMBER span)
@@ -77,6 +80,9 @@ public:
     bool visible = false;
     QString color;
     double weight = 1.0;
+    double strokeWidth = 1.25;
+    double fillOpacity = 0.0;
+    QString referenceColor;
     bool source = false;
     bool sidecar = false;
     bool span = false;

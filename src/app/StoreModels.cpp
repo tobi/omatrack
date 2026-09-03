@@ -192,6 +192,9 @@ QVariant ChannelListModel::data(const QModelIndex& index, int role) const {
         case VisibleRole: return row.visible;
         case ColorRole: return row.color;
         case WeightRole: return row.weight;
+        case StrokeWidthRole: return row.strokeWidth;
+        case FillOpacityRole: return row.fillOpacity;
+        case ReferenceColorRole: return row.referenceColor;
         case SourceRole: return row.source;
         case SidecarRole: return row.sidecar;
         case SpanRole: return row.span;
@@ -207,6 +210,9 @@ QHash<int, QByteArray> ChannelListModel::roleNames() const {
         {VisibleRole, "channelVisible"},
         {ColorRole, "channelColor"},
         {WeightRole, "weight"},
+        {StrokeWidthRole, "strokeWidth"},
+        {FillOpacityRole, "fillOpacity"},
+        {ReferenceColorRole, "referenceColor"},
         {SourceRole, "source"},
         {SidecarRole, "sidecar"},
         {SpanRole, "span"},
@@ -219,8 +225,11 @@ void ChannelListModel::refresh(const QVector<ChannelRow>& rows) {
         [](const ChannelRow& a, const ChannelRow& b) {
             return a.key == b.key && a.title == b.title && a.unit == b.unit &&
                    a.visible == b.visible && a.color == b.color &&
-                   a.weight == b.weight && a.source == b.source &&
-                   a.sidecar == b.sidecar && a.span == b.span;
+                   a.weight == b.weight && a.strokeWidth == b.strokeWidth &&
+                   a.fillOpacity == b.fillOpacity &&
+                   a.referenceColor == b.referenceColor &&
+                   a.source == b.source && a.sidecar == b.sidecar &&
+                   a.span == b.span;
         });
 }
 

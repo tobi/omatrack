@@ -92,14 +92,16 @@ heuristic pre-filter only.
   `VideoTelemetryHud` are plain `QQuickItem`s that build their frame in
   `updatePaintNode()` through `TraceSceneBuilder`: one batched
   `QSGGeometryNode` of vertex-coloured triangles per surface plus cached text
-  textures (`TraceTextCache`). Lines are quads (core-profile `glLineWidth` is
-  clamped to 1) and edges are antialiased by the 4× multisample default format
-  set in `main.cpp`. Add drawing through that builder — never a
-  `QQuickPaintedItem`, never a `Canvas`.
-  Measured on a full-height Sebring lap, seven lanes: geometry build 0.32 ms
-  average / 0.74 ms worst for ~4900 quads, cursor overlay 0.006 ms, and
-  `QSG_RENDER_TIMING=1` reports `sync=0, render=0`. The QPainter renderer this
-  replaced cost 12.6 ms on the same lap.
+  textures (`TraceTextCache`). Strokes share coverage vertices at joints
+  and fade through a one-device-pixel fringe; their screen-space width never
+  scales with zoom. MSAA is still requested, but is not their AA mechanism.
+  `TraceDecimator` preserves source-ordered extrema and gaps, using local
+  reference alignment and a 0.1-device-pixel simplification error bound.
+  Add drawing through that builder — never a `QQuickPaintedItem` or `Canvas`.
+  See `docs/TRACE_RENDERING.md` for current measurements. Older geometry
+  benchmarks accidentally used DPR 1 on high-DPI windows; the benchmark now
+  uses the actual DPR. The frame-paced `OMATRACK_AUTOTEST_TRACE_RENDERING`
+  check measures presentation cadence as well as capturing the new controls.
 - **65535 vertices is a cliff, not a slope.** The scene graph merges
   compatible geometry into 16-bit indexed batches, so a large frame loses
   everything past that vertex count with no warning — lanes simply stop

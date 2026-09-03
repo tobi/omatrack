@@ -145,6 +145,7 @@ private:
         double max = 1.0;
         QColor color;
         bool gear = false;
+        QColor referenceColor;
     };
 
     // ── rendering ──────────────────────────────────────────────────
@@ -173,7 +174,7 @@ private:
     void buildSeries(TraceSceneBuilder& builder,
                      const std::vector<double>* values, const QRectF& rect,
                      const TraceLaneLayout::ChannelRange& range,
-                     const QColor& color, bool fill, bool alignCompare,
+                     const QColor& color, double fillOpacity, bool alignCompare,
                      double shift, qreal width, double clipLow = 0.0,
                      double clipHigh = 1.0);
     qreal devicePixelRatio() const;
@@ -241,6 +242,7 @@ private:
     QFont pillFont_;
     QVector<CursorLane> cursorLanes_;
     TraceSceneBuilder builder_;
+    QVector<QPointF> primaryPath_;
     TraceSnapshot snapshot_;
     TraceLaneLayout layout_;
     TraceInteraction interaction_;
