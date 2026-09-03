@@ -7251,6 +7251,23 @@ const std::vector<double>* TelemetryStore::extraChannelData(const QString& key,
     auto cached = extraChannelCache_.constFind(cacheKey);
     if (cached != extraChannelCache_.cend()) return cached.value().get();
     if (extraChannelLoading_.contains(cacheKey)) return nullptr;
+    // Scene-graph callers only read cached arrays. AsyncJob owns QObjects and
+    // must be created/started on the store's GUI thread, never the render
+    // thread.
+    if (QThread::currentThread() != thread()) {
+        QMetaObject::invokeMethod(
+            this,
+            [this, key, reference, sessionKey = session->sessionKey(),
+             lapId]() {
+                SessionHandle* selected =
+                    reference ? compareSession_ : primarySession_;
+                if (selected && selected->sessionKey() == sessionKey &&
+                    (reference ? compareLap_ : primaryLap_) == lapId)
+                    extraChannelData(key, reference);
+            },
+            Qt::QueuedConnection);
+        return nullptr;
+    }
 
     const QString rawName = key.mid(4);
     const QString parserPath = session->telemetryPath();
