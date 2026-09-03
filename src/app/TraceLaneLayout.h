@@ -5,9 +5,11 @@
 // layout computation lives in a testable plain class. TraceView sets the
 // store/snapshot pointers, item size, and fonts, then calls rebuildSpecs /
 // layoutLanes / laneRows. Range and gear caches are invalidated together
-// through invalidateRanges().
+// through invalidateRanges(). Height-only changes leave those caches intact.
 
 #pragma once
+
+#include "StoreTypes.h"
 
 #include <QColor>
 #include <QFont>
@@ -77,11 +79,6 @@ public:
     }
 
     double labelWidth() const { return labelWidth_; }
-    bool fitChannels() const { return fitChannels_; }
-    void setFitChannels(bool fit) { fitChannels_ = fit; }
-    qreal verticalScroll() const { return verticalScroll_; }
-    void setVerticalScroll(qreal scroll) { verticalScroll_ = scroll; }
-    qreal contentHeight() const { return contentHeight_; }
     double deltaMaxAbs() const { return deltaMaxAbs_; }
     double& deltaMaxAbsRef() { return deltaMaxAbs_; }
     double itemWidth() const { return itemWidth_; }
@@ -91,7 +88,7 @@ public:
 
     void rebuildChannelSpecs();
     QVector<Lane> layoutLanes() const;
-    QVariantList laneRows() const;
+    QList<TraceLaneRow> laneRows() const;
     void updateLabelWidth();
     void invalidateRanges();
     const ChannelRange& rangeFor(const ChannelSpec& spec,
@@ -118,9 +115,6 @@ private:
     double itemWidth_ = 0.0;
     double itemHeight_ = 0.0;
     double labelWidth_ = 62.0;
-    bool fitChannels_ = true;
-    mutable qreal verticalScroll_ = 0.0;
-    mutable qreal contentHeight_ = 0.0;
     QVector<ChannelSpec> channelSpecs_;
     QHash<QString, ChannelRange> rangeCache_;
     mutable QHash<const omatrack::UnifiedLap*, std::vector<double>> gearCache_;

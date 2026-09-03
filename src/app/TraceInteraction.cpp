@@ -2,6 +2,7 @@
 
 #include "TelemetryStore.h"
 #include "TraceLaneLayout.h"
+#include "TraceLaneSizing.h"
 #include "TraceSnapshot.h"
 #include "core/TelemetryEngine.h"
 
@@ -187,8 +188,61 @@ int TraceInteraction::groupHeaderAt(const QPointF& position) const {
     return -1;
 }
 
+void TraceInteraction::cancelLaneResize() {
+    resizingBoundary_ = hoveredResizeBoundary_ = -1;
+    resizeKeys_.clear();
+    resizeHeights_.clear();
+    if (onUnsetCursor) onUnsetCursor();
+    if (onOverlayChanged) onOverlayChanged();
+}
+
+void TraceInteraction::validateLaneResize() {
+    if (resizingBoundary_ < 0) return;
+    const auto& specs = layout_->channelSpecs();
+    qsizetype index = 0;
+    for (const auto& lane : layout_->layoutLanes()) {
+        if (specs[lane.spec].kind != TraceLaneLayout::ChannelSpec::Kind::Sample)
+            continue;
+        if (index >= resizeKeys_.size() ||
+            resizeKeys_[index++] != specs[lane.spec].key) {
+            cancelLaneResize();
+            return;
+        }
+    }
+    if (index != resizeKeys_.size()) cancelLaneResize();
+}
+
+int TraceInteraction::resizeBoundaryAt(const QPointF& position) const {
+    if (!store_ || !store_->resizingTraces() ||
+        position.x() < layout_->labelWidth())
+        return -1;
+    const auto lanes = layout_->layoutLanes();
+    const auto& specs = layout_->channelSpecs();
+    int count = 0;
+    for (const auto& lane : lanes)
+        count +=
+            specs[lane.spec].kind == TraceLaneLayout::ChannelSpec::Kind::Sample;
+    int index = 0, best = -1;
+    double distance = 6.0;
+    for (const auto& lane : lanes) {
+        if (specs[lane.spec].kind != TraceLaneLayout::ChannelSpec::Kind::Sample)
+            continue;
+        const double d = std::abs(position.y() - lane.y - lane.height);
+        if (index < count - 1 && d < distance) {
+            distance = d;
+            best = index;
+        }
+        ++index;
+    }
+    return best;
+}
+
 void TraceInteraction::mouseDoubleClickEvent(QMouseEvent* event) {
     if (!store_ || !store_->primaryUnified()) return;
+    if (store_->resizingTraces()) {
+        event->accept();
+        return;
+    }
     panning_ = false;
     selecting_ = false;
     selectionStart_ = -1.0;
@@ -201,6 +255,28 @@ void TraceInteraction::mouseDoubleClickEvent(QMouseEvent* event) {
 
 void TraceInteraction::mousePressEvent(QMouseEvent* event) {
     if (!store_ || !store_->primaryUnified()) return;
+    if (store_->resizingTraces()) {
+        resizingBoundary_ = event->button() == Qt::LeftButton
+                                ? resizeBoundaryAt(event->position())
+                                : -1;
+        if (resizingBoundary_ >= 0) {
+            resizeOriginY_ = event->position().y();
+            resizeKeys_.clear();
+            resizeHeights_.clear();
+            const auto& specs = layout_->channelSpecs();
+            for (const auto& lane : layout_->layoutLanes()) {
+                if (specs[lane.spec].kind !=
+                    TraceLaneLayout::ChannelSpec::Kind::Sample)
+                    continue;
+                resizeKeys_.append(specs[lane.spec].key);
+                resizeHeights_.push_back(lane.height);
+            }
+            if (onSetCursor) onSetCursor(Qt::SizeVerCursor);
+            if (onOverlayChanged) onOverlayChanged();
+        }
+        event->accept();
+        return;
+    }
     const double x = event->position().x();
     const double fraction = fracForX(x);
     if (event->button() == Qt::RightButton) {
@@ -291,6 +367,15 @@ void TraceInteraction::mousePressEvent(QMouseEvent* event) {
 
 void TraceInteraction::mouseMoveEvent(QMouseEvent* event) {
     if (!store_) return;
+    if (store_->resizingTraces()) {
+        if (resizingBoundary_ >= 0)
+            store_->previewTraceHeights(
+                resizeKeys_, trace::resizeLaneBoundary(
+                                 resizeHeights_, size_t(resizingBoundary_),
+                                 event->position().y() - resizeOriginY_));
+        event->accept();
+        return;
+    }
     const double x = event->position().x();
     if (dragging_ && dragCorner_ >= 0) {
         const double fraction = fracForX(x);
@@ -336,6 +421,11 @@ void TraceInteraction::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void TraceInteraction::mouseReleaseEvent(QMouseEvent* event) {
+    if (resizingBoundary_ >= 0) {
+        cancelLaneResize();
+        event->accept();
+        return;
+    }
     dragging_ = false;
     panning_ = false;
     dragCorner_ = -1;
@@ -352,6 +442,10 @@ void TraceInteraction::mouseReleaseEvent(QMouseEvent* event) {
 
 void TraceInteraction::wheelEvent(QWheelEvent* event) {
     if (!store_ || !store_->primaryUnified()) return;
+    if (store_->resizingTraces()) {
+        event->accept();
+        return;
+    }
     const QPoint pixel = event->pixelDelta();
     const QPoint angle = event->angleDelta();
     const double dx = pixel.x() != 0 ? double(pixel.x()) : double(angle.x());
@@ -364,24 +458,18 @@ void TraceInteraction::wheelEvent(QWheelEvent* event) {
         event->accept();
         return;
     }
-    if (!layout_->fitChannels()) {
-        layout_->layoutLanes();
-        const qreal maxScroll =
-            std::max<qreal>(0.0, layout_->contentHeight() - itemHeight_);
-        layout_->setVerticalScroll(
-            std::clamp(layout_->verticalScroll() - qreal(dy / 120.0 * 48.0),
-                       qreal(0.0), maxScroll));
-        if (onLaneLayoutChanged) onLaneLayoutChanged();
-        if (onInvalidateScene) onInvalidateScene();
-    } else {
-        const double anchor = fracForX(event->position().x());
-        store_->zoomAt(anchor, std::pow(0.8, dy / 120.0));
-    }
+    const double anchor = fracForX(event->position().x());
+    store_->zoomAt(anchor, std::pow(0.8, dy / 120.0));
     event->accept();
 }
 
 bool TraceInteraction::keyPressEvent(QKeyEvent* event) {
     if (!store_) return false;
+    if (store_->resizingTraces()) {
+        if (event->key() == Qt::Key_Escape) store_->cancelTraceResize();
+        event->accept();
+        return true;
+    }
     int steps = 0;
     switch (event->key()) {
         case Qt::Key_Left: steps = -kCursorSamplesPerStep; break;
@@ -411,6 +499,19 @@ bool TraceInteraction::keyPressEvent(QKeyEvent* event) {
 
 void TraceInteraction::hoverMoveEvent(QHoverEvent* event) {
     if (!store_ || !store_->primaryUnified()) return;
+    if (store_->resizingTraces()) {
+        const int boundary = resizeBoundaryAt(event->position());
+        if (boundary != hoveredResizeBoundary_) {
+            hoveredResizeBoundary_ = boundary;
+            if (onOverlayChanged) onOverlayChanged();
+        }
+        if (boundary >= 0) {
+            if (onSetCursor) onSetCursor(Qt::SizeVerCursor);
+        } else if (onUnsetCursor)
+            onUnsetCursor();
+        event->accept();
+        return;
+    }
     updateZoneHoverCursor(event->position());
     updateHoveredCorner(event->position());
     updateHoveredSpan(event->position());
@@ -428,6 +529,10 @@ void TraceInteraction::hoverMoveEvent(QHoverEvent* event) {
 }
 
 void TraceInteraction::hoverLeaveEvent(QHoverEvent* event) {
+    if (hoveredResizeBoundary_ >= 0) {
+        hoveredResizeBoundary_ = -1;
+        if (onOverlayChanged) onOverlayChanged();
+    }
     if (hoveredMarker_ >= 0 || hoveredCorner_ >= 0 || hoveredSpan_ >= 0 ||
         spanHoverVisible_) {
         hoveredMarker_ = -1;

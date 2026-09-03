@@ -7,19 +7,24 @@ import QtQuick.Controls
 Item {
     id: chrome
 
+    property list<traceLaneRow> rows: []
     required property TraceView trace
 
-    function chromeText(items: var): string {
-        const parts = [];
-        for (const item of items) {
-            if (String(item.kind) === "pill")
-                parts.push(String(item.label) + " " + String(item.value));
-            else if (String(item.text) !== "")
-                parts.push(String(item.text));
-        }
-        return parts.join(" · ");
+    function refresh(): void {
+        if (chrome.trace)
+            chrome.rows = chrome.trace.laneRows;
     }
 
+    Component.onCompleted: chrome.refresh()
+    onTraceChanged: chrome.refresh()
+
+    Connections {
+        function onLaneLayoutChanged(): void {
+            chrome.refresh();
+        }
+
+        target: chrome.trace
+    }
     Label {
         color: Style.mutedTextColor
         font.bold: true
@@ -36,19 +41,21 @@ Item {
         y: chrome.trace.rulerHeight
     }
     Repeater {
-        model: chrome.trace.laneRows
+        model: chrome.rows.length
 
         delegate: Item {
             id: lane
 
-            readonly property real laneHeight: Number(lane.modelData.height)
-            readonly property string laneKind: String(lane.modelData.kind)
-            required property var modelData
+            required property int index
+            readonly property real laneHeight: lane.row.height
+            readonly property string laneKind: lane.row.kind
+            readonly property traceLaneRow row: chrome.rows[lane.index]
 
             clip: true
             height: lane.laneHeight
+            objectName: "traceLane-" + lane.row.key
             width: chrome.width
-            y: Number(lane.modelData.y)
+            y: lane.row.y
 
             Item {
                 id: channelLabel
@@ -66,8 +73,8 @@ Item {
                     height: lane.laneHeight >= 24 ? 14 : lane.laneHeight
                     horizontalAlignment: Text.AlignRight
                     leftPadding: 2
-                    rightPadding: lane.laneHeight >= 12 && lane.laneHeight < 24 ? 48 : 6
-                    text: String(lane.modelData.title)
+                    rightPadding: !Store.resizingTraces && lane.laneHeight >= 12 && lane.laneHeight < 24 ? 48 : 6
+                    text: lane.row.title
                     verticalAlignment: Text.AlignVCenter
                     width: parent.width
                     y: lane.laneHeight >= 24 ? 2 : 0
@@ -80,7 +87,7 @@ Item {
                     horizontalAlignment: Text.AlignRight
                     leftPadding: 2
                     rightPadding: 6
-                    text: String(lane.modelData.unit)
+                    text: lane.row.unit
                     verticalAlignment: Text.AlignVCenter
                     visible: lane.laneHeight >= 24 && text !== ""
                     width: parent.width
@@ -101,7 +108,7 @@ Item {
                     font.pixelSize: Math.min(Style.smallFontSize, Math.max(7, lane.laneHeight - 5))
                     height: parent.height
                     horizontalAlignment: Text.AlignLeft
-                    text: lane.modelData.expanded === true ? "▾" : "▸"
+                    text: lane.row.expanded ? "▾" : "▸"
                     verticalAlignment: Text.AlignVCenter
                     width: 14
                     x: 6
@@ -114,7 +121,7 @@ Item {
                     font.pixelSize: Math.min(Style.smallFontSize, Math.max(7, lane.laneHeight - 5))
                     height: parent.height
                     horizontalAlignment: Text.AlignLeft
-                    text: String(lane.modelData.title)
+                    text: lane.row.title
                     verticalAlignment: Text.AlignVCenter
                     width: Math.max(0, parent.width * 0.56 - 28)
                     x: 20
@@ -127,7 +134,7 @@ Item {
                     height: parent.height
                     horizontalAlignment: Text.AlignRight
                     rightPadding: 8
-                    text: chrome.chromeText(lane.modelData.chrome || [])
+                    text: lane.row.chromeText
                     verticalAlignment: Text.AlignVCenter
                     width: parent.width * 0.42
                     x: parent.width - width

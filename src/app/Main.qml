@@ -15,7 +15,7 @@ ApplicationWindow {
 
     // Supplied by QQmlApplicationEngine::setInitialProperties in main().
     required property bool autotestWindows
-    readonly property bool cornerNavigationEnabled: tracePane.visible && Store.focusedCorner >= 0 && !Store.editingCorners && !(root.activeFocusItem instanceof TextInput || root.activeFocusItem instanceof TextEdit)
+    readonly property bool cornerNavigationEnabled: tracePane.visible && Store.focusedCorner >= 0 && !Store.editingCorners && !Store.resizingTraces && !(root.activeFocusItem instanceof TextInput || root.activeFocusItem instanceof TextEdit)
 
     // Caches the root itself renders: damper-alignment traces and the
     // telemetry directories listed in the drawer. The filmstrip binds to
@@ -333,11 +333,13 @@ ApplicationWindow {
         videoFullscreen: root.videoFullscreen
     }
     Shortcut {
-        enabled: root.videoFullscreen || Store.focusedCorner >= 0
+        enabled: root.videoFullscreen || Store.focusedCorner >= 0 || Store.resizingTraces
         sequence: "Escape"
 
         onActivated: {
-            if (root.videoFullscreen)
+            if (Store.resizingTraces)
+                Store.cancelTraceResize();
+            else if (root.videoFullscreen)
                 root.videoSetFullscreen(false);
             else
                 Store.clearCornerFocus();
@@ -1633,14 +1635,21 @@ ApplicationWindow {
                             objectName: "channelMenu"
 
                             MenuItem {
+                                text: "Resize trace heights…"
+
+                                onTriggered: Store.beginTraceResize()
+                            }
+                            MenuSeparator {
+                            }
+                            MenuItem {
                                 text: "Double size"
 
-                                onTriggered: Store.setChannelWeight(channelMenu.channelKey, Math.min(4, channelMenu.channelWeight * 2))
+                                onTriggered: Store.setChannelWeight(channelMenu.channelKey, channelMenu.channelWeight * 2)
                             }
                             MenuItem {
                                 text: "Half size"
 
-                                onTriggered: Store.setChannelWeight(channelMenu.channelKey, Math.max(0.25, channelMenu.channelWeight / 2))
+                                onTriggered: Store.setChannelWeight(channelMenu.channelKey, channelMenu.channelWeight / 2)
                             }
                             MenuItem {
                                 text: "Normal size"
@@ -1733,6 +1742,15 @@ ApplicationWindow {
                         height: Math.min(implicitHeight, tracePane.height - 16)
                         width: Math.min(260, Math.max(220, tracePane.width * 0.28))
                         z: 4
+                    }
+                    TraceResizeOverlay {
+                        anchors.right: tracePane.right
+                        anchors.rightMargin: 8
+                        anchors.top: trace.top
+                        anchors.topMargin: 8
+                        height: implicitHeight
+                        width: Math.min(260, Math.max(220, tracePane.width * 0.28))
+                        z: 5
                     }
                     CornerEditOverlay {
                         anchors.right: tracePane.right

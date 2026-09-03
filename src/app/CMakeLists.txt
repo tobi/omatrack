@@ -78,6 +78,7 @@ qt_add_qml_module(omatrack
     TraceCornerRuler.qml
     TraceLaneChrome.qml
     TraceToolbar.qml
+    TraceResizeOverlay.qml
     TraceColorButton.qml
     TrackAssignmentDialog.qml
     OperationErrorDialog.qml
@@ -130,6 +131,7 @@ qt_add_qml_module(omatrack
     SingleInstance.h SingleInstance.cpp
     TraceSnapshot.h
     TraceInteraction.h TraceInteraction.cpp
+    TraceLaneSizing.h
     TraceLaneLayout.h TraceLaneLayout.cpp
     TraceView.h TraceView.cpp
     VideoTelemetryHud.h VideoTelemetryHud.cpp
@@ -142,6 +144,7 @@ if(OMATRACK_ENABLE_AUTOTEST_HARNESS)
     FilmstripAutotest.cpp
     TraceRenderingAutotest.cpp
     CornerNavigationAutotest.cpp
+    TraceResizeAutotest.cpp
     UsbCopyAutotest.cpp
     PluginAutotest.cpp)
   target_compile_definitions(omatrack PRIVATE

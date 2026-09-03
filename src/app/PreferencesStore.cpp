@@ -1,4 +1,5 @@
 #include "PreferencesStore.h"
+#include "TraceLaneSizing.h"
 
 #include "RemoteCache.h"
 
@@ -571,6 +572,21 @@ void PreferencesStore::scheduleSave() {
                 {QStringLiteral("color"),
                  channelColors_.value(key).name(QColor::HexRgb)},
                 {QStringLiteral("weight"), channelWeights_.value(key, 1.0)}});
+    // Include raw-channel weights too. Resize drafts live in TelemetryStore,
+    // not here, so another preference save cannot publish an unsaved resize.
+    for (auto it = channelWeights_.cbegin(); it != channelWeights_.cend();
+         ++it) {
+        if (it.key().startsWith(QStringLiteral("sidecar:"))) continue;
+        QVariantMap entry = channels.value(it.key()).toMap();
+        // Browsing source channels caches hundreds of default weights. Only
+        // persist a raw default when it replaces an existing override.
+        if (it.key().startsWith(QStringLiteral("raw:")) &&
+            qFuzzyCompare(it.value(), 1.0) &&
+            !entry.contains(QStringLiteral("weight")))
+            continue;
+        entry.insert(QStringLiteral("weight"), it.value());
+        channels.insert(it.key(), entry);
+    }
     for (auto it = channelAppearance_.cbegin(); it != channelAppearance_.cend();
          ++it) {
         if (it.key().startsWith(QStringLiteral("sidecar:"))) continue;
@@ -622,8 +638,8 @@ void PreferencesStore::loadChannelsConfig() {
                        defaultChannelColor(k).name(QColor::HexRgb))
                 .toString());
         channelColors_[k] = color.isValid() ? color : defaultChannelColor(k);
-        channelWeights_[k] = qBound(
-            0.5, entry.value(QStringLiteral("weight"), 1.0).toDouble(), 2.0);
+        channelWeights_[k] = trace::validLaneWeight(
+            entry.value(QStringLiteral("weight"), 1.0).toDouble());
     }
 }
 

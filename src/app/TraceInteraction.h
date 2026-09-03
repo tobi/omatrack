@@ -13,6 +13,8 @@
 #include <QPointF>
 #include <QRectF>
 #include <QString>
+#include <QStringList>
+#include <vector>
 #include <QVariantList>
 
 #include <functional>
@@ -55,6 +57,13 @@ public:
     int focusedMarkerIndex() const;
     int focusedZoneHandleAt(const QPointF& position) const;
     int groupHeaderAt(const QPointF& position) const;
+    int resizeBoundaryAt(const QPointF& position) const;
+    int highlightedResizeBoundary() const {
+        return resizingBoundary_ >= 0 ? resizingBoundary_
+                                      : hoveredResizeBoundary_;
+    }
+    void cancelLaneResize();
+    void validateLaneResize();
 
     // Hover updates.
     void updateHoveredMarker(const QPointF& position);
@@ -107,8 +116,6 @@ public:
         onChannelMenuRequested;
     std::function<void()> onOverlayChanged;
     std::function<void()> onSpanHoverChanged;
-    std::function<void()> onLaneLayoutChanged;
-    std::function<void()> onInvalidateScene;
     std::function<void(Qt::CursorShape)> onSetCursor;
     std::function<void()> onUnsetCursor;
     void resetSelection() {
@@ -125,6 +132,11 @@ private:
     double itemWidth_ = 0.0;
     double itemHeight_ = 0.0;
 
+    int resizingBoundary_ = -1;
+    int hoveredResizeBoundary_ = -1;
+    double resizeOriginY_ = 0.0;
+    QStringList resizeKeys_;
+    std::vector<double> resizeHeights_;
     bool dragging_ = false;
     bool panning_ = false;
     int dragCorner_ = -1;

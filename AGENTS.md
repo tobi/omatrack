@@ -364,7 +364,9 @@ Native lap distance is accepted only when its continuity and total agree with in
   missing boundaries. Index-cache v2 invalidates the older promoted summaries.
 - Show a track-station-aligned cumulative delta that starts at zero. The same selected primary→reference map drives every reference trace, cursor value, synchronized video frame, and delta.
 - Render standard channels plus opt-in raw source channels.
-- Configure channel visibility, active/reference colors, stroke width, area opacity, and lane weight in Channels. **Style…** expands the per-channel width/fill controls; Reset style restores their defaults. `channels.<key>.stroke_width` is in logical screen pixels (default 1.25, range 0.5–4), `fill_opacity` is peak gradient alpha (0–1; throttle/brake/clutch default 0.28), and `reference_color` is a color in `omatrack.yml`. Source-channel settings persist too; sidecar settings retain the existing host-local lifetime. Lanes always fit the pane height with no vertical scrolling or pinning, sized in proportion to channel weight. Right-click a lane for size (double/normal/half) and hide.
+- Configure channel visibility, active/reference colors, stroke width and area opacity in Channels. **Style…** expands the per-channel width/fill controls; Reset style restores their defaults. `channels.<key>.stroke_width` is in logical screen pixels (default 1.25, range 0.5–4), `fill_opacity` is peak gradient alpha (0–1; throttle/brake/clutch default 0.28), and `reference_color` is a color in `omatrack.yml`. Source-channel settings persist too; sidecar settings retain the existing host-local lifetime.
+- **Resize** in the trace toolbar (also **Resize lanes…** in Channels or the lane context menu) enters a dedicated height-editing mode. Drag the visible horizontal dividers; after a neighbour reaches its minimum, continuing the drag borrows from further lanes on that side. A lane can take almost the whole pane, not just 2× its old size. **Save** / Ctrl+S commits the proportions to `channels.<key>.weight`; **Cancel** / Escape discards the draft, and **Reset heights** previews the defaults. Draft weights are separate from `PreferencesStore`, so unrelated debounced saves cannot leak them. Selection changes cancel the mode, and corner editing and lane resizing are mutually exclusive. The cursor and viewport do not move while resizing.
+- Lanes always fit the pane: `TraceLaneSizing.h` allocates positive finite weights without the old 0.5–2 cap, with a 20-logical-pixel minimum reduced only if all the lanes cannot fit. Group headers and span rows remain compact fixed chrome; standard, delta, raw and sidecar sample traces resize. The old FIT/vertical-scroll branch is removed. Right-click double/normal/half actions remain as uncapped quick adjustments. Height changes emit `channelHeightsChanged`, not a full channel-config invalidation, preserving sample/range caches. `TraceLaneChrome` caches typed `TraceLaneRow` values and binds its repeater to the count, so dragging never recreates every label delegate.
 - Share one cursor/readout across traces.
 - Left-drag selects a range; middle-drag pans; two-finger horizontal trackpad scroll pans; wheel, shift+wheel, and ctrl+wheel zoom; double-click resets zoom; on-screen zoom icons back the gestures. Navigate with mouse and keyboard.
 - Keep corner/complex ranges visible without obscuring the data.
@@ -950,6 +952,7 @@ Add feature flags as needed:
 - `OMATRACK_AUTOTEST_ALIGNMENT=1`
 - `OMATRACK_AUTOTEST_CORNER=1`
 - `OMATRACK_AUTOTEST_CORNER_NAVIGATION=/path/to/copied-multi-lap-file` checks previous/next buttons, the H/J shortcut handlers, intermediate animation frames, rapid retargeting, cancellation/restoration, unclamped lap edges and typing protection, then captures the focused overlay.
+- `OMATRACK_AUTOTEST_TRACE_RESIZE=/path/to/copied-recording` checks native divider drags beyond 2× height, borrowing across neighbours, pane fit, unchanged cursor/viewport, draft isolation from preference writes, Cancel, Reset, raw-channel Save and geometry cost. Repeat with the same scratch config and `OMATRACK_AUTOTEST_TRACE_RESIZE_RESTORE=1` to check persisted raw weights.
 - `OMATRACK_AUTOTEST_HOVER=1`
 - `OMATRACK_AUTOTEST_ZOOM=1`
 - `OMATRACK_AUTOTEST_RENAME=1`
@@ -991,7 +994,10 @@ Embedded libmpv playback must be verified on the native Linux/Omarchy OpenGL sce
   on demand (lap detection, driver id, GPS clock); `open()` decodes every
   channel. `src_` is freed after `adoptLoadedLap()` creates the `UnifiedLap`;
   the file is re-opened on demand by `extraChannelData()` for the opt-in
-  raw-channel feature. Do not describe this as streaming — a decoded channel
+  raw-channel feature. A render-thread cache miss posts the request to the GUI
+  thread, which owns/starts its `AsyncJob`; only decoding runs on the worker.
+  Never create a store-parented job from `updatePaintNode()`. Do not describe
+  this as streaming — a decoded channel
   is still a whole array.
 - Every format crate memory-maps its input (`cosworth`, `aim`, `motec`, `vbo`), but the decoders still materialise whole channel arrays into `Vec<f64>` before the C++ side sees them. The mapping avoids the read copy; it is not a zero-copy channel walker. Pushing zero-copy further would change the C ABI, and the renderer measurements below show sample access is not the frame-budget bottleneck — so do it for memory, if at all, not for frame time.
 - `TelemetryStore` still hands QML `QVariantList`/`QVariantMap` for the

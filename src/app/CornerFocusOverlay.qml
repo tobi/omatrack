@@ -105,7 +105,7 @@ OverlayCard {
     color: Style.surfaceColor
     implicitHeight: overlayBody.implicitHeight + 20
     objectName: "cornerFocusOverlay"
-    opacity: Store.focusedCorner >= 0 && !Store.editingCorners ? 1 : 0
+    opacity: Store.focusedCorner >= 0 && !Store.editingCorners && !Store.resizingTraces ? 1 : 0
     radius: 6
     visible: overlay.opacity > 0
 
@@ -176,7 +176,7 @@ OverlayCard {
                     ToolTip.delay: 400
                     ToolTip.text: "Previous corner · H"
                     ToolTip.visible: previousCornerButton.hovered
-                    enabled: Store.focusedCorner > 0 && !Store.editingCorners
+                    enabled: Store.focusedCorner > 0 && !Store.editingCorners && !Store.resizingTraces
                     focusPolicy: Qt.NoFocus
                     font.pixelSize: Style.fontSize + 6
                     objectName: "previousCornerButton"
@@ -202,7 +202,7 @@ OverlayCard {
                     ToolTip.delay: 400
                     ToolTip.text: "Next corner · J"
                     ToolTip.visible: nextCornerButton.hovered
-                    enabled: Store.focusedCorner >= 0 && Store.focusedCorner < Store.cornerCount - 1 && !Store.editingCorners
+                    enabled: Store.focusedCorner >= 0 && Store.focusedCorner < Store.cornerCount - 1 && !Store.editingCorners && !Store.resizingTraces
                     focusPolicy: Qt.NoFocus
                     font.pixelSize: Style.fontSize + 6
                     objectName: "nextCornerButton"

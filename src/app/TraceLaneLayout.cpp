@@ -1,4 +1,5 @@
 #include "TraceLaneLayout.h"
+#include "TraceLaneSizing.h"
 
 #include "TelemetryStore.h"
 #include "TraceSnapshot.h"
@@ -8,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace {
 
@@ -17,7 +19,6 @@ constexpr double kMinLabelW = 62.0;
 constexpr double kConsistencyStripHeight = 14.0;
 constexpr double kGroupHeaderHeight = 20.0;
 constexpr double kSpanTrackHeight = 14.0;
-constexpr double kStandardSampleHeight = 72.0;
 
 const QColor kAccent("#7fbbb3");
 
@@ -141,16 +142,17 @@ void TraceLaneLayout::updateLabelWidth() {
 
 double TraceLaneLayout::laneWeightFor(const ChannelSpec& spec) const {
     if (spec.kind != ChannelSpec::Kind::Sample) return 0.0;
-    const double weight = std::max(0.25, store_->channelWeight(spec.key));
-    const double speedBoost = spec.key == QStringLiteral("speed") ? 1.35 : 1.0;
-    return weight * speedBoost;
+    const double boost = trace::laneHeightBoost(spec.key);
+    return std::min(trace::validLaneWeight(store_->channelWeight(spec.key)),
+                    std::numeric_limits<double>::max() / boost) *
+           boost;
 }
 
 QVector<TraceLaneLayout::Lane> TraceLaneLayout::layoutLanes() const {
     QVector<Lane> lanes;
     if (!store_) return lanes;
     const omatrack::UnifiedLap* compare = store_->compareUnified();
-    double totalWeight = 0.0;
+    std::vector<double> weights;
     QSet<QString> collapsed;
     for (const OverlayGroup& group : store_->overlayGroups()) {
         if (!group.expanded) collapsed.insert(group.id);
@@ -189,73 +191,46 @@ QVector<TraceLaneLayout::Lane> TraceLaneLayout::layoutLanes() const {
             lane.height = kSpanTrackHeight;
         else {
             lane.height = laneWeightFor(spec);
-            totalWeight += lane.height;
+            weights.push_back(lane.height);
         }
         lanes.append(lane);
     }
-    if (lanes.isEmpty()) {
-        contentHeight_ = 0.0;
-        return lanes;
-    }
+    if (lanes.isEmpty()) return lanes;
 
     const double consistencyHeight =
         store_->traceConfidenceMode() ? kConsistencyStripHeight : 0.0;
     const double available =
         std::max(0.0, itemHeight_ - kTopPad - kBottomPad - consistencyHeight);
-    if (!fitChannels_) {
-        double y = kTopPad + consistencyHeight - verticalScroll_;
-        for (Lane& lane : lanes) {
-            const ChannelSpec& spec = channelSpecs_[lane.spec];
-            if (spec.kind == ChannelSpec::Kind::Sample)
-                lane.height = kStandardSampleHeight *
-                              std::max(0.5, store_->channelWeight(spec.key));
-            lane.y = y;
-            y += lane.height;
-        }
-        contentHeight_ = y + kBottomPad + verticalScroll_;
-        const qreal maxScroll =
-            std::max<qreal>(0.0, contentHeight_ - itemHeight_);
-        if (verticalScroll_ > maxScroll) {
-            verticalScroll_ = maxScroll;
-            y = kTopPad + consistencyHeight - verticalScroll_;
-            for (Lane& lane : lanes) {
-                lane.y = y;
-                y += lane.height;
-            }
-        }
-        return lanes;
-    }
-
     double preferredFixed = 0.0;
     for (const Lane& lane : lanes) {
         const ChannelSpec& spec = channelSpecs_[lane.spec];
         if (spec.kind != ChannelSpec::Kind::Sample)
             preferredFixed += lane.height;
     }
-    const double fixedBudget = totalWeight > 0.0 ? available * 0.35 : available;
+    const double fixedBudget = !weights.empty() ? available * 0.35 : available;
     const double fixedScale = preferredFixed > 0.0
                                   ? std::min(1.0, fixedBudget / preferredFixed)
                                   : 1.0;
     const double weightedAvailable =
         std::max(0.0, available - preferredFixed * fixedScale);
+    const auto heights =
+        trace::fitLaneHeights(std::move(weights), weightedAvailable);
+    size_t sample = 0;
     double y = kTopPad + consistencyHeight;
     for (Lane& lane : lanes) {
         const ChannelSpec& spec = channelSpecs_[lane.spec];
         lane.y = y;
         if (spec.kind == ChannelSpec::Kind::Sample)
-            lane.height = totalWeight > 0.0
-                              ? weightedAvailable * lane.height / totalWeight
-                              : 0.0;
+            lane.height = heights[sample++];
         else
             lane.height *= fixedScale;
         y += lane.height;
     }
-    contentHeight_ = itemHeight_;
     return lanes;
 }
 
-QVariantList TraceLaneLayout::laneRows() const {
-    QVariantList rows;
+QList<TraceLaneRow> TraceLaneLayout::laneRows() const {
+    QList<TraceLaneRow> rows;
     for (const Lane& lane : layoutLanes()) {
         const ChannelSpec& spec = channelSpecs_[lane.spec];
         QString kind = QStringLiteral("sample");
@@ -264,25 +239,25 @@ QVariantList TraceLaneLayout::laneRows() const {
         else if (spec.kind == ChannelSpec::Kind::SpanTrack)
             kind = QStringLiteral("span");
 
-        QVariantMap row{{QStringLiteral("key"), spec.key},
-                        {QStringLiteral("kind"), kind},
-                        {QStringLiteral("title"), spec.title},
-                        {QStringLiteral("unit"), spec.unit},
-                        {QStringLiteral("color"), spec.color},
-                        {QStringLiteral("y"), lane.y},
-                        {QStringLiteral("height"), lane.height}};
+        TraceLaneRow row;
+        row.key = spec.key;
+        row.kind = kind;
+        row.title = spec.title;
+        row.unit = spec.unit;
+        row.y = lane.y;
+        row.height = lane.height;
         if (spec.kind == ChannelSpec::Kind::GroupHeader) {
             if (const OverlayGroup* group = overlayGroup(spec.groupId)) {
-                QVariantList chromeRows;
+                QStringList parts;
                 for (const OverlayChrome& chrome : group->chrome) {
-                    chromeRows.append(
-                        QVariantMap{{QStringLiteral("kind"), chrome.kind},
-                                    {QStringLiteral("text"), chrome.text},
-                                    {QStringLiteral("label"), chrome.label},
-                                    {QStringLiteral("value"), chrome.value}});
+                    if (chrome.kind == QStringLiteral("pill"))
+                        parts.append(chrome.label + QLatin1Char(' ') +
+                                     chrome.value);
+                    else if (!chrome.text.isEmpty())
+                        parts.append(chrome.text);
                 }
-                row.insert(QStringLiteral("expanded"), group->expanded);
-                row.insert(QStringLiteral("chrome"), chromeRows);
+                row.expanded = group->expanded;
+                row.chromeText = parts.join(QStringLiteral(" · "));
             }
         }
         rows.append(row);

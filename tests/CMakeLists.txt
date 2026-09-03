@@ -219,6 +219,12 @@ target_link_libraries(index-cache-test PRIVATE
 add_test(NAME index-cache-test COMMAND index-cache-test)
 set_tests_properties(index-cache-test PROPERTIES LABELS unit)
 
+qt_add_executable(trace-lane-sizing-test TraceLaneSizingTest.cpp)
+target_include_directories(trace-lane-sizing-test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(trace-lane-sizing-test PRIVATE Qt6::Test omatrack_warnings)
+add_test(NAME trace-lane-sizing-test COMMAND trace-lane-sizing-test)
+set_tests_properties(trace-lane-sizing-test PROPERTIES LABELS unit)
+
 qt_add_executable(overlay-style-test OverlayStyleTest.cpp
   ${CMAKE_SOURCE_DIR}/src/app/TraceDecimator.cpp
   ${CMAKE_SOURCE_DIR}/src/app/TraceSceneBuilder.cpp
@@ -327,6 +333,7 @@ add_custom_target(unit_tests
     usb-copy-test
     index-cache-test
     overlay-style-test
+    trace-lane-sizing-test
     deadline-queue-test
     omarchy-theme-test
     alignment-test

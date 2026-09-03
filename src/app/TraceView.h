@@ -54,10 +54,8 @@ class TraceView : public QQuickItem {
     Q_PROPERTY(QColor backgroundColor READ backgroundColor WRITE
                    setBackgroundColor NOTIFY backgroundColorChanged)
     Q_PROPERTY(qreal labelWidth READ labelWidth NOTIFY labelWidthChanged)
-    Q_PROPERTY(bool fitChannels READ fitChannels WRITE setFitChannels NOTIFY
-                   fitChannelsChanged)
-
-    Q_PROPERTY(QVariantList laneRows READ laneRows NOTIFY laneLayoutChanged)
+    Q_PROPERTY(
+        QList<TraceLaneRow> laneRows READ laneRows NOTIFY laneLayoutChanged)
     Q_PROPERTY(qreal rulerHeight READ rulerHeight CONSTANT)
     Q_PROPERTY(
         bool spanHoverVisible READ spanHoverVisible NOTIFY spanHoverChanged)
@@ -81,10 +79,7 @@ public:
     void setBackgroundColor(const QColor& color);
     qreal labelWidth() const { return layout_.labelWidth(); }
     qreal rulerHeight() const;
-    bool fitChannels() const { return layout_.fitChannels(); }
-    void setFitChannels(bool fit);
-
-    QVariantList laneRows() const { return layout_.laneRows(); }
+    QList<TraceLaneRow> laneRows() const { return layout_.laneRows(); }
 
     bool spanHoverVisible() const { return interaction_.spanHoverVisible(); }
     QString spanHoverTitle() const { return interaction_.spanHoverTitle(); }
@@ -127,7 +122,6 @@ signals:
     void backgroundColorChanged();
     void labelWidthChanged();
     void laneLayoutChanged();
-    void fitChannelsChanged();
 
     void cursorChangedFromCanvas();
     void cornerEdited();
@@ -151,6 +145,7 @@ private:
     // ── rendering ──────────────────────────────────────────────────
     void buildScene(TraceSceneBuilder& builder);
     void buildCursorScene(TraceSceneBuilder& builder);
+    void buildLaneResizeGuides(TraceSceneBuilder& builder);
     void buildSelection(TraceSceneBuilder& builder);
     void buildCornerMarkerGuides(TraceSceneBuilder& builder);
     void buildCornerMarkers(TraceSceneBuilder& builder);
@@ -186,7 +181,10 @@ private:
     void buildHoveredCornerDelta(TraceSceneBuilder& builder);
 
     // ── layout delegation ──────────────────────────────────────────
-    void rebuildChannelSpecs() { layout_.rebuildChannelSpecs(); }
+    void rebuildChannelSpecs() {
+        layout_.rebuildChannelSpecs();
+        interaction_.validateLaneResize();
+    }
     void invalidateRanges() { layout_.invalidateRanges(); }
     void updateLabelWidth() { layout_.updateLabelWidth(); }
     QVector<TraceLaneLayout::Lane> layoutLanes() const {

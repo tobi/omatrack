@@ -90,16 +90,19 @@ Item {
         }
         CompactToolButton {
             Layout.fillHeight: true
-            Layout.maximumWidth: 48
-            Layout.minimumWidth: 48
-            Layout.preferredWidth: 48
-            checkable: true
-            checked: toolbar.trace.fitChannels
-            objectName: "fitChannelsButton"
-            text: "FIT"
-            tip: toolbar.trace.fitChannels ? "Show all traces at once" : "Use standard lane sizes and scroll vertically"
+            Layout.maximumWidth: 72
+            Layout.minimumWidth: 72
+            Layout.preferredWidth: 72
+            checked: Store.resizingTraces
+            enabled: Store.ready
+            objectName: "resizeTracesButton"
+            text: Store.resizingTraces ? "Resizing" : "Resize"
+            tip: "Resize trace heights"
 
-            onClicked: toolbar.trace.fitChannels = checked
+            onClicked: {
+                Store.beginTraceResize();
+                toolbar.trace.forceActiveFocus();
+            }
         }
         CompactToolButton {
             id: eventModeButton

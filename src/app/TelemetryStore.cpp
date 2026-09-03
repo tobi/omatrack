@@ -1,4 +1,5 @@
 #include "TelemetryStore.h"
+#include "TraceLaneSizing.h"
 #include "SessionRefresh.h"
 
 #include "TraceSnapshot.h"
@@ -2560,6 +2561,7 @@ TelemetryStore::TelemetryStore(QObject* parent)
         }
     });
     connect(this, &TelemetryStore::selectionChanged, this, [this]() {
+        cancelTraceResize();
         cornerFocusAnimation_->stop();
         invalidateTraceConfidence();
         if (traceConfidenceMode_) requestTraceConfidence();
@@ -2672,6 +2674,9 @@ TelemetryStore::TelemetryStore(QObject* parent)
     });
     connect(this, &TelemetryStore::channelConfigChanged, this,
             [this]() { refreshChannelsModel(); });
+    connect(this, &TelemetryStore::channelHeightsChanged, this, [this]() {
+        if (!resizingTraces_) refreshChannelsModel();
+    });
     connect(this, &TelemetryStore::overlaysChanged, this,
             [this]() { refreshChannelsModel(); });
     connect(this, &TelemetryStore::cornersChanged, this,
@@ -6625,7 +6630,9 @@ void TelemetryStore::focusCorner(int index) {
 }
 
 void TelemetryStore::stepFocusedCorner(int direction) {
-    if (editingCorners_ || focusedCorner_ < 0 || direction == 0) return;
+    if (editingCorners_ || resizingTraces_ || focusedCorner_ < 0 ||
+        direction == 0)
+        return;
     const int next = focusedCorner_ + (direction < 0 ? -1 : 1);
     if (next < 0 || next >= corners_.size()) return;
     focusCorner(next);
@@ -7156,6 +7163,7 @@ void TelemetryStore::setEditingCorners(bool editing) {
 }
 
 void TelemetryStore::beginCornerEdit() {
+    cancelTraceResize();
     if (editingCorners_ || !primarySession_) return;
     cornerEditBaseline_ = corners_;
     editingCorners_ = true;
@@ -7495,16 +7503,17 @@ void TelemetryStore::setChannelColor(const QString& key, const QString& color) {
 }
 
 double TelemetryStore::channelWeight(const QString& key) const {
+    if (resizingTraces_ && traceResizeDraft_.contains(key))
+        return traceResizeDraft_.value(key);
     if (prefs_->channelWeights().contains(key))
         return prefs_->channelWeights().value(key);
     if (key.startsWith(QStringLiteral("raw:"))) {
-        const double value = qBound(0.5,
-                                    YamlConfig::instance()
-                                        .value({QStringLiteral("channels"), key,
-                                                QStringLiteral("weight")},
-                                               1.0)
-                                        .toDouble(),
-                                    2.0);
+        const double value =
+            trace::validLaneWeight(YamlConfig::instance()
+                                       .value({QStringLiteral("channels"), key,
+                                               QStringLiteral("weight")},
+                                              1.0)
+                                       .toDouble());
         prefs_->channelWeights().insert(key, value);
         return value;
     }
@@ -7512,19 +7521,80 @@ double TelemetryStore::channelWeight(const QString& key) const {
 }
 
 void TelemetryStore::setChannelWeight(const QString& key, double weight) {
-    weight = qBound(0.5, weight, 2.0);
-    if (qFuzzyCompare(channelWeight(key), weight)) return;
-    prefs_->channelWeights()[key] = weight;
-    if (key.startsWith(QStringLiteral("raw:"))) {
-        YamlConfig& config = YamlConfig::instance();
-        config.setValue(
-            {QStringLiteral("channels"), key, QStringLiteral("weight")},
-            weight);
-        schedulePreferencesSave();
-    } else if (!key.startsWith(QStringLiteral("sidecar:"))) {
-        schedulePreferencesSave();
+    if (!std::isfinite(weight) || weight <= 0 ||
+        qFuzzyCompare(channelWeight(key), weight))
+        return;
+    if (resizingTraces_)
+        traceResizeDraft_[key] = weight;
+    else {
+        prefs_->channelWeights()[key] = weight;
+        if (!key.startsWith(QStringLiteral("sidecar:")))
+            schedulePreferencesSave();
     }
-    emit channelConfigChanged();
+    emit channelHeightsChanged();
+}
+
+void TelemetryStore::beginTraceResize() {
+    if (resizingTraces_ || !primaryUnified()) return;
+    if (editingCorners_) cancelCornerEdit();
+    cornerFocusAnimation_->stop();
+    traceResizeDraft_ = prefs_->channelWeights();
+    resizingTraces_ = true;
+    emit traceResizeChanged();
+}
+
+void TelemetryStore::commitTraceResize() {
+    if (!resizingTraces_) return;
+    for (auto it = traceResizeDraft_.cbegin(); it != traceResizeDraft_.cend();
+         ++it)
+        prefs_->channelWeights().insert(it.key(), it.value());
+    resizingTraces_ = false;
+    traceResizeDraft_.clear();
+    schedulePreferencesSave();
+    emit traceResizeChanged();
+    emit channelHeightsChanged();
+}
+
+void TelemetryStore::cancelTraceResize() {
+    if (!resizingTraces_) return;
+    resizingTraces_ = false;
+    traceResizeDraft_.clear();
+    emit traceResizeChanged();
+    emit channelHeightsChanged();
+}
+
+void TelemetryStore::resetTraceHeights() {
+    if (!resizingTraces_) return;
+    for (auto it = prefs_->channelWeights().cbegin();
+         it != prefs_->channelWeights().cend(); ++it)
+        traceResizeDraft_.insert(it.key(), 1.0);
+    for (auto it = traceResizeDraft_.begin(); it != traceResizeDraft_.end();
+         ++it)
+        it.value() = 1.0;
+    emit channelHeightsChanged();
+}
+
+void TelemetryStore::previewTraceHeights(const QStringList& keys,
+                                         const std::vector<double>& heights) {
+    if (!resizingTraces_ || keys.size() != qsizetype(heights.size()) ||
+        keys.isEmpty())
+        return;
+    double total = 0.0, normalWeight = 0.0;
+    QSet<QString> unique;
+    for (qsizetype i = 0; i < keys.size(); ++i) {
+        if (unique.contains(keys[i]) || !std::isfinite(heights[size_t(i)]) ||
+            heights[size_t(i)] <= 0)
+            return;
+        unique.insert(keys[i]);
+        total += heights[size_t(i)];
+        normalWeight += trace::laneHeightBoost(keys[i]);
+    }
+    if (!std::isfinite(total) || total <= 0) return;
+    for (qsizetype i = 0; i < keys.size(); ++i)
+        traceResizeDraft_[keys[i]] = heights[size_t(i)] / total * normalWeight /
+                                     trace::laneHeightBoost(keys[i]);
+    // One atomic layout change; no channel resampling or range invalidation.
+    emit channelHeightsChanged();
 }
 
 ChannelAppearance TelemetryStore::channelAppearance(const QString& key) const {

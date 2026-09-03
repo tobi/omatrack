@@ -58,6 +58,24 @@ public:
 
 // ── channel row ─────────────────────────────────────────────────────
 
+class TraceLaneRow {
+    Q_GADGET
+    QML_VALUE_TYPE(traceLaneRow)
+    Q_PROPERTY(QString key MEMBER key)
+    Q_PROPERTY(QString kind MEMBER kind)
+    Q_PROPERTY(QString title MEMBER title)
+    Q_PROPERTY(QString unit MEMBER unit)
+    Q_PROPERTY(double y MEMBER y)
+    Q_PROPERTY(double height MEMBER height)
+    Q_PROPERTY(bool expanded MEMBER expanded)
+    Q_PROPERTY(QString chromeText MEMBER chromeText)
+public:
+    QString key, kind, title, unit, chromeText;
+    double y = 0.0;
+    double height = 0.0;
+    bool expanded = false;
+};
+
 class ChannelRow {
     Q_GADGET
     QML_ANONYMOUS
@@ -508,6 +526,7 @@ public:
     }
 };
 
+Q_DECLARE_METATYPE(TraceLaneRow)
 Q_DECLARE_METATYPE(CursorReadout)
 Q_DECLARE_METATYPE(CornerFocusSummary)
 Q_DECLARE_METATYPE(SessionInfoRow)

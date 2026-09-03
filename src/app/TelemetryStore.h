@@ -387,6 +387,8 @@ class TelemetryStore : public QObject {
     Q_PROPERTY(bool comparing READ comparing NOTIFY selectionChanged)
     Q_PROPERTY(bool editingCorners READ editingCorners WRITE setEditingCorners
                    NOTIFY editingCornersChanged)
+    Q_PROPERTY(
+        bool resizingTraces READ resizingTraces NOTIFY traceResizeChanged)
     Q_PROPERTY(int cornerCount READ cornerCount NOTIFY cornersChanged)
     Q_PROPERTY(int focusedCorner READ focusedCorner NOTIFY cornerFocusChanged)
     Q_PROPERTY(
@@ -812,6 +814,13 @@ public:
                                           const QString& referenceColor);
     Q_INVOKABLE void resetChannelAppearance(const QString& key);
     Q_INVOKABLE void setChannelWeight(const QString& key, double weight);
+    bool resizingTraces() const { return resizingTraces_; }
+    Q_INVOKABLE void beginTraceResize();
+    Q_INVOKABLE void commitTraceResize();
+    Q_INVOKABLE void cancelTraceResize();
+    Q_INVOKABLE void resetTraceHeights();
+    void previewTraceHeights(const QStringList& keys,
+                             const std::vector<double>& heights);
 
     Q_INVOKABLE QStringList channelOrder() const;
 
@@ -985,6 +994,8 @@ signals:
     void driverMappingsChanged();
     void locationsChanged();
     void channelConfigChanged();
+    void channelHeightsChanged();
+    void traceResizeChanged();
     void referenceAlignmentChanged();
     void comparisonSyncStrategyChanged();
     void trackAtlasChanged();
@@ -1199,6 +1210,8 @@ private:
     double viewStart_ = 0.0;
     double viewEnd_ = 1.0;
     bool editingCorners_ = false;
+    bool resizingTraces_ = false;
+    QHash<QString, double> traceResizeDraft_;
     QVector<CornerZone> cornerEditBaseline_;
     bool ready_ = false;
     std::optional<bool> videoMutedOverride_;

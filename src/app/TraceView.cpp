@@ -100,6 +100,8 @@ TraceView::TraceView(QQuickItem* parent) : QQuickItem(parent) {
     setFlag(QQuickItem::ItemAcceptsInputMethod, false);
     setFocusPolicy(Qt::StrongFocus);
 
+    layout_.setSnapshot(&snapshot_);
+    interaction_.setSnapshot(&snapshot_);
     layout_.setLabelFont(labelFont_);
     layout_.setUnitFont(unitFont_);
     interaction_.setLayout(&layout_);
@@ -118,8 +120,6 @@ TraceView::TraceView(QQuickItem* parent) : QQuickItem(parent) {
         };
     interaction_.onOverlayChanged = [this]() { emit overlayChanged(); };
     interaction_.onSpanHoverChanged = [this]() { emit spanHoverChanged(); };
-    interaction_.onLaneLayoutChanged = [this]() { emit laneLayoutChanged(); };
-    interaction_.onInvalidateScene = [this]() { invalidateScene(); };
     interaction_.onSetCursor = [this](Qt::CursorShape shape) {
         setCursor(shape);
     };
@@ -133,14 +133,6 @@ void TraceView::setBackgroundColor(const QColor& color) {
     backgroundColor_ = color;
     update();
     emit backgroundColorChanged();
-}
-void TraceView::setFitChannels(bool fit) {
-    if (layout_.fitChannels() == fit) return;
-    layout_.setFitChannels(fit);
-    layout_.setVerticalScroll(0.0);
-    emit fitChannelsChanged();
-    emit laneLayoutChanged();
-    invalidateScene();
 }
 qreal TraceView::rulerHeight() const { return kTopPad; }
 
@@ -173,6 +165,16 @@ void TraceView::setStore(TelemetryStore* store) {
         connect(store_, &TelemetryStore::channelConfigChanged, this, [this]() {
             rebuildChannelSpecs();
             invalidateRanges();
+        });
+        connect(store_, &TelemetryStore::channelHeightsChanged, this, [this]() {
+            emit laneLayoutChanged();
+            invalidateScene();
+        });
+        connect(store_, &TelemetryStore::traceResizeChanged, this, [this]() {
+            interaction_.cancelLaneResize();
+            interaction_.resetSelection();
+            interaction_.resetHover();
+            invalidateScene();
         });
         // Hover-peek previews another lap at the same cursor: same static
         // rebuild as a selection, but the trace range selection survives.
@@ -223,6 +225,7 @@ void TraceView::geometryChange(const QRectF& newGeometry,
                                const QRectF& oldGeometry) {
     QQuickItem::geometryChange(newGeometry, oldGeometry);
     if (newGeometry.size() != oldGeometry.size()) {
+        interaction_.cancelLaneResize();
         layout_.setItemSize(width(), height());
         interaction_.setItemSize(width(), height());
         updateLabelWidth();
@@ -943,7 +946,42 @@ void TraceView::buildOutOfLap(TraceSceneBuilder& builder,
     }
 }
 
+void TraceView::buildLaneResizeGuides(TraceSceneBuilder& builder) {
+    const auto lanes = layoutLanes();
+    const auto& specs = channelSpecs();
+    int count = 0;
+    for (const auto& lane : lanes)
+        count += specs[lane.spec].kind == ChannelSpec::Kind::Sample;
+    int index = 0;
+    const double gripX = labelWidth() + (width() - labelWidth()) * 0.30;
+    for (const auto& lane : lanes) {
+        if (specs[lane.spec].kind != ChannelSpec::Kind::Sample) continue;
+        const bool highlighted =
+            index == interaction_.highlightedResizeBoundary();
+        const double bottom = lane.y + lane.height;
+        builder.rect(QRectF(labelWidth() + 5, lane.y + 2, 57, 14),
+                     alpha(backgroundColor_, 235));
+        builder.text(QStringLiteral("%1 px").arg(qRound(lane.height)),
+                     unitFont_, kAccent,
+                     QRectF(labelWidth() + 8, lane.y + 2, 60, 14),
+                     Qt::AlignLeft | Qt::AlignVCenter);
+        if (index < count - 1) {
+            builder.hLine(bottom, labelWidth(), width(), 1.0,
+                          alpha(kAccent, highlighted ? 230 : 110));
+            builder.rect(QRectF(gripX - 18, bottom - 4, 36, 8),
+                         backgroundColor_);
+            builder.hLine(bottom - 1, gripX - 12, gripX + 12, 1.0, kAccent);
+            builder.hLine(bottom + 2, gripX - 12, gripX + 12, 1.0, kAccent);
+        }
+        ++index;
+    }
+}
+
 void TraceView::buildCursorScene(TraceSceneBuilder& builder) {
+    if (store_ && store_->resizingTraces()) {
+        buildLaneResizeGuides(builder);
+        return;
+    }
     // The cursor path reuses the snapshot captured at the last static build:
     // its compare-fraction map and lap pointers are stable while the cursor
     // moves, so a cursor frame never allocates the std::function. Only the

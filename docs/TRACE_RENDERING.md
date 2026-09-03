@@ -99,6 +99,41 @@ as typed model roles, and saved through the existing debounced `omatrack.yml`
 writer. Raw-channel appearance persists; sidecars retain their existing
 host-local settings lifetime. No new configuration file is introduced.
 
+## Trace height editing
+
+The toolbar's **Resize** action enters a dedicated mode like corner editing.
+Every sample-lane divider gets a visible grip and the lanes show their current
+height. Dragging beyond the next lane's minimum pushes through further
+neighbours; a lane can occupy nearly the entire pane. **Save** / Ctrl+S keeps
+the new proportions; **Cancel** / Escape restores the previous layout;
+**Reset heights** previews the defaults. Channels and the right-click lane menu
+also offer entry points.
+
+`TraceLaneSizing.h` fits positive finite weights to the available pixel budget,
+with a 20 px minimum (reduced when the pane is too small). There is no 2× weight
+cap. Fixed group/span chrome is reserved first; all sample traces, including raw
+channels and delta, share the rest. The former FIT/vertical-scroll branch and
+fixed size-choice dropdown are removed.
+
+Preview weights live in a store draft, not in preferences. Other preference
+writes therefore cannot accidentally save an unfinished resize. Save writes
+`channels.<key>.weight`, including raw-channel overrides; merely browsing raw
+channels does not serialize hundreds of default weights. Height changes have a
+separate notification from channel configuration, preserving range and sample
+caches. The lane-label chrome uses a typed value list with a count-backed
+repeater, keeping its delegates alive throughout the drag.
+
+Run `OMATRACK_AUTOTEST_TRACE_RESIZE=/path/to/copied-recording` through the native
+acceptance wrapper. It tests growing past 2×, neighbour borrowing, fit, unchanged
+playhead/viewport, draft isolation, Cancel, Reset, and saving a raw lane. Repeat
+with the same scratch configuration and
+`OMATRACK_AUTOTEST_TRACE_RESIZE_RESTORE=1` to check reload persistence.
+The native check also verifies that label delegates survive a drag, that a
+raw-channel-ready notification does not cancel it, and that Escape, Ctrl+S,
+and switching edit modes preserve the committed layout. All 25 unit-test
+executables passed; the tall/raw-lane geometry check averaged 3.1 ms on the
+DPR-2 setup below, and the saved raw weight reloaded without the old 2× clamp.
+
 ## Verification (2026-09-03)
 
 Linux/Hyprland, Qt 6.11.2, Intel Core Ultra X7 358H; copied multi-lap Cosworth

@@ -79,6 +79,15 @@ ApplicationWindow {
                 font.pixelSize: 15
                 text: "Trace channels"
             }
+            CompactButton {
+                enabled: Store.ready
+                text: "Resize lanes…"
+
+                onClicked: {
+                    Store.beginTraceResize();
+                    channelsWindow.hide();
+                }
+            }
             TextField {
                 id: channelSearch
 
@@ -95,7 +104,7 @@ ApplicationWindow {
             Layout.fillWidth: true
             color: Style.mutedTextColor
             elide: Text.ElideRight
-            text: "Active / reference colors · Style: line width and area fill · Lane size · Live values"
+            text: "Active / reference colors · Style: line width and area fill · Resize lanes in the workspace"
         }
         Rectangle {
             Layout.fillWidth: true
@@ -278,7 +287,6 @@ ApplicationWindow {
                 required property double strokeWidth
                 required property string title
                 required property string unit
-                required property double weight
 
                 color: channelRow.index % 2 === 0 ? Style.surfaceColor : Style.backgroundColor
                 height: channelsWindow.appearanceKey === channelRow.key ? 76 : 34
@@ -344,16 +352,6 @@ ApplicationWindow {
                         text: "Style…"
 
                         onClicked: channelsWindow.appearanceKey = channelsWindow.appearanceKey === channelRow.key ? "" : channelRow.key
-                    }
-                    ComboBox {
-                        Layout.preferredHeight: 26
-                        Layout.preferredWidth: 76
-                        ToolTip.text: "Lane height"
-                        ToolTip.visible: hovered
-                        currentIndex: Math.max(0, Math.round((channelRow.weight - 0.5) / 0.25))
-                        model: [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
-
-                        onActivated: Store.setChannelWeight(channelRow.key, Number(currentText))
                     }
                 }
                 RowLayout {
