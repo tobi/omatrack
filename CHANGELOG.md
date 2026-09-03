@@ -2,6 +2,20 @@
 
 All notable user-facing changes are documented here.
 
+## 1.8.0 — 2026-09-03
+
+- Thin antialiased traces with per-channel styling: persistent width, fill,
+  and reference-color controls.
+- Navigate focused corners with H/J and quick eased viewport transitions,
+  with previous/next header buttons.
+- The file library watches whole folder subtrees, so nested drops rescan
+  automatically; manual Rescan stays for servers.
+- USB copy sources: Windows removable drives with arrival/removal
+  notifications, plus a manual source folder picked from the copy overlay.
+- Event mode moves into the title bar as a toggle with live track/date/
+  session state, mirrored in a sidebar banner; the header readout trims to
+  lap time plus delta.
+
 ## 1.7.3 — 2026-09-03
 
 - Filmstrip lap switching keeps the playhead, viewport, and alignment entry
