@@ -173,6 +173,12 @@ void TraceView::setStore(TelemetryStore* store) {
             rebuildChannelSpecs();
             invalidateRanges();
         });
+        // Hover-peek previews another lap at the same cursor: same static
+        // rebuild as a selection, but the trace range selection survives.
+        connect(store_, &TelemetryStore::peekChanged, this, [this]() {
+            rebuildChannelSpecs();
+            invalidateRanges();
+        });
         connect(store_, &TelemetryStore::overlaysChanged, this, [this]() {
             rebuildChannelSpecs();
             invalidateRanges();

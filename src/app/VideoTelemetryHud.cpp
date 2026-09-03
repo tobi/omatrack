@@ -70,6 +70,10 @@ void VideoTelemetryHud::setStore(TelemetryStore* store) {
             snapshotDirty_ = true;
             update();
         });
+        connect(store_, &TelemetryStore::peekChanged, this, [this]() {
+            snapshotDirty_ = true;
+            update();
+        });
         connect(store_, &TelemetryStore::referenceAlignmentChanged, this,
                 [this]() {
                     snapshotDirty_ = true;

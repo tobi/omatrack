@@ -15,6 +15,8 @@ void DamperStripView::setStore(TelemetryStore* store) {
     if (store_) {
         connect(store_, &TelemetryStore::selectionChanged, this,
                 &QQuickItem::update);
+        connect(store_, &TelemetryStore::peekChanged, this,
+                &QQuickItem::update);
         connect(store_, &TelemetryStore::referenceAlignmentChanged, this,
                 &QQuickItem::update);
         connect(store_, &TelemetryStore::cornersChanged, this,

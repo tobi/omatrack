@@ -7,7 +7,10 @@ import QtQuick.Layouts
 
 // Proportional lap filmstrip: one row per active/reference session. Laps fill
 // the lane by time, including Out/In/Frag. Left click selects the current lap
-// for that session; right click on a bar sets comparison. Label right-click
+// for that session without moving the playhead or viewport; clicking the
+// selected lap again (or double-clicking any lap) jumps to the lap start.
+// Hovering a lap previews its traces and data at the current playhead.
+// Right click on a bar sets comparison. Label right-click
 // stays "Swap with reference  X".
 
 Rectangle {
@@ -132,6 +135,10 @@ Rectangle {
                                     required property bool isFastest
                                     required property string label
                                     required property int lapId
+                                    // Playhead fraction inside this cell: the
+                                    // shared cursor for the active row, mapped
+                                    // through the comparison alignment for REF.
+                                    property double playheadFrac: sessionStrip.reference ? Store.compareFractionForPrimaryFraction(Store.cursorFrac) : Store.cursorFrac
                                     property bool selectedLap: sessionStrip.reference ? sessionStrip.sessionKey === Store.compareSessionKey && proportionalLap.lapId === Store.compareLapIndex : sessionStrip.sessionKey === Store.primarySessionKey && proportionalLap.lapId === Store.primaryLapIndex
                                     required property int timeMs
                                     required property string timeText
@@ -170,6 +177,17 @@ Rectangle {
                                         text: proportionalLap.isComplete ? proportionalLap.timeText : proportionalLap.label
                                         verticalAlignment: Text.AlignVCenter
                                     }
+                                    Rectangle {
+                                        anchors.bottom: parent.bottom
+                                        anchors.bottomMargin: 2
+                                        anchors.top: parent.top
+                                        anchors.topMargin: 2
+                                        color: sessionStrip.reference ? Style.orangeColor : Style.accentColor
+                                        visible: proportionalLap.selectedLap && isFinite(proportionalLap.playheadFrac)
+                                        width: 2
+                                        x: Math.min(Math.max(proportionalLap.playheadFrac, 0), 1) * (parent.width - width)
+                                        z: 1
+                                    }
                                     MouseArea {
                                         id: proportionalLapMouse
 
@@ -182,11 +200,18 @@ Rectangle {
                                                 Store.compareLap(sessionStrip.sessionKey, proportionalLap.lapId);
                                                 return;
                                             }
+                                            if (proportionalLap.selectedLap) {
+                                                Store.cursorFrac = 0;
+                                                return;
+                                            }
                                             if (sessionStrip.reference)
                                                 Store.compareLap(sessionStrip.sessionKey, proportionalLap.lapId);
                                             else
                                                 Store.selectLap(sessionStrip.sessionKey, proportionalLap.lapId);
                                         }
+                                        onDoubleClicked: Store.cursorFrac = 0
+                                        onEntered: Store.peekLap(sessionStrip.sessionKey, proportionalLap.lapId, sessionStrip.reference)
+                                        onExited: Store.clearPeek()
                                     }
                                 }
                             }

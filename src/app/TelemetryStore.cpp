@@ -5253,6 +5253,12 @@ void TelemetryStore::resetPrimarySessionOverlays() {
 }
 
 void TelemetryStore::setPrimary(SessionHandle* session, int lapId) {
+    // A lap switch keeps the playhead, viewport, and tuning entry state:
+    // only the underlying lap changes. A peek that just became the committed
+    // lap dissolves into it.
+    if (session && hasPeek_ && !peekCompare_ &&
+        peekSessionKey_ == session->sessionKey() && peekLap_ == lapId)
+        resetPeekState();
     const bool sessionChanged = primarySession_ != session;
     const bool pairChanged = sessionChanged || primaryLap_ != lapId;
     if (sessionChanged && primarySession_ && primarySession_ != session &&
@@ -5273,7 +5279,6 @@ void TelemetryStore::setPrimary(SessionHandle* session, int lapId) {
     schedulePreferencesSave();
     invalidateExtraChannelCache();
     if (pairChanged) setReferenceAlignment(0.0);
-    cursorFrac_ = 0.0;
     loadCornersForPrimary();
     if (sessionChanged) resetPrimarySessionOverlays();
     overlays_->resampleOverlays();
@@ -5285,6 +5290,9 @@ void TelemetryStore::setPrimary(SessionHandle* session, int lapId) {
 }
 
 void TelemetryStore::setCompare(SessionHandle* session, int lapId) {
+    if (session && hasPeek_ && peekCompare_ &&
+        peekSessionKey_ == session->sessionKey() && peekLap_ == lapId)
+        resetPeekState();
     const bool sessionChanged = compareSession_ != session;
     const bool pairChanged = sessionChanged || compareLap_ != lapId;
     if (sessionChanged && compareSession_ && compareSession_ != session &&
@@ -5375,6 +5383,10 @@ void TelemetryStore::prefetchLap(const QString& sessionKey, int lapId) {
             session->adoptLoadedLap(result->lapId, std::move(result->source),
                                     std::move(result->unified),
                                     result->driverId, result->forceDriverId);
+            // A hover-peek that was waiting for this lap previews now.
+            if (hasPeek_ && peekSessionKey_ == result->sessionKey &&
+                peekLap_ == result->lapId)
+                applyPeek();
         });
 }
 
@@ -5388,6 +5400,9 @@ void TelemetryStore::selectLap(const QString& sessionKey, int lapId) {
         return;
     }
     if (primarySession_ == session && primaryLap_ == lapId) {
+        // Clicking the active lap again jumps to the start of the lap;
+        // everything else stays where it is.
+        setCursorFrac(0.0);
         resumeSidebarMetadataQueue();
         return;
     }
@@ -5403,10 +5418,65 @@ void TelemetryStore::compareLap(const QString& sessionKey, int lapId) {
         return;
     }
     if (primarySession_ == session && primaryLap_ == lapId) return;
+    if (compareSession_ == session && compareLap_ == lapId) {
+        setCursorFrac(0.0);
+        return;
+    }
     requestLapLoad(session, lapId, true);
 }
 
+void TelemetryStore::resetPeekState() {
+    hasPeek_ = false;
+    peekSessionKey_.clear();
+    peekLap_ = -1;
+    peekCompare_ = false;
+}
+
+void TelemetryStore::applyPeek() {
+    invalidateComparisonAlignment();
+    rebuildComparisonAlignment(false);
+    emit peekChanged();
+    emit cursorFracChanged();
+    emit cursorReadoutChanged();
+}
+
+void TelemetryStore::peekLap(const QString& sessionKey, int lapId,
+                             bool compare) {
+    SessionHandle* session = findSession(sessionKey);
+    if (!session || lapId < 0) {
+        clearPeek();
+        return;
+    }
+    if (!compare && session == primarySession_ && lapId == primaryLap_) {
+        clearPeek();
+        return;
+    }
+    if (compare && session == compareSession_ && lapId == compareLap_) {
+        clearPeek();
+        return;
+    }
+    if (hasPeek_ && peekSessionKey_ == sessionKey && peekLap_ == lapId &&
+        peekCompare_ == compare)
+        return;
+    peekSessionKey_ = sessionKey;
+    peekLap_ = lapId;
+    peekCompare_ = compare;
+    hasPeek_ = true;
+    // A hovered lap that is still parsing previews the moment its unified
+    // lap lands (see prefetchLap); hovering also warms the cache, so the
+    // click that follows is a synchronous cache hit.
+    if (!session->unifiedLap(lapId)) prefetchLap(sessionKey, lapId);
+    applyPeek();
+}
+
+void TelemetryStore::clearPeek() {
+    if (!hasPeek_) return;
+    resetPeekState();
+    applyPeek();
+}
+
 void TelemetryStore::clearCompare() {
+    resetPeekState();
     compareLapJob_.reset();
     invalidateExtraChannelCache();
     setCompareLapLoading(false);
@@ -5426,6 +5496,7 @@ void TelemetryStore::clearCompare() {
 }
 
 void TelemetryStore::clearPrimary() {
+    resetPeekState();
     cancelSelectionLoads();
     invalidateExtraChannelCache();
     setPrimaryLapLoading(false);
@@ -7417,6 +7488,11 @@ QString TelemetryStore::driverDisplayName(const QString& sessionKey) const {
 // ── unified access ──────────────────────────────────────────────────
 
 const omatrack::UnifiedLap* TelemetryStore::primaryUnified() const {
+    if (hasPeek_ && !peekCompare_) {
+        if (SessionHandle* peekSession = findSession(peekSessionKey_)) {
+            if (auto u = peekSession->unifiedLap(peekLap_)) return u.get();
+        }
+    }
     if (!primarySession_ || primaryLap_ < 0) return nullptr;
     auto u = primarySession_->unifiedLap(primaryLap_);
     return u ? u.get() : nullptr;
@@ -7538,6 +7614,11 @@ void SessionHandle::captureVideoHud(const TelemetrySource& source) {
 }
 
 const omatrack::UnifiedLap* TelemetryStore::compareUnified() const {
+    if (hasPeek_ && peekCompare_) {
+        if (SessionHandle* peekSession = findSession(peekSessionKey_)) {
+            if (auto u = peekSession->unifiedLap(peekLap_)) return u.get();
+        }
+    }
     if (!compareSession_ || compareLap_ < 0) return nullptr;
     auto u = compareSession_->unifiedLap(compareLap_);
     return u ? u.get() : nullptr;
@@ -7902,32 +7983,39 @@ void TelemetryStore::invalidateComparisonAlignment() {
     deltaCacheValid_ = false;
 }
 
-void TelemetryStore::rebuildComparisonAlignment() {
+void TelemetryStore::rebuildComparisonAlignment(bool notify) {
     comparisonAlignmentTime_.clear();
     comparisonAlignmentFraction_.clear();
     comparisonAlignmentBasis_.clear();
     comparisonGpsAnchors_ = 0;
 
     const QString effective = effectiveComparisonSyncStrategy();
-    if (effectiveComparisonSyncStrategy_ != effective) {
-        effectiveComparisonSyncStrategy_ = effective;
-        if (effective != QStringLiteral("manual-dampers") &&
-            !qFuzzyIsNull(referenceAlignment_)) {
-            referenceAlignment_ = 0.0;
-            emit referenceAlignmentChanged();
+    // A quiet (peek) rebuild must not touch committed tuning or strategy
+    // state: the preview borrows the shared caches and hands them back on
+    // clearPeek.
+    QString active = effective;
+    if (notify) {
+        if (effectiveComparisonSyncStrategy_ != effective) {
+            effectiveComparisonSyncStrategy_ = effective;
+            if (effective != QStringLiteral("manual-dampers") &&
+                !qFuzzyIsNull(referenceAlignment_)) {
+                referenceAlignment_ = 0.0;
+                emit referenceAlignmentChanged();
+            }
         }
+        active = effectiveComparisonSyncStrategy_;
     }
 
     const UnifiedLap* primary = primaryUnified();
     const UnifiedLap* compare = compareUnified();
     if (!primary || !compare || primary->time.size() < 2 ||
         compare->time.size() < 2) {
-        emit comparisonSyncStrategyChanged();
+        if (notify) emit comparisonSyncStrategyChanged();
         return;
     }
 
     ComparisonAlignmentOptions options;
-    options.strategy = comparisonAlignmentStrategy(effective);
+    options.strategy = comparisonAlignmentStrategy(active);
     options.cornerStarts.reserve(corners_.size());
     for (const CornerZone& corner : corners_)
         options.cornerStarts.append(corner.start);
@@ -7940,11 +8028,10 @@ void TelemetryStore::rebuildComparisonAlignment() {
     comparisonAlignmentFraction_ = std::move(result.fraction);
     comparisonAlignmentBasis_ = std::move(result.basis);
     comparisonGpsAnchors_ = result.gpsAnchors;
-    qCInfo(lcIo).noquote() << "comparison alignment"
-                           << effectiveComparisonSyncStrategy_
+    qCInfo(lcIo).noquote() << "comparison alignment" << active
                            << comparisonAlignmentBasis_ << "anchors"
                            << comparisonGpsAnchors_;
-    emit comparisonSyncStrategyChanged();
+    if (notify) emit comparisonSyncStrategyChanged();
 }
 
 QString TelemetryStore::comparisonAlignmentBasis() const {
@@ -8538,22 +8625,8 @@ bool TelemetryStore::swapPrimaryWithReference() {
     if (!primarySession_ || primaryLap_ < 0 || compareLap_ < 0 ||
         !omatrack::swapRolesPossible(compareSession_ != nullptr))
         return false;
-    const double nextCursor = compareFractionForPrimaryFraction(cursorFrac_);
-    const auto mapView = [this](double fraction) {
-        return omatrack::swappedViewportFraction(
-            fraction,
-            effectiveComparisonSyncStrategy_ ==
-                QStringLiteral("manual-dampers"),
-            referenceAlignment_, [this](double value) {
-                return compareFractionForPrimaryFraction(value);
-            });
-    };
-    const double nextViewStart = mapView(viewStart_);
-    const double nextViewEnd = mapView(viewEnd_);
-    const double nextFocusStart = mapView(focusReturnStart_);
-    const double nextFocusEnd = mapView(focusReturnEnd_);
-    const double nextAlignment = -referenceAlignment_;
     cancelSelectionLoads();
+    resetPeekState();
     invalidateExtraChannelCache();
     SessionHandle* primary = primarySession_;
     SessionHandle* compare = compareSession_;
@@ -8563,18 +8636,10 @@ bool TelemetryStore::swapPrimaryWithReference() {
     primaryLap_ = compareLap;
     compareSession_ = primary;
     compareLap_ = primaryLap;
-    // Keep the old reference's station as the new primary cursor. Manual
-    // alignment is a fractional translation and its inverse changes sign.
-    cursorFrac_ = nextCursor;
-    if (nextViewEnd > nextViewStart) {
-        viewStart_ = nextViewStart;
-        viewEnd_ = nextViewEnd;
-    }
-    if (nextFocusEnd > nextFocusStart) {
-        focusReturnStart_ = nextFocusStart;
-        focusReturnEnd_ = nextFocusEnd;
-    }
-    referenceAlignment_ = nextAlignment;
+    // Only the roles change: the cursor and viewport fractions stay exactly
+    // where they are, so the playhead never moves on X. Manual alignment is
+    // a fractional translation and its inverse changes sign.
+    referenceAlignment_ = -referenceAlignment_;
     overlays_->setPrimarySession(primarySession_);
     overlays_->setPrimaryLap(primaryLap_);
     overlays_->setCompareSession(compareSession_);

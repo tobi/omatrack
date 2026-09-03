@@ -417,6 +417,9 @@ void VideoSyncController::finishLapAdvance() {
     const int nextId = lapAdvanceNextId_;
     cancelLapAdvance();
     if (sessionKey.isEmpty() || nextId < 0) return;
+    // Lap selection keeps the cursor now, but an auto-advance must start the
+    // next lap at its beginning: jump first so the retained fraction is zero.
+    store_->jumpToFraction(0.0);
     store_->selectLap(sessionKey, nextId);
     lapAdvanceResume_ = true;
     tryResumeLapAdvance();

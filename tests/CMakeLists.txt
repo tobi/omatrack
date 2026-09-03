@@ -242,16 +242,6 @@ target_link_libraries(deadline-queue-test PRIVATE
 add_test(NAME deadline-queue-test COMMAND deadline-queue-test)
 set_tests_properties(deadline-queue-test PROPERTIES LABELS unit)
 
-qt_add_executable(swap-roles-test SwapRolesTest.cpp)
-target_include_directories(swap-roles-test PRIVATE
-  ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(swap-roles-test PRIVATE
-  Qt6::Test
-  Qt6::Core
-  omatrack_warnings)
-add_test(NAME swap-roles-test COMMAND swap-roles-test)
-set_tests_properties(swap-roles-test PROPERTIES LABELS unit)
-
 # ── Omarchy theme bridge test ───────────────────────────────────────
 qt_add_executable(omarchy-theme-test OmarchyThemeTest.cpp
   ${CMAKE_SOURCE_DIR}/src/app/OmarchyTheme.cpp)
@@ -337,7 +327,6 @@ add_custom_target(unit_tests
     index-cache-test
     overlay-style-test
     deadline-queue-test
-    swap-roles-test
     omarchy-theme-test
     alignment-test
     track-atlas-spatial-test

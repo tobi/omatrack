@@ -180,9 +180,15 @@ wins on load. Caches (Track Atlas snapshot) stay outside the file.
   pruned only when no role load is pending; active loaded snapshots remain
   usable if a volume temporarily disappears. This is not a claim of automatic
   hot-reload of changed source bytes or inherited metadata.
-- A role swap cancels pending file/role loads, moves the cursor and viewport
-  to the previous reference position, and inverts manual alignment. An ordinary
-  change to either selected lap clears tuning from the previous pair. Changing
+- A role swap cancels pending file/role loads, keeps the cursor and viewport
+  fractions exactly where they are (only the roles change, so the playhead
+  never moves on `X`), and inverts manual alignment. An ordinary
+  change to either selected lap clears tuning from the previous pair but keeps
+  cursor and viewport; clicking the already-selected filmstrip lap (or
+  double-clicking any lap) jumps to the start of that lap. Hovering a
+  filmstrip lap previews its traces, delta, and cursor data at the current
+  playhead through a transient peek that touches neither the committed
+  selection nor alignment tuning. Changing
   the primary host cancels old overlay jobs and invalidates host-specific joins.
 - Every store-backed `ListView` carries a `ScrollAnchor { view; role }`
   (`src/app/ScrollAnchor.*`). It records the identity-role value of the row

@@ -700,6 +700,13 @@ public:
     Q_INVOKABLE void selectSession(const QString& sessionKey, bool compare);
     Q_INVOKABLE void selectLap(const QString& sessionKey, int lapId);
     Q_INVOKABLE void compareLap(const QString& sessionKey, int lapId);
+    /// Transient hover preview of a filmstrip lap. Traces, delta, and cursor
+    /// data render the peeked lap at the current cursor while the committed
+    /// selection, viewport, and alignment tuning stay untouched. The peeked
+    /// lap loads in the background when it is not cached yet.
+    Q_INVOKABLE void peekLap(const QString& sessionKey, int lapId,
+                             bool compare);
+    Q_INVOKABLE void clearPeek();
     Q_INVOKABLE void clearCompare();
     Q_INVOKABLE void clearPrimary();
     /// Swap primary and reference analysis roles. No-op without a reference.
@@ -723,6 +730,10 @@ public:
     Q_INVOKABLE void seekCursorSeconds(double seconds);
     Q_INVOKABLE void setCursorFromVideoTime(double mediaTime);
     Q_INVOKABLE void jumpToFraction(double frac);
+    /// Primary-relative fraction mapped onto the reference lap through the
+    /// shared comparison alignment. Feeds the filmstrip's reference-row
+    /// playhead marker.
+    Q_INVOKABLE double compareFractionForPrimaryFraction(double fraction) const;
     /// Full-lap viewport; also leaves corner focus.
     Q_INVOKABLE void resetView();
     // Front-damper traces for the manual reference-alignment tool. The typed
@@ -936,6 +947,10 @@ signals:
     /// Video playback has just reached the end of the primary lap.
     void primaryLapPlaybackEnded();
     void selectionChanged();
+    /// The hover-peek lap changed. Renderers repaint from the same snapshot
+    /// as a selection change, without the selection side effects (video sync
+    /// resets, plugin sessions, model refreshes) that selectionChanged owns.
+    void peekChanged();
     void editingCornersChanged();
     void cursorFracChanged();
     void cursorReadoutChanged();
@@ -1047,14 +1062,17 @@ private:
     void requestTraceConfidence();
     int neighbourLapId(int offset) const;
     void invalidateComparisonAlignment();
-    void rebuildComparisonAlignment();
+    /// Rebuilds the one cached primary→reference map. Peek passes
+    /// notify=false so a transient hover preview never resets committed
+    /// alignment tuning and never emits the strategy signal that hard-seeks
+    /// reference video.
+    void rebuildComparisonAlignment(bool notify = true);
     void invalidateExtraChannelCache();
     double compareTimeForPrimaryFraction(double fraction) const;
     QString effectiveComparisonSyncStrategy() const;
     static ComparisonAlignmentStrategy comparisonAlignmentStrategy(
         const QString& strategy);
     double comparisonPrimaryFraction(double fraction) const;
-    double compareFractionForPrimaryFraction(double fraction) const;
     double primaryFractionForCompareFraction(double fraction) const;
     double primaryTimeAtFraction(double fraction) const;
     double compareVideoTimeAtFraction(double fraction) const;
@@ -1144,8 +1162,19 @@ private:
     SessionHandle* compareSession_ = nullptr;
     int primaryLap_ = -1;
     int compareLap_ = -1;
+    // Transient filmstrip hover preview, keyed by session so a rebuilt
+    // registry cannot dangle it. The committed selection above is untouched
+    // while these are set; primaryUnified()/compareUnified() prefer them.
+    bool hasPeek_ = false;
+    QString peekSessionKey_;
+    int peekLap_ = -1;
+    bool peekCompare_ = false;
+    void applyPeek();
+    void resetPeekState();
 
-    double cursorFrac_ = 0.5;
+    // Lap selection keeps the cursor, so a fresh store starts at the lap
+    // start instead of inheriting a mid-lap fraction on the first load.
+    double cursorFrac_ = 0.0;
     double viewStart_ = 0.0;
     double viewEnd_ = 1.0;
     bool editingCorners_ = false;
