@@ -14,6 +14,7 @@
 #include "UsbCopy.h"
 // Extracted collaborators (plain QObjects owned by the store).
 class PreferencesStore;
+class QVariantAnimation;
 class TrackAtlasManager;
 class OverlayManager;
 
@@ -769,6 +770,7 @@ public:
     // second window. focusCorner() remembers the viewport it replaced,
     // clearCornerFocus() puts it back.
     Q_INVOKABLE void focusCorner(int index);
+    Q_INVOKABLE void stepFocusedCorner(int direction);
     Q_INVOKABLE void focusCornerAtCursor();
     Q_INVOKABLE void clearCornerFocus();
     Q_INVOKABLE CornerFocusSummary cornerFocusSummary() const;
@@ -1222,6 +1224,7 @@ private:
     bool traceConfidenceLoading_ = false;
     bool traceConfidenceReady_ = false;
     int focusedCorner_ = -1;
+    QVariantAnimation* cornerFocusAnimation_ = nullptr;
     QString highlightedCornerMarker_;
     double focusReturnStart_ = 0.0;
     double focusReturnEnd_ = 1.0;

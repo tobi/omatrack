@@ -141,6 +141,7 @@ if(OMATRACK_ENABLE_AUTOTEST_HARNESS)
   target_sources(omatrack PRIVATE AutotestHarness.h AutotestHarness.cpp
     FilmstripAutotest.cpp
     TraceRenderingAutotest.cpp
+    CornerNavigationAutotest.cpp
     UsbCopyAutotest.cpp
     PluginAutotest.cpp)
   target_compile_definitions(omatrack PRIVATE

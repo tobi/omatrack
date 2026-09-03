@@ -56,6 +56,7 @@
 #include <QTemporaryFile>
 
 #include <QTimer>
+#include <QVariantAnimation>
 #include <QUrl>
 #include <QtConcurrent/QtConcurrentRun>
 
@@ -2493,6 +2494,25 @@ TelemetryStore::TelemetryStore(QObject* parent)
     if (s_storeInstance)
         qFatal("Only one TelemetryStore may exist in a process");
     s_storeInstance = this;
+    // One retargetable viewport transition. Both bounds advance together,
+    // so traces, ruler and focus mask always consume the same frame.
+    cornerFocusAnimation_ = new QVariantAnimation(this);
+    cornerFocusAnimation_->setObjectName(
+        QStringLiteral("cornerFocusTransition"));
+    cornerFocusAnimation_->setDuration(140);
+    cornerFocusAnimation_->setEasingCurve(QEasingCurve::OutCubic);
+    connect(
+        cornerFocusAnimation_, &QVariantAnimation::valueChanged, this,
+        [this](const QVariant& value) {
+            if (cornerFocusAnimation_->state() != QAbstractAnimation::Running)
+                return;
+            const QPointF bounds = value.toPointF();
+            viewStart_ = bounds.x();
+            viewEnd_ = bounds.y();
+            emit viewChanged();
+        });
+    connect(this, &TelemetryStore::editingCornersChanged, cornerFocusAnimation_,
+            &QVariantAnimation::stop);
     sidebarMetadataPool_.setMaxThreadCount(1);
     sidebarMetadataPool_.setThreadPriority(QThread::LowPriority);
     // Loading Q_PROPERTYs mirror their pipeline's running state.
@@ -2526,6 +2546,7 @@ TelemetryStore::TelemetryStore(QObject* parent)
     // longer contains the focused zone drops the focus, and a new lap
     // selection recomputes its markers.
     connect(this, &TelemetryStore::cornersChanged, this, [this]() {
+        cornerFocusAnimation_->stop();
         invalidateComparisonAlignment();
         rebuildComparisonAlignment();
         emit cursorFracChanged();
@@ -2539,6 +2560,7 @@ TelemetryStore::TelemetryStore(QObject* parent)
         }
     });
     connect(this, &TelemetryStore::selectionChanged, this, [this]() {
+        cornerFocusAnimation_->stop();
         invalidateTraceConfidence();
         if (traceConfidenceMode_) requestTraceConfidence();
         if (focusedCorner_ < 0) return;
@@ -5848,12 +5870,14 @@ void TelemetryStore::setComparisonSyncStrategy(const QString& strategy) {
 }
 
 void TelemetryStore::setViewStart(double v) {
+    cornerFocusAnimation_->stop();
     v = qBound(0.0, v, 1.0);
     if (qFuzzyCompare(viewStart_ + 1.0, v + 1.0)) return;
     viewStart_ = v;
     emit viewChanged();
 }
 void TelemetryStore::setViewEnd(double v) {
+    cornerFocusAnimation_->stop();
     v = qBound(0.0, v, 1.0);
     if (qFuzzyCompare(viewEnd_ + 1.0, v + 1.0)) return;
     viewEnd_ = v;
@@ -5861,6 +5885,7 @@ void TelemetryStore::setViewEnd(double v) {
 }
 
 void TelemetryStore::zoomAt(double anchorFrac, double factor) {
+    cornerFocusAnimation_->stop();
     if (!std::isfinite(anchorFrac) || !std::isfinite(factor) || factor <= 0)
         return;
     double span = viewSpan();
@@ -5887,6 +5912,7 @@ void TelemetryStore::zoomAt(double anchorFrac, double factor) {
 }
 
 void TelemetryStore::pan(double deltaFrac) {
+    cornerFocusAnimation_->stop();
     double span = viewSpan();
     double shift = deltaFrac * span;
     double ns = qBound(0.0, viewStart_ + shift, 1.0 - span);
@@ -6537,6 +6563,7 @@ void TelemetryStore::refreshCornersModel() {
 // ── corner focus ────────────────────────────────────────────────────
 
 void TelemetryStore::resetView() {
+    cornerFocusAnimation_->stop();
     if (focusedCorner_ >= 0) {
         focusedCorner_ = -1;
         markers_.clear();
@@ -6555,6 +6582,9 @@ void TelemetryStore::resetView() {
 
 void TelemetryStore::focusCorner(int index) {
     if (index < 0 || index >= corners_.size()) return;
+    const bool animate = focusedCorner_ >= 0 && focusedCorner_ != index;
+    cornerFocusAnimation_->stop();
+    const QPointF from(viewStart_, viewEnd_);
     if (focusedCorner_ < 0) {
         focusReturnStart_ = viewStart_;
         focusReturnEnd_ = viewEnd_;
@@ -6574,9 +6604,15 @@ void TelemetryStore::focusCorner(int index) {
     // renderer fills that space with the neighbouring lap, masked, or with
     // black when there is no more data to show.
     const double start = corner.mid() - kCornerCentre * span;
-    viewStart_ = start;
-    viewEnd_ = start + span;
-    emit viewChanged();
+    if (animate) {
+        cornerFocusAnimation_->setStartValue(from);
+        cornerFocusAnimation_->setEndValue(QPointF(start, start + span));
+        cornerFocusAnimation_->start();
+    } else {
+        viewStart_ = start;
+        viewEnd_ = start + span;
+        emit viewChanged();
+    }
     prefetchNeighbourLaps();
 
     rebuildCornerMarkers();
@@ -6586,6 +6622,13 @@ void TelemetryStore::focusCorner(int index) {
             setCursorFrac(marker.fraction);
             break;
         }
+}
+
+void TelemetryStore::stepFocusedCorner(int direction) {
+    if (editingCorners_ || focusedCorner_ < 0 || direction == 0) return;
+    const int next = focusedCorner_ + (direction < 0 ? -1 : 1);
+    if (next < 0 || next >= corners_.size()) return;
+    focusCorner(next);
 }
 
 // ── neighbouring laps ───────────────────────────────────────────────
@@ -6689,6 +6732,7 @@ void TelemetryStore::focusCornerAtCursor() {
 }
 
 void TelemetryStore::clearCornerFocus() {
+    cornerFocusAnimation_->stop();
     if (focusedCorner_ < 0) return;
     focusedCorner_ = -1;
     markers_.clear();

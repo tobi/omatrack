@@ -447,7 +447,7 @@ Native lap distance is accepted only when its continuity and total agree with in
   lap under analysis, behind a boundary rule labelled `« L8` / `L10 »` — or
   black when there is no such lap. Never re-frame the corner to keep the
   viewport inside the lap.
-- Fade in a right-side information overlay with entry/apex/exit speeds, time made on entry and exit, brake-point and turn-in deltas, and a checks text area; Escape or the overlay close button restores the previous viewport.
+- Fade in a right-side information overlay with entry/apex/exit speeds, time made on entry and exit, brake-point and turn-in deltas, and a checks text area. Previous/next buttons beside its corner name (H/J, except while typing) navigate without wrapping; the end buttons disable. Switching focused corners uses one 140 ms OutCubic viewport transition, retargeted from its current position on repeated input. The store animates both bounds together without clamping away start/finish context. Escape/close restores the original pre-focus viewport even after multiple corners; direct zoom/pan, reset, selection/corner changes and editing cancel pending motion.
 - Keep Track Atlas cache refresh and offline fallback explicit in preferences; corner edits are copied into `omatrack.yml` as a per-track override.
 
 The current implementation imports `corner_ranges`, downloads the selected
@@ -949,6 +949,7 @@ Add feature flags as needed:
 - `OMATRACK_AUTOTEST_SELECTION=1`
 - `OMATRACK_AUTOTEST_ALIGNMENT=1`
 - `OMATRACK_AUTOTEST_CORNER=1`
+- `OMATRACK_AUTOTEST_CORNER_NAVIGATION=/path/to/copied-multi-lap-file` checks previous/next buttons, the H/J shortcut handlers, intermediate animation frames, rapid retargeting, cancellation/restoration, unclamped lap edges and typing protection, then captures the focused overlay.
 - `OMATRACK_AUTOTEST_HOVER=1`
 - `OMATRACK_AUTOTEST_ZOOM=1`
 - `OMATRACK_AUTOTEST_RENAME=1`

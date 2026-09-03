@@ -15,6 +15,7 @@ ApplicationWindow {
 
     // Supplied by QQmlApplicationEngine::setInitialProperties in main().
     required property bool autotestWindows
+    readonly property bool cornerNavigationEnabled: tracePane.visible && Store.focusedCorner >= 0 && !Store.editingCorners && !(root.activeFocusItem instanceof TextInput || root.activeFocusItem instanceof TextEdit)
 
     // Caches the root itself renders: damper-alignment traces and the
     // telemetry directories listed in the drawer. The filmstrip binds to
@@ -353,6 +354,20 @@ ApplicationWindow {
         sequence: "X"
 
         onActivated: Store.swapPrimaryWithReference()
+    }
+    Shortcut {
+        enabled: root.cornerNavigationEnabled && Store.focusedCorner > 0
+        objectName: "previousCornerShortcut"
+        sequence: "H"
+
+        onActivated: Store.stepFocusedCorner(-1)
+    }
+    Shortcut {
+        enabled: root.cornerNavigationEnabled && Store.focusedCorner < Store.cornerCount - 1
+        objectName: "nextCornerShortcut"
+        sequence: "J"
+
+        onActivated: Store.stepFocusedCorner(1)
     }
     DropArea {
         id: fileDropArea

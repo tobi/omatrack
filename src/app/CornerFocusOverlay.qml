@@ -168,6 +168,24 @@ OverlayCard {
                 Layout.fillWidth: true
                 spacing: 4
 
+                CompactToolButton {
+                    id: previousCornerButton
+
+                    Layout.preferredHeight: 24
+                    Layout.preferredWidth: 24
+                    ToolTip.delay: 400
+                    ToolTip.text: "Previous corner · H"
+                    ToolTip.visible: previousCornerButton.hovered
+                    enabled: Store.focusedCorner > 0 && !Store.editingCorners
+                    focusPolicy: Qt.NoFocus
+                    font.pixelSize: Style.fontSize + 6
+                    objectName: "previousCornerButton"
+                    padding: 0
+                    text: "‹"
+                    tip: "Previous corner (H)"
+
+                    onClicked: Store.stepFocusedCorner(-1)
+                }
                 Label {
                     Layout.fillWidth: true
                     color: Style.foregroundColor
@@ -175,6 +193,24 @@ OverlayCard {
                     font.bold: true
                     font.pixelSize: Style.fontSize
                     text: overlay.summary.name || "Corner"
+                }
+                CompactToolButton {
+                    id: nextCornerButton
+
+                    Layout.preferredHeight: 24
+                    Layout.preferredWidth: 24
+                    ToolTip.delay: 400
+                    ToolTip.text: "Next corner · J"
+                    ToolTip.visible: nextCornerButton.hovered
+                    enabled: Store.focusedCorner >= 0 && Store.focusedCorner < Store.cornerCount - 1 && !Store.editingCorners
+                    focusPolicy: Qt.NoFocus
+                    font.pixelSize: Style.fontSize + 6
+                    objectName: "nextCornerButton"
+                    padding: 0
+                    text: "›"
+                    tip: "Next corner (J)"
+
+                    onClicked: Store.stepFocusedCorner(1)
                 }
                 Label {
                     Accessible.name: "Close corner"

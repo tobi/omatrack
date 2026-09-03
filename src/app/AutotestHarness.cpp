@@ -103,6 +103,7 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
     const auto videoShortcutReady = std::make_shared<bool>(
         startupVideoPath.isEmpty() || autotestBrakeSync || autotestDualVideo);
     const QString shotPath = QString::fromUtf8(autotestShot);
+    if (installCornerNavigation(engine, store)) return true;
     if (installTraceRendering(engine, store)) return true;
     if (installFilmstrip(engine, store)) return true;
     if (installUsbCopy(engine, store)) return true;
