@@ -36,6 +36,21 @@ void UsbCopyListModel::refresh(const QVector<UsbCopyRow>& rows) {
         });
     emit refreshed();
 }
+void UsbCopyListModel::refresh(const omatrack::UsbCopyPlan& plan) {
+    QVector<UsbCopyRow> rows;
+    rows.reserve(plan.entries.size());
+    for (const auto& entry : plan.entries) {
+        UsbCopyRow row;
+        row.sourcePath = entry.source;
+        row.targetPath = entry.destination;
+        row.statusText = entry.message;
+        row.sizeText = QStringLiteral("%1 MiB").arg(
+            double(entry.size) / (1024 * 1024), 0, 'f', 1);
+        row.ready = entry.state == omatrack::UsbCopyEntry::State::Ready;
+        rows.append(std::move(row));
+    }
+    refresh(rows);
+}
 
 // ── LapListModel ────────────────────────────────────────────────────
 

@@ -2224,6 +2224,49 @@ QString cachePathFor(const LibraryLocation& location) {
     return cacheDirectory(connectionFor(location));
 }
 
+/// The one file filter both scan pipelines share: vendor telemetry, onboard
+/// video, and the folder-metadata sidecar.
+QStringList telemetryScanFilters() {
+    return {"*.pds",       "*.PDS",       "*.ld",  "*.LD",   "*.vbo",
+            "*.telemetry", "*.TELEMETRY", "*.VBO", "*.mp4",  "*.MP4",
+            "*.mov",       "*.MOV",       "*.mkv", "*.MKV",  "*.avi",
+            "*.AVI",       "*.m4v",       "*.M4V", "*.webm", "*.WEBM",
+            "TRACK.yml"};
+}
+
+/// One recursive walk shared by the library and USB scans: vendor sources
+/// canonicalized with sidecars resolved out, TRACK.yml paths collected
+/// separately so USB can keep ignoring them.
+struct TelemetryDirScan {
+    QSet<QString> sources;
+    QSet<QString> trackMetadata;
+};
+
+TelemetryDirScan scanTelemetryDirectory(const QString& root,
+                                        const QStringList& filters,
+                                        const IoCancel& cancel = {}) {
+    TelemetryDirScan out;
+    QDirIterator it(root, filters, QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        it.next();
+        if (it.fileName() == QStringLiteral("TRACK.yml")) {
+            out.trackMetadata.insert(
+                QFileInfo(it.filePath()).absoluteFilePath());
+            continue;
+        }
+        if (ioCancelled(cancel)) break;
+        const QString path = vendorSourcePath(it.filePath());
+        if (path.isEmpty()) continue;
+        if (isSidecarPath(QDir(root).relativeFilePath(path))) continue;
+        const QFileInfo resolved(path);
+        const QString canonical = resolved.canonicalFilePath().isEmpty()
+                                      ? resolved.absoluteFilePath()
+                                      : resolved.canonicalFilePath();
+        out.sources.insert(canonical);
+    }
+    return out;
+}
+
 /// Resolves one location to the local directory that should be scanned for
 /// it, synchronizing connections into their cache first. Returns an empty
 /// path when the location cannot contribute to this scan, and always reports
@@ -2266,11 +2309,7 @@ std::shared_ptr<SessionScanResult> scanLibraryLocations(
     for (const auto& path : extraPaths)
         if (QFileInfo(path).isFile()) uniquePaths.insert(path);
     QSet<QString> metadataPaths;
-    const QStringList filters{
-        "*.pds",       "*.PDS",  "*.ld",     "*.LD",  "*.vbo", "*.telemetry",
-        "*.TELEMETRY", "*.VBO",  "*.mp4",    "*.MP4", "*.mov", "*.MOV",
-        "*.mkv",       "*.MKV",  "*.avi",    "*.AVI", "*.m4v", "*.M4V",
-        "*.webm",      "*.WEBM", "TRACK.yml"};
+    const QStringList filters = telemetryScanFilters();
 
     // Every connection syncs before anything is enumerated, so the budget is
     // applied once against the finished cache and the file list that follows
@@ -2308,27 +2347,11 @@ std::shared_ptr<SessionScanResult> scanLibraryLocations(
                 location.name.trimmed().isEmpty() ? location.target
                                                   : location.name.trimmed());
 
-        QSet<QString> sourcePaths;
-        QDirIterator it(directory, filters, QDir::Files,
-                        QDirIterator::Subdirectories);
-        while (it.hasNext()) {
-            it.next();
-            if (it.fileName() == QStringLiteral("TRACK.yml")) {
-                metadataPaths.insert(
-                    QFileInfo(it.filePath()).absoluteFilePath());
-                continue;
-            }
-            const QString path = vendorSourcePath(it.filePath());
-            if (path.isEmpty()) continue;
-            if (isSidecarPath(QDir(directory).relativeFilePath(path))) continue;
-            const QFileInfo resolved(path);
-            const QString canonical = resolved.canonicalFilePath().isEmpty()
-                                          ? resolved.absoluteFilePath()
-                                          : resolved.canonicalFilePath();
-            if (ioCancelled(cancel)) break;
-            sourcePaths.insert(canonical);
-            uniquePaths.insert(canonical);
-        }
+        const TelemetryDirScan found =
+            scanTelemetryDirectory(directory, filters, cancel);
+        metadataPaths.unite(found.trackMetadata);
+        uniquePaths.unite(found.sources);
+        const QSet<QString>& sourcePaths = found.sources;
         result->locationFileCounts.insert(location.id, sourcePaths.size());
 
         QVariantMap source = buildFileSource(directory, sourcePaths);
@@ -8240,31 +8263,14 @@ std::shared_ptr<SessionScanResult> scanUsbVolumes(
     const QVector<UsbVolume>& volumes, const QSet<QString>& skipRoots,
     const IoCancel& cancel) {
     auto result = std::make_shared<SessionScanResult>();
-    const QStringList filters{
-        "*.pds",       "*.PDS",  "*.ld",     "*.LD",  "*.vbo", "*.telemetry",
-        "*.TELEMETRY", "*.VBO",  "*.mp4",    "*.MP4", "*.mov", "*.MOV",
-        "*.mkv",       "*.MKV",  "*.avi",    "*.AVI", "*.m4v", "*.M4V",
-        "*.webm",      "*.WEBM", "TRACK.yml"};
+    const QStringList filters = telemetryScanFilters();
     for (const UsbVolume& volume : volumes) {
         if (ioCancelled(cancel)) break;
         if (skipRoots.contains(volume.rootPath)) continue;
-        QSet<QString> sourcePaths;
-        QDirIterator it(volume.rootPath, filters, QDir::Files,
-                        QDirIterator::Subdirectories);
-        while (it.hasNext()) {
-            if (ioCancelled(cancel)) break;
-            it.next();
-            if (it.fileName() == QStringLiteral("TRACK.yml")) continue;
-            const QString path = vendorSourcePath(it.filePath());
-            if (path.isEmpty()) continue;
-            if (isSidecarPath(QDir(volume.rootPath).relativeFilePath(path)))
-                continue;
-            const QFileInfo resolved(path);
-            const QString canonical = resolved.canonicalFilePath().isEmpty()
-                                          ? resolved.absoluteFilePath()
-                                          : resolved.canonicalFilePath();
-            sourcePaths.insert(canonical);
-        }
+        // TRACK.yml stays a library concept: USB sections keep their volume
+        // name and ignore folder metadata, as before.
+        const QSet<QString> sourcePaths =
+            scanTelemetryDirectory(volume.rootPath, filters, cancel).sources;
         if (sourcePaths.isEmpty()) continue;
         QVariantMap source = buildFileSource(volume.rootPath, sourcePaths);
         source.insert(QStringLiteral("name"), usbSectionName(volume));
@@ -8285,6 +8291,11 @@ void TelemetryStore::setupLibraryWatch() {
     usbDebounce_ = new QTimer(this);
     usbDebounce_->setSingleShot(true);
     usbDebounce_->setInterval(400);
+    usbPlanDebounce_ = new QTimer(this);
+    usbPlanDebounce_->setSingleShot(true);
+    usbPlanDebounce_->setInterval(300);
+    connect(usbPlanDebounce_, &QTimer::timeout, this,
+            [this]() { refreshUsbCopyPlan(); });
     usbCopyProgressTimer_ = new QTimer(this);
     usbCopyProgressTimer_->setInterval(100);
     connect(usbCopyProgressTimer_, &QTimer::timeout, this,
@@ -8321,6 +8332,12 @@ void TelemetryStore::setupLibraryWatch() {
             &TelemetryStore::rebuildLibraryWatch);
     rebuildLibraryWatch();
     usbPollTimer_->start();
+#ifdef Q_OS_WIN
+    // USB sticks announce themselves; the poll timer stays as a fallback for
+    // missed or coalesced notifications.
+    QCoreApplication::instance()->installNativeEventFilter(
+        new UsbDeviceChangeFilter([this] { startUsbScan(); }, this));
+#endif
     startUsbScan();
 }
 
@@ -8328,17 +8345,48 @@ void TelemetryStore::rebuildLibraryWatch() {
     if (!libraryWatch_) return;
     const auto locations = prefs_->locations();
     const auto usbRoots = usbRoots_;
+    const QString manual = manualUsbSource_;
     libraryWatchJob_.start(
-        [locations, usbRoots](IoCancel cancel) {
-            QStringList paths;
+        [locations, usbRoots, manual](IoCancel cancel) {
+            QStringList roots;
+            if (!manual.isEmpty() && QFileInfo(manual).isDir())
+                roots.append(manual);
             for (const auto& location : locations) {
                 if (ioCancelled(cancel)) return QStringList{};
                 if (location.enabled && location.type == LocationType::Folder &&
                     QFileInfo(location.target).isDir())
-                    paths.append(location.target);
+                    roots.append(location.target);
             }
-            paths += usbWatchRoots();
-            paths += usbRoots;
+            roots += usbWatchRoots();
+            roots += usbRoots;
+            roots.removeDuplicates();
+            // QFileSystemWatcher is not recursive: a watched root only fires
+            // for direct children, so nested telemetry drops never rescanned.
+            // Watch the whole subtree instead; the cap keeps pathological
+            // trees (and kernel watch limits) from exploding.
+            QStringList paths;
+            paths.reserve(roots.size() * 4);
+            int watched = 0;
+            for (const QString& root : roots) {
+                if (ioCancelled(cancel)) return QStringList{};
+                paths.append(root);
+                ++watched;
+                QDirIterator it(root, QDir::Dirs | QDir::NoDotAndDotDot,
+                                QDirIterator::Subdirectories);
+                while (it.hasNext()) {
+                    if (ioCancelled(cancel)) return QStringList{};
+                    if (watched >= 4096) break;
+                    it.next();
+                    paths.append(it.filePath());
+                    ++watched;
+                }
+                if (watched >= 4096) {
+                    qCInfo(lcIo).noquote()
+                        << "library watch capped at 4096 directories under"
+                        << roots.size() << "roots; deeper changes need Rescan";
+                    break;
+                }
+            }
             paths.removeDuplicates();
             return paths;
         },
@@ -8361,16 +8409,24 @@ void TelemetryStore::startUsbScan(bool force) {
     if (!force && usbScanJob_.running()) return;
     const auto locations = prefs_->locations();
     const auto knownRoots = usbRoots_;
+    const QString manual = manualUsbSource_;
     usbScanJob_.start(
-        [locations, knownRoots,
+        [locations, knownRoots, manual,
          force](IoCancel cancel) -> std::shared_ptr<SessionScanResult> {
-            const auto volumes = mountedUsbVolumes();
+            auto volumes = mountedUsbVolumes();
+            const QSet<QString> skip = configuredFolderTargets(locations);
+            if (!manual.isEmpty() && QFileInfo(manual).isDir() &&
+                !skip.contains(manual))
+                volumes.append(UsbVolume{manual,
+                                         QFileInfo(manual).fileName().isEmpty()
+                                             ? QStringLiteral("Manual source")
+                                             : QFileInfo(manual).fileName(),
+                                         QByteArrayLiteral("manual")});
             QStringList roots;
             for (const auto& volume : volumes) roots.append(volume.rootPath);
             if (ioCancelled(cancel) || (!force && roots == knownRoots))
                 return {};
-            auto result = scanUsbVolumes(
-                volumes, configuredFolderTargets(locations), cancel);
+            auto result = scanUsbVolumes(volumes, skip, cancel);
             result->usbRoots = roots;
             return result;
         },
@@ -8448,10 +8504,17 @@ QString TelemetryStore::usbRenameScript() const {
     return prefs_->usbRenameScript();
 }
 
+void TelemetryStore::scheduleUsbCopyPlanRefresh() {
+    // Naming edits arrive per keystroke; the plan walk (jail + stat per
+    // file) runs latest-wins on a worker, so coalesce bursts here instead
+    // of starting one plan job per character.
+    if (usbPlanDebounce_) usbPlanDebounce_->start();
+}
+
 void TelemetryStore::setUsbDest(const QString& dest) {
     if (prefs_->usbDest() == dest) return;
     prefs_->setUsbDest(dest);
-    refreshUsbCopyPlan();
+    scheduleUsbCopyPlanRefresh();
     schedulePreferencesSave();
     emit usbChanged();
 }
@@ -8459,7 +8522,7 @@ void TelemetryStore::setUsbDest(const QString& dest) {
 void TelemetryStore::setUsbFormat(const QString& format) {
     if (prefs_->usbFormat() == format) return;
     prefs_->setUsbFormat(format);
-    refreshUsbCopyPlan();
+    scheduleUsbCopyPlanRefresh();
     schedulePreferencesSave();
     emit usbChanged();
 }
@@ -8467,7 +8530,7 @@ void TelemetryStore::setUsbFormat(const QString& format) {
 void TelemetryStore::setUsbRenameScript(const QString& script) {
     if (prefs_->usbRenameScript() == script) return;
     prefs_->setUsbRenameScript(script);
-    refreshUsbCopyPlan();
+    scheduleUsbCopyPlanRefresh();
     schedulePreferencesSave();
     emit usbChanged();
 }
@@ -8477,9 +8540,39 @@ QString TelemetryStore::luaRenameExample() const {
 }
 
 void TelemetryStore::showUsbCopy() {
-    if (!usbPresent_) return;
+    // The overlay hosts the manual-source picker, so it opens without
+    // detected media too; the plan simply stays empty until a source lands.
     usbCopyVisible_ = true;
     refreshUsbCopyPlan();
+    emit usbChanged();
+}
+
+void TelemetryStore::setManualUsbSource(const QString& dirPath) {
+    const QString absolute =
+        QDir::cleanPath(QFileInfo(dirPath).absoluteFilePath());
+    if (!QFileInfo(absolute).isDir()) {
+        emit operationError(QStringLiteral("Not a folder"),
+                            QStringLiteral("The USB source must be a "
+                                           "readable directory."));
+        return;
+    }
+    if (manualUsbSource_ == absolute) {
+        usbCopyVisible_ = true;
+        emit usbChanged();
+        return;
+    }
+    manualUsbSource_ = absolute;
+    usbCopyVisible_ = true;
+    rebuildLibraryWatch();
+    startUsbScan();
+    emit usbChanged();
+}
+
+void TelemetryStore::clearManualUsbSource() {
+    if (manualUsbSource_.isEmpty()) return;
+    manualUsbSource_.clear();
+    rebuildLibraryWatch();
+    startUsbScan();
     emit usbChanged();
 }
 
@@ -8540,18 +8633,7 @@ void TelemetryStore::refreshUsbCopyPlan(bool clearStatus) {
         },
         [this](UsbCopyPlan plan) {
             usbCopyPlan_ = std::move(plan);
-            QVector<UsbCopyRow> rows;
-            for (const auto& entry : usbCopyPlan_.entries) {
-                UsbCopyRow row;
-                row.sourcePath = entry.source;
-                row.targetPath = entry.destination;
-                row.statusText = entry.message;
-                row.sizeText = QStringLiteral("%1 MiB").arg(
-                    double(entry.size) / (1024 * 1024), 0, 'f', 1);
-                row.ready = entry.state == UsbCopyEntry::State::Ready;
-                rows.append(std::move(row));
-            }
-            usbCopyModel_->refresh(rows);
+            usbCopyModel_->refresh(usbCopyPlan_);
             emit usbChanged();
         });
 }

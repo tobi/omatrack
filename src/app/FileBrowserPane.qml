@@ -299,7 +299,7 @@ Pane {
             Layout.fillWidth: true
             Layout.preferredHeight: 28
             color: Style.surfaceColor
-            visible: Store.usbPresent
+            visible: Store.usbPresent || Store.manualUsbSource !== ""
 
             RowLayout {
                 anchors.fill: parent

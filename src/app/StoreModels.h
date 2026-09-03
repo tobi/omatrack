@@ -13,6 +13,7 @@
 #include "FilterChange.h"
 #include "ModelDiff.h"
 #include "StoreTypes.h"
+#include "UsbCopy.h"
 #include <QSortFilterProxyModel>
 #include <QVector>
 #include <QtQml/qqmlregistration.h>
@@ -36,6 +37,9 @@ public:
     QVariant data(const QModelIndex& index, int role) const override;
     QHash<int, QByteArray> roleNames() const override;
     void refresh(const QVector<UsbCopyRow>& rows);
+    /// Renders a copy plan directly: entry→row mapping lives with the roles
+    /// instead of a field-copy lambda at the call site.
+    void refresh(const omatrack::UsbCopyPlan& plan);
     int count() const { return rows_.size(); }
 signals:
     void refreshed();

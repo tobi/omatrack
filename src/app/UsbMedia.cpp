@@ -6,6 +6,11 @@
 
 #include <algorithm>
 
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#include <dbt.h>
+#endif
+
 namespace omatrack {
 namespace {
 
@@ -112,7 +117,54 @@ QVector<UsbVolume> mountedUsbVolumes() {
     if (mounts.open(QIODevice::ReadOnly))
         return usbVolumesFromMountInfo(mounts.readAll());
 #endif
+#ifdef Q_OS_WIN
+    return windowsRemovableVolumes();
+#else
     return {};
+#endif
 }
+
+#ifdef Q_OS_WIN
+QVector<UsbVolume> windowsRemovableVolumes() {
+    QVector<UsbVolume> result;
+    const DWORD mask = GetLogicalDrives();
+    for (int drive = 0; drive < 26; ++drive) {
+        if (!(mask & (DWORD(1) << drive))) continue;
+        wchar_t raw[4] = {wchar_t(L'A' + drive), L':', L'\\', L'\0'};
+        if (GetDriveTypeW(raw) != DRIVE_REMOVABLE) continue;
+        wchar_t label[256] = {};
+        if (!GetVolumeInformationW(raw, label, 256, nullptr, nullptr, nullptr,
+                                   nullptr, 0))
+            continue;  // not ready: empty reader, locked, or spinning up
+        // Keep the trailing slash: cleanPath("E:") is drive-relative and
+        // must never reach the iterator.
+        const QString root =
+            QDir::fromNativeSeparators(QString::fromWCharArray(raw));
+        QString name = QString::fromWCharArray(label).trimmed();
+        if (name.isEmpty()) name = QString::fromWCharArray(raw);
+        result.append(UsbVolume{root, name, QByteArray::number(drive)});
+    }
+    std::sort(result.begin(), result.end(),
+              [](const UsbVolume& left, const UsbVolume& right) {
+                  return left.rootPath < right.rootPath;
+              });
+    result.erase(std::unique(result.begin(), result.end()), result.end());
+    return result;
+}
+
+bool UsbDeviceChangeFilter::nativeEventFilter(const QByteArray& eventType,
+                                              void* message, qintptr*) {
+    if (eventType != QByteArrayLiteral("windows_generic_MSG")) return false;
+    const MSG* msg = static_cast<MSG*>(message);
+    if (msg->message != WM_DEVICECHANGE) return false;
+    if (msg->wParam != DBT_DEVICEARRIVAL &&
+        msg->wParam != DBT_DEVICEREMOVECOMPLETE)
+        return false;
+    const auto* header = reinterpret_cast<DEV_BROADCAST_HDR*>(msg->lParam);
+    if (!header || header->dbch_devicetype != DBT_DEVTYP_VOLUME) return false;
+    onChange_();
+    return false;
+}
+#endif
 
 }  // namespace omatrack

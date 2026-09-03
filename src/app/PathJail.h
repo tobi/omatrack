@@ -20,7 +20,12 @@ struct PathJailResult {
 /// Default copy layout: `{track}/{date}/{session}/{original}`.
 QString defaultCopyFormat();
 
-/// Substitute `{token}` placeholders from `ctx`. Unknown tokens stay as-is.
+/// First unknown `{token}` in `format`, or empty when every token resolves.
+/// The copy planner flags these; expansion below is the validated path.
+QString unknownFormatToken(const QString& format, const QVariantMap& ctx);
+
+/// Substitute `{token}` placeholders from `ctx`. Unknown tokens stay as-is,
+/// so validate with unknownFormatToken() first.
 QString expandCopyFormat(const QString& format, const QVariantMap& ctx);
 
 /// True when `relative` is an absolute Unix path, a Windows drive path, or UNC.

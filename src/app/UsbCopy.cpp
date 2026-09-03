@@ -7,7 +7,6 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
-#include <QRegularExpression>
 #include <QTemporaryFile>
 #include <limits>
 
@@ -25,6 +24,14 @@ QString collisionKey(QString path) {
     path = path.toCaseFolded();
 #endif
     return path;
+}
+/// Re-resolves a planned relative path and confirms it still lands exactly
+/// on the previewed destination. Every phase of the copy re-checks through
+/// here so jail, mkpath, and publish cannot drift apart (TOCTOU).
+bool destinationStillPlanned(const QString& destRoot, const QString& relative,
+                             const QString& expected) {
+    const auto jailed = jailRelativePath(destRoot, relative);
+    return jailed.ok && jailed.absolutePath == expected;
 }
 }  // namespace
 
@@ -69,18 +76,12 @@ UsbCopyPlan planUsbCopy(QStringList files, const UsbCopyOptions& options,
                 relative = lua.relativePath;
         }
         if (entry.message.isEmpty() && relative.trimmed().isEmpty()) {
-            static const QRegularExpression token(
-                QStringLiteral("\\{([A-Za-z0-9_]+)\\}"));
-            auto matches = token.globalMatch(format);
-            while (matches.hasNext()) {
-                const QString key = matches.next().captured(1);
-                if (!context.contains(key)) {
-                    entry.message =
-                        QStringLiteral("Unknown naming token: {%1}").arg(key);
-                    break;
-                }
-            }
-            relative = expandCopyFormat(format, context);
+            const QString unknown = unknownFormatToken(format, context);
+            if (!unknown.isEmpty())
+                entry.message =
+                    QStringLiteral("Unknown naming token: {%1}").arg(unknown);
+            else
+                relative = expandCopyFormat(format, context);
         }
         if (entry.message.isEmpty() && (!info.isFile() || !info.isReadable()))
             entry.message =
@@ -166,9 +167,8 @@ UsbCopyResult executeUsbCopy(const UsbCopyPlan& plan, CopyCancelled cancelled,
                     .arg(entry.source);
             break;
         }
-        auto jailed =
-            jailRelativePath(plan.options.destination, entry.relative);
-        if (!jailed.ok || jailed.absolutePath != entry.destination) {
+        if (!destinationStillPlanned(plan.options.destination, entry.relative,
+                                     entry.destination)) {
             result.error =
                 QStringLiteral("Destination changed since preview: %1")
                     .arg(entry.relative);
@@ -186,8 +186,8 @@ UsbCopyResult executeUsbCopy(const UsbCopyPlan& plan, CopyCancelled cancelled,
                 QStringLiteral("Cannot create destination: %1").arg(parent);
             break;
         }
-        jailed = jailRelativePath(plan.options.destination, entry.relative);
-        if (!jailed.ok || jailed.absolutePath != entry.destination) {
+        if (!destinationStillPlanned(plan.options.destination, entry.relative,
+                                     entry.destination)) {
             result.error =
                 QStringLiteral("Destination changed while preparing copy");
             break;
@@ -248,8 +248,8 @@ UsbCopyResult executeUsbCopy(const UsbCopyPlan& plan, CopyCancelled cancelled,
             result.cancelled = true;
             break;
         }
-        jailed = jailRelativePath(plan.options.destination, entry.relative);
-        if (!jailed.ok || jailed.absolutePath != entry.destination) {
+        if (!destinationStillPlanned(plan.options.destination, entry.relative,
+                                     entry.destination)) {
             result.error = QStringLiteral("Destination changed during copy");
             break;
         }

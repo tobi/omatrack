@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 import Omatrack
 
+import Qt.labs.platform as Platform
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -8,11 +9,21 @@ import QtQuick.Layouts
 Rectangle {
     id: overlay
 
+    readonly property string sourceText: Store.manualUsbSource !== "" ? Store.manualUsbSource : Store.usbLabel !== "" ? "Detected: " + Store.usbLabel : "No USB detected — pick a folder or insert a stick"
+
     color: Style.traceBackgroundColor
     objectName: "usbCopyOverlay"
     visible: Store.usbCopyVisible
     z: 20
 
+    Platform.FolderDialog {
+        id: usbSourceDialog
+
+        acceptLabel: "Use as source"
+        title: "Choose USB source folder"
+
+        onAccepted: Store.setManualUsbSource(Store.localPathFromUrl(usbSourceDialog.folder))
+    }
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 10
@@ -39,6 +50,30 @@ Rectangle {
             font.pixelSize: Style.smallFontSize
             text: "Sources stay unchanged. Existing targets are skipped, not verified. Review every destination before copying."
             wrapMode: Text.Wrap
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+
+            Label {
+                Layout.fillWidth: true
+                color: Style.mutedTextColor
+                elide: Text.ElideMiddle
+                font.family: Style.monoFontFamily
+                font.pixelSize: Style.smallFontSize
+                text: overlay.sourceText
+            }
+            CompactButton {
+                text: "Choose folder…"
+
+                onClicked: usbSourceDialog.open()
+            }
+            CompactButton {
+                text: "Auto"
+                visible: Store.manualUsbSource !== ""
+
+                onClicked: Store.clearManualUsbSource()
+            }
         }
         Label {
             Layout.fillWidth: true

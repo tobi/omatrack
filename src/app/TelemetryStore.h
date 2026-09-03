@@ -502,6 +502,7 @@ class TelemetryStore : public QObject {
         int usbCopyInvalidCount READ usbCopyInvalidCount NOTIFY usbChanged)
     Q_PROPERTY(QString usbCopySummary READ usbCopySummary NOTIFY usbChanged)
     Q_PROPERTY(QString usbCopyTarget READ usbCopyTarget NOTIFY usbChanged)
+    Q_PROPERTY(QString manualUsbSource READ manualUsbSource NOTIFY usbChanged)
     Q_PROPERTY(UsbCopyListModel* usbCopyModel READ usbCopyModel CONSTANT)
     Q_PROPERTY(QString usbDest READ usbDest WRITE setUsbDest NOTIFY usbChanged)
     Q_PROPERTY(
@@ -538,6 +539,7 @@ public:
     Q_INVOKABLE void setEventDate(const QString& date);
     bool usbPresent() const { return usbPresent_; }
     QString usbLabel() const { return usbLabel_; }
+    QString manualUsbSource() const { return manualUsbSource_; }
     bool usbCopyVisible() const { return usbCopyVisible_; }
     QString usbCopyStatus() const { return usbCopyStatus_; }
     double usbCopyProgress() const { return usbCopyProgress_; }
@@ -556,6 +558,11 @@ public:
     Q_INVOKABLE void setUsbRenameScript(const QString& script);
     Q_INVOKABLE void showUsbCopy();
     Q_INVOKABLE void hideUsbCopy();
+    /// Manual copy source for machines without detectable USB volumes
+    /// (non-Linux, unusual mounts): scanned and watched like a USB volume,
+    /// never added to library locations. Empty when unset.
+    Q_INVOKABLE void setManualUsbSource(const QString& dirPath);
+    Q_INVOKABLE void clearManualUsbSource();
     Q_INVOKABLE void copyUsbFiles();
     Q_INVOKABLE void cancelUsbCopy();
     Q_INVOKABLE QString luaRenameExample() const;
@@ -1027,6 +1034,7 @@ private:
     void startUsbScan(bool force = true);
     void finishUsbScan(std::shared_ptr<SessionScanResult> result);
     void refreshTrackMetadata(const QStringList& paths);
+    void scheduleUsbCopyPlanRefresh();
     void refreshUsbCopyPlan(bool clearStatus = true);
     void updateUsbCopyProgress();
     int sidebarPinIndex(const QString& kind, const QString& path) const;
@@ -1239,9 +1247,11 @@ private:
     QFileSystemWatcher* libraryWatch_ = nullptr;
     QTimer* usbPollTimer_ = nullptr;
     QTimer* usbDebounce_ = nullptr;
+    QTimer* usbPlanDebounce_ = nullptr;
     QTimer* usbCopyProgressTimer_ = nullptr;
     QStringList usbRoots_;
     QVariantList usbFileSources_;
+    QString manualUsbSource_;
     bool usbPresent_ = false;
     bool usbCopyVisible_ = false;
     bool usbRescanOnly_ = false;

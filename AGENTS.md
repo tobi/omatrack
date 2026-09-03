@@ -232,18 +232,28 @@ wins on load. Caches (Track Atlas snapshot) stay outside the file.
   Documents location, so Windows OneDrive redirection is honored) is the only
   location on a fresh install and is created if missing.
 - USB-backed volumes are discovered on an `AsyncJob` worker using Linux
-  mount-table and sysfs data, without statting unrelated network mounts.
-  A GUI timer only schedules the poll; directory checks and scans stay on
-  workers. `QFileSystemWatcher` watches configured roots and USB mount roots.
+  mount-table and sysfs data, without statting unrelated network mounts;
+  on Windows, removable drives are enumerated with `GetDriveTypeW` and
+  arrivals/removals arrive as `WM_DEVICECHANGE` volume notifications on top
+  of the poll. A GUI timer only schedules the poll; directory checks and
+  scans stay on workers. `QFileSystemWatcher` watches configured roots, USB
+  mount roots, and — recursively, up to 4096 directories — everything below
+  them, so nested drops rescan automatically after a debounce; the manual
+  Rescan buttons stay as the fallback (and the only path for servers).
   A mount is a transient
   `USB — …` library section only when that scan finds a supported telemetry or
-  video file. It is never added to `locations`. Copy is a separate overlay in
-  the video slot (the slot is shown for it even with no video open), using
-  `usb.dest` / `usb.format` / optional `usb.rename_script` in `omatrack.yml`.
+  video file. It is never added to `locations`. Where no volume is
+  detectable, the copy overlay offers a manual source folder instead, scanned
+  and watched like a mount and equally absent from `locations`. Copy is a
+  separate overlay in the video slot (the slot is shown for it even with no
+  video open), using `usb.dest` / `usb.format` / optional `usb.rename_script`
+  in `omatrack.yml`.
   A newly discovered mount opens the overlay with a read-only *plan*
   (`UsbCopy.h`: per file source → jailed destination, size, New / Existing /
   Invalid) computed on a worker; nothing is written before the button. The
-  plan re-computes when the event, destination, format or script changes.
+  plan re-computes when the event, destination, format or script changes
+  (naming keystrokes coalesced through a debounce; explicit opens, scans,
+  and copy completions refresh immediately).
   Copying re-validates each source (size + mtime) and destination against the
   plan, streams into a `.part` temporary in the target directory with a live
   byte counter, publishes with a create-only rename, and preserves the source
@@ -251,9 +261,11 @@ wins on load. Caches (Track Atlas snapshot) stay outside the file.
   a target that appears mid-copy is skipped, never overwritten. Existing
   targets are skipped and reported as *unverified* — contents are not
   compared. Two sources resolving to one target invalidate the whole plan.
-  `expandCopyFormat()` leaves unknown `{tokens}` in place (the plan reports
-  them) and `jailRelativePath()` canonicalizes the nearest existing ancestor
-  so a symlink above a not-yet-created folder cannot escape the destination.
+  Unknown `{tokens}` fail the plan row (`unknownFormatToken()`; expansion
+  assumes validated input) and `jailRelativePath()` canonicalizes the
+  nearest existing ancestor so a symlink above a not-yet-created folder
+  cannot escape the destination. Every copy phase re-checks the destination
+  through one `destinationStillPlanned()` helper.
   Acceptance builds accept `OMATRACK_AUTOTEST_USB_ROOT` as a stand-in mount.
   Source files stay immutable.
 - Remote connections are synchronized into a local discovery cache containing

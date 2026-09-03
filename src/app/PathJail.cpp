@@ -59,11 +59,26 @@ QString defaultCopyFormat() {
     return QStringLiteral("{track}/{date}/{session}/{original}");
 }
 
-QString expandCopyFormat(const QString& format, const QVariantMap& ctx) {
-    QString result = format;
+const QRegularExpression& formatTokenPattern() {
     static const QRegularExpression token(
         QStringLiteral("\\{([A-Za-z0-9_]+)\\}"));
-    QRegularExpressionMatchIterator it = token.globalMatch(format);
+    return token;
+}
+
+QString unknownFormatToken(const QString& format, const QVariantMap& ctx) {
+    QRegularExpressionMatchIterator it =
+        formatTokenPattern().globalMatch(format);
+    while (it.hasNext()) {
+        const QString key = it.next().captured(1);
+        if (!ctx.contains(key)) return key;
+    }
+    return {};
+}
+
+QString expandCopyFormat(const QString& format, const QVariantMap& ctx) {
+    QString result = format;
+    QRegularExpressionMatchIterator it =
+        formatTokenPattern().globalMatch(format);
     QVector<QRegularExpressionMatch> matches;
     while (it.hasNext()) matches.append(it.next());
     for (int i = matches.size() - 1; i >= 0; --i) {
