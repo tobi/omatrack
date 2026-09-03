@@ -2,6 +2,17 @@
 
 All notable user-facing changes are documented here.
 
+## 1.7.3 — 2026-09-03
+
+- Filmstrip lap switching keeps the playhead, viewport, and alignment entry
+  state: only the underlying lap changes, so flicking through laps is instant.
+- Hovering a filmstrip lap previews its traces, delta, and cursor data at the
+  current playhead, for the active and reference rows alike; moving off
+  restores the committed selection untouched.
+- Clicking the already-selected lap (or double-clicking any lap) jumps to the
+  start of that lap. The selected cell carries a mini playhead marker.
+- Swapping primary and reference with `X` keeps the playhead in place.
+
 ## 1.7.2 — 2026-09-02
 
 - Corner editing is a dedicated mode (A, header Edit corners…, or the
