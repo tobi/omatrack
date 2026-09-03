@@ -558,6 +558,38 @@ public:
     QString usbCopySummary() const;
     QString usbCopyTarget() const { return usbCopyPlan_.options.destination; }
     UsbCopyListModel* usbCopyModel() const { return usbCopyModel_.get(); }
+    // Sync-to-device: the same plan/execute machinery with the direction
+    // flipped. Candidates are local library files missing on the stick;
+    // the event entry in the sync window only drives their device names.
+    Q_PROPERTY(bool usbSyncVisible READ usbSyncVisible NOTIFY usbSyncChanged)
+    Q_PROPERTY(QString usbSyncStatus READ usbSyncStatus NOTIFY usbSyncChanged)
+    Q_PROPERTY(
+        double usbSyncProgress READ usbSyncProgress NOTIFY usbSyncChanged)
+    Q_PROPERTY(QString usbSyncSummary READ usbSyncSummary NOTIFY usbSyncChanged)
+    Q_PROPERTY(QString usbSyncTarget READ usbSyncTarget NOTIFY usbSyncChanged)
+    Q_PROPERTY(bool usbSyncBusy READ usbSyncBusy NOTIFY usbSyncChanged)
+    Q_PROPERTY(bool usbSyncPreviewLoading READ usbSyncPreviewLoading NOTIFY
+                   usbSyncChanged)
+    Q_PROPERTY(
+        int usbSyncReadyCount READ usbSyncReadyCount NOTIFY usbSyncChanged)
+    Q_PROPERTY(
+        int usbSyncInvalidCount READ usbSyncInvalidCount NOTIFY usbSyncChanged)
+    Q_PROPERTY(UsbCopyListModel* usbSyncModel READ usbSyncModel CONSTANT)
+    bool usbSyncVisible() const { return usbSyncVisible_; }
+    QString usbSyncStatus() const { return usbSyncStatus_; }
+    double usbSyncProgress() const { return usbSyncProgress_; }
+    bool usbSyncBusy() const { return usbSyncJob_.running(); }
+    bool usbSyncPreviewLoading() const { return usbSyncPlanJob_.running(); }
+    int usbSyncReadyCount() const { return usbSyncPlan_.ready; }
+    int usbSyncInvalidCount() const { return usbSyncPlan_.invalid; }
+    QString usbSyncSummary() const;
+    QString usbSyncTarget() const { return usbSyncDevice(); }
+    UsbCopyListModel* usbSyncModel() const { return usbSyncModel_.get(); }
+    Q_INVOKABLE void showUsbSync();
+    Q_INVOKABLE void hideUsbSync();
+    Q_INVOKABLE void refreshUsbSyncPlan(bool clearStatus = true);
+    Q_INVOKABLE void syncUsbFiles();
+    Q_INVOKABLE void cancelUsbSync();
     QString usbDest() const;
     QString usbFormat() const;
     QString usbRenameScript() const;
@@ -1010,6 +1042,7 @@ signals:
     void recentFilesChanged();
     void eventChanged();
     void usbChanged();
+    void usbSyncChanged();
     void overlayStyleChanged();
     void standaloneVideoRequested(const QUrl& source);
     void operationError(const QString& title, const QString& message);
@@ -1060,6 +1093,7 @@ private:
     void refreshTrackMetadata(const QStringList& paths);
     void scheduleUsbCopyPlanRefresh();
     void refreshUsbCopyPlan(bool clearStatus = true);
+    void updateUsbSyncProgress();
     void updateUsbCopyProgress();
     int sidebarPinIndex(const QString& kind, const QString& path) const;
     void rememberRecentFile(const QString& filePath);
@@ -1266,6 +1300,12 @@ private:
     std::unique_ptr<LapListModel> compareLapsModel_;
     std::unique_ptr<FilmstripSessionListModel> filmstripSessionsModel_;
     std::unique_ptr<UsbCopyListModel> usbCopyModel_;
+    std::unique_ptr<UsbCopyListModel> usbSyncModel_;
+    AsyncJob<omatrack::UsbCopyPlan> usbSyncPlanJob_;
+    AsyncJob<omatrack::UsbCopyResult> usbSyncJob_;
+    omatrack::UsbCopyPlan usbSyncPlan_;
+    std::shared_ptr<std::atomic<qint64>> usbSyncBytes_;
+    QString usbSyncDevice() const;
     std::unique_ptr<ChannelListModel> channelsModel_;
     std::unique_ptr<CornerListModel> cornersModel_;
     std::unique_ptr<DriverMappingModel> driverMappingsModel_;
@@ -1285,4 +1325,8 @@ private:
     QString usbLabel_;
     QString usbCopyStatus_;
     double usbCopyProgress_ = 0.0;
+    QStringList discoveredLocalPaths_;
+    bool usbSyncVisible_ = false;
+    QString usbSyncStatus_;
+    double usbSyncProgress_ = 0.0;
 };

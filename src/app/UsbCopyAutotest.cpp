@@ -41,6 +41,8 @@ bool omatrack::autotest::installUsbCopy(QQmlApplicationEngine& engine,
     const QString dest = qEnvironmentVariable("OMATRACK_AUTOTEST_USB_DEST");
     if (usbRoot.isEmpty() || dest.isEmpty()) return false;
     const QString shot = qEnvironmentVariable("OMATRACK_AUTOTEST");
+    const bool syncPhase =
+        !qEnvironmentVariable("OMATRACK_AUTOTEST_USB_EXPORT").isEmpty();
     store.setUsbDest(dest);
     auto* timer = new QTimer(&engine);
     timer->setInterval(200);
@@ -48,9 +50,12 @@ bool omatrack::autotest::installUsbCopy(QQmlApplicationEngine& engine,
     auto ticks = std::make_shared<int>(0);
     auto before = std::make_shared<QStringList>();
     auto planned = std::make_shared<QStringList>();
+    auto syncPlanned = std::make_shared<QStringList>();
+    auto syncBefore = std::make_shared<QStringList>();
     QObject::connect(
         timer, &QTimer::timeout, &engine,
-        [&, timer, phase, ticks, before, planned, shot, dest]() {
+        [&, timer, phase, ticks, before, planned, syncPlanned, syncBefore, shot,
+         dest, usbRoot, syncPhase]() {
             const auto fail = [&](const QString& why) {
                 timer->stop();
                 qWarning() << "AUTOTEST usb FAILED:" << why;
@@ -136,10 +141,112 @@ bool omatrack::autotest::installUsbCopy(QQmlApplicationEngine& engine,
                     return fail(QStringLiteral("status: ") +
                                 store.usbCopyStatus());
                 window->grabWindow().save(shot + QStringLiteral(".copied.png"));
-                timer->stop();
                 qWarning() << "AUTOTEST usb: button copied exactly the planned "
                               "new files;"
                            << store.usbCopyStatus();
+                if (!syncPhase) {
+                    timer->stop();
+                    QCoreApplication::exit(0);
+                    return;
+                }
+                *phase = 3;
+                *ticks = 0;
+                return;
+            }
+            if (*phase == 3) {
+                // Export: library files missing on the stick, named by the
+                // event entry. The event values double as the naming input,
+                // exactly as a client handoff would set them.
+                if (!store.usbSyncVisible()) {
+                    store.setEventTrack(QStringLiteral("Road America"));
+                    store.setEventSession(QStringLiteral("FP1"));
+                    store.showUsbSync();
+                    return;
+                }
+                if (!store.usbSyncVisible() || store.usbSyncPreviewLoading() ||
+                    store.usbSyncModel()->count() == 0)
+                    return;
+                const int rows = store.usbSyncModel()->count();
+                for (int row = 0; row < rows; ++row) {
+                    const auto index = store.usbSyncModel()->index(row, 0);
+                    const QString target =
+                        index.data(UsbCopyListModel::TargetPathRole).toString();
+                    if (index.data(UsbCopyListModel::ReadyRole).toBool()) {
+                        if (!target.startsWith(QDir::cleanPath(usbRoot)))
+                            return fail(QStringLiteral(
+                                "sync target outside the device"));
+                        syncPlanned->append(
+                            QDir(usbRoot).relativeFilePath(target));
+                    }
+                }
+                syncPlanned->sort();
+                if (syncPlanned->isEmpty() || store.usbSyncInvalidCount() != 0)
+                    return fail(QStringLiteral("sync preview has no ready "
+                                               "rows or has invalid rows: ") +
+                                store.usbSyncSummary());
+                *syncBefore = filesUnder(usbRoot);
+                window->grabWindow().save(shot +
+                                          QStringLiteral(".sync-preview.png"));
+                qWarning() << "AUTOTEST usb sync: preview lists" << rows
+                           << "rows," << syncPlanned->size()
+                           << "missing on device;" << store.usbSyncSummary();
+                *phase = 4;
+                *ticks = 0;
+                return;
+            }
+            if (*phase == 4) {
+                if (*ticks < 5) return;
+                if (filesUnder(usbRoot) != *syncBefore)
+                    return fail(
+                        QStringLiteral("files synced without the button"));
+                // The sync UI is its own window: a Window declared inside
+                // Main.qml is not an engine root object, so find it in the
+                // object tree instead.
+                QObject* button = nullptr;
+                for (QObject* root : engine.rootObjects()) {
+                    auto* syncWin = root->findChild<QQuickWindow*>(
+                        QStringLiteral("usbSyncWindow"));
+                    if (!syncWin) continue;
+                    button = visualItem(syncWin->contentItem(),
+                                        QStringLiteral("usbSyncConfirm"));
+                    if (button) break;
+                }
+                if (!button || !button->property("enabled").toBool())
+                    return fail(
+                        QStringLiteral("sync button missing or disabled"));
+                QMetaObject::invokeMethod(button, "clicked");
+                *phase = 5;
+                *ticks = 0;
+                return;
+            }
+            if (*phase == 5) {
+                if (store.usbSyncBusy() || store.usbSyncPreviewLoading())
+                    return;
+                if (*ticks < 3) return;
+                const QStringList after = filesUnder(usbRoot);
+                QStringList expected = *syncBefore + *syncPlanned;
+                expected.sort();
+                if (after != expected)
+                    return fail(QStringLiteral("synced set %1 != planned %2")
+                                    .arg(after.join(','), expected.join(',')));
+                if (!store.usbSyncStatus().startsWith(
+                        QStringLiteral("Synced %1").arg(syncPlanned->size())))
+                    return fail(QStringLiteral("sync status: ") +
+                                store.usbSyncStatus());
+                QQuickWindow* syncWindow = nullptr;
+                for (QObject* root : engine.rootObjects()) {
+                    syncWindow = root->findChild<QQuickWindow*>(
+                        QStringLiteral("usbSyncWindow"));
+                    if (syncWindow) break;
+                }
+                if (!syncWindow)
+                    return fail(QStringLiteral("sync window not found"));
+                syncWindow->grabWindow().save(shot +
+                                              QStringLiteral(".synced.png"));
+                timer->stop();
+                qWarning() << "AUTOTEST usb sync: button synced exactly the "
+                              "planned missing files;"
+                           << store.usbSyncStatus();
                 QCoreApplication::exit(0);
             }
         });

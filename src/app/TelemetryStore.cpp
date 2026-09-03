@@ -1158,6 +1158,9 @@ void SessionHandle::adoptLoadedLap(int lapId,
 struct SessionScanResult {
     QVariantList fileSources;
     QStringList discoveredFilePaths;
+    /// Local (non-connection) source paths: the sync-to-device candidates.
+    /// Remote stubs are never exportable, so connections stay out.
+    QStringList discoveredLocalPaths;
     QHash<QString, QString> folderDisplayNames;
     QStringList trackMetadataPaths;
     /// TRACK.yml path -> modification stamp, so a rescan can tell which
@@ -2353,6 +2356,8 @@ std::shared_ptr<SessionScanResult> scanLibraryLocations(
             scanTelemetryDirectory(directory, filters, cancel);
         metadataPaths.unite(found.trackMetadata);
         uniquePaths.unite(found.sources);
+        if (!location.isConnection())
+            result->discoveredLocalPaths.append(found.sources.values());
         const QSet<QString>& sourcePaths = found.sources;
         result->locationFileCounts.insert(location.id, sourcePaths.size());
 
@@ -2375,6 +2380,9 @@ std::shared_ptr<SessionScanResult> scanLibraryLocations(
         QStringList(uniquePaths.cbegin(), uniquePaths.cend());
     std::sort(result->discoveredFilePaths.begin(),
               result->discoveredFilePaths.end());
+    result->discoveredLocalPaths.removeDuplicates();
+    std::sort(result->discoveredLocalPaths.begin(),
+              result->discoveredLocalPaths.end());
     for (const QString& path : result->trackMetadataPaths) {
         result->trackMetadataStamps.insert(
             path, QFileInfo(path).lastModified().toMSecsSinceEpoch());
@@ -2482,6 +2490,8 @@ TelemetryStore::TelemetryStore(QObject* parent)
       libraryWatchJob_(this),
       usbCopyPlanJob_(this),
       usbCopyJob_(this),
+      usbSyncPlanJob_(this),
+      usbSyncJob_(this),
       fileOpenQueue_(this),
       primaryLapJob_(this),
       compareLapJob_(this),
@@ -2655,6 +2665,7 @@ TelemetryStore::TelemetryStore(QObject* parent)
     compareLapsModel_ = std::make_unique<LapListModel>(this);
     filmstripSessionsModel_ = std::make_unique<FilmstripSessionListModel>(this);
     usbCopyModel_ = std::make_unique<UsbCopyListModel>(this);
+    usbSyncModel_ = std::make_unique<UsbCopyListModel>(this);
     channelsModel_ = std::make_unique<ChannelListModel>(this);
     cornersModel_ = std::make_unique<CornerListModel>(this);
     driverMappingsModel_ = std::make_unique<DriverMappingModel>(this);
@@ -2845,10 +2856,14 @@ void TelemetryStore::finishSessionScan(
     }
     fileSources_ = result->fileSources;
     discoveredFilePaths_ = result->discoveredFilePaths;
+    discoveredLocalPaths_ = result->discoveredLocalPaths;
     folderDisplayNames_ = result->folderDisplayNames;
     trackMetadataPaths_ = result->trackMetadataPaths;
     locationStatuses_ = result->locationStatuses;
     locationFileCounts_ = result->locationFileCounts;
+    // Scan commits refresh the plan but never the status line: a rescan
+    // landing right after Copy/Sync all must not wipe its report.
+    refreshUsbSyncPlan(false);
     if (!staleMetadataPaths.isEmpty()) {
         qInfo() << "TRACK.yml changed under" << changedMetadataDirs
                 << "- refreshing" << staleMetadataPaths.size()
@@ -8465,23 +8480,40 @@ void TelemetryStore::setupLibraryWatch() {
     usbPlanDebounce_ = new QTimer(this);
     usbPlanDebounce_->setSingleShot(true);
     usbPlanDebounce_->setInterval(300);
-    connect(usbPlanDebounce_, &QTimer::timeout, this,
-            [this]() { refreshUsbCopyPlan(); });
+    connect(usbPlanDebounce_, &QTimer::timeout, this, [this]() {
+        refreshUsbCopyPlan();
+        refreshUsbSyncPlan();
+    });
     usbCopyProgressTimer_ = new QTimer(this);
     usbCopyProgressTimer_->setInterval(100);
-    connect(usbCopyProgressTimer_, &QTimer::timeout, this,
-            &TelemetryStore::updateUsbCopyProgress);
+    connect(usbCopyProgressTimer_, &QTimer::timeout, this, [this]() {
+        updateUsbCopyProgress();
+        updateUsbSyncProgress();
+    });
     connect(&usbCopyPlanJob_, &AsyncJobBase::runningChanged, this,
             &TelemetryStore::usbChanged);
-    connect(&usbCopyJob_, &AsyncJobBase::runningChanged, this, [this]() {
-        if (usbCopyJob_.running())
+    const auto updateCopyTimer = [this]() {
+        if (usbCopyJob_.running() || usbSyncJob_.running())
             usbCopyProgressTimer_->start();
         else
             usbCopyProgressTimer_->stop();
-        emit usbChanged();
+    };
+    connect(&usbCopyJob_, &AsyncJobBase::runningChanged, this,
+            [this, updateCopyTimer]() {
+                updateCopyTimer();
+                emit usbChanged();
+            });
+    connect(&usbSyncPlanJob_, &AsyncJobBase::runningChanged, this,
+            &TelemetryStore::usbSyncChanged);
+    connect(&usbSyncJob_, &AsyncJobBase::runningChanged, this,
+            [this, updateCopyTimer]() {
+                updateCopyTimer();
+                emit usbSyncChanged();
+            });
+    connect(this, &TelemetryStore::eventChanged, this, [this]() {
+        refreshUsbCopyPlan();
+        refreshUsbSyncPlan();
     });
-    connect(this, &TelemetryStore::eventChanged, this,
-            [this]() { refreshUsbCopyPlan(); });
     connect(usbDebounce_, &QTimer::timeout, this, [this]() {
         if (usbRescanOnly_)
             startUsbScan();
@@ -8622,7 +8654,8 @@ void TelemetryStore::finishUsbScan(std::shared_ptr<SessionScanResult> result) {
                             .toString();
     }
     if (newMount && usbPresent_) usbCopyVisible_ = true;
-    refreshUsbCopyPlan();
+    refreshUsbCopyPlan(false);
+    refreshUsbSyncPlan(false);
     rebuildLibraryWatch();
     refreshLibraryModel();
     emit usbChanged();
@@ -8882,6 +8915,137 @@ void TelemetryStore::copyUsbFiles() {
             emit usbChanged();
         });
     emit usbChanged();
+}
+
+QString TelemetryStore::usbSyncDevice() const {
+    // A real mount wins; the manual folder is the fallback for machines
+    // without detectable volumes.
+    if (!usbRoots_.isEmpty()) return usbRoots_.constFirst();
+    return manualUsbSource_;
+}
+
+QString TelemetryStore::usbSyncSummary() const {
+    return QStringLiteral(
+               "%1 new on device · %2 already there · %3 need attention")
+        .arg(usbSyncPlan_.ready)
+        .arg(usbSyncPlan_.existing)
+        .arg(usbSyncPlan_.invalid);
+}
+
+void TelemetryStore::showUsbSync() {
+    usbSyncVisible_ = true;
+    refreshUsbSyncPlan();
+    emit usbSyncChanged();
+}
+
+void TelemetryStore::hideUsbSync() {
+    if (usbSyncJob_.running()) {
+        cancelUsbSync();
+        return;
+    }
+    if (!usbSyncVisible_) return;
+    usbSyncPlanJob_.reset();
+    usbSyncVisible_ = false;
+    emit usbSyncChanged();
+}
+
+void TelemetryStore::refreshUsbSyncPlan(bool clearStatus) {
+    if (!usbSyncVisible_ || usbSyncJob_.running()) return;
+    if (clearStatus) {
+        usbSyncStatus_.clear();
+        usbSyncProgress_ = 0.0;
+    }
+    const QString device = usbSyncDevice();
+    if (device.isEmpty() || !QFileInfo(device).isDir()) {
+        usbSyncPlan_ = UsbCopyPlan{};
+        usbSyncModel_->refresh(usbSyncPlan_);
+        usbSyncStatus_ =
+            QStringLiteral("No device — insert a stick or choose a folder.");
+        emit usbSyncChanged();
+        return;
+    }
+    UsbCopyOptions options;
+    options.destination = device;
+    options.format = prefs_->usbFormat();
+    options.script = prefs_->usbRenameScript();
+    options.track = prefs_->eventTrack();
+    options.session = prefs_->eventSession();
+    options.date = prefs_->eventDate().isEmpty()
+                       ? QDate::currentDate().toString(Qt::ISODate)
+                       : prefs_->eventDate();
+    const QStringList files = discoveredLocalPaths_;
+    usbSyncPlanJob_.start(
+        [files, options](IoCancel cancel) {
+            return planUsbCopy(files, options,
+                               [cancel]() { return ioCancelled(cancel); });
+        },
+        [this](UsbCopyPlan plan) {
+            usbSyncPlan_ = std::move(plan);
+            usbSyncModel_->refresh(usbSyncPlan_);
+            emit usbSyncChanged();
+        });
+}
+
+void TelemetryStore::updateUsbSyncProgress() {
+    if (!usbSyncBytes_) return;
+    const qint64 done = usbSyncBytes_->load();
+    usbSyncProgress_ =
+        usbSyncPlan_.totalBytes > 0
+            ? std::clamp(double(done) / double(usbSyncPlan_.totalBytes), 0.0,
+                         1.0)
+            : 0.0;
+    if (usbSyncJob_.running() && !ioCancelled(usbSyncJob_.cancel()))
+        usbSyncStatus_ =
+            QStringLiteral("Syncing · %1 / %2 MiB")
+                .arg(double(done) / (1024 * 1024), 0, 'f', 1)
+                .arg(double(usbSyncPlan_.totalBytes) / (1024 * 1024), 0, 'f',
+                     1);
+    emit usbSyncChanged();
+}
+
+void TelemetryStore::cancelUsbSync() {
+    if (!usbSyncJob_.running()) return;
+    if (const auto cancel = usbSyncJob_.cancel()) cancel->store(true);
+    usbSyncStatus_ =
+        QStringLiteral("Cancelling… waiting for the current I/O chunk");
+    emit usbSyncChanged();
+}
+
+void TelemetryStore::syncUsbFiles() {
+    if (usbSyncJob_.running() || usbSyncPlanJob_.running() ||
+        !usbSyncVisible_ || !usbSyncPlan_.ready || usbSyncPlan_.invalid)
+        return;
+    const auto plan = usbSyncPlan_;
+    usbSyncBytes_ = std::make_shared<std::atomic<qint64>>(0);
+    const auto progress = usbSyncBytes_;
+    usbSyncStatus_ = QStringLiteral("Syncing…");
+    usbSyncProgress_ = 0.0;
+    usbSyncJob_.start(
+        [plan, progress](IoCancel cancel) {
+            return executeUsbCopy(
+                plan, [cancel]() { return ioCancelled(cancel); },
+                [progress](qint64 bytes) { progress->store(bytes); });
+        },
+        [this](UsbCopyResult result) {
+            updateUsbSyncProgress();
+            if (!result.cancelled && result.error.isEmpty())
+                usbSyncProgress_ = 1.0;
+            usbSyncStatus_ =
+                QStringLiteral("%1Synced %2 · skipped %3 already on device")
+                    .arg(result.cancelled ? QStringLiteral("Cancelled. ")
+                                          : QString())
+                    .arg(result.copied)
+                    .arg(result.skipped);
+            if (!result.error.isEmpty()) {
+                usbSyncStatus_ += QStringLiteral(" · ") + result.error;
+                emit operationError(QStringLiteral("USB sync"), usbSyncStatus_);
+            }
+            // The device gained files: the import preview is stale.
+            startUsbScan();
+            refreshUsbSyncPlan(false);
+            emit usbSyncChanged();
+        });
+    emit usbSyncChanged();
 }
 
 bool TelemetryStore::swapPrimaryWithReference() {

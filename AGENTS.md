@@ -248,6 +248,14 @@ wins on load. Caches (Track Atlas snapshot) stay outside the file.
   bottom sheet in the sidebar (`UsbCopyOverlay` inside `FileBrowserPane`,
   sliding up to ~55% of the sidebar with a Copy all button), configured with
   `usb.dest` / `usb.format` / optional `usb.rename_script` in `omatrack.yml`.
+  The reverse direction is a separate `UsbSyncWindow`: local library files
+  missing on the stick, named by an event entry (track/date/session, shared
+  with event mode so an active event pre-fills it) and the same renaming
+  rules, with a Sync all button. Both directions share the plan/execute
+  engine (`UsbCopyPlan`, create-only temp+rename publish); a scan commit
+  refreshes plans but never wipes a Copy/Sync status report. The sidebar
+  also owns the event section (toggle, track picker, session, date) above
+  the file tree.
   A newly discovered mount opens the overlay with a read-only *plan*
   (`UsbCopy.h`: per file source → jailed destination, size, New / Existing /
   Invalid) computed on a worker; nothing is written before the button. The

@@ -87,6 +87,7 @@ qt_add_qml_module(omatrack
     VideoTelemetryOverlay.qml
     VideoDeltaBar.qml
     UsbCopyOverlay.qml
+    UsbSyncWindow.qml
     PreferencesEventPage.qml
     PreferencesPluginsPage.qml
     PreferencesOverlayPage.qml

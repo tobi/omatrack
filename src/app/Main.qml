@@ -1327,6 +1327,9 @@ ApplicationWindow {
     ChannelsWindow {
         id: channelsWindow
     }
+    UsbSyncWindow {
+        id: usbSyncWindow
+    }
     PreferencesWindow {
         id: settingsWindow
     }

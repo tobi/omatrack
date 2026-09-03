@@ -297,28 +297,71 @@ Pane {
         }
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 28
+            Layout.preferredHeight: eventSection.implicitHeight + 12
             color: Style.surfaceColor
-            visible: Store.eventMode
 
-            RowLayout {
-                anchors.fill: parent
+            ColumnLayout {
+                id: eventSection
+
+                anchors.left: parent.left
                 anchors.leftMargin: 8
+                anchors.right: parent.right
                 anchors.rightMargin: 4
-                spacing: 6
+                anchors.top: parent.top
+                anchors.topMargin: 6
+                spacing: 4
 
-                Label {
+                RowLayout {
                     Layout.fillWidth: true
-                    color: Style.accentColor
-                    elide: Text.ElideRight
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: 10
-                    text: Store.eventSummary() !== "" ? "Event · " + Store.eventSummary() : "Event · nothing configured"
-                }
-                CompactButton {
-                    text: "Off"
+                    spacing: 6
 
-                    onClicked: Store.eventMode = false
+                    Label {
+                        color: Style.accentColor
+                        font.bold: true
+                        font.family: Style.monoFontFamily
+                        font.letterSpacing: 0.8
+                        font.pixelSize: 9
+                        text: "EVENT"
+                    }
+                    Item {
+                        Layout.fillWidth: true
+                    }
+                    Switch {
+                        checked: Store.eventMode
+
+                        onToggled: Store.eventMode = checked
+                    }
+                }
+                ComboBox {
+                    id: eventTrackPick
+
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 26
+                    currentIndex: Math.max(0, eventTrackPick.model.indexOf(Store.eventTrack))
+                    model: [""].concat(Store.library.trackPills)
+
+                    onActivated: index => Store.eventTrack = index <= 0 ? "" : eventTrackPick.model[index]
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+
+                    CompactTextField {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 26
+                        placeholderText: "Session (CT4)"
+                        text: Store.eventSession
+
+                        onEditingFinished: Store.eventSession = text.trim()
+                    }
+                    CompactTextField {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 26
+                        placeholderText: "YYYY-MM-DD"
+                        text: Store.eventDate
+
+                        onEditingFinished: Store.eventDate = text.trim()
+                    }
                 }
             }
         }
@@ -341,6 +384,11 @@ Pane {
                     font.family: Style.monoFontFamily
                     font.pixelSize: 10
                     text: Store.usbLabel
+                }
+                CompactButton {
+                    text: "Sync…"
+
+                    onClicked: Store.showUsbSync()
                 }
                 CompactButton {
                     text: "Copy…"
