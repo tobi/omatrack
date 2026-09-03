@@ -259,9 +259,9 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
                                   ? store_->overlayRefColor()
                                   : QStringLiteral("#e09d7f"));
         const qreal refWidth = whiteRef ? 2.4 * s : 1.5 * s;
-        // Video HUD rebuilds a 10% scrolling window every frame. Dashed
-        // envelopePolyline flushes a polyline per gap, exploding QSG nodes
-        // at display rate. Style still applies on TraceView (invalidateScene).
+        // Video HUD rebuilds a 10% scrolling window every frame. The stroke
+        // breaks only on real data gaps now, so nothing here can explode
+        // QSG nodes at display rate.
         const auto drawStyled = [&](const std::vector<double>& values,
                                     double maximum, bool reference, qreal width,
                                     const QColor& color) {
@@ -277,7 +277,6 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
             TraceSceneBuilder::EnvelopeStyle style;
             style.width = width;
             style.color = color;
-            style.dash = TraceSceneBuilder::EnvelopeStyle::Dash::Solid;
             builder_.envelopePolyline(values, sourceFraction, windowStart,
                                       kWindowFrac, graphRect, 0.0, maximum,
                                       style, 0.0, 1.0);

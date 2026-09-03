@@ -225,29 +225,6 @@ void TraceSceneBuilder::outline(const QRectF& rect, const QColor& color) {
     vLine(rect.right(), rect.top(), rect.bottom(), 1.0, color);
 }
 
-void TraceSceneBuilder::strokeTriple(const QPointF* points, int count,
-                                     const QRectF& rect, const QColor& color,
-                                     bool fill, qreal width) {
-    if (!points || count < 2) return;
-    if (fill) {
-        reserveQuads(count);
-        for (int i = 1; i < count; ++i) {
-            const QPointF& from = points[i - 1];
-            const QPointF& to = points[i];
-            const qreal top = std::min(from.y(), to.y());
-            if (top >= rect.bottom()) continue;
-            fillQuad(from, to, QPointF(to.x(), rect.bottom()),
-                     QPointF(from.x(), rect.bottom()),
-                     QColor(color.red(), color.green(), color.blue(), 42));
-        }
-    }
-    // A slightly wider, dimmer stroke under the core line hides the hard
-    // quad edge that 4× MSAA alone still leaves on a steep slope.
-    polyline(points, count, width + 0.9,
-             QColor(color.red(), color.green(), color.blue(), 80));
-    polyline(points, count, width, color);
-}
-
 void TraceSceneBuilder::envelopePolyline(
     const std::vector<double>& series,
     const std::function<double(double)>& sourceFraction, double xStart,
@@ -257,107 +234,48 @@ void TraceSceneBuilder::envelopePolyline(
         return;
 
     const int valueLast = int(series.size()) - 1;
-    const qreal dpr = devicePixelRatio();
     const int columns = deviceColumns(rect);
     const auto toY = [&](double value) {
         return rect.top() + (1.0 - (value - yMin) / ySpan) * rect.height();
     };
 
-    const double samplesPerPixel =
-        (xSpan * double(valueLast)) / std::max(1.0, rect.width() * dpr);
     const double series0 = sourceFraction(xStart);
     const double series1 = sourceFraction(xStart + xSpan);
     const double seriesSpan = series1 - series0;
 
-    auto flush = [&](QVector<QPointF>& pts) {
-        strokeTriple(pts.constData(), pts.size(), rect, style.color, style.fill,
-                     style.width);
-        pts.clear();
+    const bool warped = std::fabs(seriesSpan) > 1.0e-12;
+    // One tight stroke for every zoom level: each device column contributes
+    // the exact min/max of the samples it covers, so extremes survive
+    // decimation without ever rendering a filled band or a stretched raster.
+    // A column holding a single sample plots that sample's exact position,
+    // so a zoomed slope is a line through the data. Gaps (no finite sample,
+    // clipped column) break the stroke; nothing is invented across them.
+    pointsScratch_.clear();
+    auto flush = [&]() {
+        if (pointsScratch_.size() >= 2)
+            polyline(pointsScratch_.constData(), int(pointsScratch_.size()),
+                     style.width, style.color);
+        else if (pointsScratch_.size() == 1)
+            dot(pointsScratch_.constData()[0], style.width * 0.5, style.color);
+        pointsScratch_.clear();
     };
+    reserveQuads(columns);
 
-    const int dashOn = style.dash == EnvelopeStyle::Dash::Dotted   ? 2
-                       : style.dash == EnvelopeStyle::Dash::Dashed ? 6
-                                                                   : 0;
-    const int dashOff = style.dash == EnvelopeStyle::Dash::Dotted   ? 4
-                        : style.dash == EnvelopeStyle::Dash::Dashed ? 4
-                                                                    : 0;
-
-    if (samplesPerPixel < 2.0 && std::fabs(seriesSpan) > 1.0e-12) {
-        // Polyline through the samples in view. x is the linear inverse of
-        // sourceFraction between the viewport endpoints — exact for an
-        // unwarped lap, and locally close once GPS alignment is linear.
-        // Walking samples (not interpolating at every device column) keeps a
-        // zoomed slope a line instead of a stretched column raster.
-        const int first =
-            std::clamp(int(std::floor(std::min(series0, series1) * valueLast)),
-                       0, valueLast);
-        const int lastIndex =
-            std::clamp(int(std::ceil(std::max(series0, series1) * valueLast)),
-                       0, valueLast);
-        if (lastIndex > first) {
-            pointsScratch_.clear();
-            pointsScratch_.reserve(lastIndex - first + 1);
-            int emitted = 0;
-            for (int i = first; i <= lastIndex; ++i) {
-                if (dashOn > 0) {
-                    const int period = dashOn + dashOff;
-                    if ((emitted++ % period) >= dashOn) {
-                        flush(pointsScratch_);
-                        continue;
-                    }
-                } else {
-                    ++emitted;
-                }
-                const double seriesFrac = double(i) / double(valueLast);
-                const double t = (seriesFrac - series0) / seriesSpan;
-                if (t < -0.02 || t > 1.02) {
-                    flush(pointsScratch_);
-                    continue;
-                }
-                const double fraction = xStart + t * xSpan;
-                if (fraction < clipLow || fraction > clipHigh) {
-                    flush(pointsScratch_);
-                    continue;
-                }
-                const double value = series[size_t(i)];
-                if (!std::isfinite(value)) {
-                    flush(pointsScratch_);
-                    continue;
-                }
-                pointsScratch_.append(
-                    QPointF(rect.left() + t * rect.width(),
-                            std::clamp(toY(value), rect.top(), rect.bottom())));
-            }
-            flush(pointsScratch_);
-            return;
-        }
-    }
-
-    // Dense min/max envelope as a connected ribbon. Axis-aligned column
-    // bars look like a nearest-neighbour zoom of a bitmap once a column
-    // covers only a few samples; trapezoids keep the slope a trace.
-    reserveQuads(columns * (style.fill ? 2 : 1));
-    bool hasPrevious = false;
-    int ribbonPoints = 0;
-    double previousX = 0.0;
-    double previousTop = 0.0;
-    double previousBottom = 0.0;
-    const qreal half = std::max(0.5 / dpr, style.width * 0.5);
+    // Fill chains along the top edge of the stroke, column to column, exactly
+    // like the stroke itself: no band, no stretching, just area under the
+    // tight line for channels that ask for it.
+    bool fillOpen = false;
+    double fillX = 0.0;
+    double fillTop = 0.0;
     for (int column = 0; column < columns; ++column) {
-        if (dashOn > 0) {
-            const int period = dashOn + dashOff;
-            if ((column % period) >= dashOn) {
-                hasPrevious = false;
-                continue;
-            }
-        }
         const double startFraction =
             xStart + xSpan * double(column) / double(columns);
         const double endFraction =
             xStart + xSpan * double(column + 1) / double(columns);
         const double centre = (startFraction + endFraction) * 0.5;
         if (centre < clipLow || centre > clipHigh) {
-            hasPrevious = false;
+            flush();
+            fillOpen = false;
             continue;
         }
         double from = sourceFraction(startFraction) * valueLast;
@@ -366,12 +284,16 @@ void TraceSceneBuilder::envelopePolyline(
 
         double low = std::numeric_limits<double>::infinity();
         double high = -std::numeric_limits<double>::infinity();
+        int finite = 0;
+        double singleFrac = 0.0;
         const int firstIndex = std::clamp(int(std::floor(from)), 0, valueLast);
         const int lastIndex = std::clamp(int(std::ceil(to)), 0, valueLast);
         if (lastIndex - firstIndex >= 2) {
             for (int i = firstIndex; i <= lastIndex; ++i) {
                 const double value = series[size_t(i)];
                 if (!std::isfinite(value)) continue;
+                if (finite == 0) singleFrac = double(i) / double(valueLast);
+                ++finite;
                 low = std::min(low, value);
                 high = std::max(high, value);
             }
@@ -382,42 +304,50 @@ void TraceSceneBuilder::envelopePolyline(
                 series[size_t(lower)] +
                 (series[size_t(upper)] - series[size_t(lower)]) *
                     (from - double(lower));
-            if (std::isfinite(value)) low = high = value;
+            if (std::isfinite(value)) {
+                finite = 1;
+                singleFrac = from / double(valueLast);
+                low = high = value;
+            }
         }
-        if (low > high) {
-            hasPrevious = false;
+        if (finite == 0) {
+            flush();
+            fillOpen = false;
             continue;
         }
 
-        double top = std::clamp(toY(high), rect.top(), rect.bottom());
-        double bottom = std::clamp(toY(low), rect.top(), rect.bottom());
-        if (bottom - top < half * 2.0) {
-            const double mid = 0.5 * (top + bottom);
-            top = mid - half;
-            bottom = mid + half;
+        double x = rect.left() +
+                   rect.width() * (double(column) + 0.5) / double(columns);
+        if (finite == 1) {
+            // One sample in this column: plot its exact position instead of
+            // the column centre. x is the linear inverse of sourceFraction
+            // between the viewport endpoints — exact for an unwarped lap,
+            // and locally close once GPS alignment is linear.
+            const double t = warped ? (singleFrac - series0) / seriesSpan
+                                    : (centre - xStart) / xSpan;
+            if (t < -0.02 || t > 1.02) {
+                flush();
+                fillOpen = false;
+                continue;
+            }
+            x = rect.left() + t * rect.width();
         }
-        const double x = rect.left() + rect.width() * (double(column) + 0.5) /
-                                           double(columns);
+        const double top = std::clamp(toY(high), rect.top(), rect.bottom());
+        const double bottom = std::clamp(toY(low), rect.top(), rect.bottom());
 
-        if (hasPrevious) {
-            if (style.fill && previousTop < rect.bottom())
-                fillQuad(QPointF(previousX, previousTop), QPointF(x, top),
+        if (style.fill) {
+            if (fillOpen)
+                fillQuad(QPointF(fillX, fillTop), QPointF(x, top),
                          QPointF(x, rect.bottom()),
-                         QPointF(previousX, rect.bottom()), style.fillColor);
-            fillQuad(QPointF(previousX, previousTop), QPointF(x, top),
-                     QPointF(x, bottom), QPointF(previousX, previousBottom),
-                     style.color);
+                         QPointF(fillX, rect.bottom()), style.fillColor);
+            fillX = x;
+            fillTop = top;
+            fillOpen = true;
         }
-        previousX = x;
-        previousTop = top;
-        previousBottom = bottom;
-        hasPrevious = true;
-        ++ribbonPoints;
+        pointsScratch_.append(QPointF(x, top));
+        if (bottom - top > 1.0e-9) pointsScratch_.append(QPointF(x, bottom));
     }
-    if (ribbonPoints == 1)
-        this->rect(QRectF(previousX - half, previousTop, half * 2.0,
-                          std::max(half * 2.0, previousBottom - previousTop)),
-                   style.color);
+    flush();
 }
 
 void TraceSceneBuilder::commit(QSGNode* root) {

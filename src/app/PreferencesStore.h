@@ -20,7 +20,6 @@
 #include <QVector>
 
 #include <QtConcurrent/QtConcurrentRun>
-#include <QFutureWatcher>
 #include <QTimer>
 
 #include <functional>

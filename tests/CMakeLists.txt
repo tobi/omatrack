@@ -219,7 +219,9 @@ target_link_libraries(index-cache-test PRIVATE
 add_test(NAME index-cache-test COMMAND index-cache-test)
 set_tests_properties(index-cache-test PROPERTIES LABELS unit)
 
-qt_add_executable(overlay-style-test OverlayStyleTest.cpp)
+qt_add_executable(overlay-style-test OverlayStyleTest.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/TraceSceneBuilder.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/TraceTextCache.cpp)
 target_include_directories(overlay-style-test PRIVATE
   ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(overlay-style-test PRIVATE

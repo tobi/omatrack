@@ -746,9 +746,6 @@ void TraceView::buildDelta(TraceSceneBuilder& builder, const QRectF& rect) {
     const double columnWidth = rect.width() / double(columns);
     const double viewStart = store_->viewStart();
     const double viewSpan = store_->viewSpan();
-    const qreal dpr = devicePixelRatio();
-    const double samplesPerPixel =
-        (viewSpan * double(last)) / std::max(1.0, rect.width() * dpr);
     auto toY = [&](double value) {
         return rect.top() + (1.0 - (value + layout_.deltaMaxAbsRef()) /
                                        (2.0 * layout_.deltaMaxAbsRef())) *
@@ -756,72 +753,46 @@ void TraceView::buildDelta(TraceSceneBuilder& builder, const QRectF& rect) {
     };
     const double zeroY = std::clamp(toY(0.0), rect.top(), rect.bottom());
 
-    if (samplesPerPixel < 1.25) {
-        QVector<QPointF> points;
-        const int first =
-            std::clamp(int(std::floor(viewStart * last)) - 1, 0, last);
-        const int lastIndex = std::clamp(
-            int(std::ceil((viewStart + viewSpan) * last)) + 1, 0, last);
-        points.reserve(lastIndex - first + 1);
-        for (int i = first; i <= lastIndex; ++i) {
-            const double fraction = double(i) / double(last);
-            const double y =
-                std::clamp(toY(delta[i]), rect.top(), rect.bottom());
-            const double x =
-                rect.left() + (fraction - viewStart) / viewSpan * rect.width();
-            points.append(QPointF(x, y));
+    // One path at every zoom: a per-column band against the zero line plus
+    // a single tight stroke through the column centres. The delta is a
+    // smooth cumulative trace, so centre interpolation is exact to well
+    // under a pixel — no sparse/dense switch, no stretched bars.
+    builder.reserveQuads(columns * 2);
+    QVector<QPointF> points;
+    points.reserve(columns + 1);
+    auto flushStroke = [&]() {
+        if (points.size() >= 2)
+            builder.polyline(points.constData(), points.size(), 1.8,
+                             kForeground);
+        points.clear();
+    };
+    for (int column = 0; column < columns; ++column) {
+        const double fraction =
+            viewStart + viewSpan * (double(column) + 0.5) / double(columns);
+        if (fraction < 0.0 || fraction > 1.0) {
+            flushStroke();
+            continue;
         }
-        if (points.size() >= 2) {
-            builder.reserveQuads(points.size());
-            for (int i = 1; i < points.size(); ++i) {
-                const QPointF& from = points[i - 1];
-                const QPointF& to = points[i];
-                const double midY = 0.5 * (from.y() + to.y());
-                const QColor band = alpha(midY > zeroY ? kGreen : kRed, 48);
-                builder.fillQuad(from, to, QPointF(to.x(), zeroY),
-                                 QPointF(from.x(), zeroY), band);
-            }
-            builder.strokeTriple(points.constData(), points.size(), rect,
-                                 kForeground, false, 1.8);
+        const double position = fraction * last;
+        const int lower = std::clamp(int(std::floor(position)), 0, last);
+        const int upper = std::min(lower + 1, last);
+        const double value =
+            delta[lower] + (delta[upper] - delta[lower]) * (position - lower);
+        if (!std::isfinite(value)) {
+            flushStroke();
+            continue;
         }
-    } else {
-        builder.reserveQuads(columns * 2);
-        bool hasPrevious = false;
-        double previousY = 0.0;
-        for (int column = 0; column < columns; ++column) {
-            const double fraction =
-                viewStart + viewSpan * double(column) / double(columns);
-            if (fraction < 0.0 || fraction > 1.0) {
-                hasPrevious = false;
-                continue;
-            }
-            const double position = std::clamp(fraction, 0.0, 1.0) * last;
-            const int lower = std::clamp(int(std::floor(position)), 0, last);
-            const int upper = std::min(lower + 1, last);
-            const double value = delta[lower] + (delta[upper] - delta[lower]) *
-                                                    (position - lower);
-            const double y = std::clamp(toY(value), rect.top(), rect.bottom());
-            const double x = rect.left() + columnWidth * column;
+        const double y = std::clamp(toY(value), rect.top(), rect.bottom());
+        const double x = rect.left() + columnWidth * column;
 
-            const QColor band = alpha(value < 0.0 ? kGreen : kRed, 48);
-            builder.rect(QRectF(x, std::min(y, zeroY), columnWidth,
-                                std::fabs(zeroY - y)),
-                         band);
+        const QColor band = alpha(value < 0.0 ? kGreen : kRed, 48);
+        builder.rect(
+            QRectF(x, std::min(y, zeroY), columnWidth, std::fabs(zeroY - y)),
+            band);
 
-            double top = y;
-            double bottom = y;
-            if (hasPrevious) {
-                top = std::min(top, previousY);
-                bottom = std::max(bottom, previousY);
-            }
-            const qreal half = std::max(0.5 / dpr, 0.85);
-            builder.rect(
-                QRectF(x, top - half, columnWidth, bottom - top + half * 2.0),
-                kForeground);
-            previousY = y;
-            hasPrevious = true;
-        }
+        points.append(QPointF(x + columnWidth * 0.5, y));
     }
+    flushStroke();
 
     builder.dashedHLine(zeroY, rect.left(), rect.right(), kGridStrong);
     builder.text(QString("Δ +%1 / -%2")

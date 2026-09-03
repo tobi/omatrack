@@ -86,9 +86,8 @@ QSGNode* DamperStripView::updatePaintNode(QSGNode* oldNode,
 
     // The shift is a pixel offset: the whole strip slides right by shift_*w.
     // envelopePolyline maps viewport fraction → series fraction (identity
-    // here, since the full lap is always shown) and handles both the
-    // zoomed-out min/max envelope and the zoomed-in polyline, matching what
-    // TraceView does for channel traces.
+    // here, since the full lap is always shown), matching what TraceView
+    // does for channel traces.
     const double offset = shift_ * w;
 
     // The builder has no separate opacity concept, so fold strokeOpacity into

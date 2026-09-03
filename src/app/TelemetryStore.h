@@ -50,8 +50,6 @@ class QTimer;
 class QFileSystemWatcher;
 class QQmlEngine;
 class QJSEngine;
-template <typename T>
-class QFutureWatcher;
 struct SessionScanResult;
 struct SessionLapLoadResult;
 struct FileOpenResult;

@@ -35,7 +35,6 @@
 #include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
-#include <QFutureWatcher>
 #include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>

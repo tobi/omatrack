@@ -12,16 +12,15 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QFutureWatcher>
 #include <QPointer>
 #include <QNetworkRequest>
 #include <QProcess>
 #include <QStandardPaths>
 #include <QSysInfo>
 #include <QTimer>
-#include <QtConcurrent>
 
 #include <chrono>
+#include <memory>
 
 namespace {
 
@@ -437,7 +436,8 @@ std::unique_ptr<omatrack::UpdateInstaller> installerForAsset(
 
 }  // namespace
 
-AppUpdater::AppUpdater(QObject* parent) : QObject(parent) {
+AppUpdater::AppUpdater(QObject* parent)
+    : QObject(parent), checkJob_(this), installJob_(this) {
     currentVersion_ = QCoreApplication::applicationVersion();
     installPath_ = currentInstallPath();
 #ifdef Q_OS_WIN
@@ -465,15 +465,10 @@ AppUpdater::AppUpdater(QObject* parent) : QObject(parent) {
 }
 
 AppUpdater::~AppUpdater() {
-    // Cancel any in-flight check/install, then wait for the worker lambdas to
-    // finish before `this` goes away. The lambdas capture `this` to post
-    // progress back via QMetaObject::invokeMethod(this, …); without waiting,
-    // a queued callback could touch this after free. Pending queued events
-    // are discarded by ~QObject, but the worker thread itself must first stop
-    // touching `this`.
-    if (cancel_) cancel_->store(true);
-    if (checkFuture_.isRunning()) checkFuture_.waitForFinished();
-    if (installFuture_.isRunning()) installFuture_.waitForFinished();
+    // checkJob_/installJob_ cancel their workers and wait for them as they
+    // are destroyed here, so the QPointer-guarded progress posts below can
+    // never touch this after free. Pending queued events are discarded by
+    // ~QObject, but the worker threads themselves stop first.
 }
 
 bool AppUpdater::bannerVisible() const {
@@ -513,7 +508,10 @@ void AppUpdater::snooze() {
 }
 
 void AppUpdater::cancel() {
-    if (cancel_) cancel_->store(true);
+    if (const omatrack::IoCancel cancel = checkJob_.cancel())
+        cancel->store(true);
+    if (const omatrack::IoCancel cancel = installJob_.cancel())
+        cancel->store(true);
 }
 
 void AppUpdater::loadState() {
@@ -636,88 +634,82 @@ void AppUpdater::startCheck(bool force) {
     }
 
     setPhase(Phase::Checking, QStringLiteral("Checking for updates…"));
-    if (cancel_) cancel_->store(true);
-    cancel_ = std::make_shared<std::atomic<bool>>(false);
-    const quint64 generation = ++generation_;
-    const omatrack::IoCancel cancel = cancel_;
     const QString version = currentVersion_;
     const QUrl api = releaseApiUrl();
-    auto* watcher = new QFutureWatcher<CheckResult>(this);
-    connect(watcher, &QFutureWatcher<CheckResult>::finished, this,
-            [this, watcher, generation]() {
-                const CheckResult result = watcher->result();
-                watcher->deleteLater();
-                if (generation != generation_) return;
-                lastCheck_ = isoNow();
-                if (!result.ok) {
-                    const bool cancelled =
-                        result.error == QStringLiteral("Cancelled");
-                    setPhase(Phase::Idle, {},
-                             cancelled ? QString() : result.error);
-                    saveState();
-                    return;
-                }
-                if (!result.newer) {
-                    clearAvailable();
-                    setPhase(Phase::Idle);
-                    saveState();
-                    return;
-                }
-                adoptRelease(result.release, result.sha256);
+    const bool velopack = !updateExePath_.isEmpty();
+    checkJob_.start(
+        [api, version, velopack](const omatrack::IoCancel& cancel) {
+            CheckResult result;
+            const omatrack::HttpResponse response = omatrack::sendFollowing(
+                api, "GET",
+                [version](const QUrl& hop) {
+                    return githubRequest(hop, version);
+                },
+                {}, cancel);
+            if (omatrack::ioCancelled(cancel)) {
+                result.error = QStringLiteral("Cancelled");
+                return result;
+            }
+            if (response.status != 200) {
+                result.error = response.error.isEmpty()
+                                   ? QStringLiteral("Update check failed")
+                                   : response.error;
+                qCInfo(lcIo).noquote() << "update check failed status"
+                                       << response.status << response.error;
+                return result;
+            }
+            const auto parsed = omatrack::parseGithubRelease(response.body);
+            if (!parsed) {
+                result.error = QStringLiteral("Update metadata invalid");
+                return result;
+            }
+            result.release = *parsed;
+#ifdef Q_OS_WIN
+            const bool selected =
+                omatrack::selectWindowsUpdateAsset(&result.release, velopack);
+#else
+            const bool selected = omatrack::selectReleaseAsset(
+                &result.release, omatrack::currentUpdateChannel());
+#endif
+            if (!selected) {
+                result.error = QStringLiteral("No download for this platform");
+                return result;
+            }
+            result.ok = true;
+            result.newer =
+                omatrack::versionIsNewer(result.release.version, version);
+            if (!result.newer || !result.release.checksumsUrl.isValid())
+                return result;
+            const omatrack::HttpResponse sums = omatrack::sendFollowing(
+                result.release.checksumsUrl, "GET",
+                [version](const QUrl& hop) {
+                    return githubRequest(hop, version);
+                },
+                {}, cancel);
+            if (sums.status == 200)
+                result.sha256 = omatrack::checksumForFile(
+                    sums.body, result.release.assetName);
+            return result;
+        },
+        [this](CheckResult result) {
+            lastCheck_ = isoNow();
+            if (!result.ok) {
+                const bool cancelled =
+                    result.error == QStringLiteral("Cancelled");
+                setPhase(Phase::Idle, {}, cancelled ? QString() : result.error);
+                saveState();
+                return;
+            }
+            if (!result.newer) {
+                clearAvailable();
                 setPhase(Phase::Idle);
                 saveState();
-            });
-    const bool velopack = !updateExePath_.isEmpty();
-    checkFuture_ = QtConcurrent::run([api, cancel, version, velopack]() {
-        CheckResult result;
-        const omatrack::HttpResponse response = omatrack::sendFollowing(
-            api, "GET",
-            [version](const QUrl& hop) { return githubRequest(hop, version); },
-            {}, cancel);
-        if (omatrack::ioCancelled(cancel)) {
-            result.error = QStringLiteral("Cancelled");
-            return result;
-        }
-        if (response.status != 200) {
-            result.error = response.error.isEmpty()
-                               ? QStringLiteral("Update check failed")
-                               : response.error;
-            qCInfo(lcIo).noquote() << "update check failed status"
-                                   << response.status << response.error;
-            return result;
-        }
-        const auto parsed = omatrack::parseGithubRelease(response.body);
-        if (!parsed) {
-            result.error = QStringLiteral("Update metadata invalid");
-            return result;
-        }
-        result.release = *parsed;
-#ifdef Q_OS_WIN
-        const bool selected =
-            omatrack::selectWindowsUpdateAsset(&result.release, velopack);
-#else
-        const bool selected = omatrack::selectReleaseAsset(
-            &result.release, omatrack::currentUpdateChannel());
-#endif
-        if (!selected) {
-            result.error = QStringLiteral("No download for this platform");
-            return result;
-        }
-        result.ok = true;
-        result.newer =
-            omatrack::versionIsNewer(result.release.version, version);
-        if (!result.newer || !result.release.checksumsUrl.isValid())
-            return result;
-        const omatrack::HttpResponse sums = omatrack::sendFollowing(
-            result.release.checksumsUrl, "GET",
-            [version](const QUrl& hop) { return githubRequest(hop, version); },
-            {}, cancel);
-        if (sums.status == 200)
-            result.sha256 =
-                omatrack::checksumForFile(sums.body, result.release.assetName);
-        return result;
-    });
-    watcher->setFuture(checkFuture_);
+                return;
+            }
+            adoptRelease(result.release, result.sha256);
+            setPhase(Phase::Idle);
+            saveState();
+        });
 }
 
 void AppUpdater::install() {
@@ -734,64 +726,16 @@ void AppUpdater::install() {
 
     setProgress(0);
     setPhase(Phase::Downloading, QStringLiteral("Downloading update…"));
-    if (cancel_) cancel_->store(true);
-    cancel_ = std::make_shared<std::atomic<bool>>(false);
-    const quint64 generation = ++generation_;
-    const omatrack::IoCancel cancel = cancel_;
     const QString version = currentVersion_;
     const QString installPath = installPath_;
     const omatrack::GithubRelease release = latest_;
     const qint64 pid = QCoreApplication::applicationPid();
     const QStringList relaunchArgs = QCoreApplication::arguments().mid(1);
     QString expectedSha = sha256_;
-    auto* watcher = new QFutureWatcher<omatrack::UpdateInstallOutcome>(this);
-    connect(watcher, &QFutureWatcher<omatrack::UpdateInstallOutcome>::finished,
-            this, [this, watcher, generation]() {
-                const omatrack::UpdateInstallOutcome result = watcher->result();
-                watcher->deleteLater();
-                if (generation != generation_) return;
-                if (!result.ok) {
-                    setProgress(0);
-                    const bool cancelled =
-                        result.error == QStringLiteral("Cancelled");
-                    setPhase(Phase::Idle, {},
-                             cancelled ? QString() : result.error);
-                    return;
-                }
-                setPhase(Phase::Idle, QStringLiteral("Restarting…"));
-                bool launched = false;
-                if (result.relaunchWithHelper) {
-#ifdef Q_OS_WIN
-                    if (result.helperPath.endsWith(QStringLiteral(".cmd"),
-                                                   Qt::CaseInsensitive))
-                        launched = QProcess::startDetached(
-                            QStringLiteral("cmd.exe"),
-                            {QStringLiteral("/d"), QStringLiteral("/c"),
-                             result.helperPath});
-                    else
-                        launched = QProcess::startDetached(result.helperPath,
-                                                           result.helperArgs);
-#elif defined(Q_OS_MACOS)
-                    launched = QProcess::startDetached(
-                        QStringLiteral("/bin/bash"), {result.helperPath});
-#else
-                    launched = false;
-#endif
-                } else {
-                    launched = QProcess::startDetached(
-                        installPath_, QCoreApplication::arguments().mid(1),
-                        QDir::currentPath());
-                }
-                if (!launched) {
-                    setPhase(Phase::Idle, {},
-                             QStringLiteral("Updated, but could not restart. "
-                                            "Relaunch Omatrack."));
-                    return;
-                }
-                QCoreApplication::quit();
-            });
     const QString updateExe = updateExePath_;
-    std::unique_ptr<omatrack::UpdateInstaller> installer =
+    // Shared (not unique) so the worker lambda below stays copy-constructible
+    // for AsyncJob::start, which takes the work as a std::function.
+    const std::shared_ptr<omatrack::UpdateInstaller> installer =
         installerForAsset(release.assetName);
     const QString partPath = installer->partPath(installPath, release.version);
     QFile::remove(partPath);
@@ -800,86 +744,129 @@ void AppUpdater::install() {
     // so the worker stops before `this` is destroyed; the guard covers any
     // event queued in the narrow window before ~QObject drains it.
     QPointer<AppUpdater> guard(this);
-    installFuture_ = QtConcurrent::run([guard, cancel, version, installPath,
-                                        release, expectedSha, pid, relaunchArgs,
-                                        updateExe, partPath,
-                                        installer = std::move(installer)]() {
-        omatrack::UpdateInstallOutcome result;
-        QString sha = expectedSha;
-        if (sha.isEmpty() && release.checksumsUrl.isValid()) {
-            const omatrack::HttpResponse sums = omatrack::sendFollowing(
-                release.checksumsUrl, "GET",
+    installJob_.start(
+        [guard, version, installPath, release, expectedSha, pid, relaunchArgs,
+         updateExe, partPath, installer](const omatrack::IoCancel& cancel) {
+            omatrack::UpdateInstallOutcome result;
+            QString sha = expectedSha;
+            if (sha.isEmpty() && release.checksumsUrl.isValid()) {
+                const omatrack::HttpResponse sums = omatrack::sendFollowing(
+                    release.checksumsUrl, "GET",
+                    [version](const QUrl& hop) {
+                        return githubRequest(hop, version);
+                    },
+                    {}, cancel);
+                if (sums.status == 200)
+                    sha =
+                        omatrack::checksumForFile(sums.body, release.assetName);
+            }
+            if (sha.isEmpty()) {
+                result.error =
+                    QStringLiteral("Release is missing a SHA-256 checksum");
+                return result;
+            }
+            const omatrack::FileDownload download = omatrack::downloadFile(
+                release.assetUrl,
                 [version](const QUrl& hop) {
                     return githubRequest(hop, version);
                 },
-                {}, cancel);
-            if (sums.status == 200)
-                sha = omatrack::checksumForFile(sums.body, release.assetName);
-        }
-        if (sha.isEmpty()) {
-            result.error =
-                QStringLiteral("Release is missing a SHA-256 checksum");
-            return result;
-        }
-        const omatrack::FileDownload download = omatrack::downloadFile(
-            release.assetUrl,
-            [version](const QUrl& hop) { return githubRequest(hop, version); },
-            partPath,
-            [guard, cancel](qint64 received, qint64 total) {
-                if (omatrack::ioCancelled(cancel)) return false;
-                const double value =
-                    total > 0 ? double(received) / double(total) : 0.0;
-                QMetaObject::invokeMethod(
-                    guard.data(),  // null-safe context; the functor re-checks
-                    [guard, received, total, value]() {
-                        if (!guard) return;
-                        guard->downloadBytes_ = received;
-                        guard->downloadTotal_ = total;
-                        guard->setProgress(value);
-                        if (total > 0)
-                            guard->setPhase(
-                                AppUpdater::Phase::Downloading,
-                                QStringLiteral("Downloading %1 of %2…")
-                                    .arg(omatrack::formatBytes(received),
-                                         omatrack::formatBytes(total)));
-                    },
-                    Qt::QueuedConnection);
-                return true;
-            },
-            cancel);
-        if (omatrack::ioCancelled(cancel)) {
-            QFile::remove(partPath);
-            result.error = QStringLiteral("Cancelled");
-            return result;
-        }
-        if (download.status != 200 || !download.error.isEmpty()) {
-            QFile::remove(partPath);
-            result.error = download.error.isEmpty()
-                               ? QStringLiteral("Update download failed")
-                               : download.error;
-            return result;
-        }
-        const QString actual = omatrack::fileSha256(partPath);
-        if (actual.compare(sha, Qt::CaseInsensitive) != 0) {
-            QFile::remove(partPath);
-            result.error = QStringLiteral("Downloaded package failed checksum");
-            qCInfo(lcIo).noquote() << "update checksum mismatch expected" << sha
-                                   << "got" << actual;
-            return result;
-        }
-        QMetaObject::invokeMethod(
-            guard.data(),
-            [guard]() {
-                if (!guard) return;
-                guard->setPhase(AppUpdater::Phase::Installing,
-                                QStringLiteral("Installing…"));
-                guard->setProgress(1.0);
-            },
-            Qt::QueuedConnection);
-        return installer->apply({partPath, installPath, release.version, pid,
-                                 relaunchArgs, updateExe});
-    });
-    watcher->setFuture(installFuture_);
+                partPath,
+                [guard, cancel](qint64 received, qint64 total) {
+                    if (omatrack::ioCancelled(cancel)) return false;
+                    const double value =
+                        total > 0 ? double(received) / double(total) : 0.0;
+                    QMetaObject::invokeMethod(
+                        guard.data(),  // null-safe context; the functor
+                                       // re-checks
+                        [guard, received, total, value]() {
+                            if (!guard) return;
+                            guard->downloadBytes_ = received;
+                            guard->downloadTotal_ = total;
+                            guard->setProgress(value);
+                            if (total > 0)
+                                guard->setPhase(
+                                    AppUpdater::Phase::Downloading,
+                                    QStringLiteral("Downloading %1 of %2…")
+                                        .arg(omatrack::formatBytes(received),
+                                             omatrack::formatBytes(total)));
+                        },
+                        Qt::QueuedConnection);
+                    return true;
+                },
+                cancel);
+            if (omatrack::ioCancelled(cancel)) {
+                QFile::remove(partPath);
+                result.error = QStringLiteral("Cancelled");
+                return result;
+            }
+            if (download.status != 200 || !download.error.isEmpty()) {
+                QFile::remove(partPath);
+                result.error = download.error.isEmpty()
+                                   ? QStringLiteral("Update download failed")
+                                   : download.error;
+                return result;
+            }
+            const QString actual = omatrack::fileSha256(partPath);
+            if (actual.compare(sha, Qt::CaseInsensitive) != 0) {
+                QFile::remove(partPath);
+                result.error =
+                    QStringLiteral("Downloaded package failed checksum");
+                qCInfo(lcIo).noquote() << "update checksum mismatch expected"
+                                       << sha << "got" << actual;
+                return result;
+            }
+            QMetaObject::invokeMethod(
+                guard.data(),
+                [guard]() {
+                    if (!guard) return;
+                    guard->setPhase(AppUpdater::Phase::Installing,
+                                    QStringLiteral("Installing…"));
+                    guard->setProgress(1.0);
+                },
+                Qt::QueuedConnection);
+            return installer->apply({partPath, installPath, release.version,
+                                     pid, relaunchArgs, updateExe});
+        },
+        [this](omatrack::UpdateInstallOutcome result) {
+            if (!result.ok) {
+                setProgress(0);
+                const bool cancelled =
+                    result.error == QStringLiteral("Cancelled");
+                setPhase(Phase::Idle, {}, cancelled ? QString() : result.error);
+                return;
+            }
+            setPhase(Phase::Idle, QStringLiteral("Restarting…"));
+            bool launched = false;
+            if (result.relaunchWithHelper) {
+#ifdef Q_OS_WIN
+                if (result.helperPath.endsWith(QStringLiteral(".cmd"),
+                                               Qt::CaseInsensitive))
+                    launched = QProcess::startDetached(
+                        QStringLiteral("cmd.exe"),
+                        {QStringLiteral("/d"), QStringLiteral("/c"),
+                         result.helperPath});
+                else
+                    launched = QProcess::startDetached(result.helperPath,
+                                                       result.helperArgs);
+#elif defined(Q_OS_MACOS)
+                launched = QProcess::startDetached(QStringLiteral("/bin/bash"),
+                                                   {result.helperPath});
+#else
+                launched = false;
+#endif
+            } else {
+                launched = QProcess::startDetached(
+                    installPath_, QCoreApplication::arguments().mid(1),
+                    QDir::currentPath());
+            }
+            if (!launched) {
+                setPhase(Phase::Idle, {},
+                         QStringLiteral("Updated, but could not restart. "
+                                        "Relaunch Omatrack."));
+                return;
+            }
+            QCoreApplication::quit();
+        });
 }
 
 void AppUpdater::adoptRelease(const omatrack::GithubRelease& release,

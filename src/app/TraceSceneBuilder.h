@@ -77,27 +77,24 @@ public:
                      qreal width = 1.0, qreal dash = 6.0, qreal gap = 4.0);
     /// Four 1 px rules around `rect`.
     void outline(const QRectF& rect, const QColor& color);
-    /// The trace stroke triple: an optional fill under the curve, a wider
-    /// dimmer halo, and the core line. Hides the hard quad edge that 4× MSAA
-    /// still leaves on a steep slope.
-    void strokeTriple(const QPointF* points, int count, const QRectF& rect,
-                      const QColor& color, bool fill, qreal width);
 
     struct EnvelopeStyle {
-        enum class Dash { Solid, Dashed, Dotted };
         qreal width = 1.0;
         bool fill = false;
-        Dash dash = Dash::Solid;
         QColor color;
         QColor fillColor;
     };
-    /// Decimates `series` to fit `rect`: when samples outnumber device pixels
-    /// it emits a connected min/max ribbon; otherwise a polyline through the
-    /// samples in view. `sourceFraction` maps a viewport
+    /// One tight stroke for `series` across `rect`, exact at every zoom:
+    /// each device column contributes the min/max of the samples it covers
+    /// (a lone sample plots at its exact position), so extremes survive
+    /// decimation without a filled band or a stretched raster. `fill`
+    /// chains area under the stroke's top edge for channels that ask for
+    /// it. `sourceFraction` maps a viewport
     /// fraction in [xStart, xStart+xSpan] onto a series index fraction in
-    /// [0, 1]. `clipLow`/`clipHigh` mask columns outside [clipLow, clipHigh]
-    /// on the viewport axis (neighbour-lap windows). Replaces the three
-    /// per-surface decimators that did the same job three ways.
+    /// [0, 1]. `clipLow`/`clipHigh` break the stroke outside [clipLow,
+    /// clipHigh] on the viewport axis (neighbour-lap windows), as do
+    /// columns with no finite sample. Replaces the three per-surface
+    /// decimators that did the same job three ways.
     void envelopePolyline(const std::vector<double>& series,
                           const std::function<double(double)>& sourceFraction,
                           double xStart, double xSpan, const QRectF& rect,

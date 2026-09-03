@@ -10,13 +10,10 @@
 #pragma once
 
 #include "AppUpdate.h"
+#include "AsyncJob.h"
 
-#include <QFuture>
 #include <QString>
 #include <QtQml/qqmlregistration.h>
-
-#include <atomic>
-#include <memory>
 
 class QTimer;
 
@@ -124,12 +121,11 @@ private:
     double progress_ = 0.0;
     qint64 downloadBytes_ = 0;
     qint64 downloadTotal_ = 0;
-    quint64 generation_ = 0;
     omatrack::GithubRelease latest_;
-    std::shared_ptr<std::atomic<bool>> cancel_;
     QTimer* pollTimer_ = nullptr;
-    // Held so the destructor can cancel and wait: without waiting, a worker
-    // lambda that captures `this` can touch this after free.
-    QFuture<CheckResult> checkFuture_;
-    QFuture<omatrack::UpdateInstallOutcome> installFuture_;
+    // Latest-wins pipelines. AsyncJob owns the watcher, the generation
+    // counter and the cancel token, and its destructor cancels and waits,
+    // so a worker can never touch this after free.
+    AsyncJob<CheckResult> checkJob_;
+    AsyncJob<omatrack::UpdateInstallOutcome> installJob_;
 };
