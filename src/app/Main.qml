@@ -1428,9 +1428,7 @@ ApplicationWindow {
                     color: Style.traceBackgroundColor
                     focus: visible
                     objectName: "videoPane"
-                    // The USB import preview borrows the embedded video slot
-                    // when a stick is discovered, even with no video open.
-                    visible: root.videoVisible || Store.usbCopyVisible
+                    visible: root.videoVisible
 
                     Shortcut {
                         enabled: videoPane.visible && videoPlayer.loaded
@@ -1515,11 +1513,6 @@ ApplicationWindow {
 
                         anchors.fill: parent
                         objectName: "videoStageSlot"
-
-                        UsbCopyOverlay {
-                            anchors.fill: parent
-                            visible: Store.usbCopyVisible
-                        }
                     }
                 }
                 Rectangle {

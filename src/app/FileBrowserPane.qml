@@ -565,4 +565,37 @@ Pane {
             }
         }
     }
+    Rectangle {
+        id: usbSheet
+
+        anchors.bottom: parent.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        color: Style.traceBackgroundColor
+        height: Store.usbCopyVisible ? Math.min(480, Math.max(280, browser.height * 0.55)) : 0
+        visible: Store.usbCopyVisible || usbSheet.height > 0
+        z: 10
+
+        Behavior on height {
+            NumberAnimation {
+                duration: 220
+                easing.type: Easing.OutCubic
+            }
+        }
+
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            color: Style.borderColor
+            height: 1
+        }
+        UsbCopyOverlay {
+            anchors.bottom: parent.bottom
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.topMargin: 1
+        }
+    }
 }

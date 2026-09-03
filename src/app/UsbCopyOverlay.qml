@@ -13,8 +13,6 @@ Rectangle {
 
     color: Style.traceBackgroundColor
     objectName: "usbCopyOverlay"
-    visible: Store.usbCopyVisible
-    z: 20
 
     Platform.FolderDialog {
         id: usbSourceDialog
@@ -171,7 +169,7 @@ Rectangle {
             CompactButton {
                 enabled: !Store.usbCopyBusy && !Store.usbPreviewLoading && Store.usbCopyReadyCount > 0 && Store.usbCopyInvalidCount === 0
                 objectName: "usbCopyConfirm"
-                text: "Copy " + Store.usbCopyReadyCount + " new files"
+                text: "Copy all"
 
                 onClicked: Store.copyUsbFiles()
             }

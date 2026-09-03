@@ -245,9 +245,9 @@ wins on load. Caches (Track Atlas snapshot) stay outside the file.
   video file. It is never added to `locations`. Where no volume is
   detectable, the copy overlay offers a manual source folder instead, scanned
   and watched like a mount and equally absent from `locations`. Copy is a
-  separate overlay in the video slot (the slot is shown for it even with no
-  video open), using `usb.dest` / `usb.format` / optional `usb.rename_script`
-  in `omatrack.yml`.
+  bottom sheet in the sidebar (`UsbCopyOverlay` inside `FileBrowserPane`,
+  sliding up to ~55% of the sidebar with a Copy all button), configured with
+  `usb.dest` / `usb.format` / optional `usb.rename_script` in `omatrack.yml`.
   A newly discovered mount opens the overlay with a read-only *plan*
   (`UsbCopy.h`: per file source → jailed destination, size, New / Existing /
   Invalid) computed on a worker; nothing is written before the button. The
