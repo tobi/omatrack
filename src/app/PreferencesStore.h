@@ -13,6 +13,7 @@
 #include "YamlConfig.h"
 
 #include <QColor>
+#include <QPointF>
 #include <QHash>
 #include <QObject>
 #include <QPointer>
@@ -50,6 +51,8 @@ public:
     const QStringList& recentFiles() const { return recentFiles_; }
     QStringList& recentFiles() { return recentFiles_; }
 
+    QPointF videoHudPosition() const { return videoHudPosition_; }
+    void setVideoHudPosition(QPointF point) { videoHudPosition_ = point; }
     bool videoMuted() const { return videoMuted_; }
     void setVideoMuted(bool muted) { videoMuted_ = muted; }
 
@@ -165,6 +168,7 @@ private:
 
     QStringList recentFiles_;
     bool videoMuted_ = false;
+    QPointF videoHudPosition_{-1.0, -1.0};
     QString requestedComparisonSyncStrategy_ = QStringLiteral("gps-continuous");
     qint64 cacheLimitBytes_ = 0;
     QVector<SidebarPin> sidebarPins_;

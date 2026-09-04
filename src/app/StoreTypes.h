@@ -37,6 +37,10 @@ class LapRow {
     Q_PROPERTY(QString label MEMBER label)
     Q_PROPERTY(QString timeText MEMBER timeText)
     Q_PROPERTY(int timeMs MEMBER timeMs)
+    Q_PROPERTY(double displayTimeMs MEMBER displayTimeMs)
+    Q_PROPERTY(int filmstripEdge MEMBER filmstripEdge)
+    Q_PROPERTY(double filmstripWeight MEMBER filmstripWeight)
+    Q_PROPERTY(double filmstripOffset MEMBER filmstripOffset)
     Q_PROPERTY(double startTime MEMBER startTime)
     Q_PROPERTY(bool isFastest MEMBER isFastest)
     Q_PROPERTY(bool isComplete MEMBER isComplete)
@@ -48,6 +52,10 @@ public:
     QString label;
     QString timeText;
     int timeMs = 0;
+    double displayTimeMs = -1.0;
+    int filmstripEdge = 0;  // -1 = leading bookend, +1 = trailing bookend
+    double filmstripWeight = 0.0;
+    double filmstripOffset = 0.0;
     double startTime = 0.0;
     bool isFastest = false;
     bool isComplete = false;

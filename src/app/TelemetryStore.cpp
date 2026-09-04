@@ -1140,8 +1140,11 @@ void SessionHandle::adoptLoadedLap(int lapId,
                                    std::unique_ptr<TelemetrySource> source,
                                    std::shared_ptr<const UnifiedLap> unified,
                                    double driverId, bool forceDriverId,
-                                   const VideoIdentityResult& videoIdentity) {
+                                   const VideoIdentityResult& videoIdentity,
+                                   const QHash<int, double>& displayTimes) {
     if (!source || !unified || unified->size() == 0) return;
+    for (auto& lap : laps_)
+        lap.displayTimeMs = displayTimes.value(lap.lapId, -1.0);
     applyEventDriverId(driverId > 0 ? driverId : source->detectDriverId(),
                        forceDriverId);
     if (!hasGpsLocation()) captureGpsLocation(*source);
@@ -1287,6 +1290,7 @@ QVariantMap buildFileSource(const QString& directory,
 }
 
 struct SessionLapLoadResult {
+    QHash<int, double> displayTimes;
     QString sessionKey;
     int lapId = -1;
     std::unique_ptr<TelemetrySource> source;
@@ -1964,6 +1968,16 @@ std::shared_ptr<SessionLapLoadResult> loadSessionLap(
         return result;
     }
     result->unified = std::move(unified);
+    // Pixel allocation depends on the user's current speed mapping. Compute
+    // this ephemeral UI projection once on the open worker, never on hover,
+    // and never rewrite catalog times/classifications or create a sidecar.
+    for (const auto& sourceLap : result->source->detectLaps()) {
+        if (const auto stopped = result->source->stoppedDuration(
+                sourceLap.startTime, sourceLap.endTime, overrides))
+            result->displayTimes.insert(
+                sourceLap.id,
+                std::max(0.0, sourceLap.timeMs - *stopped * 1000.0));
+    }
     return result;
 }
 std::shared_ptr<CornerConsistencyLoadResult> loadCornerConsistency(
@@ -2490,8 +2504,6 @@ TelemetryStore::TelemetryStore(QObject* parent)
       libraryWatchJob_(this),
       usbCopyPlanJob_(this),
       usbCopyJob_(this),
-      usbSyncPlanJob_(this),
-      usbSyncJob_(this),
       fileOpenQueue_(this),
       primaryLapJob_(this),
       compareLapJob_(this),
@@ -2501,7 +2513,9 @@ TelemetryStore::TelemetryStore(QObject* parent)
       traceConfidenceJob_(this),
       cornerConsistencyJob_(this),
       videoDownloadJob_(this),
-      clearCacheJob_(this) {
+      clearCacheJob_(this),
+      usbSyncPlanJob_(this),
+      usbSyncJob_(this) {
     if (s_storeInstance)
         qFatal("Only one TelemetryStore may exist in a process");
     s_storeInstance = this;
@@ -3163,7 +3177,8 @@ void TelemetryStore::queueFileOpen(const QString& filePath, FileOpenRole role,
                 session->adoptLoadedLap(
                     result->lap->lapId, std::move(result->lap->source),
                     std::move(result->lap->unified), result->lap->driverId,
-                    result->lap->forceDriverId, result->lap->videoIdentity);
+                    result->lap->forceDriverId, result->lap->videoIdentity,
+                    result->lap->displayTimes);
                 if (added) {
                     // A remote video that the sidebar could only list as a
                     // plain file now has laps; let its row catch up.
@@ -5244,7 +5259,8 @@ void TelemetryStore::requestLapLoad(SessionHandle* session, int lapId,
             session->adoptLoadedLap(result->lapId, std::move(result->source),
                                     std::move(result->unified),
                                     result->driverId, result->forceDriverId,
-                                    result->videoIdentity);
+                                    result->videoIdentity,
+                                    result->displayTimes);
             if (session->isVideo()) rememberRecentFile(session->path());
             if (compare)
                 setCompare(session, result->lapId);
@@ -5448,7 +5464,9 @@ void TelemetryStore::prefetchLap(const QString& sessionKey, int lapId) {
             if (!session) return;  // session replaced while the prefetch ran
             session->adoptLoadedLap(result->lapId, std::move(result->source),
                                     std::move(result->unified),
-                                    result->driverId, result->forceDriverId);
+                                    result->driverId, result->forceDriverId,
+                                    result->videoIdentity,
+                                    result->displayTimes);
             // A hover-peek that was waiting for this lap previews now.
             if (hasPeek_ && peekSessionKey_ == result->sessionKey &&
                 peekLap_ == result->lapId)
@@ -5651,6 +5669,7 @@ QVector<LapRow> TelemetryStore::buildLapRows(SessionHandle* session,
         row.label = l.label;
         row.timeText = l.timeText;
         row.timeMs = int(l.timeMs);
+        row.displayTimeMs = l.displayTimeMs >= 0 ? l.displayTimeMs : l.timeMs;
         row.startTime = l.startTime;
         row.isFastest = l.isFastest;
         row.isComplete = l.isComplete;
@@ -6733,7 +6752,8 @@ void TelemetryStore::prefetchNeighbourLaps() {
                 session->adoptLoadedLap(
                     result->lapId, std::move(result->source),
                     std::move(result->unified), result->driverId,
-                    result->forceDriverId);
+                    result->forceDriverId, result->videoIdentity,
+                    result->displayTimes);
                 // Only the viewport needs to know: this lap is context, not
                 // a selection change.
                 if (session == primarySession_) emit viewChanged();
@@ -9093,6 +9113,19 @@ bool TelemetryStore::swapPrimaryWithReference() {
     emit viewChanged();
     emit referenceAlignmentChanged();
     return true;
+}
+
+QPointF TelemetryStore::videoHudPosition() const {
+    return prefs_->videoHudPosition();
+}
+
+void TelemetryStore::setVideoHudPosition(double x, double y) {
+    if (!std::isfinite(x) || !std::isfinite(y)) return;
+    const QPointF position(std::clamp(x, 0.0, 1.0), std::clamp(y, 0.0, 1.0));
+    if (position == prefs_->videoHudPosition()) return;
+    prefs_->setVideoHudPosition(position);
+    schedulePreferencesSave();
+    emit videoHudPositionChanged();
 }
 
 QString TelemetryStore::overlayRefColor() const {

@@ -263,6 +263,14 @@ public:
     /// absent.
     double detectDriverId(const ChannelOverrides& overrides = {}) const;
 
+    /// Bounded estimate of clearly stopped time using the currently mapped
+    /// speed channel. Unknown/gapped samples are NOT assumed stopped.
+    /// Used for a view-only timeline projection; recording/lap clocks stay
+    /// intact.
+    std::optional<double> stoppedDuration(
+        double startTime, double endTime,
+        const ChannelOverrides& overrides = {}) const;
+
     /// Build a 50 Hz UnifiedLap over [startTime, endTime].
     UnifiedLap unifyLap(double startTime, double endTime,
                         const ChannelOverrides& overrides = {}) const;

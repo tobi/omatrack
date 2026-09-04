@@ -761,6 +761,49 @@ private slots:
 class SyntheticSourceTest : public QObject {
     Q_OBJECT
 private slots:
+    void stoppedTimeKeepsSlowPitDrivingAndUnknownSamples() {
+        TelemetrySource source;
+        RawChannel speed;
+        speed.name = "Ground Speed";
+        speed.unit = "km/h";
+        speed.frequencyHz = 4;
+        speed.samples.assign(481, 0.0);
+        for (int i = 120; i < 360; ++i) speed.samples[size_t(i)] = 20.0;
+        source.channels().push_back(speed);
+        QVERIFY(source.stoppedDuration(0, 120).has_value());
+        QVERIFY(std::abs(*source.stoppedDuration(0, 120) - 60.0) < 0.3);
+        source.channels()[0].samples.assign(481, 20.0);
+        QCOMPARE(*source.stoppedDuration(0, 120), 0.0);
+        source.channels()[0].unit = "m/s";
+        source.channels()[0].samples.assign(481,
+                                            1.0);  // 3.6 km/h is still driving
+        QCOMPARE(*source.stoppedDuration(0, 120), 0.0);
+        source.channels()[0].samples.assign(
+            481, std::numeric_limits<double>::quiet_NaN());
+        QVERIFY(!source.stoppedDuration(0, 120));
+        source.channels()[0].unit = "rpm";
+        source.channels()[0].samples.assign(481, 0.0);
+        QVERIFY(!source.stoppedDuration(0, 120));
+        QVERIFY(!source.stoppedDuration(120, 0));
+    }
+
+    void stoppedTimeUsesTheCurrentSpeedOverride() {
+        TelemetrySource source;
+        RawChannel speed;
+        speed.name = "Ground Speed";
+        speed.unit = "km/h";
+        speed.frequencyHz = 4;
+        speed.samples.assign(481, 0.0);
+        source.channels().push_back(speed);
+        speed.name = "Custom speed";
+        speed.unit = "m/s";
+        speed.samples.assign(481, 5.0);
+        source.channels().push_back(speed);
+        QCOMPARE(*source.stoppedDuration(0, 120), 120.0);
+        QCOMPARE(*source.stoppedDuration(0, 120, {{"speed", "Custom speed"}}),
+                 0.0);
+    }
+
     void mapChannelsFindsSpeed() {
         TelemetrySource src;
         RawChannel ch;

@@ -14,6 +14,12 @@ ApplicationWindow {
 
     property int currentSection: 0
 
+    function openEvent(): void {
+        preferencesWindow.currentSection = 3;
+        preferencesWindow.refresh();
+        preferencesWindow.show();
+        preferencesWindow.raise();
+    }
     function refresh(): void {
         libraryPage.refresh();
         driversPage.refresh();

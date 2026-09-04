@@ -86,6 +86,7 @@ qt_add_qml_module(omatrack
     VideoMetadataDialog.qml
     VideoTelemetryOverlay.qml
     VideoDeltaBar.qml
+    VideoSessionLabel.qml
     UsbCopyOverlay.qml
     UsbSyncWindow.qml
     PreferencesEventPage.qml
@@ -146,6 +147,7 @@ if(OMATRACK_ENABLE_AUTOTEST_HARNESS)
     TraceRenderingAutotest.cpp
     CornerNavigationAutotest.cpp
     TraceResizeAutotest.cpp
+    SessionChromeAutotest.cpp
     UsbCopyAutotest.cpp
     PluginAutotest.cpp)
   target_compile_definitions(omatrack PRIVATE

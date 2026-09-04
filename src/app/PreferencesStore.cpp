@@ -259,6 +259,16 @@ void PreferencesStore::loadPreferences() {
         config.save();
     }
     videoMuted_ = config.value(QStringLiteral("video/muted"), false).toBool();
+    const auto hudPosition =
+        config.map({QStringLiteral("video"), QStringLiteral("hud_position")});
+    bool xOk = false, yOk = false;
+    const double hudX =
+        hudPosition.value(QStringLiteral("x"), -1.0).toDouble(&xOk);
+    const double hudY =
+        hudPosition.value(QStringLiteral("y"), -1.0).toDouble(&yOk);
+    if (xOk && yOk && std::isfinite(hudX) && std::isfinite(hudY) && hudX >= 0 &&
+        hudX <= 1 && hudY >= 0 && hudY <= 1)
+        videoHudPosition_ = QPointF(hudX, hudY);
     const QString configuredSyncStrategy =
         config.value(QStringLiteral("video/reference_sync")).toString();
     if (QStringList{
@@ -509,6 +519,10 @@ void PreferencesStore::scheduleSave() {
         locationRows.isEmpty() ? QVariant() : QVariant(locationRows));
     config.setValue(QStringLiteral("recent_files"), recentFiles_);
     config.setValue(QStringLiteral("video/muted"), videoMuted_);
+    if (videoHudPosition_.x() >= 0 && videoHudPosition_.y() >= 0)
+        config.setMap({QStringLiteral("video"), QStringLiteral("hud_position")},
+                      {{QStringLiteral("x"), videoHudPosition_.x()},
+                       {QStringLiteral("y"), videoHudPosition_.y()}});
     config.setValue(QStringLiteral("video/reference_sync"),
                     requestedComparisonSyncStrategy_);
     QVariantList pinRows;

@@ -137,6 +137,9 @@ struct LapEntry {
     double startTime = 0.0;
     double endTime = 0.0;
     double timeMs = 0.0;
+    // View-only width weight under the current speed mapping; never stored
+    // as a replacement lap time or in the recording/index catalog.
+    double displayTimeMs = -1.0;
     QString label;
     QString timeText;
     bool isFastest = false;
@@ -263,7 +266,8 @@ public:
                         std::unique_ptr<omatrack::TelemetrySource> source,
                         std::shared_ptr<const omatrack::UnifiedLap> unified,
                         double driverId = 0.0, bool forceDriverId = false,
-                        const VideoIdentityResult& videoIdentity = {});
+                        const VideoIdentityResult& videoIdentity = {},
+                        const QHash<int, double>& displayTimes = {});
     void setVideoClock(const omatrack::VideoClock& clock,
                        const VideoIdentityResult& identity = {});
     const omatrack::VideoClock& videoClock() const { return videoClock_; }
@@ -513,6 +517,8 @@ class TelemetryStore : public QObject {
         QString usbFormat READ usbFormat WRITE setUsbFormat NOTIFY usbChanged)
     Q_PROPERTY(QString usbRenameScript READ usbRenameScript WRITE
                    setUsbRenameScript NOTIFY usbChanged)
+    Q_PROPERTY(QPointF videoHudPosition READ videoHudPosition NOTIFY
+                   videoHudPositionChanged)
     Q_PROPERTY(QString overlayRefColor READ overlayRefColor WRITE
                    setOverlayRefColor NOTIFY overlayStyleChanged)
     Q_PROPERTY(QString overlayRefStyle READ overlayRefStyle WRITE
@@ -606,6 +612,8 @@ public:
     Q_INVOKABLE void copyUsbFiles();
     Q_INVOKABLE void cancelUsbCopy();
     Q_INVOKABLE QString luaRenameExample() const;
+    QPointF videoHudPosition() const;
+    Q_INVOKABLE void setVideoHudPosition(double x, double y);
     QString overlayRefColor() const;
     QString overlayRefStyle() const;
     bool overlayRefWhite() const;
@@ -1044,6 +1052,7 @@ signals:
     void usbChanged();
     void usbSyncChanged();
     void overlayStyleChanged();
+    void videoHudPositionChanged();
     void standaloneVideoRequested(const QUrl& source);
     void operationError(const QString& title, const QString& message);
     void overlaysChanged();

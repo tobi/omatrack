@@ -2,6 +2,7 @@
 
 #include <QString>
 #include <algorithm>
+#include <cmath>
 
 int UsbCopyListModel::rowCount(const QModelIndex& parent) const {
     return parent.isValid() ? 0 : rows_.size();
@@ -68,6 +69,10 @@ QVariant LapListModel::data(const QModelIndex& index, int role) const {
         case LabelRole: return row.label;
         case TimeTextRole: return row.timeText;
         case TimeMsRole: return row.timeMs;
+        case DisplayTimeMsRole: return row.displayTimeMs;
+        case FilmstripEdgeRole: return row.filmstripEdge;
+        case FilmstripWeightRole: return row.filmstripWeight;
+        case FilmstripOffsetRole: return row.filmstripOffset;
         case StartTimeRole: return row.startTime;
         case IsFastestRole: return row.isFastest;
         case IsCompleteRole: return row.isComplete;
@@ -84,6 +89,10 @@ QHash<int, QByteArray> LapListModel::roleNames() const {
         {LabelRole, "label"},
         {TimeTextRole, "timeText"},
         {TimeMsRole, "timeMs"},
+        {DisplayTimeMsRole, "displayTimeMs"},
+        {FilmstripEdgeRole, "filmstripEdge"},
+        {FilmstripWeightRole, "filmstripWeight"},
+        {FilmstripOffsetRole, "filmstripOffset"},
         {StartTimeRole, "startTime"},
         {IsFastestRole, "isFastest"},
         {IsCompleteRole, "isComplete"},
@@ -94,29 +103,47 @@ QHash<int, QByteArray> LapListModel::roleNames() const {
 }
 
 void LapListModel::refresh(const QVector<LapRow>& rows) {
+    QVector<LapRow> presented = rows;
+    fixedLapCount_ = 0;
+    double total = 0.0;
+    for (qsizetype i = 0; i < presented.size(); ++i) {
+        auto& row = presented[i];
+        row.filmstripEdge = 0;
+        if (!row.isComplete || row.isPitLap) {
+            if (i == 0)
+                row.filmstripEdge = -1;
+            else if (i + 1 == presented.size())
+                row.filmstripEdge = 1;
+        }
+        if (!std::isfinite(row.displayTimeMs) || row.displayTimeMs < 0)
+            row.displayTimeMs = std::max(0, row.timeMs);
+        if (row.filmstripEdge)
+            ++fixedLapCount_;
+        else
+            total += row.displayTimeMs;
+    }
+    double before = 0;
+    for (auto& row : presented) {
+        row.filmstripOffset = total > 0 ? before / total : 0.0;
+        row.filmstripWeight =
+            !row.filmstripEdge && total > 0 ? row.displayTimeMs / total : 0.0;
+        if (!row.filmstripEdge) before += row.displayTimeMs;
+    }
     replaceByIdentity(
-        rows_, rows,
+        rows_, presented,
         [](const LapRow& row) { return QString::number(row.lapId); },
         [](const LapRow& a, const LapRow& b) {
             return a.lapId == b.lapId && a.label == b.label &&
                    a.timeText == b.timeText && a.timeMs == b.timeMs &&
+                   a.displayTimeMs == b.displayTimeMs &&
+                   a.filmstripEdge == b.filmstripEdge &&
+                   a.filmstripWeight == b.filmstripWeight &&
+                   a.filmstripOffset == b.filmstripOffset &&
                    a.startTime == b.startTime && a.isFastest == b.isFastest &&
                    a.isComplete == b.isComplete && a.isPitLap == b.isPitLap &&
                    a.countsForBest == b.countsForBest &&
                    a.hoverText == b.hoverText;
         });
-    fixedLapCount_ = 0;
-    flexibleTimeMs_ = 0;
-    totalTimeMs_ = 0;
-    for (const LapRow& r : rows_) {
-        totalTimeMs_ += std::max(1, r.timeMs);
-        if (!r.countsForBest)
-            ++fixedLapCount_;
-        else
-            flexibleTimeMs_ += std::max(1, r.timeMs);
-    }
-    flexibleTimeMs_ = std::max(1, flexibleTimeMs_);
-    totalTimeMs_ = std::max(1, totalTimeMs_);
     emit refreshed();
 }
 

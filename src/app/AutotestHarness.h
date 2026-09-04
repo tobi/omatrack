@@ -11,6 +11,8 @@ bool installUsbCopy(QQmlApplicationEngine& engine, TelemetryStore& store);
 // Focused corner buttons/shortcuts and interruptible viewport transitions.
 bool installCornerNavigation(QQmlApplicationEngine& engine,
                              TelemetryStore& store);
+// Session header, fixed filmstrip bookends, and persistent fullscreen HUD.
+bool installSessionChrome(QQmlApplicationEngine& engine, TelemetryStore& store);
 // Trace-height draft, drag, cancellation and persistence checks.
 bool installTraceResize(QQmlApplicationEngine& engine, TelemetryStore& store);
 // Native frame-paced zoom, stroke/fill settings and screenshots.

@@ -1,9 +1,9 @@
 pragma ComponentBehavior: Bound
 import Omatrack
 
-// Application header bar: brand, live session context (track / driver / lap /
-// comparison), event-mode toggle and state, the cursor position and delta
-// readout, and the overflow actions menu.
+// Application header: prominent track, event filter/configuration underneath,
+// cursor readout and overflow actions. Driver/lap context lives in the
+// filmstrip and fullscreen comparison header, not duplicated here.
 //
 // Owns its cursor-readout refresh: a Connections block on Store plus
 // Component.onCompleted drive readout.refresh() so Main.qml never has to poke
@@ -19,6 +19,7 @@ import QtQuick.Layouts
 ToolBar {
     id: appBar
 
+    property string eventSummary: ""
     property list<string> recentFileRows: []
     required property bool sidebarVisible
     property var sidecarRows: []
@@ -27,6 +28,7 @@ ToolBar {
     signal channelsRequested
     signal cornersRequested
     signal driverRenameRequested(string key, string name)
+    signal eventSettingsRequested
     signal metadataRequested(string path, bool folderScope)
     signal openFileRequested
     signal preferencesRequested
@@ -61,6 +63,7 @@ ToolBar {
     }
 
     Component.onCompleted: {
+        appBar.eventSummary = Store.eventSummary();
         readout.refresh();
         appBar.refreshRecentFiles();
         appBar.refreshSidecars();
@@ -69,6 +72,9 @@ ToolBar {
     Connections {
         function onCursorReadoutChanged(): void {
             readout.refresh();
+        }
+        function onEventChanged(): void {
+            appBar.eventSummary = Store.eventSummary();
         }
         function onRecentFilesChanged(): void {
             appBar.refreshRecentFiles();
@@ -146,71 +152,55 @@ ToolBar {
                 color: Style.foregroundColor
                 elide: Text.ElideRight
                 font.bold: true
-                font.pixelSize: 12
+                font.pixelSize: 18
+                objectName: "headerTrackName"
                 text: Store.primaryLabel
                 visible: text !== ""
             }
             RowLayout {
                 Layout.fillWidth: true
-                spacing: 2
+                spacing: 4
 
-                Label {
-                    id: headerDriverName
+                CompactToolButton {
+                    id: eventButton
 
-                    Layout.maximumWidth: Math.min(220, headerDriverName.implicitWidth)
-                    color: Style.mutedTextColor
-                    elide: Text.ElideRight
+                    Layout.preferredHeight: 20
+                    checkable: true
+                    checked: Store.eventMode
                     font.pixelSize: 10
-                    text: Store.primaryDriverName
-                    visible: headerDriverName.text !== ""
+                    objectName: "headerEventMode"
+                    text: "Event"
+                    tip: "Toggle the event filter"
+
+                    onClicked: Store.eventMode = eventButton.checked
+                }
+                CompactToolButton {
+                    Layout.preferredHeight: 20
+                    Layout.preferredWidth: 24
+                    font.pixelSize: 14
+                    objectName: "headerEventSettings"
+                    text: "⚙"
+                    tip: "Configure event track, date and session"
+
+                    onClicked: appBar.eventSettingsRequested()
                 }
                 Label {
-                    id: headerDetail
+                    id: eventSummaryLabel
 
                     Layout.fillWidth: true
-                    color: Style.mutedTextColor
+                    color: Style.accentColor
                     elide: Text.ElideRight
+                    font.family: Style.monoFontFamily
                     font.pixelSize: 10
-                    text: {
-                        const driver = Store.primaryDriverName;
-                        const detail = Store.primaryDetail;
-                        return driver !== "" && detail.indexOf(driver) === 0 ? detail.substring(driver.length) : detail;
-                    }
-                    visible: headerDetail.text !== ""
+                    objectName: "headerEventSummary"
+                    text: appBar.eventSummary
+                    visible: Store.eventMode && eventSummaryLabel.text !== ""
                 }
-                Label {
-                    id: headerCompare
-
-                    color: Style.orangeColor
-                    elide: Text.ElideRight
-                    font.pixelSize: 10
-                    text: Store.comparing ? "  ·  vs " + Store.compareLabel : ""
-                    visible: headerCompare.text !== ""
+                Item {
+                    Layout.fillWidth: true
+                    visible: !eventSummaryLabel.visible
                 }
             }
-        }
-        CompactToolButton {
-            id: eventButton
-
-            Layout.preferredHeight: 28
-            checkable: true
-            checked: Store.eventMode
-            objectName: "headerEventMode"
-            text: "Event"
-            tip: Store.eventMode ? (Store.eventSummary() !== "" ? "Filtering to " + Store.eventSummary() + " — turn off for the full library" : "Event filter is on but track and day are empty — turn off for the full library") : "Filter the library to one track and day"
-
-            onClicked: Store.eventMode = eventButton.checked
-        }
-        Label {
-            id: eventSummaryLabel
-
-            Layout.maximumWidth: 200
-            color: Style.accentColor
-            elide: Text.ElideRight
-            font.family: Style.monoFontFamily
-            font.pixelSize: 10
-            text: Store.eventSummary()
-            visible: Store.eventMode && eventSummaryLabel.text !== ""
         }
         CompactToolButton {
             Layout.preferredHeight: 28

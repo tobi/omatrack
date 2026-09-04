@@ -30,7 +30,7 @@ The current canonical lap is a 50 Hz `UnifiedLap`. Primary/reference traces, cur
 
 ### Dense, calm, expert UX
 
-Optimize for excellent information density, not empty space or mobile-sized chrome. Keep the current hierarchy: compact session context, proportional lap strip, session tree, large trace workspace, and focused inspectors. Numeric data uses a compact monospace treatment; color communicates role and comparison consistently.
+Optimize for excellent information density, not empty space or mobile-sized chrome. Keep the current hierarchy: prominent track name with event filter/configuration beneath it (driver/lap details belong in the filmstrip, not duplicated in the app header), compact lap strip, session tree, large trace workspace, and focused inspectors. Numeric data uses a compact monospace treatment; color communicates role and comparison consistently.
 
 Dense does not mean noisy. Default views show the channels that answer common driving questions. Raw and specialist channels remain one action away. Prefer progressive disclosure, direct manipulation, keyboard/mouse fluency, and side-by-side context over wizard flows and decorative panels.
 
@@ -368,6 +368,17 @@ Native lap distance is accepted only when its continuity and total agree with in
   placement uses mpv's reported display aspect ratio and existing letterboxing;
   when space is insufficient (or PiP would overlap), the video viewport reserves
   a compact bottom lane. The filmstrip never resets selection when reparented.
+  Leading Out / trailing In (including pit bookends) occupy fixed 72-logical-pixel
+  cells aligned across both roles. Interior laps remain variable, with a 12 px
+  selectable floor for fully stopped segments. Width is a transient view
+  projection under the current speed-channel mapping: `stoppedDuration()`
+  probes the source clock at approximately 4 Hz (at most 4096 bins per lap) on the lap-open
+  worker, excluding only finite speeds at or below 1 km/h. Slow pit driving and
+  unknown/gapped speed retain time. The projection is not a new catalog scalar:
+  it is never serialized, does not alter lap times, best-lap classification,
+  cursor fractions or video timing, and is recomputed when a mapping is opened.
+  `FilmstripLayout` owns the pixel budget; `LapListModel` caches fractions so
+  cursor movement cannot scan telemetry or re-layout the cells.
   Incomplete source laps stay incomplete; similar duration does not establish
   missing boundaries. Index-cache v2 invalidates the older promoted summaries.
 - Show a track-station-aligned cumulative delta that starts at zero. The same selected primary→reference map drives every reference trace, cursor value, synchronized video frame, and delta.
@@ -384,7 +395,7 @@ Native lap distance is accepted only when its continuity and total agree with in
 
 - Open MP4, MOV, MKV, AVI, M4V, and WebM video inside the main analysis workspace; an MP4 containing an AiM `aimd` track is also a telemetry session.
 - Render through libmpv's OpenGL Render API in `MpvVideoItem`; never spawn the mpv CLI or embed a foreign native window.
-- Place video in the resizable section above the traces. Playback chrome stays minimal: the top-left speaker button toggles persisted audio mute, Space toggles playback, and Left/Right skip the primary recording by 2 seconds. Store the mute preference under `video.muted` in `omatrack.yml`. Fullscreen dual-video compose is split, active-with-reference pip, reference-with-active pip, active only, or reference only (keys 1–5). In pip layouts the main recording is inset so it is not confused with a single full-frame video. `S` toggles 0.25× slow motion on the primary clock (the reference follows). The top bar shows the layout name, then driver / lap N/M / fuel for the active and reference recordings.
+- Place video in the resizable section above the traces. Playback chrome stays minimal: the top-left speaker button toggles persisted audio mute, Space toggles playback, and Left/Right skip the primary recording by 2 seconds. Store the mute preference under `video.muted` in `omatrack.yml`. Fullscreen dual-video compose is split, active-with-reference pip, reference-with-active pip, active only, or reference only (keys 1–5). In pip layouts the main recording is inset so it is not confused with a single full-frame video. `S` toggles 0.25× slow motion on the primary clock (the reference follows). The top bar shows the layout name and mode controls. Driver / lap N/M / fuel labels sit above the central delta readout, aligned to their active/reference sides. The telemetry HUD's dragged position is stored as normalized available-space coordinates under `video.hud_position: {x, y}` in `omatrack.yml`, written only at drag end and clamped around the filmstrip; it survives restarts, layout changes and window resizing.
 - Selecting an AiM video session selects its fastest lap and pauses at the
   telemetry cursor. The primary recording is the clock: it always plays at
   1×, publishes `time-pos` into `MpvVideoItem::position_`, and is never
@@ -835,6 +846,15 @@ ctest --test-dir build -L lint
 cmake --build --preset release --target lint
 ```
 
+For semantic Qt checks, see `docs/QUALITY_CHECKS.md`: Clazy is the additional
+Qt-specific analyzer; clang-tidy is already opt-in, and qmllint is a default
+gate. None can analyze a preprocessor branch excluded by its compile database.
+The native USB event filter's QObject ownership is compiled/tested on every
+platform; only Windows message decoding is conditional. Before a release, push
+main and wait for its Linux/Windows/macOS CI to pass, then use
+`scripts/tag-release.sh X.Y.Z` (or `--check` to validate without tagging). Never
+cut a tag solely because the native Linux tests passed.
+
 The individual targets stay available: `cpp_format_check` / `cpp_format`
 (clang-format), `qml_format_check` / `qml_format` (qmlformat via
 `cmake/QmlFormatCheck.cmake`, since qmlformat has no `--check`), `qml_lint`
@@ -961,6 +981,7 @@ Add feature flags as needed:
 - `OMATRACK_AUTOTEST_CORNER=1`
 - `OMATRACK_AUTOTEST_CORNER_NAVIGATION=/path/to/copied-multi-lap-file` checks previous/next buttons, the H/J shortcut handlers, intermediate animation frames, rapid retargeting, cancellation/restoration, unclamped lap edges and typing protection, then captures the focused overlay.
 - `OMATRACK_AUTOTEST_TRACE_RESIZE=/path/to/copied-recording` checks native divider drags beyond 2× height, borrowing across neighbours, pane fit, unchanged cursor/viewport, draft isolation from preference writes, Cancel, Reset, raw-channel Save and geometry cost. Repeat with the same scratch config and `OMATRACK_AUTOTEST_TRACE_RESIZE_RESTORE=1` to check persisted raw weights.
+- `OMATRACK_AUTOTEST_SESSION_CHROME=/path/to/copied-recording` with optional `OMATRACK_AUTOTEST_CHROME_REFERENCE=/path/to/second-recording` checks the larger track heading, event controls beneath it and aligned fixed filmstrip bookends. On video it also checks fullscreen role labels and a real HUD drag. Repeat with the same scratch config and `OMATRACK_AUTOTEST_CHROME_RESTORE=1` to verify the HUD position is restored.
 - `OMATRACK_AUTOTEST_HOVER=1`
 - `OMATRACK_AUTOTEST_ZOOM=1`
 - `OMATRACK_AUTOTEST_RENAME=1`

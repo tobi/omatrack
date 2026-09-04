@@ -291,6 +291,7 @@ ApplicationWindow {
             Store.focusCornerAtCursor();
         }
         onDriverRenameRequested: (key, name) => root.openDriverRename(key, name)
+        onEventSettingsRequested: settingsWindow.openEvent()
         onMetadataRequested: (path, folderScope) => {
             if (folderScope)
                 videoMetadataDialog.openForFolder(path);
@@ -459,48 +460,6 @@ ApplicationWindow {
                     font.pixelSize: 10
                     text: "0.25×"
                     visible: videoSync.videoSlowMotion
-                }
-                Label {
-                    color: Style.accentColor
-                    font.family: Style.uiFontFamily
-                    font.pixelSize: 10
-                    text: Store.primaryDriverName || "—"
-                    visible: root.telemetryVideoActive
-                }
-                Label {
-                    color: Style.mutedTextColor
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: 10
-                    text: "LAP " + Store.primaryLapOrdinal + "/" + Store.primaryLapTotal
-                    visible: root.telemetryVideoActive
-                }
-                Label {
-                    color: Style.mutedTextColor
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: 10
-                    text: "FUEL " + (Store.primaryFuelLoad || "—")
-                    visible: root.telemetryVideoActive
-                }
-                Label {
-                    color: Style.orangeColor
-                    font.family: Style.uiFontFamily
-                    font.pixelSize: 10
-                    text: Store.compareDriverName || "—"
-                    visible: root.telemetryVideoActive && root.dualVideo
-                }
-                Label {
-                    color: Style.mutedTextColor
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: 10
-                    text: "LAP " + Store.compareLapOrdinal + "/" + Store.compareLapTotal
-                    visible: root.telemetryVideoActive && root.dualVideo
-                }
-                Label {
-                    color: Style.mutedTextColor
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: 10
-                    text: "FUEL " + (Store.compareFuelLoad || "—")
-                    visible: root.telemetryVideoActive && root.dualVideo
                 }
                 Item {
                     Layout.fillWidth: true
@@ -1074,7 +1033,9 @@ ApplicationWindow {
             visible: root.videoFullscreen && root.videoOverlayVisible && root.telemetryVideoActive && videoPlayer.loaded
         }
         VideoDeltaBar {
-            visible: root.videoFullscreen && root.videoOverlayVisible && root.telemetryVideoActive && videoPlayer.loaded && Store.comparing
+            defaultY: videoComposeHost.composeMode === 1 ? videoStage.height * 0.15 : fullscreenChrome.height + 8
+            showDelta: root.videoOverlayVisible
+            visible: root.videoFullscreen && root.telemetryVideoActive && videoPlayer.loaded
         }
         Rectangle {
             anchors.centerIn: parent

@@ -1,29 +1,30 @@
 pragma ComponentBehavior: Bound
 import Omatrack
-
 import QtQuick
 
 Item {
     id: overlay
 
     readonly property real aspectRatio: 0.21
+    readonly property real availableX: Math.max(0, overlay.parent.width - overlay.width)
+    readonly property real availableY: Math.max(0, overlay.parent.height - overlay.bottomInset - overlay.height)
     property real bottomInset: 0
     property real dragOriginX: 0
     property real dragOriginY: 0
+    property point dragPosition: Qt.point(0, 0)
     property real mediaTime: 0
     readonly property real scaleFactor: 0.65
     readonly property real unscaledWidth: Math.min(overlay.parent.width - 16, 1000, Math.max(520, overlay.parent.width * 0.72))
-    property bool userPositioned: false
+    readonly property bool userPositioned: Store.videoHudPosition.x >= 0 && Store.videoHudPosition.y >= 0
 
-    function clampX(value) {
-        if (!overlay.parent)
-            return 0;
-        return Math.max(0, Math.min(overlay.parent.width - overlay.width, value));
+    function clampX(value: real): real {
+        return Math.max(0, Math.min(overlay.availableX, value));
     }
-    function clampY(value) {
-        if (!overlay.parent)
-            return 0;
-        return Math.max(0, Math.min(overlay.parent.height - overlay.bottomInset - overlay.height, value));
+    function clampY(value: real): real {
+        return Math.max(0, Math.min(overlay.availableY, value));
+    }
+    function savePosition(x: real, y: real): void {
+        Store.setVideoHudPosition(overlay.availableX > 0 ? overlay.clampX(x) / overlay.availableX : 0.5, overlay.availableY > 0 ? overlay.clampY(y) / overlay.availableY : 0.5);
     }
 
     height: overlay.width * overlay.aspectRatio
@@ -31,24 +32,19 @@ Item {
     width: Math.max(0, overlay.unscaledWidth * overlay.scaleFactor)
     z: 8
 
-    onBottomInsetChanged: {
-        if (overlay.userPositioned)
-            overlay.y = overlay.clampY(overlay.y);
-    }
-
     Binding {
         property: "x"
         restoreMode: Binding.RestoreNone
         target: overlay
-        value: (overlay.parent.width - overlay.width) * 0.5
-        when: !overlay.userPositioned
+        value: overlay.userPositioned ? Store.videoHudPosition.x * overlay.availableX : overlay.availableX * 0.5
+        when: !hudDrag.active
     }
     Binding {
         property: "y"
         restoreMode: Binding.RestoreNone
         target: overlay
-        value: overlay.clampY(overlay.parent.height * 0.9 - overlay.height * 0.5)
-        when: !overlay.userPositioned
+        value: overlay.userPositioned ? Store.videoHudPosition.y * overlay.availableY : overlay.clampY(overlay.parent.height * 0.9 - overlay.height * 0.5)
+        when: !hudDrag.active
     }
     VideoTelemetryHud {
         anchors.fill: parent
@@ -64,18 +60,27 @@ Item {
         throttleColor: Style.throttleTelemetryColor
     }
     DragHandler {
+        id: hudDrag
+
         target: null
 
         onActiveChanged: {
-            if (active) {
+            if (hudDrag.active) {
                 overlay.dragOriginX = overlay.x;
                 overlay.dragOriginY = overlay.y;
-                overlay.userPositioned = true;
+                overlay.dragPosition = Qt.point(overlay.x, overlay.y);
+            } else {
+                // Use the last drag point, not x/y: release re-enables the
+                // saved-position bindings in this same event-loop turn.
+                overlay.savePosition(overlay.dragPosition.x, overlay.dragPosition.y);
             }
         }
         onTranslationChanged: {
-            overlay.x = overlay.clampX(overlay.dragOriginX + translation.x);
-            overlay.y = overlay.clampY(overlay.dragOriginY + translation.y);
+            if (!hudDrag.active)
+                return;
+            overlay.dragPosition = Qt.point(overlay.clampX(overlay.dragOriginX + hudDrag.translation.x), overlay.clampY(overlay.dragOriginY + hudDrag.translation.y));
+            overlay.x = overlay.dragPosition.x;
+            overlay.y = overlay.dragPosition.y;
         }
     }
     HoverHandler {

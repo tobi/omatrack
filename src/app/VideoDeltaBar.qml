@@ -14,8 +14,11 @@ OverlayCard {
     id: deltaBar
 
     readonly property real barHeight: 18 * deltaBar.userScale
-    readonly property real barWidth: 260 * deltaBar.userScale
+    readonly property real barWidth: Math.min(260 * deltaBar.userScale, Math.max(80, deltaBar.hostWidth - 248))
     readonly property real baseBarWidth: 260
+    readonly property bool comparing: Store.comparing
+    readonly property real contextWidth: Math.min(210, Math.max(100, (deltaBar.hostWidth - deltaBar.barWidth - 48) / 2))
+    property real defaultY: deltaBar.parent ? deltaBar.parent.height * 0.15 : 0
     readonly property color dimRateColor: Qt.rgba(deltaBar.rateColor.r, deltaBar.rateColor.g, deltaBar.rateColor.b, 0.38)
     property real dragOriginX: 0
     property real dragOriginY: 0
@@ -23,6 +26,7 @@ OverlayCard {
     readonly property real fillWidth: track.width * 0.5 * deltaBar.fillRatio
     readonly property real fullScale: 1
     readonly property bool gaining: Number.isFinite(deltaBar.speedDelta) ? deltaBar.speedDelta >= 0 : Number.isFinite(deltaBar.timeDelta) && deltaBar.timeDelta <= 0
+    readonly property real hostWidth: deltaBar.parent ? deltaBar.parent.width : 0
     readonly property real maxScale: 2.8
     readonly property real minScale: 0.55
     readonly property color rateColor: {
@@ -35,6 +39,7 @@ OverlayCard {
         return Qt.rgba(Style.mutedTextColor.r + (base.r - Style.mutedTextColor.r) * t, Style.mutedTextColor.g + (base.g - Style.mutedTextColor.g) * t, Style.mutedTextColor.b + (base.b - Style.mutedTextColor.b) * t, 1);
     }
     property real resizeOriginScale: 1
+    property bool showDelta: true
     property real speedDelta: Number.NaN
     property real timeDelta: Number.NaN
     readonly property string timeText: {
@@ -69,11 +74,11 @@ OverlayCard {
     clip: false
     color: Qt.rgba(0, 0, 0, 0)
     dragEnabled: !resizeHover.hovered
-    height: track.height + 4 * deltaBar.userScale + readout.implicitHeight
+    height: activeContext.implicitHeight + (deltaBar.comparing ? 8 + track.height + 4 * deltaBar.userScale + readout.implicitHeight : 0)
     objectName: "videoDeltaBar"
-    opacity: Number.isFinite(deltaBar.timeDelta) ? 1 : 0
+    opacity: 1
     radius: 0
-    width: deltaBar.barWidth
+    width: deltaBar.comparing ? Math.max(deltaBar.barWidth, 2 * deltaBar.contextWidth + 24) : deltaBar.contextWidth
     z: 9
 
     Component.onCompleted: deltaBar.refresh()
@@ -98,7 +103,7 @@ OverlayCard {
         property: "y"
         restoreMode: Binding.RestoreNone
         target: deltaBar
-        value: deltaBar.parent ? deltaBar.parent.height * 0.15 : 0
+        value: deltaBar.defaultY
         when: !deltaBar.userPositioned
     }
     Connections {
@@ -126,14 +131,34 @@ OverlayCard {
 
         target: deltaBar.parent
     }
+    VideoSessionLabel {
+        id: activeContext
+
+        alignRight: deltaBar.comparing
+        anchors.top: parent.top
+        height: implicitHeight
+        reference: false
+        width: deltaBar.contextWidth
+        x: deltaBar.comparing ? deltaBar.width * 0.5 - 12 - activeContext.width : 0
+    }
+    VideoSessionLabel {
+        anchors.top: parent.top
+        height: implicitHeight
+        reference: true
+        visible: deltaBar.comparing
+        width: deltaBar.contextWidth
+        x: deltaBar.width * 0.5 + 12
+    }
     Rectangle {
         id: track
 
         anchors.horizontalCenter: parent.horizontalCenter
-        anchors.top: parent.top
+        anchors.top: activeContext.bottom
+        anchors.topMargin: 8
         color: Qt.rgba(0, 0, 0, 0.78)
         height: deltaBar.barHeight
         radius: height / 2
+        visible: deltaBar.comparing && deltaBar.showDelta && Number.isFinite(deltaBar.timeDelta)
         width: deltaBar.barWidth
 
         Rectangle {
@@ -184,9 +209,12 @@ OverlayCard {
         font.family: Style.monoFontFamily
         font.pixelSize: Math.max(12, Math.round(22 * deltaBar.userScale))
         text: deltaBar.timeText
+        visible: track.visible
     }
     WheelHandler {
         onWheel: event => {
+            if (!deltaBar.comparing)
+                return;
             deltaBar.userScale = deltaBar.clampScale(deltaBar.userScale * (event.angleDelta.y > 0 ? 1.08 : 1 / 1.08));
             if (deltaBar.userPositioned) {
                 deltaBar.x = deltaBar.clampX(deltaBar.x);
@@ -201,6 +229,7 @@ OverlayCard {
         anchors.bottom: parent.bottom
         anchors.right: parent.right
         height: 18
+        visible: deltaBar.comparing
         width: 18
 
         HoverHandler {

@@ -1441,6 +1441,44 @@ std::vector<Lap> TelemetrySource::detectLaps() const {
     return laps;
 }
 
+std::optional<double> TelemetrySource::stoppedDuration(
+    double startTime, double endTime, const ChannelOverrides& overrides) const {
+    if (!std::isfinite(startTime) || !std::isfinite(endTime) || startTime < 0 ||
+        endTime <= startTime ||
+        endTime > double(std::numeric_limits<std::int64_t>::max()) / 1e9)
+        return std::nullopt;
+    const auto mapping = mapChannels(overrides);
+    const auto speed = mapping.find("speed");
+    if (speed == mapping.end() || speed->second < 0) return std::nullopt;
+    const auto& channel = channels_[size_t(speed->second)];
+    const auto unit = lowerTrimmed(channel.unit);
+    const auto conversion = speedUnits().find(unit);
+    if (!unit.empty() && conversion == speedUnits().end()) return std::nullopt;
+    const double factor =
+        conversion == speedUnits().end() ? 1.0 : conversion->second;
+    // A display projection, not lap timing: preserve slow pit-lane driving.
+    // Only a finite speed at or below 1 km/h is positive evidence of a stop.
+    // Bounded probes on the SOURCE clock retain gaps rather than treating
+    // missing samples as zero. No flattened-array clock or extra file format.
+    const double duration = endTime - startTime;
+    const int bins = int(std::min(4096.0, std::ceil(duration * 4.0)));
+    const double step = duration / std::max(1, bins);
+    double stopped = 0;
+    bool observed = false;
+    for (int i = 0; i < bins; ++i) {
+        double value = 0;
+        if (!sampleAt(size_t(speed->second), startTime + (i + 0.5) * step,
+                      &value, false))
+            continue;
+        value *= factor;
+        if (!std::isfinite(value) || value < 0 || value > 540) continue;
+        observed = true;
+        if (value <= 1.0) stopped += step;
+    }
+    return observed ? std::optional<double>(std::min(stopped, duration))
+                    : std::nullopt;
+}
+
 UnifiedLap TelemetrySource::unifyLap(double startTime, double endTime,
                                      const ChannelOverrides& overrides) const {
     if (!std::isfinite(startTime) || !std::isfinite(endTime) ||

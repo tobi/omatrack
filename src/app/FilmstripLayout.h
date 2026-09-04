@@ -8,6 +8,51 @@
 
 namespace omatrack {
 
+struct FilmstripCells {
+    double spacing = 0;
+    double bookend = 0;
+    double minimum = 0;
+    double flexible = 0;
+};
+
+inline FilmstripCells filmstripCells(double width, int count, int fixed) {
+    if (!std::isfinite(width) || width <= 0 || count <= 0) return {};
+    fixed = std::clamp(fixed, 0, count);
+    const int variable = count - fixed;
+    const double selectable = std::min(1.0, width / count);
+    // Keep bookends fixed before spending pixels on gaps. Dense sessions
+    // tighten spacing rather than making their Out/In widths disagree.
+    const double bookend =
+        fixed > 0 ? std::min(72.0, (width - variable * selectable) / fixed) : 0;
+    const double gap =
+        count > 1 ? std::min(3.0, std::max(0.0, (width - fixed * bookend -
+                                                 variable * selectable) /
+                                                    (count - 1)))
+                  : 0;
+    const double usable = std::max(0.0, width - gap * (count - 1));
+    const double remaining = std::max(0.0, usable - fixed * bookend);
+    const double minimum =
+        variable > 0 ? std::min(12.0, remaining / variable) : 0;
+    return {gap, bookend, minimum,
+            std::max(0.0, remaining - variable * minimum)};
+}
+inline double filmstripCellWidth(double width, int count, int fixed, int edge,
+                                 double weight) {
+    const auto cells = filmstripCells(width, count, fixed);
+    return edge ? cells.bookend
+                : cells.minimum + cells.flexible * std::clamp(weight, 0.0, 1.0);
+}
+inline double filmstripCellX(double width, int count, int fixed, bool leading,
+                             int index, int edge, double offset) {
+    const auto cells = filmstripCells(width, count, fixed);
+    if (edge < 0) return 0;
+    if (edge > 0) return std::max(0.0, width - cells.bookend);
+    const int variableBefore = std::max(0, index - int(leading));
+    return (leading ? cells.bookend : 0) + index * cells.spacing +
+           variableBefore * cells.minimum +
+           cells.flexible * std::clamp(offset, 0.0, 1.0);
+}
+
 // The fullscreen strip sits above a stable controls lane. Reuse existing
 // bottom letterboxing when it fits; otherwise reserve space by reducing the
 // video viewport rather than covering driving footage. PiP needs reservation
@@ -46,6 +91,15 @@ class FilmstripLayout : public QObject {
 public:
     explicit FilmstripLayout(QObject* parent = nullptr) : QObject(parent) {}
 
+    Q_INVOKABLE double cellWidth(double width, int count, int fixed, int edge,
+                                 double weight) const {
+        return omatrack::filmstripCellWidth(width, count, fixed, edge, weight);
+    }
+    Q_INVOKABLE double cellX(double width, int count, int fixed, bool leading,
+                             int index, int edge, double offset) const {
+        return omatrack::filmstripCellX(width, count, fixed, leading, index,
+                                        edge, offset);
+    }
     Q_INVOKABLE double reservedHeight(double width, double height,
                                       double primaryAspect,
                                       double referenceAspect, int mode,

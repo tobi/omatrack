@@ -8,6 +8,45 @@
 class LibraryModelTest : public QObject {
     Q_OBJECT
 private slots:
+    void filmstripOnlyFixesBookendsAndKeepsPitLapsVariable() {
+        LapListModel model;
+        QVector<LapRow> rows(5);
+        for (int i = 0; i < rows.size(); ++i) {
+            rows[i].lapId = i;
+            rows[i].isComplete = true;
+            rows[i].countsForBest = true;
+            rows[i].timeMs = 100000;
+            rows[i].displayTimeMs = 100000;
+        }
+        rows[0].isComplete = rows[4].isComplete = false;
+        rows[0].countsForBest = rows[4].countsForBest = false;
+        rows[2].isPitLap = true;
+        rows[2].countsForBest = false;
+        rows[2].timeMs = 900000;        // real elapsed label must survive
+        rows[2].displayTimeMs = 50000;  // most of it was parked
+        model.refresh(rows);
+        QCOMPARE(model.fixedLapCount(), 2);
+        QVERIFY(model.leadingBookend());
+        QCOMPARE(
+            model.data(model.index(0), LapListModel::FilmstripEdgeRole).toInt(),
+            -1);
+        QCOMPARE(
+            model.data(model.index(4), LapListModel::FilmstripEdgeRole).toInt(),
+            1);
+        QCOMPARE(
+            model.data(model.index(2), LapListModel::FilmstripEdgeRole).toInt(),
+            0);
+        QCOMPARE(model.data(model.index(2), LapListModel::FilmstripWeightRole)
+                     .toDouble(),
+                 0.2);
+        QCOMPARE(model.data(model.index(2), LapListModel::TimeMsRole).toInt(),
+                 900000);
+        rows[2].displayTimeMs = 0;
+        model.refresh(rows);
+        QCOMPARE(model.data(model.index(2), LapListModel::FilmstripWeightRole)
+                     .toDouble(),
+                 0.0);
+    }
     void refreshDoesNotReset() {
         LibraryModel model;
         QVariantList sources;
