@@ -152,9 +152,13 @@ QVector<UsbVolume> windowsRemovableVolumes() {
     return result;
 }
 
+#endif
+
 bool UsbDeviceChangeFilter::nativeEventFilter(const QByteArray& eventType,
                                               void* message, qintptr*) {
-    if (eventType != QByteArrayLiteral("windows_generic_MSG")) return false;
+#ifdef Q_OS_WIN
+    if (!message || eventType != QByteArrayLiteral("windows_generic_MSG"))
+        return false;
     const MSG* msg = static_cast<MSG*>(message);
     if (msg->message != WM_DEVICECHANGE) return false;
     if (msg->wParam != DBT_DEVICEARRIVAL &&
@@ -162,9 +166,12 @@ bool UsbDeviceChangeFilter::nativeEventFilter(const QByteArray& eventType,
         return false;
     const auto* header = reinterpret_cast<DEV_BROADCAST_HDR*>(msg->lParam);
     if (!header || header->dbch_devicetype != DBT_DEVTYP_VOLUME) return false;
-    onChange_();
+    if (onChange_) onChange_();
+#else
+    Q_UNUSED(eventType);
+    Q_UNUSED(message);
+#endif
     return false;
 }
-#endif
 
 }  // namespace omatrack

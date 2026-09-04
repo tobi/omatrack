@@ -5,6 +5,16 @@
 #include <QFileInfo>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QPointer>
+#include <type_traits>
+
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#include <dbt.h>
+#endif
+
+static_assert(std::is_base_of_v<QObject, omatrack::UsbDeviceChangeFilter>);
+static_assert(!std::is_copy_constructible_v<omatrack::UsbDeviceChangeFilter>);
 
 namespace {
 
@@ -20,6 +30,46 @@ class UsbMediaTest : public QObject {
     Q_OBJECT
 
 private slots:
+    void eventFilterHasParentOwnedLifetime() {
+        QPointer<omatrack::UsbDeviceChangeFilter> filter;
+        int calls = 0;
+        {
+            QObject parent;
+            filter = new omatrack::UsbDeviceChangeFilter([&calls] { ++calls; },
+                                                         &parent);
+            QCOMPARE(filter->parent(), &parent);
+            QVERIFY(!filter->nativeEventFilter(QByteArrayLiteral("unrelated"),
+                                               nullptr, nullptr));
+            QVERIFY(!filter->nativeEventFilter(
+                QByteArrayLiteral("windows_generic_MSG"), nullptr, nullptr));
+            QCOMPARE(calls, 0);
+        }
+        QVERIFY(filter.isNull());
+    }
+
+    void windowsVolumeEventsNotifyWithoutConsuming() {
+#ifdef Q_OS_WIN
+        int calls = 0;
+        omatrack::UsbDeviceChangeFilter filter([&calls] { ++calls; });
+        DEV_BROADCAST_VOLUME volume{};
+        volume.dbcv_size = sizeof(volume);
+        volume.dbcv_devicetype = DBT_DEVTYP_VOLUME;
+        MSG message{};
+        message.message = WM_DEVICECHANGE;
+        message.wParam = DBT_DEVICEARRIVAL;
+        message.lParam = reinterpret_cast<LPARAM>(&volume);
+        QVERIFY(!filter.nativeEventFilter(
+            QByteArrayLiteral("windows_generic_MSG"), &message, nullptr));
+        QCOMPARE(calls, 1);
+        message.wParam = DBT_DEVICEREMOVECOMPLETE;
+        QVERIFY(!filter.nativeEventFilter(
+            QByteArrayLiteral("windows_generic_MSG"), &message, nullptr));
+        QCOMPARE(calls, 2);
+#else
+        QSKIP("Native Windows payloads are covered by the Windows CI job");
+#endif
+    }
+
     void detectsUsbTransportPath() {
 #ifdef Q_OS_WIN
         QSKIP("Windows cannot follow the POSIX sysfs symlink fixtures");

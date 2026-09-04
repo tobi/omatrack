@@ -4,10 +4,9 @@
 #include <QString>
 #include <QVector>
 #include <functional>
-
-#ifdef Q_OS_WIN
+#include <utility>
+#include <QObject>
 #include <QAbstractNativeEventFilter>
-#endif
 
 namespace omatrack {
 
@@ -42,23 +41,25 @@ QVector<UsbVolume> mountedUsbVolumes();
 /// Removable logical drives (GetDriveTypeW == DRIVE_REMOVABLE) that are
 /// ready: empty card readers fail GetVolumeInformationW and are skipped.
 QVector<UsbVolume> windowsRemovableVolumes();
+#endif
 
 /// Calls onChange when Windows reports a volume arrival or removal
 /// (WM_DEVICECHANGE, DBT_DEVTYP_VOLUME). Install once on the application;
-/// never consumes the message.
-class UsbDeviceChangeFilter : public QAbstractNativeEventFilter {
+/// never consumes the message. The QObject ownership contract is compiled
+/// on every platform; non-Windows events are ignored.
+class UsbDeviceChangeFilter : public QObject,
+                              public QAbstractNativeEventFilter {
+    Q_OBJECT
+    Q_DISABLE_COPY_MOVE(UsbDeviceChangeFilter)
 public:
     explicit UsbDeviceChangeFilter(std::function<void()> onChange,
                                    QObject* parent = nullptr)
-        : QAbstractNativeEventFilter(), onChange_(std::move(onChange)) {
-        setParent(parent);
-    }
+        : QObject(parent), onChange_(std::move(onChange)) {}
     bool nativeEventFilter(const QByteArray& eventType, void* message,
                            qintptr* result) override;
 
 private:
     std::function<void()> onChange_;
 };
-#endif
 
 }  // namespace omatrack
