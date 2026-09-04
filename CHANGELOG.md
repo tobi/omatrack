@@ -2,6 +2,25 @@
 
 All notable user-facing changes are documented here.
 
+## 1.8.1 — 2026-09-04
+
+- Fixed-width Out/In bookends align both filmstrip rows. Middle laps remain
+  variable-width without letting stationary pit time consume the strip;
+  actual lap times and playback timing are unchanged.
+- Resize trace heights directly in a dedicated mode, with neighbour-pushing
+  dividers, Save/Cancel/Reset, and persistent proportions for raw channels too.
+- Larger track heading with Event controls underneath; fullscreen driver,
+  lap and fuel context moves above the central delta readout.
+- The dragged telemetry HUD position survives restarts and window resizing.
+- USB copy is a sidebar bottom sheet with Copy all. A separate Sync action
+  copies library recordings to a USB stick; event setup sits atop the sidebar.
+- Raw-channel cache misses create their background jobs on the GUI thread,
+  keeping QObject ownership correct while decoding remains on workers.
+- Fix the Windows build: the USB device-change filter now has proper QObject
+  ownership, covered by cross-platform lifetime and Windows message tests.
+- Release tagging now has an explicit gate requiring green cross-platform CI
+  for the exact pushed main commit. Document the Qt linting tools and limits.
+
 ## 1.8.0 — 2026-09-03
 
 - Thin antialiased traces with per-channel styling: persistent width, fill,
