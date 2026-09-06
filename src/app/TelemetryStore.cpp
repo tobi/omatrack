@@ -5808,6 +5808,28 @@ void TelemetryStore::setImageTelemetryModel(const QString& path) {
     emit imageTelemetrySettingsChanged();
 }
 
+bool TelemetryStore::imageModelManaged() const {
+    return prefs_->imageModelManaged();
+}
+
+void TelemetryStore::setImageModelManaged(bool managed) {
+    if (managed == prefs_->imageModelManaged()) return;
+    prefs_->setImageModelManaged(managed);
+    schedulePreferencesSave();
+    emit imageTelemetrySettingsChanged();
+}
+
+bool TelemetryStore::imageModelUpdates() const {
+    return prefs_->imageModelUpdates();
+}
+
+void TelemetryStore::setImageModelUpdates(bool updates) {
+    if (updates == prefs_->imageModelUpdates()) return;
+    prefs_->setImageModelUpdates(updates);
+    schedulePreferencesSave();
+    emit imageTelemetrySettingsChanged();
+}
+
 void TelemetryStore::overrideVideoMuted(bool muted) {
     if (videoMuted() == muted) {
         videoMutedOverride_ = muted;

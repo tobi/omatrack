@@ -1,7 +1,9 @@
 # Optional native image-reader runtime. A build without either dependency remains
 # a normal telemetry/video player and explicitly reports extraction unavailable.
 option(OMATRACK_ENABLE_IMAGE_TELEMETRY "Enable image-derived video telemetry" ON)
-set(ONNXRUNTIME_ROOT "" CACHE PATH "ONNX Runtime C/C++ SDK prefix")
+set(ONNXRUNTIME_ROOT "$ENV{ONNXRUNTIME_ROOT}" CACHE PATH "ONNX Runtime C/C++ SDK prefix")
+option(OMATRACK_REQUIRE_IMAGE_TELEMETRY "Fail configure if the image-reader runtime is unavailable"
+  "$ENV{OMATRACK_REQUIRE_IMAGE_TELEMETRY}")
 add_library(omatrack_inference STATIC
   ${PROJECT_SOURCE_DIR}/src/inference/GaugeReader.cpp
   ${PROJECT_SOURCE_DIR}/src/inference/VideoFrameDecoder.cpp)
@@ -44,4 +46,10 @@ if(OMATRACK_ENABLE_IMAGE_TELEMETRY)
   else()
     message(STATUS "Image telemetry decoder disabled: FFmpeg development libraries missing")
   endif()
+endif()
+
+if(OMATRACK_REQUIRE_IMAGE_TELEMETRY AND
+   (NOT OMATRACK_ENABLE_IMAGE_TELEMETRY OR NOT ONNXRUNTIME_INCLUDE_DIR OR
+    NOT ONNXRUNTIME_LIBRARY OR NOT TARGET PkgConfig::GAUGE_FFMPEG))
+  message(FATAL_ERROR "This build requires ONNX Runtime and FFmpeg development libraries")
 endif()

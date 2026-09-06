@@ -78,7 +78,7 @@ ImageTelemetryFileIdentity identify(const QString& path) {
     require(!result.canonicalPath.empty(),
             "Cannot canonicalize source or model");
 #ifdef Q_OS_UNIX
-    struct stat st{};
+    struct stat st = {};
     require(::stat(QFile::encodeName(text(result.canonicalPath)).constData(),
                    &st) == 0 &&
                 S_ISREG(st.st_mode),

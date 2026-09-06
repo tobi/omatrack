@@ -13,10 +13,18 @@ ApplicationWindow {
     id: preferencesWindow
 
     property int currentSection: 0
+    required property ImageModelManager imageModelManager
+
+    signal chooseLocalImageModel
 
     function openEvent(): void {
         preferencesWindow.currentSection = 3;
         preferencesWindow.refresh();
+        preferencesWindow.show();
+        preferencesWindow.raise();
+    }
+    function openImageTelemetry(): void {
+        preferencesWindow.currentSection = 7;
         preferencesWindow.show();
         preferencesWindow.raise();
     }
@@ -96,107 +104,119 @@ ApplicationWindow {
                 border.width: 1
                 color: Style.darkBackgroundColor
 
-                ColumnLayout {
+                ScrollView {
+                    id: navigationScroll
+
                     anchors.fill: parent
-                    anchors.margins: 12
-                    spacing: 6
+                    clip: true
+                    contentWidth: navigationScroll.availableWidth
+                    padding: 12
 
-                    Label {
-                        Layout.bottomMargin: 4
-                        Layout.leftMargin: 8
-                        color: Style.dimTextColor
-                        font.bold: true
-                        font.family: Style.monoFontFamily
-                        font.pixelSize: Style.smallFontSize
-                        text: "SETTINGS"
-                    }
-                    Repeater {
-                        delegate: Button {
-                            id: sectionButton
+                    ColumnLayout {
+                        spacing: 6
+                        width: navigationScroll.availableWidth
 
-                            required property string detail
-                            required property int index
-                            required property string label
+                        Label {
+                            Layout.bottomMargin: 4
+                            Layout.leftMargin: 8
+                            color: Style.dimTextColor
+                            font.bold: true
+                            font.family: Style.monoFontFamily
+                            font.pixelSize: Style.smallFontSize
+                            text: "SETTINGS"
+                        }
+                        Repeater {
+                            delegate: Button {
+                                id: sectionButton
 
+                                required property string detail
+                                required property int index
+                                required property string label
+
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 54
+                                bottomPadding: 7
+                                checkable: true
+                                checked: preferencesWindow.currentSection === sectionButton.index
+                                flat: true
+                                leftPadding: 12
+                                rightPadding: 8
+                                topPadding: 7
+
+                                background: Rectangle {
+                                    border.color: sectionButton.checked ? Style.accentColor : "transparent"
+                                    border.width: 1
+                                    color: sectionButton.checked ? Style.selectionColor : "transparent"
+                                    opacity: sectionButton.checked ? 0.22 : 1
+                                    radius: 5
+                                }
+                                contentItem: Column {
+                                    spacing: 2
+
+                                    Label {
+                                        color: sectionButton.checked ? Style.accentColor : Style.foregroundColor
+                                        font.bold: sectionButton.checked
+                                        text: sectionButton.label
+                                        width: parent.width
+                                    }
+                                    Label {
+                                        color: Style.mutedTextColor
+                                        font.pixelSize: Style.smallFontSize
+                                        text: sectionButton.detail
+                                        width: parent.width
+                                    }
+                                }
+
+                                onClicked: preferencesWindow.currentSection = sectionButton.index
+                            }
+                            model: ListModel {
+                                ListElement {
+                                    detail: "Folders and connections"
+                                    label: "Telemetry library"
+                                }
+                                ListElement {
+                                    detail: "Names across sessions"
+                                    label: "Drivers"
+                                }
+                                ListElement {
+                                    detail: "Track Atlas cache"
+                                    label: "Track data"
+                                }
+                                ListElement {
+                                    detail: "Track and session"
+                                    label: "Event"
+                                }
+                                ListElement {
+                                    detail: "Reference HUD traces"
+                                    label: "Overlay"
+                                }
+                                ListElement {
+                                    detail: "Lua trace groups"
+                                    label: "Plugins"
+                                }
+                                ListElement {
+                                    detail: "GitHub AppImage"
+                                    label: "Updates"
+                                }
+                                ListElement {
+                                    detail: "Reader model and updates"
+                                    label: "Image telemetry"
+                                }
+                            }
+                        }
+                        Item {
+                            Layout.fillHeight: true
+                        }
+                        Label {
                             Layout.fillWidth: true
-                            Layout.preferredHeight: 54
-                            bottomPadding: 7
-                            checkable: true
-                            checked: preferencesWindow.currentSection === sectionButton.index
-                            flat: true
-                            leftPadding: 12
-                            rightPadding: 8
-                            topPadding: 7
-
-                            background: Rectangle {
-                                border.color: sectionButton.checked ? Style.accentColor : "transparent"
-                                border.width: 1
-                                color: sectionButton.checked ? Style.selectionColor : "transparent"
-                                opacity: sectionButton.checked ? 0.22 : 1
-                                radius: 5
-                            }
-                            contentItem: Column {
-                                spacing: 2
-
-                                Label {
-                                    color: sectionButton.checked ? Style.accentColor : Style.foregroundColor
-                                    font.bold: sectionButton.checked
-                                    text: sectionButton.label
-                                    width: parent.width
-                                }
-                                Label {
-                                    color: Style.mutedTextColor
-                                    font.pixelSize: Style.smallFontSize
-                                    text: sectionButton.detail
-                                    width: parent.width
-                                }
-                            }
-
-                            onClicked: preferencesWindow.currentSection = sectionButton.index
+                            Layout.leftMargin: 8
+                            Layout.rightMargin: 8
+                            color: Style.dimTextColor
+                            elide: Text.ElideMiddle
+                            font.family: Style.monoFontFamily
+                            font.pixelSize: Style.smallFontSize
+                            text: Store.configFilePath()
                         }
-                        model: ListModel {
-                            ListElement {
-                                detail: "Folders and connections"
-                                label: "Telemetry library"
-                            }
-                            ListElement {
-                                detail: "Names across sessions"
-                                label: "Drivers"
-                            }
-                            ListElement {
-                                detail: "Track Atlas cache"
-                                label: "Track data"
-                            }
-                            ListElement {
-                                detail: "Track and session"
-                                label: "Event"
-                            }
-                            ListElement {
-                                detail: "Reference HUD traces"
-                                label: "Overlay"
-                            }
-                            ListElement {
-                                detail: "Lua trace groups"
-                                label: "Plugins"
-                            }
-                            ListElement {
-                                detail: "GitHub AppImage"
-                                label: "Updates"
-                            }
-                        }
-                    }
-                    Item {
-                        Layout.fillHeight: true
-                    }
-                    Label {
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 8
-                        Layout.rightMargin: 8
-                        color: Style.dimTextColor
-                        elide: Text.ElideMiddle
-                        font.family: Style.monoFontFamily
-                        font.pixelSize: Style.smallFontSize
-                        text: Store.configFilePath()
                     }
                 }
             }
@@ -220,6 +240,11 @@ ApplicationWindow {
                 PreferencesPluginsPage {
                 }
                 PreferencesUpdatesPage {
+                }
+                PreferencesImageTelemetryPage {
+                    modelManager: preferencesWindow.imageModelManager
+
+                    onChooseLocalModel: preferencesWindow.chooseLocalImageModel()
                 }
             }
         }

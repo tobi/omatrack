@@ -7,6 +7,24 @@
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Test)
 
+qt_add_executable(image-model-manager-test ImageModelManagerTest.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/AsyncJob.h
+  ${CMAKE_SOURCE_DIR}/src/app/ImageModelManager.h
+  ${CMAKE_SOURCE_DIR}/src/app/ImageModelManager.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/ImageModelManifest.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/RemoteCache.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/VerboseLog.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/WebDavBackend.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/S3Backend.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/SigV4.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/LibraryLocation.cpp)
+target_include_directories(image-model-manager-test PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/app)
+target_link_libraries(image-model-manager-test PRIVATE
+  Qt6::Test Qt6::Core Qt6::Network Qt6::Concurrent Qt6::Qml
+  omatrack_core omatrack_inference omatrack_warnings)
+add_test(NAME image-model-manager-test COMMAND image-model-manager-test)
+set_tests_properties(image-model-manager-test PROPERTIES LABELS unit)
+
 add_executable(image-scan-scheduler-test ImageScanSchedulerTest.cpp)
 target_include_directories(image-scan-scheduler-test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(image-scan-scheduler-test PRIVATE omatrack_warnings)
@@ -61,6 +79,13 @@ if(OMATRACK_ENABLE_IMAGE_TELEMETRY AND ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_L
 endif()
 add_test(NAME gauge-reader-test COMMAND gauge-reader-test)
 set_tests_properties(gauge-reader-test PROPERTIES LABELS unit)
+set(OMATRACK_GAUGE_SMOKE_MODEL "$ENV{OMATRACK_GAUGE_SMOKE_MODEL}" CACHE FILEPATH
+  "Pinned public model for native-runtime smoke verification")
+if(OMATRACK_GAUGE_SMOKE_MODEL)
+  add_test(NAME gauge-reader-public-model-test COMMAND gauge-reader-test
+    --model-only "${OMATRACK_GAUGE_SMOKE_MODEL}")
+  set_tests_properties(gauge-reader-public-model-test PROPERTIES LABELS integration)
+endif()
 set(OMATRACK_GAUGE_TEST_MODEL "" CACHE FILEPATH "Optional reviewed model for real image-reader parity tests")
 set(OMATRACK_GAUGE_TEST_FIXTURES "" CACHE PATH "Optional generated, private reader fixture directory")
 if(OMATRACK_GAUGE_TEST_MODEL AND OMATRACK_GAUGE_TEST_FIXTURES)

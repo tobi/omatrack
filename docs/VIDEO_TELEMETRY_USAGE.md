@@ -4,6 +4,32 @@ Omatrack collects image-derived telemetry as **data**, not as a screenshot/demo
 panel. It keeps native telemetry first and uses the image reader for supported
 local videos without a telemetry/data track.
 
+## Enable the reader
+
+Image extraction and managed model downloads are **off on a fresh install**.
+Opening a video or Preferences does not contact the model host before you opt in.
+Existing explicit extraction settings and local/staged model paths remain usable.
+
+Open **Preferences → Image telemetry** (also available from **Model…** in the
+video controls). **Enable & download reader (~2.2 MB)** enables extraction and
+consents to downloading the compatible reader from the public
+[tobil/omatrack-telemetry-reader](https://huggingface.co/tobil/omatrack-telemetry-reader)
+repository. No Hugging Face account or token is needed. Video, crops and telemetry
+stay local; only model files and update metadata are downloaded. The preferences
+page shows download progress, cancellation, failures and available updates.
+
+**Keep reader up to date** is on by default after opt-in and can be turned off
+independently of extraction. Automatic activation waits until no video is open,
+including paused videos. A downloaded update can be activated deliberately with
+**Apply now** while a video is open; it restarts extraction and invalidates
+incompatible prediction caches through the existing model-content identity.
+
+**Choose local model…** remains available without network consent. Selecting a
+local file turns managed downloads off before changing the active path, so a
+pending download/update cannot replace it. Stopping managed downloads leaves the
+current model path available for local use; turning extraction off is a separate
+choice.
+
 ## Watching and scanning
 
 - Opening a new video starts fullscreen; Escape returns to the workspace and F
@@ -64,7 +90,9 @@ of absent telemetry. Remote inference is withheld until a local/downloaded video
 is available. No video/crops are sent to an external inference service.
 
 See [reader contracts and model setup](GAUGE_READER_RUNTIME.md). Model weights and
-private footage are not included in this repository or covered by its MIT license.
+private footage are not included in this source repository. Consult the model
+repository's own license and model card before using or redistributing its files;
+Omatrack's source license does not grant rights to input footage.
 
 ## Build and run
 
@@ -81,17 +109,25 @@ cmake --build --preset release
 ./build/omatrack --new-instance /path/to/video.mp4
 ```
 
-`OMATRACK_GAUGE_MODEL` is an explicit **private staging** choice: it verifies the
+`OMATRACK_GAUGE_MODEL` is an explicit **build-time staging** choice: it verifies the
 known export hash and places the model in `models/gauge-reader.onnx` beside the
 executable. It neither downloads nor publishes weights. Alternatively select a
-trusted local model with **Model…** in the playback controls. Configuration uses
-the existing single `omatrack.yml` document:
+trusted local model through **Model… → Choose local model…**. Configuration uses
+the existing single `omatrack.yml` document. For an explicitly enabled local reader:
 
 ```yaml
 video:
   image_telemetry: true
   image_model: /absolute/path/to/gauge-reader.onnx
+  image_model_managed: false
+  image_model_updates: true
 ```
+
+`image_model_managed` defaults to `false`; no model network requests occur while
+it is false. `image_model_updates` defaults to `true` but takes effect only after
+managed-download consent. `image_telemetry` defaults to `false`; an existing
+explicit value is preserved. The UI writes these preferences through the normal
+debounced configuration writer.
 
 An empty `image_model` uses the staged model. The source/model identities must be
 readable to validate cache reuse, but a complete cache does not construct the

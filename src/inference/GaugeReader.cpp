@@ -21,8 +21,6 @@
 namespace omatrack::inference {
 namespace {
 using Clock = std::chrono::steady_clock;
-constexpr char CheckpointSha[] =
-    "2b1bedae45f08c9187e8e26a92cc1a01db30bda812e8fb7d85fe51368a80faeb";
 constexpr char Contract[] = "omatrack-crop-count-v1";
 constexpr char Preprocessing[] = "pillow-rgb-bilinear-22bit-crop-count-v1";
 constexpr int CropWidth = 192, CropHeight = 64;
@@ -322,6 +320,7 @@ std::string gaugeReaderTestDecode(const float* logits, const float* counts) {
 
 struct GaugeReader::Impl {
     std::string error;
+    std::map<std::string, std::string> metadata;
 #if OMATRACK_HAVE_ONNXRUNTIME
     Ort::Env environment{ORT_LOGGING_LEVEL_WARNING, "omatrack-gauge-reader"};
     std::unique_ptr<Ort::Session> session;
@@ -346,13 +345,19 @@ GaugeReader::GaugeReader(const std::string& modelPath)
                                                       path.c_str(), options);
         Ort::AllocatorWithDefaultOptions allocator;
         const auto metadata = session->GetModelMetadata();
+        // Compatibility is a semantic/tensor contract, not one forever-pinned
+        // training run. Managed downloads authenticate the complete artifact
+        // via their immutable-commit manifest SHA-256; local models must still
+        // carry valid provenance and match this exact reader implementation.
+        std::map<std::string, std::string> acceptedMetadata;
         const std::array<std::pair<const char*, const char*>, 5> required{
             {{"omatrack.contract", Contract},
-             {"omatrack.checkpoint_sha256", CheckpointSha},
              {"omatrack.preprocessing", Preprocessing},
              {"omatrack.layout", "tds_aim_orange-1920x1080"},
              {"omatrack.decoder",
-              "count-argmax-plus-one-ctc-prefix-beam-10-per-length"}}};
+              "count-argmax-plus-one-ctc-prefix-beam-10-per-length"},
+             {"omatrack.fields",
+              "gear,stint_lap,brake_fill_pct,throttle_fill_pct"}}};
         for (const auto& item : required) {
             const auto value = metadata.LookupCustomMetadataMapAllocated(
                 item.first, allocator);
@@ -360,7 +365,21 @@ GaugeReader::GaugeReader(const std::string& modelPath)
                 throw std::runtime_error(
                     "Wrong gauge model provenance/contract: " +
                     std::string(item.first));
+            acceptedMetadata.emplace(item.first, value.get());
         }
+        const auto checkpoint = metadata.LookupCustomMetadataMapAllocated(
+            "omatrack.checkpoint_sha256", allocator);
+        const std::string digest = checkpoint ? checkpoint.get() : "";
+        if (digest.size() != 64 ||
+            !std::all_of(digest.begin(), digest.end(),
+                         [](char c) {
+                             return (c >= '0' && c <= '9') ||
+                                    (c >= 'a' && c <= 'f');
+                         }) ||
+            digest == std::string(64, '0'))
+            throw std::runtime_error(
+                "Missing or invalid gauge checkpoint provenance SHA-256");
+        acceptedMetadata.emplace("omatrack.checkpoint_sha256", digest);
         if (session->GetInputCount() != 1 || session->GetOutputCount() != 3)
             throw std::runtime_error(
                 "Gauge model must have one crop input and three count-reader "
@@ -384,6 +403,7 @@ GaugeReader::GaugeReader(const std::string& modelPath)
         checkTensor(false, 0, "digits", {4, 11, 24});
         checkTensor(false, 1, "fills", {4});
         checkTensor(false, 2, "counts", {4, 3});
+        impl_->metadata = std::move(acceptedMetadata);
         impl_->session = std::move(session);
     } catch (const std::exception& e) {
         impl_->error = e.what();
@@ -404,6 +424,9 @@ bool GaugeReader::ready() const {
 #endif
 }
 const std::string& GaugeReader::modelError() const { return impl_->error; }
+const std::map<std::string, std::string>& GaugeReader::modelMetadata() const {
+    return impl_->metadata;
+}
 
 GaugeResult GaugeReader::inspectLayout(const GaugeRgb24Frame& frame) {
     const auto started = Clock::now();

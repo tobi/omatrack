@@ -495,6 +495,12 @@ class TelemetryStore : public QObject {
         QString imageTelemetryModel READ imageTelemetryModel WRITE
             setImageTelemetryModel NOTIFY imageTelemetrySettingsChanged FINAL)
     Q_PROPERTY(
+        bool imageModelManaged READ imageModelManaged WRITE setImageModelManaged
+            NOTIFY imageTelemetrySettingsChanged FINAL)
+    Q_PROPERTY(
+        bool imageModelUpdates READ imageModelUpdates WRITE setImageModelUpdates
+            NOTIFY imageTelemetrySettingsChanged FINAL)
+    Q_PROPERTY(
         QStringList recentFiles READ recentFiles NOTIFY recentFilesChanged)
     Q_PROPERTY(
         bool eventMode READ eventMode WRITE setEventMode NOTIFY eventChanged)
@@ -1012,6 +1018,10 @@ public:
     void setImageTelemetryEnabled(bool enabled);
     QString imageTelemetryModel() const;
     void setImageTelemetryModel(const QString& path);
+    bool imageModelManaged() const;
+    void setImageModelManaged(bool managed);
+    bool imageModelUpdates() const;
+    void setImageModelUpdates(bool updates);
     /// `--mute`: silence playback for this process without touching
     /// `video.muted` in omatrack.yml. The first click on the speaker button
     /// ends the override and persists as usual.

@@ -1,0 +1,4 @@
+# CPU inference example, tested with Python 3.12. No torch/timm required.
+numpy==2.4.3
+pillow==12.3.0
+onnxruntime==1.23.2

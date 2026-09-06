@@ -63,6 +63,10 @@ public:
     void setImageTelemetryModel(const QString& path) {
         imageTelemetryModel_ = path;
     }
+    bool imageModelManaged() const { return imageModelManaged_; }
+    void setImageModelManaged(bool managed) { imageModelManaged_ = managed; }
+    bool imageModelUpdates() const { return imageModelUpdates_; }
+    void setImageModelUpdates(bool updates) { imageModelUpdates_ = updates; }
 
     const QString& requestedSyncStrategy() const {
         return requestedComparisonSyncStrategy_;
@@ -176,8 +180,10 @@ private:
 
     QStringList recentFiles_;
     bool videoMuted_ = false;
-    bool imageTelemetryEnabled_ = true;
+    bool imageTelemetryEnabled_ = false;
     QString imageTelemetryModel_;
+    bool imageModelManaged_ = false;
+    bool imageModelUpdates_ = true;
     QPointF videoHudPosition_{-1.0, -1.0};
     QString requestedComparisonSyncStrategy_ = QStringLiteral("gps-continuous");
     qint64 cacheLimitBytes_ = 0;

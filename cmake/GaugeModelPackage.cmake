@@ -48,6 +48,9 @@ if(OMATRACK_ENABLE_IMAGE_TELEMETRY AND ONNXRUNTIME_ROOT AND ONNXRUNTIME_LIBRARY)
     if(EXISTS "${ONNXRUNTIME_ROOT}/${_notice}")
       install(FILES "${ONNXRUNTIME_ROOT}/${_notice}"
         DESTINATION "${CMAKE_INSTALL_DOCDIR}/onnxruntime")
+    elseif(EXISTS "${ONNXRUNTIME_ROOT}/share/licenses/onnxruntime/${_notice}")
+      install(FILES "${ONNXRUNTIME_ROOT}/share/licenses/onnxruntime/${_notice}"
+        DESTINATION "${CMAKE_INSTALL_DOCDIR}/onnxruntime")
     endif()
   endforeach()
 endif()

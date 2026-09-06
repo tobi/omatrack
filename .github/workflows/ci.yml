@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  OMATRACK_REQUIRE_IMAGE_TELEMETRY: 'ON'
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -25,7 +28,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends --yes \
-            ccache clang-format libmpv-dev libyaml-dev ninja-build pkg-config
+            ccache clang-format libmpv-dev libyaml-dev libzstd-dev ninja-build pkg-config
+          ort_root=$(scripts/fetch-onnxruntime.sh linux-x64)
+          echo "ONNXRUNTIME_ROOT=$ort_root" >> "$GITHUB_ENV"
+          model_file=$(scripts/fetch-reader-test-model.sh)
+          echo "OMATRACK_GAUGE_SMOKE_MODEL=$model_file" >> "$GITHUB_ENV"
       - name: Restore Cargo cache
         uses: actions/cache@v4
         with:
@@ -64,7 +71,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Install native dependencies
-        run: brew install ccache clang-format libyaml mpv ninja pkg-config
+        run: |
+          brew install ccache clang-format libyaml mpv ninja pkg-config zstd
+          ort_root=$(scripts/fetch-onnxruntime.sh osx-arm64)
+          echo "ONNXRUNTIME_ROOT=$ort_root" >> "$GITHUB_ENV"
+          model_file=$(scripts/fetch-reader-test-model.sh)
+          echo "OMATRACK_GAUGE_SMOKE_MODEL=$model_file" >> "$GITHUB_ENV"
       - name: Restore Cargo cache
         uses: actions/cache@v4
         with:
@@ -118,10 +130,18 @@ jobs:
             mingw-w64-ucrt-x86_64-ccache
             mingw-w64-ucrt-x86_64-libyaml
             mingw-w64-ucrt-x86_64-mpv
+            mingw-w64-ucrt-x86_64-onnxruntime
+            mingw-w64-ucrt-x86_64-zstd
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-qt6-base
             mingw-w64-ucrt-x86_64-qt6-declarative
             mingw-w64-ucrt-x86_64-rust
+      - name: Select native ONNX Runtime SDK
+        run: |
+          ort_root=$(cygpath -m /ucrt64)
+          echo "ONNXRUNTIME_ROOT=$ort_root" >> "$GITHUB_ENV"
+          model_file=$(scripts/fetch-reader-test-model.sh)
+          echo "OMATRACK_GAUGE_SMOKE_MODEL=$(cygpath -m "$model_file")" >> "$GITHUB_ENV"
       - name: Restore Cargo cache
         uses: actions/cache@v4
         with:

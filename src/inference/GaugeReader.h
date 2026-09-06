@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -66,6 +67,7 @@ public:
     static bool runtimeAvailable();
     bool ready() const;
     const std::string& modelError() const;
+    const std::map<std::string, std::string>& modelMetadata() const;
     GaugeResult read(const GaugeRgb24Frame& frame);
 
     // Image-only admission is available even in builds without ONNX Runtime.

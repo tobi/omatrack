@@ -73,6 +73,7 @@ qt_add_qml_module(omatrack
     PreferencesLibraryPage.qml
     PreferencesTrackDataPage.qml
     PreferencesUpdatesPage.qml
+    PreferencesImageTelemetryPage.qml
     TextInputDialog.qml
     SessionTreeDelegate.qml
     SpanHoverCard.qml
@@ -104,6 +105,8 @@ qt_add_qml_module(omatrack
     DamperStripView.h DamperStripView.cpp
     MpvVideoItem.h MpvVideoItem.cpp
     ImageTelemetryController.h ImageTelemetryController.cpp
+    ImageModelManager.h ImageModelManager.cpp
+    ImageModelManifest.h ImageModelManifest.cpp
     ImageTelemetryTraces.h ImageTelemetryTraces.cpp
     ImageTelemetryTraceGeometry.h ImageTelemetryTraceGeometry.cpp
     FilmstripLayout.h
@@ -155,7 +158,8 @@ if(OMATRACK_ENABLE_AUTOTEST_HARNESS)
     SessionChromeAutotest.cpp
     UsbCopyAutotest.cpp
     PluginAutotest.cpp
-    ImageTelemetryScanAutotest.h ImageTelemetryScanAutotest.cpp)
+    ImageTelemetryScanAutotest.h ImageTelemetryScanAutotest.cpp
+    ImageModelManagementAutotest.h ImageModelManagementAutotest.cpp)
   target_compile_definitions(omatrack PRIVATE
     OMATRACK_ENABLE_AUTOTEST_HARNESS=1)
 endif()

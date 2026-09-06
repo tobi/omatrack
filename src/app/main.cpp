@@ -19,6 +19,7 @@
 
 #ifdef OMATRACK_ENABLE_AUTOTEST_HARNESS
 #include "AutotestHarness.h"
+#include "ImageModelManagementAutotest.h"
 #include "ImageTelemetryScanAutotest.h"
 #endif
 #include "Headless.h"
@@ -251,7 +252,8 @@ int main(int argc, char** argv) {
                      openAndRaise);
 
 #ifdef OMATRACK_ENABLE_AUTOTEST_HARNESS
-    if (!omatrack::autotest::installImageTelemetryScan(engine, *store))
+    if (!omatrack::autotest::installImageModelManagement(engine, *store) &&
+        !omatrack::autotest::installImageTelemetryScan(engine, *store))
         omatrack::autotest::install(engine, *store);
 #endif
     return app.exec();

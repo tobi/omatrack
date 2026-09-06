@@ -503,6 +503,30 @@ Native lap distance is accepted only when its continuity and total agree with in
   throttle visible fill. No GPS, physical brake pressure or authoritative lap
   classification is inferred. See `docs/GAUGE_READER_RUNTIME.md` for model
   provenance, parity, negative tests and deployment requirements.
+- Managed image models are an explicit opt-in in `omatrack.yml`:
+  `video.image_model_managed` defaults false; fresh `video.image_telemetry`
+  defaults false while existing explicit preferences are honored. Once opted in,
+  `video.image_model_updates` controls automatic compatible updates. Selecting a
+  custom local model opts out before changing the active path.
+- `ImageModelManager` fetches the public Hugging Face repository
+  `tobil/omatrack-telemetry-reader`: resolve an immutable commit, then read its
+  manifest and model from that same revision. Verify bounded size, SHA256 and the
+  reader's semantic/tensor contract before atomic, versioned promotion. Preserve
+  the previous good artifact on cancellation, corruption, errors or incompatibility.
+  Never fetch a model or catalog before consent, transmit footage/crops, reuse
+  authentication/cookies, accept arbitrary manifest URLs, or log signed CDN queries.
+- Automatic checks are at most daily, with a short cooldown for explicit checks.
+  Downloaded updates can be staged during playback, but automatic activation waits
+  until video/extraction is inactive. Explicit Apply is user intent to restart the
+  reader; cached observations remain separated by model content identity. Updates
+  may change checkpoint provenance but never silently change the supported layout,
+  preprocessing, decoder or output semantics. These I/O pipelines use AsyncJob and
+  the dedicated HTTP service, not the GUI thread or a second settings store.
+- CI and release packaging require ONNX Runtime plus FFmpeg image-reader support;
+  ordinary source builds may still omit it explicitly. Linux/macOS use the pinned,
+  hash-verified public SDK bootstrap; Windows uses its native MSYS2 runtime package.
+  Model files are obtained separately through opt-in Hugging Face download, not
+  copied from private training directories into public release assets.
 
 ### Corner intelligence
 

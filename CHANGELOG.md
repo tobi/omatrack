@@ -2,6 +2,27 @@
 
 All notable user-facing changes are documented here.
 
+## 1.8.2 — 2026-09-06
+
+- Collect image-derived telemetry while watching supported videos, or scan ahead
+  from the cursor and backfill the recording. Partial and complete `.telemetry`
+  caches survive reopening; completed caches require no new model inference.
+- Show collected values in native recording-time traces with explicit unknown
+  coverage, actual decoded timestamps, and lightweight cursor updates.
+- Optional Hugging Face reader download and compatible-model updates, with pinned
+  revision, size/hash/contract verification and preservation of the previous model.
+  No model network requests occur before opting in; footage stays local.
+- Videos open fullscreen. Optional MP4/MOV/MKV/AVI/M4V/WebM associations preserve
+  other applications' registrations, and Finder document events use the common
+  file-open path.
+- Native telemetry retains precedence. The initial reader supports the reviewed
+  1080p orange AiM layout and four visible fields; it does not invent physical
+  brake pressure, GPS, distance or verified lap classifications.
+- Avoid an upstream mpv scaler-padding NaN bug with builtin bilinear display
+  scaling, without changing original-resolution model inputs.
+- Preserve exact cached floating-point observations through the JSON parser so
+  later partial-cache merges cannot reject unchanged predictions.
+
 ## 1.8.1 — 2026-09-04
 
 - Fixed-width Out/In bookends align both filmstrip rows. Middle laps remain

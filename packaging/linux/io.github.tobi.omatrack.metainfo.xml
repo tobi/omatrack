@@ -24,6 +24,14 @@
   <url type="bugtracker">https://github.com/tobi/omatrack/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.8.2" date="2026-09-06">
+      <description>
+        <p>Progressive image-derived telemetry for supported video overlays,
+        resumable telemetry caches, native time traces, optional Hugging Face
+        model download and updates, and fullscreen video opening. Native
+        telemetry remains authoritative and source footage stays local.</p>
+      </description>
+    </release>
     <release version="1.2.0" date="2026-08-15">
       <description>
         <p>In-app updates from GitHub Releases for the Linux AppImage,

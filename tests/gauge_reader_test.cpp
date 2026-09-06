@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -75,6 +76,149 @@ Image loadPpm(const fs::path& path) {
     require(in.gcount() == std::streamsize(image.bytes.size()),
             "truncated fixture PPM");
     return image;
+}
+// Small public ONNX protobufs, generated at runtime. Constants are zeros, not
+// learned weights; these prove loader/metadata/tensor compatibility only.
+std::string protoVarint(std::uint64_t value) {
+    std::string bytes;
+    do {
+        const auto low = value & 127;
+        value >>= 7;
+        bytes.push_back(char(low | (value ? 128 : 0)));
+    } while (value);
+    return bytes;
+}
+std::string protoNumber(unsigned field, std::uint64_t value) {
+    return protoVarint(std::uint64_t(field) << 3) + protoVarint(value);
+}
+std::string protoBytes(unsigned field, const std::string& value) {
+    return protoVarint((std::uint64_t(field) << 3) | 2) +
+           protoVarint(value.size()) + value;
+}
+std::string valueInfo(const std::string& name,
+                      const std::vector<int>& dimensions, int type = 1) {
+    std::string shape;
+    for (int dimension : dimensions)
+        shape += protoBytes(1, protoNumber(1, dimension));
+    return protoBytes(1, name) +
+           protoBytes(
+               2, protoBytes(1, protoNumber(1, type) + protoBytes(2, shape)));
+}
+std::map<std::string, std::string> syntheticMetadata() {
+    return {
+        {"omatrack.contract", "omatrack-crop-count-v1"},
+        {"omatrack.preprocessing", "pillow-rgb-bilinear-22bit-crop-count-v1"},
+        {"omatrack.layout", "tds_aim_orange-1920x1080"},
+        {"omatrack.decoder",
+         "count-argmax-plus-one-ctc-prefix-beam-10-per-length"},
+        {"omatrack.fields", "gear,stint_lap,brake_fill_pct,throttle_fill_pct"},
+        {"omatrack.checkpoint_sha256", std::string(64, 'c')}};
+}
+std::string syntheticModel(const std::map<std::string, std::string>& metadata,
+                           int width = 192, int countWidth = 3,
+                           int inputType = 1) {
+    const std::array<std::string, 3> names{{"digits", "fills", "counts"}};
+    const std::array<std::vector<int>, 3> shapes{
+        {{4, 11, 24}, {4}, {4, countWidth}}};
+    std::string graph = protoBytes(2, "synthetic-compatibility-check");
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        std::string tensor;
+        std::size_t elements = 1;
+        for (int dimension : shapes[i]) {
+            tensor += protoNumber(1, dimension);
+            elements *= std::size_t(dimension);
+        }
+        tensor +=
+            protoNumber(2, 1) + protoBytes(9, std::string(elements * 4, '\0'));
+        const auto attribute =
+            protoBytes(1, "value") + protoNumber(20, 4) + protoBytes(5, tensor);
+        graph +=
+            protoBytes(1, protoBytes(2, names[i]) + protoBytes(4, "Constant") +
+                              protoBytes(5, attribute));
+        graph += protoBytes(12, valueInfo(names[i], shapes[i]));
+    }
+    graph += protoBytes(11, valueInfo("crops", {4, 3, 64, width}, inputType));
+    std::string model = protoNumber(1, 8) + protoBytes(8, protoNumber(2, 17)) +
+                        protoBytes(7, graph);
+    for (const auto& [key, value] : metadata)
+        model += protoBytes(14, protoBytes(1, key) + protoBytes(2, value));
+    return model;
+}
+void compatibilityTests() {
+    if (!GaugeReader::runtimeAvailable()) return;
+    const auto unique =
+        std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto directory =
+        fs::temp_directory_path() /
+        ("omatrack-gauge-contract-" + std::to_string(unique));
+    require(fs::create_directory(directory),
+            "cannot create synthetic model directory");
+    struct Cleanup {
+        fs::path path;
+        ~Cleanup() {
+            std::error_code ignored;
+            fs::remove_all(path, ignored);
+        }
+    } cleanup{directory};
+    const auto path = directory / "synthetic.onnx";
+    auto put = [&](const std::string& bytes) {
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        output.write(bytes.data(), bytes.size());
+        require(bool(output), "cannot write synthetic ONNX");
+    };
+    auto metadata = syntheticMetadata();
+    put(syntheticModel(metadata));
+    {
+        GaugeReader reader(path.string());
+        require(reader.ready(),
+                "compatible new checkpoint rejected: " + reader.modelError());
+        require(reader.modelMetadata() == metadata,
+                "validated model metadata missing");
+    }
+    for (const auto& key :
+         {"omatrack.contract", "omatrack.preprocessing", "omatrack.layout",
+          "omatrack.decoder", "omatrack.fields"}) {
+        auto incompatible = metadata;
+        incompatible[key] = "incompatible";
+        put(syntheticModel(incompatible));
+        GaugeReader reader(path.string());
+        require(!reader.ready(),
+                std::string("incompatible metadata accepted: ") + key);
+    }
+    for (const auto& digest : {std::string{}, std::string(64, '0'),
+                               std::string(64, 'z'), std::string(63, 'c')}) {
+        auto bad = metadata;
+        bad["omatrack.checkpoint_sha256"] = digest;
+        put(syntheticModel(bad));
+        GaugeReader reader(path.string());
+        require(!reader.ready(), "invalid checkpoint provenance accepted");
+    }
+    for (const auto& graph :
+         {syntheticModel(metadata, 191), syntheticModel(metadata, 192, 4),
+          syntheticModel(metadata, 192, 3, 2)}) {
+        put(graph);
+        GaugeReader reader(path.string());
+        require(!reader.ready(), "incompatible tensor contract accepted");
+    }
+    std::cout << "PASS synthetic ONNX: new provenance accepted; incompatible "
+                 "semantics/tensors rejected\n";
+}
+void modelOnly(const std::string& path) {
+    require(GaugeReader::runtimeAvailable(),
+            "model-only smoke requires real ONNX Runtime");
+    GaugeReader reader(path);
+    require(reader.ready(),
+            "public model loader failed: " + reader.modelError());
+    require(reader.modelMetadata().size() == 6,
+            "public model validated metadata missing");
+    Image blank;
+    const auto result = reader.read(blank.frame());
+    require(result.admission == GaugeAdmission::Rejected &&
+                result.error == GaugeError::None,
+            "public model blank-frame rejection failed");
+    allUnknown(result);
+    std::cout << "PASS public model loader, semantic/tensor metadata and "
+                 "blank-frame rejection (no accuracy claim)\n";
 }
 void unitTests() {
     GaugeReader missing("/definitely/missing/gauge-reader.onnx");
@@ -324,22 +468,33 @@ void fixtures(const std::string& modelPath, const fs::path& directory) {
 
 int main(int argc, char** argv) {
     try {
-        std::string model;
+        std::string model, smokeModel;
         fs::path directory;
         for (int i = 1; i < argc; ++i) {
             const std::string option = argv[i];
-            if (option == "--model" && i + 1 < argc)
+            if (option == "--model-only" && i + 1 < argc) {
+                smokeModel = argv[++i];
+                require(!smokeModel.empty(),
+                        "model-only path must not be empty");
+            } else if (option == "--model" && i + 1 < argc)
                 model = argv[++i];
             else if (option == "--fixtures" && i + 1 < argc)
                 directory = argv[++i];
             else
                 throw std::runtime_error(
-                    "usage: gauge_reader_test [--model model.onnx --fixtures "
-                    "directory]");
+                    "usage: gauge_reader_test [--model-only model.onnx] or "
+                    "[--model model.onnx --fixtures directory]");
+        }
+        require(smokeModel.empty() || (model.empty() && directory.empty()),
+                "model-only cannot be combined with private fixtures");
+        if (!smokeModel.empty()) {
+            modelOnly(smokeModel);
+            return 0;
         }
         require(model.empty() == directory.empty(),
                 "model and fixtures must be supplied together");
         unitTests();
+        compatibilityTests();
         if (!model.empty()) fixtures(model, directory);
         return 0;
     } catch (const std::exception& e) {

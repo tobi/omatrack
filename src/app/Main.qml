@@ -330,6 +330,21 @@ ApplicationWindow {
             associationDialog.open();
     }
 
+    ImageModelManager {
+        id: imageModelDownloads
+
+        activationBlocked: root.videoVisible || imageTelemetry.running || imageTelemetry.scanAhead
+        activePath: Store.imageTelemetryModel
+        autoUpdate: Store.imageModelUpdates
+        managed: Store.imageModelManaged
+        objectName: "imageModelManager"
+
+        onModelActivated: (path, version) => {
+            // A local choice/opt-out always wins over a queued activation.
+            if (Store.imageModelManaged && path !== "")
+                Store.imageTelemetryModel = path;
+        }
+    }
     ImageTelemetryController {
         id: imageTelemetry
 
@@ -946,7 +961,7 @@ ApplicationWindow {
                         font.pixelSize: Style.smallFontSize
                         text: "Model…"
 
-                        onClicked: imageModelDialog.open()
+                        onClicked: settingsWindow.openImageTelemetry()
                     }
                     ToolButton {
                         font.pixelSize: Style.smallFontSize
@@ -1190,7 +1205,15 @@ ApplicationWindow {
         nameFilters: ["ONNX gauge reader (*.onnx)"]
         title: "Select the reviewed ONNX gauge reader"
 
-        onAccepted: Store.imageTelemetryModel = root.toLocalPath(imageModelDialog.file)
+        onAccepted: {
+            const path = root.toLocalPath(imageModelDialog.file);
+            if (path === "")
+                return;
+            // Opt out before the path changes so a late managed activation
+            // cannot replace a deliberately chosen local model.
+            Store.imageModelManaged = false;
+            Store.imageTelemetryModel = path;
+        }
     }
 
     // ══ drawer (file open) ══════════════════════════════════════════
@@ -1375,6 +1398,10 @@ ApplicationWindow {
     }
     PreferencesWindow {
         id: settingsWindow
+
+        imageModelManager: imageModelDownloads
+
+        onChooseLocalImageModel: imageModelDialog.open()
     }
     SpanHoverCard {
         id: spanHoverCard
