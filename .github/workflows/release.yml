@@ -262,7 +262,9 @@ jobs:
       - name: Test
         run: ctest --preset ci
       - name: Install and bundle application
+        timeout-minutes: 10
         run: |
+          test -f "${ONNXRUNTIME_ROOT:?}/lib/libonnxruntime.dylib"
           mkdir -p build-ci/Omatrack.app/Contents/Frameworks
           dylibbundler \
             --bundle-deps \
@@ -270,7 +272,8 @@ jobs:
             --dest-dir build-ci/Omatrack.app/Contents/Frameworks \
             --install-path '@executable_path/../Frameworks/' \
             --ignore "$QT_ROOT_DIR" \
-            --overwrite-files
+            --search-path "$ONNXRUNTIME_ROOT/lib" \
+            --overwrite-files <<< 'quit'
           cmake --install build-ci
           .release-workflow/packaging/macos/verify-bundle.sh stage/Omatrack.app
           codesign --force --deep --sign - stage/Omatrack.app
