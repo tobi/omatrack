@@ -256,7 +256,10 @@ jobs:
           version: '6.11.1'
           cache: true
       - name: Configure
-        run: cmake --preset ci -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/stage"
+        run: >-
+          cmake --preset ci
+          -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/stage"
+          -DCMAKE_INSTALL_DOCDIR="Omatrack.app/Contents/Resources/doc"
       - name: Build
         run: cmake --build --preset ci
       - name: Test
@@ -275,6 +278,9 @@ jobs:
             --search-path "$ONNXRUNTIME_ROOT/lib" \
             --overwrite-files <<< 'quit'
           cmake --install build-ci
+          test -f stage/Omatrack.app/Contents/Resources/doc/LICENSE
+          test -f stage/Omatrack.app/Contents/Resources/doc/onnxruntime/LICENSE
+          test -f stage/Omatrack.app/Contents/Resources/doc/onnxruntime/ThirdPartyNotices.txt
           .release-workflow/packaging/macos/verify-bundle.sh stage/Omatrack.app
           codesign --force --deep --sign - stage/Omatrack.app
           codesign --verify --deep --strict stage/Omatrack.app
