@@ -936,8 +936,9 @@ cut a tag solely because the native Linux tests passed.
 If a tagged build fails only because the packaging workflow/environment needs a
 repair, keep the existing tag immutable. Commit the packaging-only repair to main,
 then dispatch `release.yml` from main with `release_tag=vX.Y.Z`. Every build job
-checks out that exact existing tag, verifies its CMake version and successful
-main-push CI for its commit, and publication targets the same tag. Application
+checks out that exact existing tag for application code, checks out packaging
+helpers separately from the immutable workflow commit, verifies the tag's CMake
+version and successful main-push CI, and publishes to that same tag. Application
 source changes require a new version/tag rather than replacing an existing tag.
 
 The individual targets stay available: `cpp_format_check` / `cpp_format`
