@@ -2,15 +2,23 @@ name: Release
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing immutable tag to rebuild with packaging-only workflow repairs (empty = no publication)'
+        required: false
+        default: ''
+        type: string
   push:
     tags:
       - 'v*.*.*'
 
 permissions:
   contents: read
+  actions: read
 
 env:
   OMATRACK_REQUIRE_IMAGE_TELEMETRY: 'ON'
+  OMATRACK_RELEASE_TAG: ${{ inputs.release_tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
 
 concurrency:
   group: release-${{ github.ref }}
@@ -26,6 +34,22 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+      - name: Validate immutable release source and CI
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ -n "$OMATRACK_RELEASE_TAG" ]]; then
+            [[ "$OMATRACK_RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            version=$(awk '$1 == "project(omatrack" && $2 == "VERSION" {print $3; exit}' CMakeLists.txt)
+            test "$OMATRACK_RELEASE_TAG" = "v$version"
+            sha=$(git rev-parse HEAD)
+            test "$sha" = "$(git rev-parse "refs/tags/$OMATRACK_RELEASE_TAG^{commit}")"
+            state=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --event push --commit "$sha" --limit 1 --json status,conclusion --jq '.[0] | "\(.status):\(.conclusion)"')
+            test "$state" = completed:success
+          fi
       - name: Read and validate release version
         shell: bash
         run: |
@@ -40,7 +64,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends --yes \
             binutils ccache clang-format libmpv-dev libyaml-dev libzstd-dev ninja-build \
-            pkg-config zsync
+            pkg-config zsync libavformat-dev libavcodec-dev libavutil-dev libswscale-dev
           ort_root=$(scripts/fetch-onnxruntime.sh linux-x64)
           echo "ONNXRUNTIME_ROOT=$ort_root" >> "$GITHUB_ENV"
           model_file=$(scripts/fetch-reader-test-model.sh)
@@ -161,6 +185,22 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+      - name: Validate immutable release source and CI
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ -n "$OMATRACK_RELEASE_TAG" ]]; then
+            [[ "$OMATRACK_RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            version=$(awk '$1 == "project(omatrack" && $2 == "VERSION" {print $3; exit}' CMakeLists.txt)
+            test "$OMATRACK_RELEASE_TAG" = "v$version"
+            sha=$(git rev-parse HEAD)
+            test "$sha" = "$(git rev-parse "refs/tags/$OMATRACK_RELEASE_TAG^{commit}")"
+            state=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --event push --commit "$sha" --limit 1 --json status,conclusion --jq '.[0] | "\(.status):\(.conclusion)"')
+            test "$state" = completed:success
+          fi
       - name: Read and validate release version
         shell: bash
         run: |
@@ -245,6 +285,22 @@ jobs:
         shell: msys2 {0}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+      - name: Validate immutable release source and CI
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ -n "$OMATRACK_RELEASE_TAG" ]]; then
+            [[ "$OMATRACK_RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            version=$(awk '$1 == "project(omatrack" && $2 == "VERSION" {print $3; exit}' CMakeLists.txt)
+            test "$OMATRACK_RELEASE_TAG" = "v$version"
+            sha=$(git rev-parse HEAD)
+            test "$sha" = "$(git rev-parse "refs/tags/$OMATRACK_RELEASE_TAG^{commit}")"
+            state=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --event push --commit "$sha" --limit 1 --json status,conclusion --jq '.[0] | "\(.status):\(.conclusion)"')
+            test "$state" = completed:success
+          fi
       - name: Install MSYS2 toolchain and dependencies
         uses: msys2/setup-msys2@v2
         with:
@@ -410,7 +466,7 @@ jobs:
 
   publish:
     name: Publish GitHub release
-    if: github.ref_type == 'tag'
+    if: github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
     needs: [linux, macos, windows]
     runs-on: ubuntu-24.04
     permissions:
@@ -448,7 +504,8 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v3
         with:
-          name: Omatrack ${{ github.ref_name }}
+          name: Omatrack ${{ env.OMATRACK_RELEASE_TAG }}
+          tag_name: ${{ env.OMATRACK_RELEASE_TAG }}
           body: |
             Portable Linux AppImages, the Windows Velopack installer, and
             macOS apps can check this release from the header and update

@@ -933,6 +933,13 @@ main and wait for its Linux/Windows/macOS CI to pass, then use
 `scripts/tag-release.sh X.Y.Z` (or `--check` to validate without tagging). Never
 cut a tag solely because the native Linux tests passed.
 
+If a tagged build fails only because the packaging workflow/environment needs a
+repair, keep the existing tag immutable. Commit the packaging-only repair to main,
+then dispatch `release.yml` from main with `release_tag=vX.Y.Z`. Every build job
+checks out that exact existing tag, verifies its CMake version and successful
+main-push CI for its commit, and publication targets the same tag. Application
+source changes require a new version/tag rather than replacing an existing tag.
+
 The individual targets stay available: `cpp_format_check` / `cpp_format`
 (clang-format), `qml_format_check` / `qml_format` (qmlformat via
 `cmake/QmlFormatCheck.cmake`, since qmlformat has no `--check`), `qml_lint`

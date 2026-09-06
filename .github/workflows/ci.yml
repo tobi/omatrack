@@ -28,7 +28,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends --yes \
-            ccache clang-format libmpv-dev libyaml-dev libzstd-dev ninja-build pkg-config
+            ccache clang-format libmpv-dev libyaml-dev libzstd-dev ninja-build pkg-config \
+            libavformat-dev libavcodec-dev libavutil-dev libswscale-dev
           ort_root=$(scripts/fetch-onnxruntime.sh linux-x64)
           echo "ONNXRUNTIME_ROOT=$ort_root" >> "$GITHUB_ENV"
           model_file=$(scripts/fetch-reader-test-model.sh)
