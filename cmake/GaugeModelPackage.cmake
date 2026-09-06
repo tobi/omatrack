@@ -29,6 +29,10 @@ if(OMATRACK_GAUGE_MODEL)
   message(STATUS "Staging trusted local gauge model; this grants no redistribution rights")
 endif()
 
+if(WIN32 AND OMATRACK_ENABLE_IMAGE_TELEMETRY AND ONNXRUNTIME_RUNTIME_FILES)
+  install(FILES ${ONNXRUNTIME_RUNTIME_FILES} DESTINATION "${CMAKE_INSTALL_BINDIR}")
+endif()
+
 # Distribution Linux builds use system Qt/mpv, but the explicitly selected ORT SDK
 # is not necessarily system-installed. Include its runtime and notices in the
 # installation tree. Windows/macOS use Qt's deployment scanner for dependencies.

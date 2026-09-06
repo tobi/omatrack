@@ -22,6 +22,9 @@ All notable user-facing changes are documented here.
   scaling, without changing original-resolution model inputs.
 - Preserve exact cached floating-point observations through the JSON parser so
   later partial-cache merges cannot reject unchanged predictions.
+- Place the matching ONNX Runtime DLL beside Windows executables instead of
+  accidentally loading an older system copy; incompatible runtime APIs fail
+  explicitly rather than crashing.
 
 ## 1.8.1 — 2026-09-04
 

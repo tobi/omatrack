@@ -79,6 +79,16 @@ if(OMATRACK_ENABLE_IMAGE_TELEMETRY AND ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_L
 endif()
 add_test(NAME gauge-reader-test COMMAND gauge-reader-test)
 set_tests_properties(gauge-reader-test PROPERTIES LABELS unit)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND OMATRACK_ENABLE_IMAGE_TELEMETRY AND
+   ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRARY)
+  add_library(ort-unavailable-api SHARED OrtUnavailableApi.cpp)
+  target_include_directories(ort-unavailable-api PRIVATE "${ONNXRUNTIME_INCLUDE_DIR}")
+  target_link_libraries(ort-unavailable-api PRIVATE omatrack_warnings)
+  add_test(NAME gauge-reader-incompatible-runtime-test
+    COMMAND ${CMAKE_COMMAND} -E env "LD_PRELOAD=$<TARGET_FILE:ort-unavailable-api>"
+      $<TARGET_FILE:gauge-reader-test>)
+  set_tests_properties(gauge-reader-incompatible-runtime-test PROPERTIES LABELS unit)
+endif()
 set(OMATRACK_GAUGE_SMOKE_MODEL "$ENV{OMATRACK_GAUGE_SMOKE_MODEL}" CACHE FILEPATH
   "Pinned public model for native-runtime smoke verification")
 if(OMATRACK_GAUGE_SMOKE_MODEL)

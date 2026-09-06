@@ -322,7 +322,7 @@ struct GaugeReader::Impl {
     std::string error;
     std::map<std::string, std::string> metadata;
 #if OMATRACK_HAVE_ONNXRUNTIME
-    Ort::Env environment{ORT_LOGGING_LEVEL_WARNING, "omatrack-gauge-reader"};
+    std::unique_ptr<Ort::Env> environment;
     std::unique_ptr<Ort::Session> session;
     std::vector<float> input = std::vector<float>(4 * 3 * CropPixels);
 #endif
@@ -334,6 +334,11 @@ GaugeReader::GaugeReader(const std::string& modelPath)
     try {
         if (modelPath.empty())
             throw std::runtime_error("No gauge reader model configured");
+        if (!runtimeAvailable())
+            throw std::runtime_error(
+                "Loaded ONNX Runtime is incompatible with this build");
+        impl_->environment = std::make_unique<Ort::Env>(
+            ORT_LOGGING_LEVEL_WARNING, "omatrack-gauge-reader");
         Ort::SessionOptions options;
         options.SetIntraOpNumThreads(1);
         options.SetInterOpNumThreads(1);
@@ -341,7 +346,7 @@ GaugeReader::GaugeReader(const std::string& modelPath)
         options.SetGraphOptimizationLevel(
             GraphOptimizationLevel::ORT_ENABLE_ALL);
         const auto path = std::filesystem::u8path(modelPath);
-        auto session = std::make_unique<Ort::Session>(impl_->environment,
+        auto session = std::make_unique<Ort::Session>(*impl_->environment,
                                                       path.c_str(), options);
         Ort::AllocatorWithDefaultOptions allocator;
         const auto metadata = session->GetModelMetadata();
@@ -415,7 +420,16 @@ GaugeReader::GaugeReader(const std::string& modelPath)
 #endif
 }
 GaugeReader::~GaugeReader() = default;
-bool GaugeReader::runtimeAvailable() { return OMATRACK_HAVE_ONNXRUNTIME != 0; }
+bool GaugeReader::runtimeAvailable() {
+#if OMATRACK_HAVE_ONNXRUNTIME
+    // Windows can find an older system onnxruntime.dll when an installation
+    // is incomplete. Do not dereference the C++ wrapper's null API table.
+    const auto* base = OrtGetApiBase();
+    return base && base->GetApi(ORT_API_VERSION);
+#else
+    return false;
+#endif
+}
 bool GaugeReader::ready() const {
 #if OMATRACK_HAVE_ONNXRUNTIME
     return bool(impl_->session);
