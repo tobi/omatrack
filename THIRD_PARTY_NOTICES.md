@@ -29,6 +29,18 @@ system copies. Their source is not copied into this repository.
 - **Qt 6** — available under the GNU LGPL v3, GNU GPL v2/v3, or commercial terms. See <https://www.qt.io/licensing>.
 - **libmpv** — license depends on how mpv was built; LGPL v2.1-or-later is available for qualifying builds, while builds with GPL components are GPL. See <https://github.com/mpv-player/mpv/blob/master/Copyright>.
 - **libyaml** — MIT License. See <https://github.com/yaml/libyaml>.
+- **ONNX Runtime (optional image reader)** — MIT License and its bundled third-party notices. See <https://github.com/microsoft/onnxruntime>. An enabled build links the explicitly selected SDK; Linux install rules retain its `LICENSE` and `ThirdPartyNotices.txt` under the application's documentation directory.
+- **FFmpeg libraries (optional independent image decoder)** — libavformat, libavcodec, libavutil and libswscale; licensing depends on the exact build and enabled components (LGPL/GPL). See <https://ffmpeg.org/legal.html>.
+
+The image reader includes original C++ preprocessing that reproduces Pillow's
+BILINEAR resampling semantics, validated against Pillow. No Pillow source is
+bundled; Pillow retains its separate HPND-style terms at
+<https://github.com/python-pillow/Pillow/blob/main/LICENSE>.
+
+Model weights and private evaluation footage are **not covered by Omatrack's MIT
+license and are not bundled in this repository**. Explicit local model staging
+is a build convenience, not permission to publish or redistribute the model or
+its source data.
 
 Distributors are responsible for satisfying the terms of the exact dependency builds they ship.
 

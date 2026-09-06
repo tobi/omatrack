@@ -30,8 +30,9 @@ through braking, turn-in, apex, and throttle pickup.
 
 ## Current capabilities
 
-- Open Pi/Cosworth `.pds`, MoTeC `.ld`, Racelogic `.vbo`, AiM `aimd` telemetry embedded in `.mp4`, and native `.telemetry`. Vendor files convert once to a hidden `.{filename}.telemetry` companion; analysis always reads that.
-- Play ordinary MP4, MOV, MKV, AVI, M4V, and WebM video without treating it as telemetry.
+- Open Pi/Cosworth `.pds`, MoTeC `.ld`, Racelogic `.vbo`, AiM `aimd` telemetry embedded in `.mp4`, and native `.telemetry`. Local native sources are parsed directly; remote conversions use the ETag cache. Sources are never rewritten.
+- Open MP4, MOV, MKV, AVI, M4V, and WebM in fullscreen video mode; Escape returns to the workspace. Video file associations are optional, not a takeover of your media defaults.
+- With the optional image reader configured, collect gear, displayed lap counter and brake/throttle visible fill while watching supported videos. Scan faster than playback from the cursor, backfill the recording, and reuse partial/complete standard `.telemetry` caches. The docked workspace shows real image-derived time traces, not a screenshot HUD. Native telemetry takes precedence and unknown layouts stay unknown. See [progressive extraction and cache setup](docs/VIDEO_TELEMETRY_USAGE.md).
 - Group a library as Track → Date → Session → Laps, with lazy parsing and fastest-lap selection.
 - Compare primary and reference laps through a cached track-station map that remains useful when GPS is sparse or absent.
 - Overlay standard and raw channels, share a cursor, pan, zoom, select ranges, pin lanes, and manually align specialist signals.

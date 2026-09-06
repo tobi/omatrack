@@ -343,6 +343,7 @@ dependencies = [
  "motec-telemetry",
  "motorsport-telemetry-core",
  "racelogic-telemetry",
+ "serde_json",
  "telemetry-format",
 ]
 

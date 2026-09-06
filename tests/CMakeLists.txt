@@ -7,6 +7,68 @@
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Test)
 
+add_executable(image-scan-scheduler-test ImageScanSchedulerTest.cpp)
+target_include_directories(image-scan-scheduler-test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(image-scan-scheduler-test PRIVATE omatrack_warnings)
+add_test(NAME image-scan-scheduler-test COMMAND image-scan-scheduler-test)
+set_tests_properties(image-scan-scheduler-test PROPERTIES LABELS unit)
+
+add_executable(image-telemetry-cache-test ImageTelemetryCacheTest.cpp)
+target_link_libraries(image-telemetry-cache-test PRIVATE omatrack_image_cache ${OMATRACK_ZSTD_TARGET} omatrack_warnings)
+add_test(NAME image-telemetry-cache-test COMMAND image-telemetry-cache-test)
+set_tests_properties(image-telemetry-cache-test PROPERTIES LABELS unit)
+
+qt_add_executable(image-telemetry-trace-test ImageTelemetryTraceGeometryTest.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/ImageTelemetryTraceGeometry.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/TraceDecimator.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/TraceSceneBuilder.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/TraceTextCache.cpp)
+target_include_directories(image-telemetry-trace-test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(image-telemetry-trace-test PRIVATE Qt6::Test Qt6::Core Qt6::Gui Qt6::Quick omatrack_warnings)
+add_test(NAME image-telemetry-trace-test COMMAND image-telemetry-trace-test)
+set_tests_properties(image-telemetry-trace-test PROPERTIES LABELS unit)
+
+qt_add_executable(file-open-events-test FileOpenEventsTest.cpp)
+target_include_directories(file-open-events-test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(file-open-events-test PRIVATE Qt6::Test Qt6::Gui omatrack_warnings)
+add_test(NAME file-open-events-test COMMAND file-open-events-test)
+set_tests_properties(file-open-events-test PROPERTIES LABELS unit)
+
+qt_add_executable(windows-associations-test windows_associations_test.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/WindowsAssociations.cpp)
+target_include_directories(windows-associations-test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(windows-associations-test PRIVATE Qt6::Test Qt6::Core omatrack_warnings)
+if(WIN32)
+  target_link_libraries(windows-associations-test PRIVATE advapi32 shell32)
+endif()
+add_test(NAME windows-associations-test COMMAND windows-associations-test)
+set_tests_properties(windows-associations-test PROPERTIES LABELS unit)
+
+add_executable(video-frame-decoder-test VideoFrameDecoderTest.cpp)
+target_link_libraries(video-frame-decoder-test PRIVATE omatrack_inference omatrack_warnings)
+add_test(NAME video-frame-decoder-test COMMAND video-frame-decoder-test)
+set_tests_properties(video-frame-decoder-test PROPERTIES LABELS unit)
+
+add_executable(gauge-reader-test gauge_reader_test.cpp
+  ${CMAKE_SOURCE_DIR}/src/inference/GaugeReader.cpp)
+target_include_directories(gauge-reader-test PRIVATE ${CMAKE_SOURCE_DIR}/src/inference)
+target_compile_definitions(gauge-reader-test PRIVATE OMATRACK_GAUGE_READER_TESTING=1)
+target_link_libraries(gauge-reader-test PRIVATE omatrack_warnings)
+if(OMATRACK_ENABLE_IMAGE_TELEMETRY AND ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRARY)
+  target_compile_definitions(gauge-reader-test PRIVATE OMATRACK_HAVE_ONNXRUNTIME=1)
+  target_include_directories(gauge-reader-test PRIVATE "${ONNXRUNTIME_INCLUDE_DIR}")
+  target_link_libraries(gauge-reader-test PRIVATE "${ONNXRUNTIME_LIBRARY}")
+endif()
+add_test(NAME gauge-reader-test COMMAND gauge-reader-test)
+set_tests_properties(gauge-reader-test PROPERTIES LABELS unit)
+set(OMATRACK_GAUGE_TEST_MODEL "" CACHE FILEPATH "Optional reviewed model for real image-reader parity tests")
+set(OMATRACK_GAUGE_TEST_FIXTURES "" CACHE PATH "Optional generated, private reader fixture directory")
+if(OMATRACK_GAUGE_TEST_MODEL AND OMATRACK_GAUGE_TEST_FIXTURES)
+  add_test(NAME gauge-reader-parity-test COMMAND gauge-reader-test
+    --model "${OMATRACK_GAUGE_TEST_MODEL}" --fixtures "${OMATRACK_GAUGE_TEST_FIXTURES}")
+  set_tests_properties(gauge-reader-parity-test PROPERTIES LABELS integration)
+endif()
+
 qt_add_executable(filmstrip-layout-test FilmstripLayoutTest.cpp
   ${CMAKE_SOURCE_DIR}/src/app/FilmstripLayout.h)
 target_include_directories(filmstrip-layout-test PRIVATE ${CMAKE_SOURCE_DIR}/src)

@@ -147,8 +147,13 @@ private:
             display,
             {MPV_RENDER_PARAM_INVALID, nullptr},
         };
+        // libmpv's GL-default-state contract applies to context creation too,
+        // not only render(). Qt may enter FBO creation with scene-graph state
+        // bound; letting mpv initialize against it can corrupt cached textures.
+        QQuickOpenGLUtils::resetOpenGLState();
         const int result = mpv_render_context_create(
             &state_->renderContext, state_->handle, parameters);
+        QQuickOpenGLUtils::resetOpenGLState();
         if (result < 0) {
             state_->renderContext = nullptr;
             notifyFailure(
@@ -200,6 +205,15 @@ MpvVideoItem::MpvVideoItem(QQuickItem* parent)
     setOption(state_->handle, "input-vo-keyboard", "no");
     setOption(state_->handle, "osc", "no");
     setOption(state_->handle, "vo", "libmpv");
+    // Use builtin linear sampling rather than padded scaler LUTs. mpv 0.41's
+    // high-order scaler upload can contain uninitialized NaNs in padding;
+    // GL_LINEAR interpolation spreads those into otherwise valid video.
+    // This affects display scaling only, never the full-resolution image
+    // reader. See docs/VIDEO_SCALER_COMPATIBILITY.md and its minimal upstream
+    // patch.
+    setOption(state_->handle, "scale", "bilinear");
+    setOption(state_->handle, "cscale", "bilinear");
+    setOption(state_->handle, "dscale", "bilinear");
     setOption(state_->handle, "hwdec", "auto-safe");
     setOption(state_->handle, "keep-open", "yes");
     setOption(state_->handle, "pause", "yes");
@@ -596,6 +610,7 @@ void MpvVideoItem::seek(double seconds) {
     ++exactSeekCount_;
     pendingSeekTarget_ = seconds;
     pendingSeekAcknowledged_ = false;
+    emit seekRequested();
     if (lcSeek().isInfoEnabled())
         qCInfo(lcSeek).noquote() << QStringLiteral("seek video %1  t=%2s")
                                         .arg(omatrack::displayUrl(source_),

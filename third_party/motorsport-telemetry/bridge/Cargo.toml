@@ -17,4 +17,8 @@ cosworth-telemetry = { git = "https://github.com/tobi/motorsport-telemetry-rs", 
 motec-telemetry = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "c1ac439d99d924be5e6663e15abd335c56b30bc0" }
 motorsport-telemetry-core = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "c1ac439d99d924be5e6663e15abd335c56b30bc0" }
 racelogic-telemetry = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "c1ac439d99d924be5e6663e15abd335c56b30bc0" }
+# Unify this feature into the upstream MTJ reader. Its default float parser can
+# move a shortest-decimal f64 by an ULP, making identical cached observations
+# conflict at the next merge. Keep equality strict; parse the stored value exactly.
+serde_json = { version = "=1.0.151", features = ["float_roundtrip"] }
 telemetry-format = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "c1ac439d99d924be5e6663e15abd335c56b30bc0" }

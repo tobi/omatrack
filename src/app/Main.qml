@@ -25,6 +25,7 @@ ApplicationWindow {
     // Side by side only when the reference lap has its own recording and the
     // primary video is telemetry-linked, so both can share one alignment map.
     readonly property bool dualVideo: telemetryVideoActive && Store.compareVideoSource.toString() !== "" && Store.compareVideoSource.toString() !== Store.primaryVideoSource.toString()
+    readonly property bool imageTraceActive: root.standaloneVideoActive && imageTelemetry.knownSamples > 0
     // Rapid selection changes update one pending source instead of queuing
     // stale callLater closures that can reopen the previous recording.
     property url pendingVideoSource: ""
@@ -172,12 +173,17 @@ ApplicationWindow {
         root.revealVideoControls();
     }
     function showVideo(source, telemetryLinked) {
+        const newRecording = source.toString() !== videoPlayer.source.toString();
         root.telemetryVideoActive = telemetryLinked === true;
         root.videoVisible = true;
         root.revealVideoControls();
         if (root.width < 1000)
             root.sidebarVisible = false;
         root.pendingVideoSource = source;
+        // Enter once for a new recording; changing laps or resuming playback
+        // must not undo the user's deliberate Escape back to the workspace.
+        if (newRecording)
+            root.videoSetFullscreen(true);
         Qt.callLater(root.openPendingVideo);
     }
     function syncTelemetryVideo() {
@@ -324,6 +330,15 @@ ApplicationWindow {
             associationDialog.open();
     }
 
+    ImageTelemetryController {
+        id: imageTelemetry
+
+        eligible: root.standaloneVideoActive
+        enabled: Store.imageTelemetryEnabled
+        modelPath: Store.imageTelemetryModel
+        objectName: "imageTelemetryController"
+        player: videoPlayer
+    }
     VideoSync {
         id: videoSync
 
@@ -817,7 +832,7 @@ ApplicationWindow {
             border.color: Style.borderColor
             border.width: 1
             color: Style.videoControlBackgroundColor
-            height: root.standaloneVideoActive ? 58 : 38
+            height: root.standaloneVideoActive ? 88 : 38
             objectName: "videoControls"
             opacity: videoPlayer.loaded && (root.videoControlsRequested || videoControlsHover.hovered) ? 1 : 0
             visible: opacity > 0.01
@@ -880,6 +895,64 @@ ApplicationWindow {
                     onMoved: {
                         videoPlayer.seek(value);
                         root.revealVideoControls();
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 28
+                    spacing: 6
+                    visible: root.standaloneVideoActive
+
+                    CheckBox {
+                        id: imageExtractionToggle
+
+                        checked: Store.imageTelemetryEnabled
+                        font.pixelSize: Style.smallFontSize
+                        text: "Extract telemetry"
+
+                        onToggled: Store.imageTelemetryEnabled = imageExtractionToggle.checked
+                    }
+                    ToolButton {
+                        enabled: Store.imageTelemetryEnabled && imageTelemetry.available && !imageTelemetry.complete
+                        font.pixelSize: Style.smallFontSize
+                        objectName: "imageScanAheadButton"
+                        text: imageTelemetry.scanAhead ? "Pause scan" : "Scan from cursor"
+
+                        onClicked: imageTelemetry.scanAhead = !imageTelemetry.scanAhead
+                    }
+                    ProgressBar {
+                        Layout.preferredWidth: 90
+                        from: 0
+                        to: 1
+                        value: imageTelemetry.progress
+                    }
+                    Label {
+                        id: extractionStatus
+
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 40
+                        ToolTip.text: imageTelemetry.cachePath
+                        ToolTip.visible: extractionStatusHover.hovered && imageTelemetry.cachePath !== ""
+                        color: Style.mutedTextColor
+                        elide: Text.ElideRight
+                        font.pixelSize: Style.smallFontSize
+                        text: imageTelemetry.status
+
+                        HoverHandler {
+                            id: extractionStatusHover
+                        }
+                    }
+                    ToolButton {
+                        font.pixelSize: Style.smallFontSize
+                        text: "Model…"
+
+                        onClicked: imageModelDialog.open()
+                    }
+                    ToolButton {
+                        font.pixelSize: Style.smallFontSize
+                        text: "Retry"
+
+                        onClicked: imageTelemetry.retry()
                     }
                 }
                 RowLayout {
@@ -1109,6 +1182,15 @@ ApplicationWindow {
         }
 
         target: Store
+    }
+    Platform.FileDialog {
+        id: imageModelDialog
+
+        fileMode: Platform.FileDialog.OpenFile
+        nameFilters: ["ONNX gauge reader (*.onnx)"]
+        title: "Select the reviewed ONNX gauge reader"
+
+        onAccepted: Store.imageTelemetryModel = root.toLocalPath(imageModelDialog.file)
     }
 
     // ══ drawer (file open) ══════════════════════════════════════════
@@ -1384,11 +1466,11 @@ ApplicationWindow {
                 Rectangle {
                     id: videoPane
 
-                    SplitView.fillHeight: root.standaloneVideoActive
+                    SplitView.fillHeight: root.standaloneVideoActive && !root.imageTraceActive
                     SplitView.fillWidth: true
-                    SplitView.maximumHeight: visible ? (root.standaloneVideoActive ? 16777215 : root.height * 0.72) : 0
+                    SplitView.maximumHeight: visible ? (root.standaloneVideoActive && !root.imageTraceActive ? 16777215 : root.height * 0.72) : 0
                     SplitView.minimumHeight: visible ? 180 : 0
-                    SplitView.preferredHeight: visible ? (root.standaloneVideoActive ? root.height : Math.min(480, Math.max(220, root.height * 0.42))) : 0
+                    SplitView.preferredHeight: visible ? (root.standaloneVideoActive && !root.imageTraceActive ? root.height : Math.min(480, Math.max(220, root.height * 0.42))) : 0
                     border.color: Style.borderColor
                     border.width: 1
                     color: Style.traceBackgroundColor
@@ -1479,6 +1561,36 @@ ApplicationWindow {
 
                         anchors.fill: parent
                         objectName: "videoStageSlot"
+                    }
+                }
+                ImageTelemetryTraces {
+                    id: imageTraces
+
+                    SplitView.fillHeight: true
+                    SplitView.fillWidth: true
+                    SplitView.minimumHeight: visible ? 200 : 0
+                    SplitView.preferredHeight: visible ? 280 : 0
+                    backgroundColor: Style.traceBackgroundColor
+                    brakeColor: Style.redColor
+                    controller: imageTelemetry
+                    cursorColor: Style.foregroundColor
+                    duration: videoPlayer.duration
+                    font: Qt.font({
+                        family: Style.monoFontFamily,
+                        pixelSize: Style.smallFontSize
+                    })
+                    foregroundColor: Style.foregroundColor
+                    gearColor: Style.orangeColor
+                    gridColor: Style.borderColor
+                    lapColor: Style.accentColor
+                    mutedColor: Style.mutedTextColor
+                    objectName: "imageTelemetryTraces"
+                    position: videoPlayer.position
+                    throttleColor: Style.greenColor
+                    visible: root.imageTraceActive && !root.videoFullscreen
+
+                    onSeekRequested: function (seconds) {
+                        videoPlayer.seek(seconds);
                     }
                 }
                 Rectangle {

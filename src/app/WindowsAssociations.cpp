@@ -1,5 +1,32 @@
 #include "WindowsAssociations.h"
 
+namespace omatrack {
+
+QVector<FileAssociation> fileAssociations() {
+    return {
+        {QStringLiteral("pds"), QStringLiteral("Pi/Cosworth telemetry session"),
+         false, true},
+        {QStringLiteral("ld"), QStringLiteral("MoTeC telemetry session"), false,
+         true},
+        // A MoTeC layout is not a recording, but it is the file i2 users
+        // double-click; the store opens the sibling `.ld` for it.
+        {QStringLiteral("ldx"), QStringLiteral("MoTeC telemetry layout"), false,
+         true},
+        {QStringLiteral("vbo"),
+         QStringLiteral("Racelogic VBOX telemetry session"), false, true},
+        {QStringLiteral("telemetry"), QStringLiteral("Omatrack telemetry"),
+         false, true},
+        {QStringLiteral("mp4"), QStringLiteral("MPEG-4 video"), true, false},
+        {QStringLiteral("mov"), QStringLiteral("QuickTime video"), true, false},
+        {QStringLiteral("mkv"), QStringLiteral("Matroska video"), true, false},
+        {QStringLiteral("avi"), QStringLiteral("AVI video"), true, false},
+        {QStringLiteral("m4v"), QStringLiteral("MPEG-4 video"), true, false},
+        {QStringLiteral("webm"), QStringLiteral("WebM video"), true, false},
+    };
+}
+
+}  // namespace omatrack
+
 #ifdef Q_OS_WIN
 
 #include <QDir>
@@ -26,7 +53,8 @@ QString progIdFor(const QString& extension) {
     return QStringLiteral("Omatrack.") + extension.toLower();
 }
 
-bool setDefaultValue(const QString& subkey, const QString& value) {
+bool setValue(const QString& subkey, const QString& value,
+              const QString& name = {}) {
     HKEY key = nullptr;
     const QString path = QStringLiteral("Software\\Classes\\") + subkey;
     if (RegCreateKeyExW(HKEY_CURRENT_USER,
@@ -36,18 +64,63 @@ bool setDefaultValue(const QString& subkey, const QString& value) {
         return false;
     const std::wstring wide = value.toStdWString();
     const LONG status = RegSetValueExW(
-        key, nullptr, 0, REG_SZ, reinterpret_cast<const BYTE*>(wide.c_str()),
+        key, name.isEmpty() ? nullptr : reinterpret_cast<LPCWSTR>(name.utf16()),
+        0, REG_SZ, reinterpret_cast<const BYTE*>(wide.c_str()),
         DWORD((wide.size() + 1) * sizeof(wchar_t)));
     RegCloseKey(key);
     return status == ERROR_SUCCESS;
 }
 
+bool missingKey(LSTATUS status) {
+    return status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND;
+}
+
 bool deleteKeyTree(const QString& subkey) {
     const QString path = QStringLiteral("Software\\Classes\\") + subkey;
-    return RegDeleteTreeW(HKEY_CURRENT_USER,
-                          reinterpret_cast<LPCWSTR>(path.utf16())) ==
-               ERROR_SUCCESS ||
-           GetLastError() == ERROR_FILE_NOT_FOUND;
+    const LSTATUS status = RegDeleteTreeW(
+        HKEY_CURRENT_USER, reinterpret_cast<LPCWSTR>(path.utf16()));
+    return status == ERROR_SUCCESS || missingKey(status);
+}
+
+QString defaultValue(HKEY key) {
+    wchar_t value[256]{};
+    DWORD bytes = sizeof(value);
+    if (RegGetValueW(key, nullptr, nullptr, RRF_RT_REG_SZ, nullptr, value,
+                     &bytes) != ERROR_SUCCESS)
+        return {};
+    return QString::fromWCharArray(value);
+}
+
+// Never delete an extension key: it can contain another player's default,
+// MIME metadata and OpenWith entries, even if Omatrack registered it first.
+bool removeAssociation(const QString& ext) {
+    const QString progId = progIdFor(ext);
+    const QString path = QStringLiteral("Software\\Classes\\.") + ext;
+    HKEY key = nullptr;
+    LSTATUS status = RegOpenKeyExW(HKEY_CURRENT_USER,
+                                   reinterpret_cast<LPCWSTR>(path.utf16()), 0,
+                                   KEY_QUERY_VALUE | KEY_SET_VALUE, &key);
+    bool ok = status == ERROR_SUCCESS || missingKey(status);
+    if (status == ERROR_SUCCESS) {
+        if (defaultValue(key) == progId) {
+            status = RegDeleteValueW(key, nullptr);
+            ok = status == ERROR_SUCCESS || missingKey(status);
+        }
+        RegCloseKey(key);
+    }
+    const QString openWith = path + QStringLiteral("\\OpenWithProgids");
+    status = RegOpenKeyExW(HKEY_CURRENT_USER,
+                           reinterpret_cast<LPCWSTR>(openWith.utf16()), 0,
+                           KEY_SET_VALUE, &key);
+    if (status == ERROR_SUCCESS) {
+        status =
+            RegDeleteValueW(key, reinterpret_cast<LPCWSTR>(progId.utf16()));
+        ok = (status == ERROR_SUCCESS || missingKey(status)) && ok;
+        RegCloseKey(key);
+    } else {
+        ok = missingKey(status) && ok;
+    }
+    return deleteKeyTree(progId) && ok;
 }
 
 void notifyShell() {
@@ -60,34 +133,24 @@ bool writeAssociation(const FileAssociation& association, const QString& exe) {
     const QString command =
         QStringLiteral("\"%1\" \"%2\"")
             .arg(QDir::toNativeSeparators(exe), QStringLiteral("%1"));
-    if (!setDefaultValue(QStringLiteral(".") + ext, progId)) return false;
-    if (!setDefaultValue(progId, association.description)) return false;
-    if (!setDefaultValue(progId + QStringLiteral("\\DefaultIcon"),
-                         QDir::toNativeSeparators(exe) + QStringLiteral(",0")))
+    if (exe.isEmpty()) return false;
+    if (!setValue(progId, association.description)) return false;
+    if (!setValue(
+            progId + QStringLiteral("\\DefaultIcon"),
+            QStringLiteral("\"%1\",0").arg(QDir::toNativeSeparators(exe))))
         return false;
-    return setDefaultValue(progId + QStringLiteral("\\shell\\open\\command"),
-                           command);
+    if (!setValue(progId + QStringLiteral("\\shell\\open\\command"), command))
+        return false;
+    if (!setValue(
+            QStringLiteral(".") + ext + QStringLiteral("\\OpenWithProgids"),
+            QString(), progId))
+        return false;
+    // Publish the extension only after the open command exists. This is the
+    // classic HKCU registration; Windows' protected UserChoice stays untouched.
+    return setValue(QStringLiteral(".") + ext, progId);
 }
 
 }  // namespace
-
-QVector<FileAssociation> fileAssociations() {
-    return {
-        {QStringLiteral("pds"), QStringLiteral("Pi/Cosworth telemetry session"),
-         false, true},
-        {QStringLiteral("ld"), QStringLiteral("MoTeC telemetry session"), false,
-         true},
-        // A MoTeC layout is not a recording, but it is the file i2 users
-        // double-click; the store opens the sibling `.ld` for it.
-        {QStringLiteral("ldx"), QStringLiteral("MoTeC telemetry layout"), false,
-         true},
-        {QStringLiteral("vbo"),
-         QStringLiteral("Racelogic VBOX telemetry session"), false, true},
-        {QStringLiteral("telemetry"), QStringLiteral("Omatrack telemetry"),
-         false, true},
-        {QStringLiteral("mp4"), QStringLiteral("MPEG-4 video"), true, false},
-    };
-}
 
 bool consumeWindowsSetupHook(int argc, char** argv) {
     QString hook;
@@ -118,14 +181,9 @@ bool associationEnabled(const QString& extension) {
                       reinterpret_cast<LPCWSTR>(path.utf16()), 0, KEY_READ,
                       &key) != ERROR_SUCCESS)
         return false;
-    wchar_t value[256];
-    DWORD bytes = sizeof(value);
-    const LONG status =
-        RegQueryValueExW(key, nullptr, nullptr, nullptr,
-                         reinterpret_cast<LPBYTE>(value), &bytes);
+    const bool enabled = defaultValue(key) == progIdFor(ext);
     RegCloseKey(key);
-    if (status != ERROR_SUCCESS) return false;
-    return QString::fromWCharArray(value) == progIdFor(ext);
+    return enabled;
 }
 
 bool setAssociationEnabled(const QString& extension, bool enabled) {
@@ -143,10 +201,8 @@ bool setAssociationEnabled(const QString& extension, bool enabled) {
     bool ok = false;
     if (enabled)
         ok = writeAssociation(match, exePath());
-    else {
-        deleteKeyTree(QStringLiteral(".") + ext);
-        ok = deleteKeyTree(progIdFor(ext));
-    }
+    else
+        ok = removeAssociation(ext);
     notifyShell();
     return ok;
 }
@@ -161,10 +217,8 @@ void registerDefaultAssociations() {
 }
 
 void unregisterAllAssociations() {
-    for (const FileAssociation& association : fileAssociations()) {
-        deleteKeyTree(QStringLiteral(".") + association.extension);
-        deleteKeyTree(progIdFor(association.extension));
-    }
+    for (const FileAssociation& association : fileAssociations())
+        removeAssociation(association.extension);
     notifyShell();
 }
 

@@ -225,11 +225,121 @@ fn parse_path(open_path: &Path, index_only: bool) -> Result<Box<dyn TelemetrySou
                 .map(|source| Box::new(source) as Box<dyn TelemetrySource>)
                 .map_err(|error| error.to_string())
         }
-        "telemetry" => telemetry_format::NativeRecording::open(open_path)
-            .map(|source| Box::new(source) as Box<dyn TelemetrySource>)
-            .map_err(|error| error.to_string()),
+        "telemetry" => {
+            // MTJ may use the standard .telemetry name. Dispatch plain/zstd MTJ
+            // by magic through the existing upstream reader; ZIP archives keep
+            // their unchanged NativeRecording path. No vendor decoding here.
+            let mut magic = [0u8; 4];
+            let jsonl_encoding = File::open(open_path)
+                .and_then(|mut file| file.read_exact(&mut magic))
+                .is_ok()
+                && (magic == [0x28, 0xb5, 0x2f, 0xfd] || magic[0] == b'{');
+            if jsonl_encoding {
+                telemetry_format::JsonlRecording::open(open_path)
+                    .map_err(|error| error.to_string())
+                    .and_then(|source| {
+                        if source.is_extension() {
+                            Err(".telemetry requires an MTJ recording, not an MTX extension".into())
+                        } else {
+                            Ok(Box::new(source) as Box<dyn TelemetrySource>)
+                        }
+                    })
+            } else {
+                telemetry_format::NativeRecording::open(open_path)
+                    .map(|source| Box::new(source) as Box<dyn TelemetrySource>)
+                    .map_err(|error| error.to_string())
+            }
+        }
         other => Err(format!("unsupported telemetry format: {other:?}")),
     }
+}
+
+/// Parse a bounded, already decompressed MTJ document using the upstream codec.
+/// This is a generic interchange entry point, not an image-cache schema parser.
+///
+/// # Safety
+/// `bytes` must point to `len` readable bytes for the duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_open_mtj_bytes(bytes: *const u8, len: usize) -> *mut c_void {
+    ffi_guard(
+        stringify!(omatrack_open_mtj_bytes),
+        std::ptr::null_mut(),
+        || {
+            if bytes.is_null() || len == 0 || len > 128 * 1024 * 1024 {
+                set_error("invalid or oversized MTJ buffer");
+                return std::ptr::null_mut();
+            }
+            let data = std::slice::from_raw_parts(bytes, len);
+            // The caller bounds decompression. Do not admit a compressed bomb here.
+            if data.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
+                set_error("MTJ buffer must be bounded and decompressed by the caller");
+                return std::ptr::null_mut();
+            }
+            match telemetry_format::JsonlRecording::from_bytes("memory", data) {
+                Ok(source) if !source.is_extension() => {
+                    Box::into_raw(build_handle(Box::new(source))) as *mut c_void
+                }
+                Ok(_) => {
+                    set_error("expected an MTJ recording, not an extension");
+                    std::ptr::null_mut()
+                }
+                Err(error) => {
+                    set_error(error.to_string());
+                    std::ptr::null_mut()
+                }
+            }
+        },
+    )
+}
+
+/// Copy one standard applied-pass parameter into a caller-owned UTF-8 buffer.
+/// Returns required bytes INCLUDING NUL, or zero when absent/invalid. A buffer
+/// smaller than the returned size is left untouched; query first with NULL/0.
+///
+/// # Safety
+/// `handle` must be a live handle; `pass`/`key` must be NUL-terminated UTF-8;
+/// a non-null `out` must point to `capacity` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn omatrack_pass_parameter(
+    handle: *mut c_void,
+    pass: *const c_char,
+    key: *const c_char,
+    out: *mut c_char,
+    capacity: usize,
+) -> usize {
+    ffi_guard(stringify!(omatrack_pass_parameter), 0, || {
+        let Some(file) = as_file(handle) else {
+            return 0;
+        };
+        if pass.is_null() || key.is_null() {
+            return 0;
+        }
+        let (Ok(pass), Ok(key)) = (CStr::from_ptr(pass).to_str(), CStr::from_ptr(key).to_str())
+        else {
+            return 0;
+        };
+        let mut matching = file.src.applied_passes().iter().filter(|p| p.name == pass);
+        let Some(found) = matching.next() else {
+            return 0;
+        };
+        // Ambiguous provenance is not a valid identity.
+        if matching.next().is_some() {
+            return 0;
+        }
+        let mut matching = found.params.iter().filter(|(k, _)| k == key);
+        let Some((_, value)) = matching.next() else {
+            return 0;
+        };
+        if matching.next().is_some() || value.as_bytes().contains(&0) {
+            return 0;
+        }
+        let required = value.len() + 1;
+        if !out.is_null() && capacity >= required {
+            std::ptr::copy_nonoverlapping(value.as_ptr(), out.cast(), value.len());
+            *out.add(value.len()) = 0;
+        }
+        required
+    })
 }
 
 fn canonical_or_absolute(path: &Path) -> io::Result<PathBuf> {
@@ -328,6 +438,11 @@ fn build_handle(src: Box<dyn TelemetrySource>) -> Box<BridgeFile> {
                 .and_then(|value| i64::try_from(value).ok())
                 .unwrap_or(-1),
             timezone: cstring(&src.timezone()),
+            channel_visible: src
+                .channel_visible()
+                .iter()
+                .map(|value| u8::from(*value))
+                .collect(),
             duration_ns: src
                 .channels()
                 .iter()
@@ -1787,6 +1902,133 @@ mod tests {
     use motorsport_telemetry_core::{
         Channel, Chunk, LapMetadata, SampleType, SourceLapMetadata, UnitSource, VideoFileRef,
     };
+
+    // origin: PUBLIC — synthetic MTJ, no recording-derived data.
+    const MTJ_FIXTURE: &[u8] = b"{\"mtj\":1,\"q\":200000000,\"dur\":600000000,\"passes\":[{\"n\":\"test.prediction\",\"v\":1,\"p\":{\"origin\":\"1700000000000000001\"}}]}\n[]\n{\"n\":\"image_test\",\"hz\":5,\"v\":[1,null,3]}\n";
+
+    #[test]
+    fn mtj_shortest_decimals_preserve_observation_bits() {
+        // origin: PUBLIC. Generated fractions only, never recording values.
+        // The serde_json default parser changes some shortest decimals by an
+        // ULP. That made a second cache save reject its own previous values.
+        // Keep the exact-equality merge contract; require float_roundtrip.
+        let mut state = 20260905u64;
+        for mode in 0..2 {
+            let values: Vec<f64> = (0..4096)
+                .map(|i| {
+                    state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    if mode == 0 {
+                        let bits = ((126 - i % 24) as u32) << 23 | (state as u32 & 0x7fffff);
+                        f64::from(f32::from_bits(bits)) * 100.0
+                    } else {
+                        (f64::from_bits(0x3ff0000000000000 | (state >> 12)) - 1.0) * 100.0
+                    }
+                })
+                .collect();
+            let text = values
+                .iter()
+                .map(f64::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            let jsonl = format!(
+                "{{\"mtj\":1,\"q\":200000000,\"dur\":819200000000}}\n[]\n{{\"n\":\"public_synthetic_fill\",\"hz\":5,\"u\":\"%\",\"v\":[{text}]}}\n"
+            );
+            let source =
+                telemetry_format::JsonlRecording::from_bytes("memory", jsonl.as_bytes()).unwrap();
+            for (i, value) in values.iter().enumerate() {
+                assert_eq!(
+                    source.decode(0, 0, i as u64).to_bits(),
+                    value.to_bits(),
+                    "mode {mode}, synthetic sample {i}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mtj_buffer_and_pass_parameter_are_checked() {
+        unsafe {
+            let handle = omatrack_open_mtj_bytes(MTJ_FIXTURE.as_ptr(), MTJ_FIXTURE.len());
+            assert!(!handle.is_null());
+            let name = CString::new("test.prediction").unwrap();
+            let key = CString::new("origin").unwrap();
+            let bytes = omatrack_pass_parameter(
+                handle,
+                name.as_ptr(),
+                key.as_ptr(),
+                std::ptr::null_mut(),
+                0,
+            );
+            assert_eq!(bytes, 20);
+            let mut too_short = [42 as c_char; 1];
+            assert_eq!(
+                omatrack_pass_parameter(
+                    handle,
+                    name.as_ptr(),
+                    key.as_ptr(),
+                    too_short.as_mut_ptr(),
+                    1
+                ),
+                bytes
+            );
+            assert_eq!(too_short, [42]);
+            let mut output = vec![0 as c_char; bytes];
+            assert_eq!(
+                omatrack_pass_parameter(
+                    handle,
+                    name.as_ptr(),
+                    key.as_ptr(),
+                    output.as_mut_ptr(),
+                    bytes
+                ),
+                bytes
+            );
+            assert_eq!(
+                CStr::from_ptr(output.as_ptr()).to_str().unwrap(),
+                "1700000000000000001"
+            );
+            assert!(omatrack_open_mtj_bytes(std::ptr::null(), 1).is_null());
+            assert!(omatrack_open_mtj_bytes(b"{}\n".as_ptr(), 3).is_null());
+            assert!(omatrack_open_mtj_bytes([0x28, 0xb5, 0x2f, 0xfd].as_ptr(), 4).is_null());
+            omatrack_close(handle);
+        }
+    }
+
+    #[test]
+    fn telemetry_magic_dispatch_keeps_zip_and_supports_plain_and_zstd_mtj() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("omatrack-mtj-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = telemetry_format::JsonlRecording::from_bytes("memory", MTJ_FIXTURE).unwrap();
+        let plain = dir.join("plain.telemetry");
+        let compressed = dir.join("compressed.telemetry");
+        let zip = dir.join("archive.telemetry");
+        std::fs::write(&plain, MTJ_FIXTURE).unwrap();
+        telemetry_format::write_jsonl_from_source_with(&source, &compressed, true).unwrap();
+        telemetry_format::write_from_source(&source, &zip).unwrap();
+        for path in [&plain, &compressed, &zip] {
+            let opened = parse_path(path, false).unwrap();
+            assert_eq!(opened.channels().len(), 1);
+            assert_eq!(opened.channels()[0].sample_count, 3);
+            assert_eq!(opened.decode(0, 0, 0), 1.0);
+            assert!(opened.decode(0, 0, 1).is_nan());
+        }
+        for (name, invalid) in [
+            ("wrong-version.telemetry", b"{\"mtj\":999,\"q\":1,\"dur\":1}\n[]\n".as_slice()),
+            ("not-mtj.telemetry", b"{\"wrong\":1}\n[]\n".as_slice()),
+            ("truncated.telemetry", [0x28, 0xb5, 0x2f, 0xfd].as_slice()),
+            ("extension.telemetry", b"{\"mtx\":1,\"n\":\"test\",\"q\":200000000,\"dur\":200000000,\"vis\":1,\"utc\":1,\"tz\":\"Etc/UTC\"}\n{\"n\":\"test\",\"hz\":5,\"vis\":1,\"v\":[0]}\n".as_slice()),
+        ] {
+            let path = dir.join(name);
+            std::fs::write(&path, invalid).unwrap();
+            assert!(parse_path(&path, false).is_err());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     struct TestSource {
         channels: Vec<Channel>,

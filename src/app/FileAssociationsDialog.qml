@@ -21,21 +21,41 @@ Dialog {
             Layout.fillWidth: true
             Layout.preferredWidth: 420
             color: Style.mutedTextColor
-            text: "Omatrack can open these types from Explorer. Telemetry formats are on; MPEG-4 video stays off unless you want every .mp4 to launch Omatrack."
+            text: "Register file types for opening from Explorer. Telemetry formats are enabled by default. Video formats are optional and off by default; choose each type separately. Windows may still ask you to choose a default app."
             wrapMode: Text.Wrap
         }
-        Repeater {
-            model: Updater.associationCount
+        ScrollView {
+            id: associationScroll
 
-            delegate: CheckBox {
-                id: associationBox
+            Layout.fillWidth: true
+            Layout.preferredHeight: Math.min(associationList.implicitHeight, 360)
+            clip: true
+            contentWidth: associationScroll.availableWidth
 
-                required property int index
+            Column {
+                id: associationList
 
-                checked: Updater.associationEnabled(associationBox.index)
-                text: Updater.associationLabel(associationBox.index) + (Updater.associationVideo(associationBox.index) ? " (optional)" : "")
+                spacing: 4
+                width: associationScroll.availableWidth
 
-                onToggled: Updater.setAssociationEnabled(associationBox.index, checked)
+                Repeater {
+                    model: Updater.associationCount
+
+                    delegate: CheckBox {
+                        id: associationBox
+
+                        required property int index
+
+                        checked: Updater.associationEnabled(associationBox.index)
+                        text: Updater.associationLabel(associationBox.index) + (Updater.associationVideo(associationBox.index) ? " (optional)" : "")
+                        width: associationList.width
+
+                        onToggled: {
+                            Updater.setAssociationEnabled(associationBox.index, associationBox.checked);
+                            associationBox.checked = Updater.associationEnabled(associationBox.index);
+                        }
+                    }
+                }
             }
         }
     }

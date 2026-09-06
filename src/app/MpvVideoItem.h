@@ -91,6 +91,8 @@ signals:
     void pausedChanged();
     void mutedChanged();
     void seekingChanged();
+    /// Synchronous seek intent, before mpv's asynchronous state notifications.
+    void seekRequested();
     void positionChanged();
     void durationChanged();
     void videoAspectRatioChanged();

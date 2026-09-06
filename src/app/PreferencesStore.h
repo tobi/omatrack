@@ -55,6 +55,14 @@ public:
     void setVideoHudPosition(QPointF point) { videoHudPosition_ = point; }
     bool videoMuted() const { return videoMuted_; }
     void setVideoMuted(bool muted) { videoMuted_ = muted; }
+    bool imageTelemetryEnabled() const { return imageTelemetryEnabled_; }
+    void setImageTelemetryEnabled(bool enabled) {
+        imageTelemetryEnabled_ = enabled;
+    }
+    const QString& imageTelemetryModel() const { return imageTelemetryModel_; }
+    void setImageTelemetryModel(const QString& path) {
+        imageTelemetryModel_ = path;
+    }
 
     const QString& requestedSyncStrategy() const {
         return requestedComparisonSyncStrategy_;
@@ -168,6 +176,8 @@ private:
 
     QStringList recentFiles_;
     bool videoMuted_ = false;
+    bool imageTelemetryEnabled_ = true;
+    QString imageTelemetryModel_;
     QPointF videoHudPosition_{-1.0, -1.0};
     QString requestedComparisonSyncStrategy_ = QStringLiteral("gps-continuous");
     qint64 cacheLimitBytes_ = 0;

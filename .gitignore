@@ -1,5 +1,15 @@
 build/
 build-*/
+/work/
+# Model weights, generated image telemetry, and local coordination are not code.
+*.onnx
+*.onnx.data
+*.pt
+*.pth
+*.telemetry
+*.telemetry.jsonl*
+docs/VIDEO_TELEMETRY_PROGRESS.md
+docs/VIDEO_TELEMETRY_INTEGRATION_PLAN.md
 third_party/motorsport-telemetry/target/
 *.user
 *.autosave
@@ -29,6 +39,7 @@ CMakeUserPresets.json
 *.M4V
 *.webm
 *.WebM
+*.WEBM
 *.unified.csv
 # Profiler traces, screenshots, and benchmark outputs are local artifacts.
 profiler/

@@ -259,6 +259,10 @@ void PreferencesStore::loadPreferences() {
         config.save();
     }
     videoMuted_ = config.value(QStringLiteral("video/muted"), false).toBool();
+    imageTelemetryEnabled_ =
+        config.value(QStringLiteral("video/image_telemetry"), true).toBool();
+    imageTelemetryModel_ =
+        config.value(QStringLiteral("video/image_model")).toString();
     const auto hudPosition =
         config.map({QStringLiteral("video"), QStringLiteral("hud_position")});
     bool xOk = false, yOk = false;
@@ -519,6 +523,9 @@ void PreferencesStore::scheduleSave() {
         locationRows.isEmpty() ? QVariant() : QVariant(locationRows));
     config.setValue(QStringLiteral("recent_files"), recentFiles_);
     config.setValue(QStringLiteral("video/muted"), videoMuted_);
+    config.setValue(QStringLiteral("video/image_telemetry"),
+                    imageTelemetryEnabled_);
+    config.setValue(QStringLiteral("video/image_model"), imageTelemetryModel_);
     if (videoHudPosition_.x() >= 0 && videoHudPosition_.y() >= 0)
         config.setMap({QStringLiteral("video"), QStringLiteral("hud_position")},
                       {{QStringLiteral("x"), videoHudPosition_.x()},

@@ -19,9 +19,11 @@
 
 #ifdef OMATRACK_ENABLE_AUTOTEST_HARNESS
 #include "AutotestHarness.h"
+#include "ImageTelemetryScanAutotest.h"
 #endif
 #include "Headless.h"
 #include "SingleInstance.h"
+#include "FileOpenEvents.h"
 #include "TelemetryStore.h"
 #include "VerboseLog.h"
 #ifdef Q_OS_WIN
@@ -146,6 +148,7 @@ int main(int argc, char** argv) {
     QSurfaceFormat::setDefaultFormat(surfaceFormat);
     QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
     QGuiApplication app(argc, argv);
+    omatrack::FileOpenEvents fileOpenEvents(&app);
     if (verbose) omatrack::setVerbose(true);
 
     // Explorer / Finder / xdg-open start a fresh process per file. Hand the
@@ -233,21 +236,23 @@ int main(int argc, char** argv) {
     if (mute) store->overrideVideoMuted(true);
     openPaths(launchPaths);
     if (!startupVideoPath.isEmpty()) store->openFile(startupVideoPath);
-    QObject::connect(
-        &instance, &omatrack::SingleInstance::pathsReceived, &app,
-        [&engine, openPaths](const QStringList& paths) {
-            openPaths(paths);
-            for (QObject* root : engine.rootObjects())
-                if (auto* window = qobject_cast<QQuickWindow*>(root)) {
-                    if (window->windowState() & Qt::WindowMinimized)
-                        window->showNormal();
-                    window->raise();
-                    window->requestActivate();
-                }
-        });
+    const auto openAndRaise = [&engine, openPaths](const QStringList& paths) {
+        openPaths(paths);
+        for (QObject* root : engine.rootObjects())
+            if (auto* window = qobject_cast<QQuickWindow*>(root)) {
+                if (window->windowState() & Qt::WindowMinimized)
+                    window->showNormal();
+                window->raise();
+                window->requestActivate();
+            }
+    };
+    fileOpenEvents.setHandler(openAndRaise);
+    QObject::connect(&instance, &omatrack::SingleInstance::pathsReceived, &app,
+                     openAndRaise);
 
 #ifdef OMATRACK_ENABLE_AUTOTEST_HARNESS
-    omatrack::autotest::install(engine, *store);
+    if (!omatrack::autotest::installImageTelemetryScan(engine, *store))
+        omatrack::autotest::install(engine, *store);
 #endif
     return app.exec();
 }

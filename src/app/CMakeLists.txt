@@ -19,7 +19,8 @@ set_target_properties(omatrack PROPERTIES
   MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.tobi.omatrack"
   MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}")
 if(APPLE)
-  set_target_properties(omatrack PROPERTIES OUTPUT_NAME "Omatrack")
+  set_target_properties(omatrack PROPERTIES OUTPUT_NAME "Omatrack"
+    MACOSX_BUNDLE_INFO_PLIST "${PROJECT_SOURCE_DIR}/packaging/macos/Info.plist.in")
 endif()
 
 if(WIN32)
@@ -102,6 +103,9 @@ qt_add_qml_module(omatrack
     AppUpdater.h AppUpdater.cpp
     DamperStripView.h DamperStripView.cpp
     MpvVideoItem.h MpvVideoItem.cpp
+    ImageTelemetryController.h ImageTelemetryController.cpp
+    ImageTelemetryTraces.h ImageTelemetryTraces.cpp
+    ImageTelemetryTraceGeometry.h ImageTelemetryTraceGeometry.cpp
     FilmstripLayout.h
     OmarchyTheme.h OmarchyTheme.cpp
     ComparisonAlignment.h ComparisonAlignment.cpp
@@ -131,6 +135,7 @@ qt_add_qml_module(omatrack
     ModelDiff.h
     VerboseLog.h VerboseLog.cpp
     SingleInstance.h SingleInstance.cpp
+    FileOpenEvents.h
     TraceSnapshot.h
     TraceInteraction.h TraceInteraction.cpp
     TraceLaneSizing.h
@@ -149,7 +154,8 @@ if(OMATRACK_ENABLE_AUTOTEST_HARNESS)
     TraceResizeAutotest.cpp
     SessionChromeAutotest.cpp
     UsbCopyAutotest.cpp
-    PluginAutotest.cpp)
+    PluginAutotest.cpp
+    ImageTelemetryScanAutotest.h ImageTelemetryScanAutotest.cpp)
   target_compile_definitions(omatrack PRIVATE
     OMATRACK_ENABLE_AUTOTEST_HARNESS=1)
 endif()
@@ -187,6 +193,8 @@ target_link_libraries(omatrack PRIVATE
   omatrack_warnings
   omatrack_yaml
   omatrack_mpv
+  omatrack_inference
+  omatrack_image_cache
   Qt6::Concurrent
   Qt6::Quick
   Qt6::QuickControls2
@@ -209,6 +217,7 @@ target_compile_definitions(omatrack PRIVATE
 install(TARGETS omatrack
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
   BUNDLE DESTINATION .)
+include(${PROJECT_SOURCE_DIR}/cmake/GaugeModelPackage.cmake)
 
 if(UNIX AND NOT APPLE)
   install(FILES

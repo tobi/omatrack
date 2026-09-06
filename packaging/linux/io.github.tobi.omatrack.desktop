@@ -8,7 +8,8 @@ Exec=omatrack %f
 Icon=io.github.tobi.omatrack
 Terminal=false
 Categories=Utility;Engineering;
-MimeType=application/x-cosworth-pds;application/x-motec-ld;application/x-racelogic-vbo;
+# Open With capabilities only; installation must not set video defaults.
+MimeType=application/x-cosworth-pds;application/x-motec-ld;application/x-racelogic-vbo;video/mp4;video/quicktime;video/x-matroska;video/vnd.avi;video/x-msvideo;video/x-m4v;video/webm;
 StartupNotify=true
 Keywords=telemetry;motorsport;racing;data;video;
 StartupWMClass=omatrack

@@ -5786,6 +5786,28 @@ void TelemetryStore::setVideoMuted(bool muted) {
     if (was != muted) emit videoMutedChanged();
 }
 
+bool TelemetryStore::imageTelemetryEnabled() const {
+    return prefs_->imageTelemetryEnabled();
+}
+
+void TelemetryStore::setImageTelemetryEnabled(bool enabled) {
+    if (enabled == prefs_->imageTelemetryEnabled()) return;
+    prefs_->setImageTelemetryEnabled(enabled);
+    schedulePreferencesSave();
+    emit imageTelemetrySettingsChanged();
+}
+
+QString TelemetryStore::imageTelemetryModel() const {
+    return prefs_->imageTelemetryModel();
+}
+
+void TelemetryStore::setImageTelemetryModel(const QString& path) {
+    if (path == prefs_->imageTelemetryModel()) return;
+    prefs_->setImageTelemetryModel(path);
+    schedulePreferencesSave();
+    emit imageTelemetrySettingsChanged();
+}
+
 void TelemetryStore::overrideVideoMuted(bool muted) {
     if (videoMuted() == muted) {
         videoMutedOverride_ = muted;

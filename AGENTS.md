@@ -4,7 +4,7 @@
 
 Omatrack is a native racing-telemetry workstation. Its primary target is Linux under Omarchy, built with Qt 6, Qt Quick, and Material controls. It should turn heterogeneous logger files into a coherent, driver-facing model of sessions, laps, channels, tracks, corners, and corner complexes.
 
-This is not a single-format file viewer or a generic chart demo. The product direction is a full telemetry system that can ingest every major race format through one analysis pipeline. The current parser bridge supports Pi/Cosworth `.pds`, MoTeC `.ld`, Racelogic `.vbo`, AiM `aimd` telemetry embedded in `.mp4`, native `.telemetry`, and Motorsport Telemetry JSONL (MTJ recordings and MTX sidecars). That is the starting set, not the intended limit. Local files are opened directly by the parser on every open — no conversion, no fingerprinting, nothing written anywhere. `.telemetry` is generated only for recordings on a connected server: keyed by the object's ETag under `.omatrack/c/{generation}/` both in the local cache and at the remote root, so one conversion of a multi-gigabyte onboard MP4 serves every machine. Motec `.ldx` is not a session. MTX is an overlay, not a library session: drop or sibling-find a `.ext.jsonl` / `.mtx.jsonl`, overlap-join it onto the open host by integer nanoseconds, and show it as a collapsible folder of extra channels and spans. `.telemetry` is Omatrack's native recording: header first, O(1) catalog, lossless channel columns, laps, video links, and frame sync. Any problem that should be solved at load time or pre-computed belongs in that format — extend `telemetry-format` upstream, do not add a second sidecar schema in Qt.
+This is not a single-format file viewer or a generic chart demo. The product direction is a full telemetry system that can ingest every major race format through one analysis pipeline. The current parser bridge supports Pi/Cosworth `.pds`, MoTeC `.ld`, Racelogic `.vbo`, AiM `aimd` telemetry embedded in `.mp4`, native `.telemetry`, and Motorsport Telemetry JSONL (MTJ recordings and MTX sidecars). That is the starting set, not the intended limit. Local native telemetry files are opened directly by the parser, without conversion or writes beside their sources. Image-derived telemetry is a separate, explicitly predicted cache under the application cache directory; it never replaces native source truth. Native-format `.telemetry` conversion for recordings on a connected server is keyed by the object's ETag under `.omatrack/c/{generation}/` both in the local cache and at the remote root, so one conversion of a multi-gigabyte onboard MP4 serves every machine. Motec `.ldx` is not a session. MTX is an overlay, not a library session: drop or sibling-find a `.ext.jsonl` / `.mtx.jsonl`, overlap-join it onto the open host by integer nanoseconds, and show it as a collapsible folder of extra channels and spans. `.telemetry` is Omatrack's native recording: header first, O(1) catalog, lossless channel columns, laps, video links, and frame sync. Any problem that should be solved at load time or pre-computed belongs in that format — extend `telemetry-format` upstream, do not add a second sidecar schema in Qt.
 
 ## Product goal
 
@@ -149,7 +149,9 @@ wins on load. Caches (Track Atlas snapshot) stay outside the file.
   `$XDG_CACHE_HOME/omatrack/index/v2/{generation}/`, keyed by POSIX
   `(dev, ino, size, mtime)` and `omatrack::converterGeneration()`. Failures
   are not stored. Nothing is written beside the source recording.
-  Only remote recordings get a `.telemetry` (below).
+  Only remote native recordings are converted to `.telemetry` (below). The
+  independent image-prediction cache is a separate derived-data path, never
+  source conversion.
 - Dispatch formats through the Rust parser workspace.
 - Infer inexpensive metadata from filenames/folders before parsing samples.
 - Group the library as Track → Date → Session → Laps.
@@ -290,10 +292,12 @@ wins on load. Caches (Track Atlas snapshot) stay outside the file.
   converts during the sidebar pass.) A 412 means another client won; use
   that object rather than overwrite it. Discovery remains usable offline from
   its last stubs and ETag metadata.
-- Local recordings are never converted or hashed. `.telemetry` files exist
-  only for remote objects, and only under `.omatrack/c/`; the ETag in the
-  name is the identity, BLAKE3 is used solely to verify a linked video
-  against a catalog that carries one.
+- Local native recordings are never converted or content-hashed merely for
+  discovery. Remote native `.telemetry` conversions remain under `.omatrack/c/`;
+  their ETag is the identity, and BLAKE3 verifies linked video when the catalog
+  carries it. Explicit image extraction separately caches predicted `.telemetry`
+  under the application cache, keyed by source file identity, model content hash,
+  duration and semantic revisions. Never write beside a local source.
 - `{generation}` is `omatrack::converterGeneration()`: the native format
   version and the pinned `motorsport-telemetry-rs` revision
   (`10-c1ac439d99d9`), derived by the bridge's `build.rs` from its own
@@ -394,7 +398,17 @@ Native lap distance is accepted only when its continuity and total agree with in
 ### Embedded video playback
 
 - Open MP4, MOV, MKV, AVI, M4V, and WebM video inside the main analysis workspace; an MP4 containing an AiM `aimd` track is also a telemetry session.
+- Deliberately opening a new video enters fullscreen once. Escape returns to the
+  workspace; lap changes, playback updates, and refreshes of the same recording
+  must not force fullscreen again. Finder document-open events use the same file
+  path as CLI/dialog/drop opens, queued until the store is available.
 - Render through libmpv's OpenGL Render API in `MpvVideoItem`; never spawn the mpv CLI or embed a foreign native window.
+- Embedded playback explicitly uses builtin bilinear scale/cscale/dscale. This
+  avoids proven uninitialized padded scaler LUTs in mpv0.41 that can propagate
+  NaNs into black video. It is a display-filter tradeoff, not altered image-model
+  input or a clock workaround. Retain this policy until a fixed dependency and
+  higher-order filters pass regression. See `docs/VIDEO_SCALER_COMPATIBILITY.md`
+  for the one-data-change causal proof and minimal upstream patch.
 - Place video in the resizable section above the traces. Playback chrome stays minimal: the top-left speaker button toggles persisted audio mute, Space toggles playback, and Left/Right skip the primary recording by 2 seconds. Store the mute preference under `video.muted` in `omatrack.yml`. Fullscreen dual-video compose is split, active-with-reference pip, reference-with-active pip, active only, or reference only (keys 1–5). In pip layouts the main recording is inset so it is not confused with a single full-frame video. `S` toggles 0.25× slow motion on the primary clock (the reference follows). The top bar shows the layout name and mode controls. Driver / lap N/M / fuel labels sit above the central delta readout, aligned to their active/reference sides. The telemetry HUD's dragged position is stored as normalized available-space coordinates under `video.hud_position: {x, y}` in `omatrack.yml`, written only at drag end and clamped around the filmstrip; it survives restarts, layout changes and window resizing.
 - Selecting an AiM video session selects its fastest lap and pauses at the
   telemetry cursor. The primary recording is the clock: it always plays at
@@ -451,7 +465,44 @@ Native lap distance is accepted only when its continuity and total agree with in
   instead of adding compatibility branches.
 - Opening a video without embedded telemetry clears active/reference laps and
   gives the video the full analysis workspace. Telemetry-bearing videos retain
-  the synchronized trace workspace below playback.
+  the synchronized trace workspace below playback when leaving fullscreen.
+- Standalone video uses `ImageTelemetryController` as a progressive data producer,
+  not a separate demo HUD. `video.image_telemetry` and `video.image_model` remain
+  in omatrack.yml. While watching it fills observed 5 Hz cells and catches up missed
+  cells in the watched interval. **Scan from cursor** runs bounded worker batches
+  faster than playback, prioritizes a new cursor, proceeds forward and then wraps
+  to fill earlier holes. Pausing/seeking does not erase already collected data.
+- Image-derived data appears in the docked `ImageTelemetryTraces` recording-time
+  workspace, using the shared scene builders, Style and a cached static scene
+  separate from the cursor. It is not a native `SessionHandle`, invented distance,
+  authoritative lap table or brake-pressure channel. Fullscreen remains video-first.
+- `ImageTelemetryCache` persists partial and complete standard zstd MTJ `.telemetry`
+  in the app cache. One file contains predictions, independent visited/layout/known
+  masks, actual presentation-PTS channel and exact integer source origin/provenance
+  in standard pass parameters. No custom per-recording sidecar. MTJ values sit on
+  the declared 200 ms lattice; actual decoded PTS stay separately available, never
+  an invented full-video frame table. This is predicted data, not dense gold.
+  Atomic locked monotonic merge/publish preserves progress across sessions and
+  concurrent instances; source/model/revision changes invalidate stale entries.
+  A validated complete cache loads without running the model or decoder.
+- Inference and cache I/O run in a single-worker AsyncJob pool, separate from
+  libmpv rendering. VideoFrameDecoder returns actual decoded PTS and explicit
+  origin, never screenshots stamped with time-pos or FPS-derived timestamps.
+  Seeks invalidate current observations but retain same-source coverage; source
+  and model changes discard stale jobs/snapshots. Cache writes never mark missing
+  inference or transient decode failures as fully observed. Unsupported or
+  unreadable observations remain explicitly unknown rather than zero.
+- Native telemetry remains first. Even if native parsing falls back to standalone
+  playback, any media data/aimd track conservatively vetoes image extraction:
+  parser failure does not establish telemetry absence. Remote image fallback is
+  withheld until a local/downloaded video is available. Inputs stay read-only.
+- Gauge admission currently recognizes only the reviewed 1920x1080 orange AiM
+  layout through image structure checks. It is not a general detector. Unknown
+  layouts and obscured/unsupported fields remain unknown, never zero. The four
+  supported outputs are gear, displayed stint counter, brake visible fill and
+  throttle visible fill. No GPS, physical brake pressure or authoritative lap
+  classification is inferred. See `docs/GAUGE_READER_RUNTIME.md` for model
+  provenance, parity, negative tests and deployment requirements.
 
 ### Corner intelligence
 
@@ -554,7 +605,10 @@ CornerContext{primary, reference metrics, delta-trace time deltas}
   couple of seconds. A leftover zip install is offered the Setup.exe so
   it can migrate. File associations are HKCU: telemetry formats default
   on (`.pds`, `.ld`, `.ldx`, `.vbo`, `.telemetry` — an `.ldx` opens its
-  sibling `.ld`), `.mp4` default off, prompted on first run.
+  sibling `.ld`); `.mp4`, `.mov`, `.mkv`, `.avi`, `.m4v` and `.webm` are independently
+  optional/default off, prompted on first run. Removing an Omatrack registration
+  must preserve other applications' extension keys. Linux/macOS advertise optional
+  Open-With capabilities, not ownership/default takeover.
 - macOS: one click downloads `Omatrack-*-macOS-arm64.dmg`, verifies
   `SHA256SUMS.txt`, copies `Omatrack.app` off the image, then a helper
   waits for this process to exit, dittos the new bundle over the old one,
@@ -1012,7 +1066,8 @@ Embedded libmpv playback must be verified on the native Linux/Omarchy OpenGL sce
   library sessions: they are overlap-joined onto the open host and drawn as a
   collapsible folder of header chrome, span tracks, and sample channels. An
   ordinary MP4 without an `aimd` track remains valid for standalone playback.
-  Local files are parsed in place; no `.telemetry` is generated for them.
+  Local native files are parsed in place, not converted. Image-derived caches
+  are generated only in the separate private application cache path described above.
   Remote recordings are normalized once and keyed by ETag: the local mirror
   is `$XDG_CACHE_HOME/.omatrack/c/{generation}/{ETag}.telemetry`; remote
   publication is create-only at
