@@ -4,6 +4,7 @@
 #include <QGuiApplication>
 #include <QPalette>
 #include <QWindow>
+#include <QtGui/qpa/qplatformwindow_p.h>
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -69,26 +70,54 @@ void useDarkTitleBar(QWindow* window) {
                           sizeof(enabled));
 }
 
+// Qt implements Window.FullScreen on Windows as a borderless WS_POPUP window
+// sized exactly to the monitor. Because the scene graph runs on OpenGL (the
+// libmpv render API needs it), DWM and the display driver treat that surface
+// like a game's exclusive fullscreen: the display re-modes, the screen goes
+// black for a moment, variable-refresh monitors switch rate, and — Qt's
+// documented DWM limitation — other top-level windows (Preferences,
+// Channels, dialogs) cannot appear above it. Qt's remedy is the platform
+// window's HasBorderInFullScreen flag: the popup keeps WS_BORDER, the
+// client area is inset by one pixel, and the window never matches the
+// screen exactly, so it stays a composited window. Qt still reports it as
+// FullScreen (isFullScreen_sys() accounts for the border), so the QML
+// visibility round-trip is unchanged. The flag lives on the platform
+// window, so it is set once the native handle exists — the first Show.
+void keepFullScreenComposited(QWindow* window) {
+    if (!window || !window->isTopLevel()) return;
+    using QNativeInterface::Private::QWindowsWindow;
+    if (auto* native = window->nativeInterface<QWindowsWindow>())
+        native->setHasBorderInFullScreen(true);
+}
+
 class WindowsWindowAppearance final : public QObject {
 public:
-    explicit WindowsWindowAppearance(QObject* parent) : QObject(parent) {}
+    explicit WindowsWindowAppearance(QObject* parent, bool darkTitleBar)
+        : QObject(parent), darkTitleBar_(darkTitleBar) {}
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override {
-        if (event->type() == QEvent::Show)
-            useDarkTitleBar(qobject_cast<QWindow*>(watched));
+        if (event->type() == QEvent::Show) {
+            auto* window = qobject_cast<QWindow*>(watched);
+            keepFullScreenComposited(window);
+            if (darkTitleBar_) useDarkTitleBar(window);
+        }
         return QObject::eventFilter(watched, event);
     }
+
+private:
+    const bool darkTitleBar_;
 };
 
 }  // namespace
 
 void initializeWindowsIntegration(QGuiApplication& app) {
     SetCurrentProcessExplicitAppUserModelID(L"io.github.tobi.omatrack");
-    if (highContrastEnabled()) return;
-
-    QGuiApplication::setPalette(omatrackDarkPalette());
-    app.installEventFilter(new WindowsWindowAppearance(&app));
+    // High contrast keeps the system palette and title bars; the fullscreen
+    // compositing fix applies regardless.
+    const bool themed = !highContrastEnabled();
+    if (themed) QGuiApplication::setPalette(omatrackDarkPalette());
+    app.installEventFilter(new WindowsWindowAppearance(&app, themed));
 }
 
 }  // namespace omatrack

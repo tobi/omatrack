@@ -36,6 +36,10 @@ All notable user-facing changes are documented here.
 - Validate each registered model's exact size, hash and contract on a worker;
   large-file hashes use bounded streaming buffers. CI and package audits verify
   all bundled models/notices and exercise cold offline loading on every platform.
+- Keep Windows fullscreen video a composited window instead of a game-style
+  exclusive surface: no display re-mode or refresh-rate switch, no black
+  flicker entering and leaving fullscreen, and Preferences/Channels/dialogs can
+  appear above the video.
 
 ## 1.8.2 — 2026-09-06
 
