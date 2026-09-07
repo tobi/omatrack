@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -53,6 +54,24 @@ struct GaugeResult {
                            // excludes model load
 };
 
+enum class GaugeFillDirection {
+    Unknown,
+    LeftToRight,
+    RightToLeft,
+    BottomToTop,
+    TopToBottom
+};
+struct GaugeCrop {
+    int left = 0, top = 0, right = 0, bottom = 0;  // half-open SOURCE pixels
+    bool enabled = false;
+    GaugeFillDirection direction = GaugeFillDirection::Unknown;
+};
+struct GaugeReadConfiguration {
+    int sourceWidth = 0, sourceHeight = 0;
+    std::array<GaugeCrop, 4>
+        crops;  // gear, displayed stint counter, brake fill, throttle fill
+};
+
 // Qt-free optional ONNX Runtime CPU reader. Construct and call on a worker;
 // one instance per serial worker (not concurrently callable). No file writes,
 // network, telemetry, source filenames, timestamps or temporal smoothing.
@@ -69,6 +88,14 @@ public:
     const std::string& modelError() const;
     const std::map<std::string, std::string>& modelMetadata() const;
     GaugeResult read(const GaugeRgb24Frame& frame);
+    // Experimental configured-crop route: validates geometry/directions and
+    // keeps the SAME model metadata/tensor contract. Caller must visually
+    // confirm and separately validate the crop domain. Supported here means
+    // structurally valid configuration, not recognition/generalization or
+    // calibrated truth. Disabled fields are not preprocessed or decoded and
+    // remain unknown.
+    GaugeResult readConfigured(const GaugeRgb24Frame& frame,
+                               const GaugeReadConfiguration& configuration);
 
     // Image-only admission is available even in builds without ONNX Runtime.
     // This is a conservative fixed-layout heuristic, not arbitrary HUD
@@ -76,6 +103,8 @@ public:
     static GaugeResult inspectLayout(const GaugeRgb24Frame& frame);
 
 private:
+    GaugeResult readImpl(const GaugeRgb24Frame& frame,
+                         const GaugeReadConfiguration* configuration);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

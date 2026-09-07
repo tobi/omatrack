@@ -47,6 +47,7 @@ struct ImageTelemetryIdentity {
     ImageTelemetryFileIdentity source;
     ImageTelemetryFileIdentity model;
     std::string modelSha256;
+    std::string setupSha256;  // confirmed source-normalized gauge configuration
     std::string schemaRevision = ImageTelemetrySchemaRevision;
     std::string layoutRevision = ImageTelemetryLayoutRevision;
     std::string decoderRevision = ImageTelemetryDecoderRevision;

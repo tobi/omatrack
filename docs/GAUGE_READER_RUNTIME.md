@@ -190,11 +190,35 @@ The validated local artifact is
 97029f70068f4ec276b3d6bc28810763275806f579d91ddd4701b544af392147
 ```
 
-The source distribution includes no model weights or evaluation images. The
-optional `OMATRACK_GAUGE_MODEL` setting stages a model into a local build/install;
-it does not authorize publishing that model. Generate the complete bad-model,
+The source tree includes no model weights or evaluation images. Release recipes
+now stage this exact public reader at build time for offline operation, with
+immutable-revision download and SHA256 verification. `OMATRACK_GAUGE_MODEL`
+also stages it into a local development build/install. Experimental candidates
+are not silently substituted or published. Generate the complete bad-model,
 nonfinite and negative fixtures under **`<output-dir>/fixtures`** with the exporter
 above, and keep them private.
+
+## Configured-crop API and discovery
+
+`read()` remains the fixed-layout interface above. The separate
+`readConfigured(frame, GaugeReadConfiguration)` accepts exact source dimensions,
+four half-open pixel crops, selected masks, and explicit bar direction. Digits use
+aspect-preserving Pillow-compatible resize/padding; bars map the chosen direction
+to left-to-right before the same resize. Digit rounding ties follow Python's
+round-to-even. Disabled crops are not copied, preprocessed or decoded, and their
+fixed batch slots cannot produce observations. Model/tensor/metadata validation
+and count-CTC decoding are unchanged.
+
+The configured API validates geometry, not the model's applicability. It does not
+perform fixed-layout admission. The app still separately enforces the original
+structural gate and reviewed crop compatibility. Private native tests relocate
+approved crop pixels into a different source geometry and verify exact original
+Pillow bytes/predictions for all four directions and disabled masks. This does NOT
+validate changing margins or crop contents: independent approved-validation
+experiments found severe failures from two-pixel shifts and 10% expansions.
+Arbitrary UI edits/detector proposals remain unsupported until separately validated.
+See [Discover → Confirm → Extract](GAUGE_DISCOVERY.md) for native workflow,
+experimental detector status, setup/cache identity and acceptance.
 
 ## Native dependency and application integration
 
@@ -227,8 +251,10 @@ cmake --build --preset release
 Use the [isolated development helper](VIDEO_BUILD_ENVIRONMENT.md) when Qt/libmpv
 are supplied by a project-local prefix. Select a trusted model with **Reader
 model…**, or set `OMATRACK_GAUGE_MODEL=/path/to/reviewed/gauge-reader.onnx` at
-configure time to stage it into that build and install tree. Model staging is
-empty by default and grants no redistribution rights.
+configure time to stage it into that build and install tree. Source builds stage
+nothing by default; release recipes fetch the immutable, hash-verified public
+~2.2 MB reader at build time for offline use. Staging an arbitrary local model
+does not grant redistribution rights.
 
 Build and deployment contracts:
 

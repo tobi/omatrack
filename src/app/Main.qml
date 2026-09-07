@@ -348,11 +348,13 @@ ApplicationWindow {
     ImageTelemetryController {
         id: imageTelemetry
 
+        detectorPath: Store.gaugeDetectorModel
         eligible: root.standaloneVideoActive
         enabled: Store.imageTelemetryEnabled
         modelPath: Store.imageTelemetryModel
         objectName: "imageTelemetryController"
         player: videoPlayer
+        store: Store
     }
     VideoSync {
         id: videoSync
@@ -754,6 +756,16 @@ ApplicationWindow {
             onEntered: root.revealVideoControls()
             onPositionChanged: root.revealVideoControls()
         }
+        GaugeDiscoveryOverlay {
+            anchors.fill: parent
+            chromeTopInset: root.videoFullscreen ? 28 : 0
+            controller: imageTelemetry
+            objectName: "gaugeDiscoveryOverlay"
+            sourceAspect: videoPlayer.videoAspectRatio > 0 ? videoPlayer.videoAspectRatio : 16 / 9
+            videoViewport: Qt.rect(videoComposeHost.x, videoComposeHost.y, videoComposeHost.width, videoComposeHost.height)
+            visible: videoPlayer.loaded && !root.dualVideo
+            z: 2
+        }
         Menu {
             id: videoMetadataMenu
 
@@ -918,17 +930,8 @@ ApplicationWindow {
                     spacing: 6
                     visible: root.standaloneVideoActive
 
-                    CheckBox {
-                        id: imageExtractionToggle
-
-                        checked: Store.imageTelemetryEnabled
-                        font.pixelSize: Style.smallFontSize
-                        text: "Extract telemetry"
-
-                        onToggled: Store.imageTelemetryEnabled = imageExtractionToggle.checked
-                    }
                     ToolButton {
-                        enabled: Store.imageTelemetryEnabled && imageTelemetry.available && !imageTelemetry.complete
+                        enabled: Store.imageTelemetryEnabled && imageTelemetry.phase === ImageTelemetryController.Extracting && imageTelemetry.available && !imageTelemetry.complete
                         font.pixelSize: Style.smallFontSize
                         objectName: "imageScanAheadButton"
                         text: imageTelemetry.scanAhead ? "Pause scan" : "Scan from cursor"
@@ -1215,6 +1218,15 @@ ApplicationWindow {
             Store.imageTelemetryModel = path;
         }
     }
+    Platform.FileDialog {
+        id: gaugeDetectorDialog
+
+        fileMode: Platform.FileDialog.OpenFile
+        nameFilters: ["Experimental detector (*.onnx)"]
+        title: "Select experimental detector (metadata.json and contract.json required)"
+
+        onAccepted: Store.gaugeDetectorModel = root.toLocalPath(gaugeDetectorDialog.file)
+    }
 
     // ══ drawer (file open) ══════════════════════════════════════════
     Drawer {
@@ -1401,6 +1413,7 @@ ApplicationWindow {
 
         imageModelManager: imageModelDownloads
 
+        onChooseGaugeDetector: gaugeDetectorDialog.open()
         onChooseLocalImageModel: imageModelDialog.open()
     }
     SpanHoverCard {

@@ -4,6 +4,8 @@
 
 #include "AsyncJob.h"
 #include "MpvVideoItem.h"
+#include "GaugeSetup.h"
+#include "StoreModels.h"
 #include "inference/ImageTelemetrySeries.h"
 
 #include <QElapsedTimer>
@@ -17,10 +19,26 @@
 
 struct ImageTelemetryWorker;
 struct ImageTelemetryResult;
+struct GaugeDiscoveryResult;
+class TelemetryStore;
 
 class ImageTelemetryController : public QObject {
     Q_OBJECT
     QML_ELEMENT
+    Q_PROPERTY(TelemetryStore* store READ store WRITE setStore NOTIFY
+                   storeChanged FINAL)
+    Q_PROPERTY(GaugeRegionModel* gauges READ gauges CONSTANT FINAL)
+    Q_PROPERTY(Phase phase READ phase NOTIFY setupChanged FINAL)
+    Q_PROPERTY(bool canConfirm READ canConfirm NOTIFY setupChanged FINAL)
+    Q_PROPERTY(bool canExtract READ canExtract NOTIFY setupChanged FINAL)
+    Q_PROPERTY(bool experimentalDetector READ experimentalDetector NOTIFY
+                   setupChanged FINAL)
+    Q_PROPERTY(bool geometryCompatible READ geometryCompatible NOTIFY
+                   setupChanged FINAL)
+    Q_PROPERTY(
+        QString setupIdentity READ setupIdentity NOTIFY setupChanged FINAL)
+    Q_PROPERTY(
+        int discoverySamples READ discoverySamples NOTIFY setupChanged FINAL)
     Q_PROPERTY(MpvVideoItem* player READ player WRITE setPlayer NOTIFY
                    playerChanged FINAL)
     Q_PROPERTY(
@@ -29,6 +47,8 @@ class ImageTelemetryController : public QObject {
                    eligibleChanged FINAL)
     Q_PROPERTY(QString modelPath READ modelPath WRITE setModelPath NOTIFY
                    modelPathChanged FINAL)
+    Q_PROPERTY(QString detectorPath READ detectorPath WRITE setDetectorPath
+                   NOTIFY detectorPathChanged FINAL)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged FINAL)
     Q_PROPERTY(bool available READ available CONSTANT FINAL)
     Q_PROPERTY(bool scanAhead READ scanAhead WRITE setScanAhead NOTIFY
@@ -58,7 +78,32 @@ class ImageTelemetryController : public QObject {
     Q_PROPERTY(int observations READ inferenceRuns NOTIFY timelineChanged FINAL)
 
 public:
+    enum Phase { Discovery, Confirmed, Extracting };
+    Q_ENUM(Phase)
     explicit ImageTelemetryController(QObject* parent = nullptr);
+    TelemetryStore* store() const;
+    void setStore(TelemetryStore* store);
+    GaugeRegionModel* gauges() { return &gauges_; }
+    Phase phase() const { return phase_; }
+    bool canConfirm() const;
+    bool canExtract() const;
+    QString setupIdentity() const { return evidence_.setup.fingerprint(); }
+    int discoverySamples() const { return evidence_.sampleCount(); }
+    bool geometryCompatible() const { return geometryCompatible_; }
+    bool experimentalDetector() const {
+        return evidence_.setup.detectorIdentity.startsWith(
+            QStringLiteral("experimental-"));
+    }
+    Q_INVOKABLE virtual void confirmSetup(bool extensionDefault = true) final;
+    Q_INVOKABLE virtual void confirmGauge(const QString& key) final;
+    Q_INVOKABLE virtual void startExtraction() final;
+    Q_INVOKABLE virtual void reviewSetup() final;
+    Q_INVOKABLE virtual void editGauge(const QString& key,
+                                       const QString& semantic, bool selected,
+                                       const QRectF& box,
+                                       const QString& representation = {},
+                                       const QString& direction = {}) final;
+
     ~ImageTelemetryController() override;
     MpvVideoItem* player() const { return player_; }
     void setPlayer(MpvVideoItem* player);
@@ -68,11 +113,13 @@ public:
     void setEligible(bool eligible);
     const QString& modelPath() const { return modelPath_; }
     void setModelPath(const QString& path);
+    QString detectorPath() const { return detectorPath_; }
+    void setDetectorPath(const QString& path);
     const QString& status() const { return status_; }
     bool available() const;
     bool scanAhead() const { return scanAhead_; }
     void setScanAhead(bool enabled);
-    bool running() const { return job_.running(); }
+    bool running() const { return job_.running() || discoveryJob_.running(); }
     int scannedSamples() const { return scanned_; }
     int knownSamples() const { return known_; }
     int inferenceRuns() const { return inferenceRuns_; }
@@ -97,16 +144,23 @@ public:
     Q_INVOKABLE void retry();
 
 signals:
+    void storeChanged();
+    void setupChanged();
     void playerChanged();
     void enabledChanged();
     void eligibleChanged();
     void modelPathChanged();
+    void detectorPathChanged();
     void statusChanged();
     void sampleChanged();
     void scanStateChanged();
     void timelineChanged();
 
 private:
+    void discover(double seconds);
+    void refreshGauges();
+    void refreshGeometry();
+    void clearReading();
     void reset();
     void resetForSeek();
     void retireWorker();
@@ -117,6 +171,14 @@ private:
     void apply(const std::shared_ptr<ImageTelemetryResult>& result);
 
     QPointer<MpvVideoItem> player_;
+    QPointer<TelemetryStore> store_;
+    GaugeRegionModel gauges_;
+    omatrack::GaugeEvidence evidence_;
+    Phase phase_ = Discovery;
+    bool proposalLoaded_ = false, geometryCompatible_ = false;
+    double lastDiscoveryTarget_ = -10;
+    qint64 nextDiscoveryMs_ = 0;
+    AsyncJob<std::shared_ptr<GaugeDiscoveryResult>> discoveryJob_;
     QTimer timer_;
     QThreadPool workerPool_;
     AsyncJob<std::shared_ptr<ImageTelemetryResult>> job_;
@@ -124,7 +186,7 @@ private:
     std::shared_ptr<ImageTelemetryWorker> worker_;
     omatrack::inference::ImageTelemetrySnapshot series_;
     QElapsedTimer clock_;
-    QString modelPath_, status_, cachePath_;
+    QString modelPath_, detectorPath_, status_, cachePath_;
     bool enabled_ = true, eligible_ = false, scanAhead_ = false;
     bool valid_ = false, blocked_ = false, awaitingSeek_ = false;
     bool complete_ = false, cacheComplete_ = false, pendingSave_ = false,

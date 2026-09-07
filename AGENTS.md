@@ -466,12 +466,35 @@ Native lap distance is accepted only when its continuity and total agree with in
 - Opening a video without embedded telemetry clears active/reference laps and
   gives the video the full analysis workspace. Telemetry-bearing videos retain
   the synchronized trace workspace below playback when leaving fullscreen.
-- Standalone video uses `ImageTelemetryController` as a progressive data producer,
-  not a separate demo HUD. `video.image_telemetry` and `video.image_model` remain
-  in omatrack.yml. While watching it fills observed 5 Hz cells and catches up missed
-  cells in the watched interval. **Scan from cursor** runs bounded worker batches
-  faster than playback, prioritizes a new cursor, proceeds forward and then wraps
-  to fill earlier holes. Pausing/seeking does not erase already collected data.
+- `ImageTelemetryController` uses **Discover → Confirm → Extract**. Enabling
+  `video.image_telemetry` starts pixel-only discovery, not reading. Full-source
+  boxes stay on the video while a serial worker samples approximately every three
+  seconds. Confidence is repeated spatial/type evidence at independent actual PTS,
+  never repeated paused frames or calibrated probabilities. The user may edit,
+  relabel, choose fill direction, disable and visually confirm boxes. Confirm saves
+  the setup; only the separate **Start extraction** action admits compatible selected
+  crops into the progressive 5 Hz recording. Discovery can inspect native-bearing
+  local video; native telemetry priority still vetoes image extraction.
+  `video.gauge_files` and `video.gauge_defaults` are typed PreferencesStore state
+  in omatrack.yml. Per-file setups and extension defaults reopen as proposals to
+  revalidate, never trusted file-extension layouts. Remembering the extension proposal
+  defaults ON; every confirmation saves the per-file setup. Normalized geometry retains
+  source dimensions; source/display mismatch withholds incorrect placement/reads.
+  `video.image_model` remains the reader override. Empty `video.gauge_detector` tries
+  the locally staged, hash-pinned experimental V2 at
+  `models/experimental-detector/gauge-detector.onnx` beside the executable;
+  `heuristic` explicitly selects the reviewed-layout heuristic, and an ONNX path
+  selects a local detector with verified companion metadata. Missing/failed detectors
+  fall back to the clearly labeled heuristic. Experimental proposals start unselected
+  and keep the EXPERIMENTAL warning after confirmation. Candidate v1 failed independent
+  localization acceptance; larger candidates need separate review before admission. Arbitrary edited/detected crops remain
+  unreadable despite the separately implemented configured-crop API: the incumbent
+  fails crop-jitter robustness. See `docs/GAUGE_DISCOVERY.md` before relaxing this gate.
+  After extraction starts, **Scan from cursor** runs bounded worker batches faster
+  than playback, prioritizes the cursor and wraps to fill earlier holes. Seeking
+  cancels stale jobs but retains same-setup coverage; edits reset setup-dependent
+  snapshots. Predicted cache keys and serialized provenance include confirmed setup
+  and detector identity in addition to the reader-content and source identity.
 - Image-derived data appears in the docked `ImageTelemetryTraces` recording-time
   workspace, using the shared scene builders, Style and a cached static scene
   separate from the cursor. It is not a native `SessionHandle`, invented distance,
@@ -525,8 +548,11 @@ Native lap distance is accepted only when its continuity and total agree with in
 - CI and release packaging require ONNX Runtime plus FFmpeg image-reader support;
   ordinary source builds may still omit it explicitly. Linux/macOS use the pinned,
   hash-verified public SDK bootstrap; Windows uses its native MSYS2 runtime package.
-  Model files are obtained separately through opt-in Hugging Face download, not
-  copied from private training directories into public release assets.
+  Release build recipes bundle the pinned public ~2.2 MB reader offline through
+  immutable-commit download plus SHA256 verification at build time; development
+  builds may stage it with `OMATRACK_GAUGE_MODEL`. Runtime Hugging Face downloads
+  remain optional opt-in updates. Experimental detector/reader candidates and
+  private training artifacts are not bundled into public releases.
 
 ### Corner intelligence
 

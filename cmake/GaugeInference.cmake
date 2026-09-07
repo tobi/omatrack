@@ -6,6 +6,7 @@ option(OMATRACK_REQUIRE_IMAGE_TELEMETRY "Fail configure if the image-reader runt
   "$ENV{OMATRACK_REQUIRE_IMAGE_TELEMETRY}")
 add_library(omatrack_inference STATIC
   ${PROJECT_SOURCE_DIR}/src/inference/GaugeReader.cpp
+  ${PROJECT_SOURCE_DIR}/src/inference/GaugeDetector.cpp
   ${PROJECT_SOURCE_DIR}/src/inference/VideoFrameDecoder.cpp)
 target_include_directories(omatrack_inference PUBLIC
   ${PROJECT_SOURCE_DIR}/src/inference)

@@ -198,6 +198,7 @@ QJsonObject identityParameters(const ImageTelemetrySeries& series) {
     addIdentity(p, QStringLiteral("source_"), series.identity.source);
     addIdentity(p, QStringLiteral("model_"), series.identity.model);
     p.insert(QStringLiteral("model_sha256"), text(series.identity.modelSha256));
+    p.insert(QStringLiteral("setup_sha256"), text(series.identity.setupSha256));
     p.insert(QStringLiteral("schema_revision"),
              text(series.identity.schemaRevision));
     p.insert(QStringLiteral("layout_revision"),
@@ -637,7 +638,8 @@ QString ImageTelemetryCache::pathFor(const ImageTelemetrySeries& series) const {
 ImageTelemetryCache::Result ImageTelemetryCache::prepare(
     const QString& sourcePath, const QString& modelPath,
     std::int64_t durationNs, std::int64_t timelineOriginNs,
-    bool nativeTelemetryAbsent, const Cancel& cancel) const {
+    bool nativeTelemetryAbsent, const Cancel& cancel,
+    const QString& setupSha256) const {
     try {
         checkCancel(cancel);
         auto series = std::make_shared<ImageTelemetrySeries>();
@@ -646,6 +648,7 @@ ImageTelemetryCache::Result ImageTelemetryCache::prepare(
         series->identity.modelSha256 =
             modelHash(series->identity.model, cancel);
         series->identity.nativeTelemetryAbsent = nativeTelemetryAbsent;
+        series->identity.setupSha256 = setupSha256.toStdString();
         series->durationNs = durationNs;
         series->timelineOriginNs = timelineOriginNs;
         series->cells.resize(ImageTelemetrySeries::slotCount(durationNs));

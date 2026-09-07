@@ -298,6 +298,7 @@ void MpvVideoItem::processEvents() {
                 }
                 break;
             case MPV_EVENT_FILE_LOADED:
+                requestDisplaySize();
                 if (!loaded_) {
                     loaded_ = true;
                     emit loadedChanged();
@@ -346,12 +347,31 @@ void MpvVideoItem::processEvents() {
                     emit seekingChanged();
                 }
                 break;
+            case MPV_EVENT_VIDEO_RECONFIG: requestDisplaySize(); break;
+            case MPV_EVENT_GET_PROPERTY_REPLY:
             case MPV_EVENT_PROPERTY_CHANGE: {
                 const auto* property =
                     static_cast<mpv_event_property*>(event->data);
                 if (!property || !property->name || !property->data) break;
-                if (std::strcmp(property->name, "time-pos") == 0 &&
-                    property->format == MPV_FORMAT_DOUBLE) {
+                if (std::strcmp(property->name, "video-out-params") == 0 &&
+                    property->format == MPV_FORMAT_NODE) {
+                    const auto* node =
+                        static_cast<const mpv_node*>(property->data);
+                    if (node->format == MPV_FORMAT_NODE_MAP && node->u.list) {
+                        qint64 width = 0, height = 0;
+                        for (int i = 0; i < node->u.list->num; ++i) {
+                            const auto& value = node->u.list->values[i];
+                            if (value.format != MPV_FORMAT_INT64) continue;
+                            if (std::strcmp(node->u.list->keys[i], "dw") == 0)
+                                width = value.u.int64;
+                            if (std::strcmp(node->u.list->keys[i], "dh") == 0)
+                                height = value.u.int64;
+                        }
+                        if (width > 0 && height > 0)
+                            setDisplaySize(width, height);
+                    }
+                } else if (std::strcmp(property->name, "time-pos") == 0 &&
+                           property->format == MPV_FORMAT_DOUBLE) {
                     const double value = *static_cast<double*>(property->data);
                     if (!qFuzzyCompare(position_ + 1.0, value + 1.0)) {
                         position_ = std::max(0.0, value);
@@ -444,6 +464,16 @@ void MpvVideoItem::processEvents() {
     }
 }
 
+void MpvVideoItem::requestDisplaySize() {
+    if (!state_ || !state_->handle) return;
+    // START_FILE clears our cached geometry. mpv may retain identical dw/dh
+    // across same-sized recordings and send no property-change notification.
+    // Query the coherent pair asynchronously after load/reconfig; never leave
+    // a paused reopen stuck at aspect=0 waiting for a change that will not
+    // come.
+    mpv_get_property_async(state_->handle, 11, "video-out-params",
+                           MPV_FORMAT_NODE);
+}
 void MpvVideoItem::setDisplaySize(qint64 width, qint64 height) {
     width = std::max<qint64>(0, width);
     height = std::max<qint64>(0, height);

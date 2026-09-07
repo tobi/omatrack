@@ -10,6 +10,7 @@ ScrollView {
 
     required property ImageModelManager modelManager
 
+    signal chooseGaugeDetector
     signal chooseLocalModel
 
     function enableAndDownload(): void {
@@ -55,14 +56,14 @@ ScrollView {
 
             checked: Store.imageTelemetryEnabled
             objectName: "imageTelemetryEnabledPreference"
-            text: "Extract telemetry from supported videos"
+            text: "Discover gauges while playing (confirm before extraction)"
 
             onToggled: Store.imageTelemetryEnabled = extractionToggle.checked
         }
         Label {
             Layout.fillWidth: true
             color: Style.mutedTextColor
-            text: "Extraction runs locally. Turning it on does not consent to downloads; a compatible local, staged or downloaded model is required."
+            text: "Discovery and reading run locally. The packaged reader (~2.2 MB) works offline. Turning discovery on never starts extraction: review the source-frame boxes, confirm the setup, then Start extraction. Native telemetry remains authoritative."
             wrapMode: Text.Wrap
         }
         Rectangle {
@@ -72,7 +73,36 @@ ScrollView {
         }
         Label {
             font.bold: true
-            text: "Managed reader"
+            text: "Experimental detector (local research candidate)"
+        }
+        Label {
+            Layout.fillWidth: true
+            color: Style.yellowColor
+            text: "Discovery tries the pinned V2 detector if staged locally, otherwise the reviewed-layout heuristic. EXPERIMENTAL proposals start unselected: false boxes and wrong labels are expected, and arbitrary crops remain unreadable. Only the exact reviewed orange-AiM crops can be extracted. Local exports require metadata.json and contract.json."
+            wrapMode: Text.Wrap
+        }
+        RowLayout {
+            CompactButton {
+                text: "Choose local detector…"
+
+                onClicked: imagePage.chooseGaugeDetector()
+            }
+            CompactButton {
+                enabled: Store.gaugeDetectorModel !== "heuristic"
+                text: "Reviewed heuristic"
+
+                onClicked: Store.gaugeDetectorModel = "heuristic"
+            }
+        }
+        CompactButton {
+            enabled: Store.gaugeDetectorModel !== ""
+            text: "Use staged detector / fallback"
+
+            onClicked: Store.gaugeDetectorModel = ""
+        }
+        Label {
+            font.bold: true
+            text: "Optional managed reader updates"
         }
         Label {
             Layout.fillWidth: true
@@ -83,7 +113,7 @@ ScrollView {
         Label {
             Layout.fillWidth: true
             color: Style.mutedTextColor
-            text: "Managed downloads are off. Enabling them also enables extraction and allows the managed reader to replace the current model selection when applied."
+            text: "Managed downloads are optional and off. Enabling them enables discovery (not extraction) and allows the managed reader to replace the current model selection when applied."
             visible: !Store.imageModelManaged
             wrapMode: Text.Wrap
         }

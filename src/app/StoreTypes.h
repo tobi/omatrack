@@ -9,8 +9,30 @@
 #pragma once
 
 #include <QString>
+#include <QRectF>
+
 #include <QVariantList>
 #include <QtQml/qqmlregistration.h>
+
+class GaugeRegionRow {
+    Q_GADGET
+    QML_VALUE_TYPE(gaugeRegionRow)
+    Q_PROPERTY(QString key MEMBER key)
+    Q_PROPERTY(QString semantic MEMBER semantic)
+    Q_PROPERTY(QString representation MEMBER representation)
+    Q_PROPERTY(QString direction MEMBER direction)
+    Q_PROPERTY(QRectF box MEMBER box)
+    Q_PROPERTY(QString support MEMBER support)
+    Q_PROPERTY(bool selected MEMBER selected)
+    Q_PROPERTY(bool confirmed MEMBER confirmed)
+    Q_PROPERTY(bool readable MEMBER readable)
+    Q_PROPERTY(int evidence MEMBER evidence)
+public:
+    QString key, semantic, representation, direction, support;
+    QRectF box;
+    bool selected = false, confirmed = false, readable = false;
+    int evidence = 0;
+};
 
 class UsbCopyRow {
     Q_GADGET

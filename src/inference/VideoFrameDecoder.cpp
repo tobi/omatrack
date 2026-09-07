@@ -1,6 +1,8 @@
 #include "VideoFrameDecoder.h"
 
 #include <algorithm>
+#include <array>
+#include <cstring>
 #include <chrono>
 #include <limits>
 
@@ -14,6 +16,18 @@ extern "C" {
 #endif
 
 namespace omatrack::inference {
+#ifdef OMATRACK_HAVE_VIDEO_DECODER
+namespace {
+bool identityDisplayMatrix(const std::uint8_t* data, std::size_t size) {
+    if (!data) return true;
+    if (size < 9 * sizeof(std::int32_t)) return false;
+    std::array<std::int32_t, 9> matrix{};
+    std::memcpy(matrix.data(), data, sizeof(matrix));
+    return matrix == std::array<std::int32_t, 9>{65536, 0, 0, 0,         65536,
+                                                 0,     0, 0, 1073741824};
+}
+}  // namespace
+#endif
 struct VideoFrameDecoder::Impl {
     std::string error;
     bool metadata = false;
@@ -91,6 +105,25 @@ bool VideoFrameDecoder::open(const std::string& path, const Cancel& cancel) {
         av_find_best_stream(p.format, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     if (p.streamIndex < 0) return p.fail("No decodable video stream");
     const AVStream* stream = p.format->streams[p.streamIndex];
+#if LIBAVFORMAT_VERSION_MAJOR >= 61
+    const auto* transform = av_packet_side_data_get(
+        stream->codecpar->coded_side_data, stream->codecpar->nb_coded_side_data,
+        AV_PKT_DATA_DISPLAYMATRIX);
+    const bool identity =
+        !transform || identityDisplayMatrix(transform->data, transform->size);
+#else
+    std::size_t transformSize = 0;
+    const auto* transform = av_stream_get_side_data(
+        stream, AV_PKT_DATA_DISPLAYMATRIX, &transformSize);
+    const bool identity = identityDisplayMatrix(transform, transformSize);
+#endif
+    // mpv applies this transform for display; this source-pixel decoder does
+    // not. Withhold even 180-degree/mirrored input (same aspect ratio) rather
+    // than placing boxes on the wrong pixels or changing reader preprocessing.
+    if (!identity)
+        return p.fail(
+            "Unsupported video display transform; image discovery/extraction "
+            "withheld");
     const AVCodec* decoder = avcodec_find_decoder(stream->codecpar->codec_id);
     if (!decoder) return p.fail("Video codec is not available");
     p.codec = avcodec_alloc_context3(decoder);
@@ -162,6 +195,13 @@ bool VideoFrameDecoder::frameAtOrAfter(std::int64_t presentationNs,
                              AVRational{1, 1000000000});
             p.lastPts = sourceNs - p.originNs;
             if (p.lastPts < presentationNs) continue;
+            const auto* transform =
+                av_frame_get_side_data(p.frame, AV_FRAME_DATA_DISPLAYMATRIX);
+            if (transform &&
+                !identityDisplayMatrix(transform->data, transform->size))
+                return p.fail(
+                    "Unsupported frame display transform; image "
+                    "discovery/extraction withheld");
             const int width = p.frame->width;
             const int height = p.frame->height;
             // Known-layout reader currently expects 1080p, but safely decode up

@@ -6,6 +6,7 @@
 
 #include "AsyncJob.h"
 #include "ChannelAppearance.h"
+#include "GaugeSetup.h"
 
 #include "TelemetryStore.h"  // SidebarPin, cornerConfigPath, SessionHandle fwd
 
@@ -63,10 +64,19 @@ public:
     void setImageTelemetryModel(const QString& path) {
         imageTelemetryModel_ = path;
     }
+    const QString& gaugeDetectorModel() const { return gaugeDetectorModel_; }
+    void setGaugeDetectorModel(const QString& path) {
+        gaugeDetectorModel_ = path;
+    }
     bool imageModelManaged() const { return imageModelManaged_; }
     void setImageModelManaged(bool managed) { imageModelManaged_ = managed; }
     bool imageModelUpdates() const { return imageModelUpdates_; }
     void setImageModelUpdates(bool updates) { imageModelUpdates_ = updates; }
+
+    omatrack::GaugeSetup gaugeProposal(const QString& source) const;
+    void saveGaugeSetup(const QString& source,
+                        const omatrack::GaugeSetup& setup,
+                        bool extensionDefault);
 
     const QString& requestedSyncStrategy() const {
         return requestedComparisonSyncStrategy_;
@@ -181,7 +191,8 @@ private:
     QStringList recentFiles_;
     bool videoMuted_ = false;
     bool imageTelemetryEnabled_ = false;
-    QString imageTelemetryModel_;
+    QString imageTelemetryModel_, gaugeDetectorModel_;
+    QHash<QString, omatrack::GaugeSetup> gaugeFiles_, gaugeDefaults_;
     bool imageModelManaged_ = false;
     bool imageModelUpdates_ = true;
     QPointF videoHudPosition_{-1.0, -1.0};

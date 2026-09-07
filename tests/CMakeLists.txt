@@ -31,6 +31,25 @@ target_link_libraries(image-scan-scheduler-test PRIVATE omatrack_warnings)
 add_test(NAME image-scan-scheduler-test COMMAND image-scan-scheduler-test)
 set_tests_properties(image-scan-scheduler-test PROPERTIES LABELS unit)
 
+add_executable(gauge-detector-test gauge_detector_test.cpp)
+target_link_libraries(gauge-detector-test PRIVATE omatrack_inference omatrack_warnings)
+add_test(NAME gauge-detector-test COMMAND gauge-detector-test
+  --artifacts ${CMAKE_CURRENT_BINARY_DIR}/gauge-detector-guards)
+set_tests_properties(gauge-detector-test PROPERTIES LABELS unit)
+qt_add_executable(gauge-detector-artifact-test GaugeDetectorArtifactTest.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/GaugeDetectorArtifact.cpp)
+target_include_directories(gauge-detector-artifact-test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(gauge-detector-artifact-test PRIVATE Qt6::Core omatrack_inference omatrack_warnings)
+add_test(NAME gauge-detector-artifact-test COMMAND gauge-detector-artifact-test)
+set_tests_properties(gauge-detector-artifact-test PROPERTIES LABELS unit)
+
+qt_add_executable(gauge-setup-test GaugeSetupTest.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/GaugeSetup.cpp)
+target_include_directories(gauge-setup-test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(gauge-setup-test PRIVATE Qt6::Test Qt6::Core omatrack_warnings)
+add_test(NAME gauge-setup-test COMMAND gauge-setup-test)
+set_tests_properties(gauge-setup-test PROPERTIES LABELS unit)
+
 add_executable(image-telemetry-cache-test ImageTelemetryCacheTest.cpp)
 target_link_libraries(image-telemetry-cache-test PRIVATE omatrack_image_cache ${OMATRACK_ZSTD_TARGET} omatrack_warnings)
 add_test(NAME image-telemetry-cache-test COMMAND image-telemetry-cache-test)
@@ -258,6 +277,7 @@ set_tests_properties(usb-media-test PROPERTIES LABELS unit)
 
 qt_add_executable(library-model-test LibraryModelTest.cpp
   ${CMAKE_SOURCE_DIR}/src/app/LibraryModel.cpp
+  ${CMAKE_SOURCE_DIR}/src/app/StoreTypes.h
   ${CMAKE_SOURCE_DIR}/src/app/StoreModels.cpp)
 target_include_directories(library-model-test PRIVATE
   ${CMAKE_SOURCE_DIR}/src)

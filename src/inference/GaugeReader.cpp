@@ -192,19 +192,43 @@ RgbImage resize(const RgbImage& source, int width, int height) {
     return output;
 }
 
-std::vector<std::uint8_t> preprocess(const GaugeRgb24Frame& f) {
+std::vector<std::uint8_t> preprocess(
+    const GaugeRgb24Frame& f,
+    const GaugeReadConfiguration* configuration = nullptr) {
     std::vector<std::uint8_t> output(4 * CropPixels * 3,
                                      0);  // NHWC bytes, black digit padding
     for (std::size_t field = 0; field < CropBoxes.size(); ++field) {
-        const auto b = CropBoxes[field];
+        if (configuration && !configuration->crops[field].enabled) continue;
+        const auto configured =
+            configuration ? configuration->crops[field] : GaugeCrop{};
+        const auto b = configuration ? Box{configured.left, configured.top,
+                                           configured.right, configured.bottom}
+                                     : CropBoxes[field];
         const int w = b.right - b.left, h = b.bottom - b.top;
         const bool bar = field >= 2;
-        RgbImage source(bar ? h : w, bar ? w : h);
+        const auto direction = configuration ? configured.direction
+                                             : GaugeFillDirection::BottomToTop;
+        const bool vertical =
+            bar && (direction == GaugeFillDirection::BottomToTop ||
+                    direction == GaugeFillDirection::TopToBottom);
+        RgbImage source(vertical ? h : w, vertical ? w : h);
         for (int y = 0; y < h; ++y)
             for (int x = 0; x < w; ++x) {
                 // Pillow ROTATE_270 = clockwise: bottom-to-top becomes
                 // left-to-right.
-                const int dx = bar ? h - 1 - y : x, dy = bar ? x : y;
+                int dx = x, dy = y;
+                if (bar && direction == GaugeFillDirection::BottomToTop) {
+                    dx = h - 1 - y;
+                    dy = x;
+                } else if (bar &&
+                           direction == GaugeFillDirection::TopToBottom) {
+                    dx = y;
+                    dy = w - 1 - x;
+                } else if (bar &&
+                           direction == GaugeFillDirection::RightToLeft) {
+                    dx = w - 1 - x;
+                    dy = h - 1 - y;
+                }
                 std::copy_n(pixel(f, b.left + x, b.top + y), 3,
                             source.bytes.data() +
                                 (std::size_t(dy) * source.width + dx) * 3);
@@ -214,8 +238,16 @@ std::vector<std::uint8_t> preprocess(const GaugeRgb24Frame& f) {
             // These two reviewed geometries have no half-integer rounding ties.
             const double ratio =
                 std::min(double(CropWidth) / w, double(CropHeight) / h);
-            width = std::max(1, int(std::round(w * ratio)));
-            height = std::max(1, int(std::round(h * ratio)));
+            const auto rounded = [configuration](double value) {
+                const double lower = std::floor(value);
+                // Python round uses ties-to-even. Legacy reviewed geometries
+                // have no ties; keep their unchanged route explicit.
+                if (configuration && value - lower == .5)
+                    return int(lower) + (int(lower) % 2);
+                return int(std::round(value));
+            };
+            width = std::max(1, rounded(w * ratio));
+            height = std::max(1, rounded(h * ratio));
         }
         auto scaled = resize(source, width, height);
         const int left = (CropWidth - width) / 2,
@@ -312,6 +344,10 @@ std::string decode(const float* logits, const float* counts) {
 #ifdef OMATRACK_GAUGE_READER_TESTING
 std::vector<std::uint8_t> gaugeReaderTestPreprocess(const GaugeRgb24Frame& f) {
     return preprocess(f);
+}
+std::vector<std::uint8_t> gaugeReaderTestConfiguredPreprocess(
+    const GaugeRgb24Frame& f, const GaugeReadConfiguration& config) {
+    return preprocess(f, &config);
 }
 std::string gaugeReaderTestDecode(const float* logits, const float* counts) {
     return decode(logits, counts);
@@ -470,8 +506,54 @@ GaugeResult GaugeReader::inspectLayout(const GaugeRgb24Frame& frame) {
 }
 
 GaugeResult GaugeReader::read(const GaugeRgb24Frame& frame) {
+    return readImpl(frame, nullptr);
+}
+GaugeResult GaugeReader::readConfigured(
+    const GaugeRgb24Frame& frame, const GaugeReadConfiguration& configuration) {
+    return readImpl(frame, &configuration);
+}
+GaugeResult GaugeReader::readImpl(const GaugeRgb24Frame& frame,
+                                  const GaugeReadConfiguration* configuration) {
     const auto started = Clock::now();
-    auto result = inspectLayout(frame);
+    GaugeResult result;
+    if (!configuration)
+        result = inspectLayout(frame);
+    else {
+        bool valid = validFrame(frame) &&
+                     frame.width == configuration->sourceWidth &&
+                     frame.height == configuration->sourceHeight &&
+                     frame.width <= 16384 && frame.height <= 16384;
+        bool any = false;
+        for (std::size_t i = 0; i < configuration->crops.size(); ++i) {
+            const auto& c = configuration->crops[i];
+            if (!c.enabled) continue;
+            any = true;
+            valid = valid && c.left >= 0 && c.top >= 0 &&
+                    c.right <= frame.width && c.bottom <= frame.height &&
+                    c.right > c.left && c.bottom > c.top;
+            if (valid)
+                valid = std::int64_t(c.right - c.left) * (c.bottom - c.top) <=
+                        16'777'216;
+            if (i >= 2)
+                valid = valid &&
+                        c.direction >= GaugeFillDirection::LeftToRight &&
+                        c.direction <= GaugeFillDirection::TopToBottom;
+        }
+        if (!valid) {
+            result.error = GaugeError::InvalidFrame;
+            result.detail =
+                "Invalid configured source crop/geometry/fill direction";
+        } else if (!any) {
+            result.admission = GaugeAdmission::Rejected;
+            result.detail = "No enabled reader crops";
+        } else {
+            result.admission = GaugeAdmission::Supported;
+            result.detail =
+                "Experimental configured crops; not layout admission or "
+                "accuracy certification";
+        }
+        unknown(result, result.detail);
+    }
     if (result.error == GaugeError::None && !ready()) {
         result.error = runtimeAvailable() ? GaugeError::ModelLoadFailed
                                           : GaugeError::RuntimeUnavailable;
@@ -480,7 +562,7 @@ GaugeResult GaugeReader::read(const GaugeRgb24Frame& frame) {
     } else if (result.admission == GaugeAdmission::Supported && ready()) {
 #if OMATRACK_HAVE_ONNXRUNTIME
         try {
-            const auto bytes = preprocess(frame);
+            const auto bytes = preprocess(frame, configuration);
             for (std::size_t field = 0; field < 4; ++field)
                 for (std::size_t p = 0; p < CropPixels; ++p)
                     for (std::size_t c = 0; c < 3; ++c)
@@ -526,7 +608,17 @@ GaugeResult GaugeReader::read(const GaugeRgb24Frame& frame) {
             const auto* counts = values[2].GetTensorData<float>();
             for (std::size_t field = 0; field < 2; ++field) {
                 auto& observation = field == 0 ? result.gear : result.stintLap;
-                const double bright = fraction(frame, CropBoxes[field], white);
+                if (configuration && !configuration->crops[field].enabled) {
+                    observation.unknownReason =
+                        "Disabled or unsupported configured field";
+                    continue;
+                }
+                const auto c =
+                    configuration ? configuration->crops[field] : GaugeCrop{};
+                const auto box = configuration
+                                     ? Box{c.left, c.top, c.right, c.bottom}
+                                     : CropBoxes[field];
+                const double bright = fraction(frame, box, white);
                 const auto text =
                     decode(digits + field * 11 * 24, counts + field * 3);
                 if (bright < .015 || bright > .6 || text.empty()) {
@@ -542,6 +634,11 @@ GaugeResult GaugeReader::read(const GaugeRgb24Frame& frame) {
             for (std::size_t field = 2; field < 4; ++field) {
                 auto& observation =
                     field == 2 ? result.brakeFillPct : result.throttleFillPct;
+                if (configuration && !configuration->crops[field].enabled) {
+                    observation.unknownReason =
+                        "Disabled or unsupported configured field";
+                    continue;
+                }
                 if (fills[field] < 0 || fills[field] > 1) {
                     observation.unknownReason = "Fill outside model domain";
                 } else {

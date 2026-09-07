@@ -252,6 +252,22 @@ private:
         return !window_->property("videoFullscreen").toBool() ||
                shortcut("Escape");
     }
+    bool confirmedRead() {
+        // Explicit acceptance-user actions. Reopening never silently trusts a
+        // preset; one fresh decoded frame is visually revalidated here. The
+        // dedicated discovery harness separately checks independent evidence.
+        if (reader_->phase() == ImageTelemetryController::Discovery) {
+            if (reader_->discoverySamples() < 1 ||
+                reader_->gauges()->count() == 0)
+                return false;
+            for (int i = 0; i < reader_->gauges()->count(); ++i)
+                reader_->confirmGauge(reader_->gauges()->row(i).key);
+            reader_->confirmSetup(false);
+        }
+        if (reader_->phase() == ImageTelemetryController::Confirmed)
+            reader_->startExtraction();
+        return reader_->phase() == ImageTelemetryController::Extracting;
+    }
     void timeline() {
         if (finished_) return;
         const auto snapshot = reader_->series();
@@ -494,7 +510,7 @@ private:
                     return;
                 }
                 if (mode_ == QStringLiteral("blank")) {
-                    reader_->setScanAhead(true);
+                    player_->setPaused(false);
                     enter(Phase::BlankScan);
                     return;
                 }
@@ -505,7 +521,7 @@ private:
                              "supported scan needs distinct blank and a "
                              "30–180s source"))
                     return;
-                if (!dock()) return;
+                if (!confirmedRead() || !dock()) return;
                 reader_->setScanAhead(false);
                 player_->setPaused(false);
                 enter(Phase::Watching);
@@ -580,17 +596,19 @@ private:
             case Phase::ReopenPartial:
                 if (!loaded(source_)) return;
                 player_->setPaused(true);
+                if (!confirmedRead()) return;
                 if (!reader_->series() ||
                     reader_->scannedSamples() < partialCount_)
                     return;
-                if (!require(reader_->inferenceRuns() == 0 &&
+                if (!require(reader_->inferenceRuns() <= 1 &&
                                  retained(*partial_, *reader_->series()) &&
                                  !reader_->complete(),
                              "partial reopen did not reuse saved monotonic "
                              "coverage"))
                     return;
-                qWarning() << "AUTOTEST image scan: partial cache reused with "
-                              "zero model calls; reopen ms"
+                qWarning() << "AUTOTEST image scan: partial cache reused; "
+                              "missing-cursor model calls"
+                           << reader_->inferenceRuns() << "reopen ms"
                            << total_.elapsed() - reopenAt_;
                 priorityCell_ = reader_->series()->cells.size() - 2;
                 while (priorityCell_ >
@@ -639,7 +657,9 @@ private:
                 enter(Phase::ReopenComplete);
                 return;
             case Phase::ReopenComplete:
-                if (!loaded(source_) || !reader_->cacheComplete()) return;
+                if (!loaded(source_) || !confirmedRead() ||
+                    !reader_->cacheComplete())
+                    return;
                 if (!require(
                         reader_->complete() && reader_->inferenceRuns() == 0 &&
                             reader_->series() &&
@@ -737,6 +757,7 @@ private:
                 if (phaseTime_.elapsed() >= 2500) verifyNoCache();
                 return;
             case Phase::VetoHold:
+                confirmedRead();
                 if (!require(reader_->knownSamples() == 0 &&
                                  reader_->inferenceRuns() == 0 && unknown(),
                              "metadata veto produced readings"))
@@ -751,14 +772,15 @@ private:
                                  reader_->inferenceRuns() == 0 && unknown(),
                              "no-HUD source ran model or became known"))
                     return;
-                if (!reader_->cacheComplete()) return;
-                if (!require(reader_->complete() && reader_->series() &&
-                                 reader_->series()->complete(),
-                             "blank completion coverage missing"))
+                if (phaseTime_.elapsed() < 6500 ||
+                    reader_->discoverySamples() < 2)
                     return;
-                qWarning() << "AUTOTEST image scan: blank cached as visited "
-                              "unknown, model calls 0";
-                verifyCache(Phase::VerifyNegative);
+                if (!require(!reader_->canConfirm() && !reader_->series(),
+                             "blank source fabricated a confirmed setup/cache"))
+                    return;
+                qWarning() << "AUTOTEST image discovery: no gauges, no cache, "
+                              "model calls 0";
+                verifyNoCache();
                 return;
             case Phase::Finish:
                 if (phaseTime_.elapsed() < 200) return;

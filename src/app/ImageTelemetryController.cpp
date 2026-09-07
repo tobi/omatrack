@@ -1,8 +1,10 @@
 #include "ImageTelemetryController.h"
 
 #include "GaugeReader.h"
+#include "GaugeDetectorArtifact.h"
 #include "ImageTelemetryCache.h"
 #include "VideoFrameDecoder.h"
+#include "TelemetryStore.h"
 #include "inference/ImageScanScheduler.h"
 
 #include <QCoreApplication>
@@ -34,6 +36,8 @@ struct ImageTelemetryWorker {
     // Mutated only on the serial pool, never by the GUI or renderer.
     VideoFrameDecoder decoder;
     std::unique_ptr<GaugeReader> reader;
+    omatrack::GaugeDetectorArtifact detectorArtifact;
+    bool detectorChecked = false;
     Cache cache;
     std::shared_ptr<ImageTelemetrySeries> draft;
     ImageScanScheduler scheduler;
@@ -54,8 +58,20 @@ struct ImageTelemetryResult {
     double inferenceMs = 0, totalMs = 0;
 };
 
+struct GaugeDiscoveryResult {
+    QVector<omatrack::GaugeRegion> regions;
+    QSize size;
+    qint64 ptsNs = -1;
+    QString error, detectorIdentity, detectorNotice;
+    bool fatal = false;
+};
+
 ImageTelemetryController::ImageTelemetryController(QObject* parent)
-    : QObject(parent), job_(this), disposeJob_(this) {
+    : QObject(parent),
+      gauges_(this),
+      discoveryJob_(this),
+      job_(this),
+      disposeJob_(this) {
     workerPool_.setMaxThreadCount(1);
     workerPool_.setExpiryTimeout(-1);
     clock_.start();
@@ -65,14 +81,18 @@ ImageTelemetryController::ImageTelemetryController(QObject* parent)
     connect(&timer_, &QTimer::timeout, this, &ImageTelemetryController::sample);
     connect(&job_, &AsyncJobBase::runningChanged, this,
             &ImageTelemetryController::scanStateChanged);
+    connect(&discoveryJob_, &AsyncJobBase::runningChanged, this,
+            &ImageTelemetryController::scanStateChanged);
     timer_.start();
     reset();
 }
 ImageTelemetryController::~ImageTelemetryController() {
     timer_.stop();
+    discoveryJob_.reset();
     job_.reset();
     retireWorker();
     job_.wait();
+    discoveryJob_.wait();
     disposeJob_.wait();
     workerPool_.waitForDone();
 }
@@ -107,6 +127,8 @@ void ImageTelemetryController::setPlayer(MpvVideoItem* player) {
             } else
                 awaitingSeek_ = false;
         });
+        connect(player_, &MpvVideoItem::videoAspectRatioChanged, this,
+                &ImageTelemetryController::refreshGeometry);
         connect(player_, &MpvVideoItem::durationChanged, this, [this]() {
             if (series_ && player_ &&
                 std::abs(player_->duration() - duration()) > 0.000001)
@@ -119,14 +141,7 @@ void ImageTelemetryController::setPlayer(MpvVideoItem* player) {
 void ImageTelemetryController::setEnabled(bool enabled) {
     if (enabled_ == enabled) return;
     enabled_ = enabled;
-    job_.reset();
-    reanchor_ = true;
-    if (!enabled_) {
-        scanAhead_ = false;
-        invalidate();
-    }
-    blocked_ = false;
-    nextAttemptMs_ = 0;
+    reset();
     emit enabledChanged();
     emit scanStateChanged();
 }
@@ -142,9 +157,16 @@ void ImageTelemetryController::setModelPath(const QString& path) {
     reset();
     emit modelPathChanged();
 }
+void ImageTelemetryController::setDetectorPath(const QString& path) {
+    if (detectorPath_ == path) return;
+    detectorPath_ = path;
+    reset();
+    emit detectorPathChanged();
+}
 void ImageTelemetryController::setScanAhead(bool enabled) {
     if (scanAhead_ == enabled ||
-        (enabled && (!enabled_ || blocked_ || complete_)))
+        (enabled &&
+         (!enabled_ || phase_ != Extracting || blocked_ || complete_)))
         return;
     scanAhead_ = enabled;
     job_.reset();
@@ -181,7 +203,7 @@ void ImageTelemetryController::retireWorker() {
         },
         [](int) {}, &workerPool_);
 }
-void ImageTelemetryController::reset() {
+void ImageTelemetryController::clearReading() {
     job_.reset();
     retireWorker();
     worker_ = std::make_shared<ImageTelemetryWorker>();
@@ -195,16 +217,329 @@ void ImageTelemetryController::reset() {
     invalidate();
     emit timelineChanged();
     emit scanStateChanged();
-    setStatus(eligible_
-                  ? QStringLiteral("Checking image telemetry cache…")
-                  : QStringLiteral("Native telemetry / no standalone video"));
+}
+void ImageTelemetryController::reset() {
+    discoveryJob_.reset();
+    clearReading();
+    evidence_.clear();
+    phase_ = Discovery;
+    proposalLoaded_ = false;
+    geometryCompatible_ = false;
+    lastDiscoveryTarget_ = -10;
+    nextDiscoveryMs_ = 0;
+    refreshGauges();
+    setStatus(
+        !enabled_ ? QStringLiteral("Image telemetry off")
+        : eligible_
+            ? QStringLiteral(
+                  "Discover gauges · play video to gather independent frames")
+            : QStringLiteral("Native telemetry / no standalone video"));
 }
 void ImageTelemetryController::resetForSeek() {
     // A seek invalidates current readings, NOT already collected source data.
+    discoveryJob_.reset();
+    lastDiscoveryTarget_ = -10;
+    nextDiscoveryMs_ = 0;
     job_.reset();
     reanchor_ = true;
     nextAttemptMs_ = 0;
     invalidate();
+}
+TelemetryStore* ImageTelemetryController::store() const { return store_; }
+void ImageTelemetryController::setStore(TelemetryStore* store) {
+    if (store_ == store) return;
+    store_ = store;
+    reset();
+    emit storeChanged();
+}
+bool ImageTelemetryController::canConfirm() const {
+    if (!enabled_ || !geometryCompatible_ || phase_ != Discovery ||
+        !evidence_.setup.valid())
+        return false;
+    bool selected = false;
+    for (const auto& r : evidence_.setup.regions) {
+        if (!r.enabled) continue;
+        selected = true;
+        if (r.hits < 3 && !r.confirmed) return false;
+    }
+    return selected;
+}
+bool ImageTelemetryController::canExtract() const {
+    if (!enabled_ || !eligible_ || !geometryCompatible_ ||
+        phase_ != Confirmed || !available())
+        return false;
+    const auto fields = evidence_.setup.readableFields();
+    return std::any_of(fields.begin(), fields.end(),
+                       [](bool value) { return value; });
+}
+void ImageTelemetryController::refreshGeometry() {
+    const auto size = evidence_.setup.sourceSize;
+    const double aspect = player_ ? player_->videoAspectRatio() : 0;
+    const bool compatible =
+        size.height() > 0 && aspect > 0 &&
+        std::abs(double(size.width()) / size.height() - aspect) < .02;
+    if (geometryCompatible_ == compatible) return;
+    geometryCompatible_ = compatible;
+    if (!compatible && phase_ == Extracting) {
+        job_.reset();
+        invalidate();
+        setStatus(QStringLiteral(
+            "Source/display aspect mismatch · extraction withheld"));
+    }
+    emit setupChanged();
+    if (compatible &&
+        status_.startsWith(QStringLiteral("Source/display aspect mismatch")))
+        setStatus(QStringLiteral(
+            "Source geometry revalidated · review and confirm setup"));
+}
+void ImageTelemetryController::refreshGauges() {
+    QVector<GaugeRegionRow> rows;
+    for (const auto& r : evidence_.setup.regions) {
+        GaugeRegionRow row;
+        row.key = r.id;
+        row.semantic = r.semantic;
+        row.representation = r.representation;
+        row.direction = r.direction;
+        row.box = r.box;
+        row.selected = r.enabled;
+        row.confirmed = r.confirmed;
+        row.evidence = r.hits;
+        row.readable = omatrack::GaugeSetup::readerField(
+                           r, evidence_.setup.sourceSize) >= 0;
+        row.support =
+            row.readable
+                ? QStringLiteral("Reviewed crop · visible values only")
+                : QStringLiteral(
+                      "Unsupported reader crop/type · remains unknown");
+        if (r.misses >= 2)
+            row.support +=
+                QStringLiteral(" · stale: missed on %1 independent frames")
+                    .arg(r.misses);
+        rows.append(row);
+    }
+    gauges_.refresh(rows);
+    emit setupChanged();
+}
+void ImageTelemetryController::confirmGauge(const QString& key) {
+    if (!enabled_ || phase_ != Discovery || evidence_.sampleCount() == 0)
+        return;
+    for (auto& r : evidence_.setup.regions)
+        if (r.id == key) {
+            r.confirmed = true;  // explicit visual user confirmation, not model
+                                 // confidence
+            r.proposal = true;
+        }
+    refreshGauges();
+}
+void ImageTelemetryController::confirmSetup(bool extensionDefault) {
+    if (!canConfirm()) return;
+    discoveryJob_.reset();
+    for (auto& r : evidence_.setup.regions) {
+        r.confirmed = r.enabled;
+        r.proposal = true;
+    }
+    phase_ = Confirmed;
+    if (store_ && player_ && player_->source().isLocalFile())
+        store_->saveGaugeSetup(player_->source().toLocalFile(), evidence_.setup,
+                               extensionDefault);
+    refreshGauges();
+    setStatus(
+        !eligible_ ? QStringLiteral("Setup saved · native telemetry takes "
+                                    "priority; image extraction withheld")
+        : canExtract()
+            ? QStringLiteral("Setup confirmed · Start extraction when ready")
+            : QStringLiteral("Setup saved · selected gauges are not supported "
+                             "by this reader"));
+}
+void ImageTelemetryController::startExtraction() {
+    if (!canExtract()) return;
+    discoveryJob_.reset();
+    clearReading();
+    phase_ = Extracting;
+    emit setupChanged();
+    setStatus(QStringLiteral("Loading confirmed-setup cache…"));
+    sample();
+}
+void ImageTelemetryController::reviewSetup() {
+    discoveryJob_.reset();
+    clearReading();
+    phase_ = Discovery;
+    for (auto& r : evidence_.setup.regions) r.confirmed = false;
+    refreshGauges();
+    setStatus(
+        QStringLiteral("Review gauges · confirm again before extraction"));
+}
+void ImageTelemetryController::editGauge(const QString& key,
+                                         const QString& semantic, bool selected,
+                                         const QRectF& box,
+                                         const QString& representation,
+                                         const QString& direction) {
+    if (!enabled_ || !evidence_.setup.valid()) return;
+    auto candidate = evidence_.setup;
+    auto it = std::find_if(candidate.regions.begin(), candidate.regions.end(),
+                           [&key](const auto& r) { return r.id == key; });
+    if (it == candidate.regions.end() || semantic.isEmpty() ||
+        semantic.size() > 64)
+        return;
+    const bool changed =
+        it->semantic != semantic || it->box != box ||
+        (!representation.isEmpty() && representation != it->representation) ||
+        (!direction.isEmpty() && direction != it->direction);
+    it->semantic = semantic;
+    if (!representation.isEmpty()) it->representation = representation;
+    if (!direction.isEmpty()) it->direction = direction;
+    it->enabled = selected;
+    it->box = box;
+    it->edited = true;
+    if (changed) it->hits = 0;
+    for (auto& r : candidate.regions) r.confirmed = false;
+    if (!candidate.valid()) return;
+    discoveryJob_.reset();
+    clearReading();
+    evidence_.setup = std::move(candidate);
+    phase_ = Discovery;
+    nextDiscoveryMs_ = 0;
+    refreshGauges();
+    setStatus(
+        QStringLiteral("Setup edited · revalidate and confirm; unsupported "
+                       "crops stay unknown"));
+}
+void ImageTelemetryController::discover(double seconds) {
+    if (blocked_ || discoveryJob_.running() ||
+        clock_.elapsed() < nextDiscoveryMs_ || !std::isfinite(seconds) ||
+        seconds < 0 || std::abs(seconds - lastDiscoveryTarget_) < 2.0)
+        return;
+    if (!player_->source().isLocalFile()) {
+        blocked_ = true;
+        setStatus(
+            QStringLiteral("Discovery requires a local/downloaded video"));
+        return;
+    }
+    const auto source = player_->source().toLocalFile();
+    if (!proposalLoaded_) {
+        if (store_) evidence_.propose(store_->gaugeProposal(source));
+        evidence_.setup.detectorIdentity =
+            QStringLiteral("orange-structure-heuristic-v1");
+        proposalLoaded_ = true;
+        refreshGauges();
+    }
+    const auto state = worker_;
+    const auto detectorPath = detectorPath_;
+    const auto stagedDetector =
+        QDir(QCoreApplication::applicationDirPath())
+            .filePath(QStringLiteral(
+                "models/experimental-detector/gauge-detector.onnx"));
+    lastDiscoveryTarget_ = seconds;
+    nextDiscoveryMs_ = clock_.elapsed() + 3000;
+    discoveryJob_.start(
+        [state, source, seconds, detectorPath,
+         stagedDetector](omatrack::IoCancel cancel) {
+            auto result = std::make_shared<GaugeDiscoveryResult>();
+            try {
+                if (!state->opened) {
+                    if (!state->decoder.open(source.toStdString(), cancel)) {
+                        result->error =
+                            QString::fromStdString(state->decoder.error());
+                        return result;
+                    }
+                    state->opened = true;
+                }
+                DecodedRgbFrame frame;
+                if (!state->decoder.frameAtOrAfter(std::llround(seconds * 1e9),
+                                                   frame, cancel)) {
+                    result->error =
+                        QString::fromStdString(state->decoder.error());
+                    return result;
+                }
+                if (cancel->load()) return result;
+                result->size = QSize(frame.width, frame.height);
+                result->ptsNs = frame.presentationPtsNs;
+                const GaugeRgb24Frame pixels{frame.pixels.data(),
+                                             frame.pixels.size(), frame.width,
+                                             frame.height, frame.stride};
+                if (!state->detectorChecked) {
+                    state->detectorArtifact =
+                        omatrack::GaugeDetectorArtifact::discover(
+                            detectorPath, stagedDetector, cancel);
+                    state->detectorChecked = true;
+                }
+                result->detectorIdentity =
+                    QStringLiteral("orange-structure-heuristic-v1");
+                result->detectorNotice = QStringLiteral(
+                    "Heuristic fallback (fixed reviewed layout)");
+                bool learned = false;
+                if (state->detectorArtifact.detector) {
+                    const auto detected =
+                        state->detectorArtifact.detector->detect(pixels);
+                    if (detected.error == GaugeError::None) {
+                        learned = true;
+                        result->detectorIdentity =
+                            state->detectorArtifact.identity;
+                        result->detectorNotice = QStringLiteral(
+                            "EXPERIMENTAL detector · unvalidated boxes/types, "
+                            "not reader approval");
+                        for (const auto& d : detected.detections) {
+                            omatrack::GaugeRegion region;
+                            region.box = {d.bbox[0], d.bbox[1],
+                                          d.bbox[2] - d.bbox[0],
+                                          d.bbox[3] - d.bbox[1]};
+                            region.semantic =
+                                QString::fromStdString(d.semantic);
+                            region.representation =
+                                QString::fromStdString(d.representation);
+                            region.score = d.score;
+                            region.enabled = false;
+                            result->regions.append(region);
+                        }
+                    } else
+                        result->detectorNotice = QStringLiteral(
+                            "Detector failed · heuristic fallback");
+                } else if (!state->detectorArtifact.error.isEmpty())
+                    result->detectorNotice =
+                        QStringLiteral(
+                            "Detector rejected (%1) · heuristic fallback")
+                            .arg(state->detectorArtifact.error);
+                // Fixed-layout heuristic is a separate backend, never a claim
+                // that the experimental detector localized these exact crops.
+                if (!learned && GaugeReader::inspectLayout(pixels).admission ==
+                                    GaugeAdmission::Supported)
+                    result->regions = omatrack::GaugeSetup::reviewedRegions();
+            } catch (const std::exception&) {
+                result->error =
+                    QStringLiteral("Discovery failed; video remains available");
+            }
+            return result;
+        },
+        [this](const std::shared_ptr<GaugeDiscoveryResult>& result) {
+            if (!result->error.isEmpty()) {
+                geometryCompatible_ = false;
+                emit setupChanged();
+                blocked_ = result->fatal;
+                setStatus(result->error);
+                return;
+            }
+            evidence_.setup.detectorIdentity = result->detectorIdentity;
+            if (!evidence_.observe(result->ptsNs, result->size,
+                                   result->regions))
+                return;
+            refreshGeometry();
+            refreshGauges();
+            if (!geometryCompatible_) {
+                setStatus(QStringLiteral(
+                    "Source/display aspect mismatch · boxes and extraction "
+                    "withheld; revalidate source geometry"));
+                return;
+            }
+            setStatus(
+                QStringLiteral("%1 · %2 independent frames · %3")
+                    .arg(result->detectorNotice)
+                    .arg(evidence_.sampleCount())
+                    .arg(canConfirm()
+                             ? QStringLiteral("review and confirm gauges")
+                             : QStringLiteral(
+                                   "keep playing to validate proposals")));
+        },
+        &workerPool_);
 }
 void ImageTelemetryController::retry() { reset(); }
 void ImageTelemetryController::refreshCurrent() {
@@ -235,9 +570,15 @@ void ImageTelemetryController::refreshCurrent() {
 }
 
 void ImageTelemetryController::sample() {
-    if (!eligible_ || !player_ || !player_->loaded() || player_->seeking() ||
+    if (!enabled_ || !player_ || !player_->loaded() || player_->seeking() ||
         awaitingSeek_)
         return;
+    if (phase_ != Extracting) {
+        if (phase_ == Discovery) discover(player_->position());
+        return;
+    }
+    if (!eligible_ || !geometryCompatible_)
+        return;  // No native replacement or misprojected reads.
     refreshCurrent();
     if (blocked_ || job_.running() || clock_.elapsed() < nextAttemptMs_ ||
         cacheComplete_)
@@ -278,9 +619,13 @@ void ImageTelemetryController::sample() {
     reanchor_ = false;
     const auto state = worker_;
     const bool ahead = scanAhead_, enabled = enabled_;
+    const auto setupHash = evidence_.setup.fingerprint();
+    const auto selectedFields = evidence_.setup.readableFields();
+    const auto readConfiguration = evidence_.setup.readerConfiguration();
     job_.start(
         [state, source, model, durationNs, current, reanchor, ahead, enabled,
-         seenRevision](omatrack::IoCancel cancel) {
+         seenRevision, setupHash, selectedFields,
+         readConfiguration](omatrack::IoCancel cancel) {
             auto result = std::make_shared<ImageTelemetryResult>();
             QElapsedTimer batch;
             batch.start();
@@ -288,7 +633,7 @@ void ImageTelemetryController::sample() {
             try {
                 if (!state->initialized) {
                     auto expected = state->cache.prepare(
-                        source, model, durationNs, 0, false, cancel);
+                        source, model, durationNs, 0, false, cancel, setupHash);
                     if (!expected.ok()) {
                         result->message = expected.error;
                         result->fatal = true;
@@ -413,7 +758,8 @@ void ImageTelemetryController::sample() {
                                 result->fatal = true;
                                 break;
                             }
-                            const auto reading = state->reader->read(pixels);
+                            const auto reading = state->reader->readConfigured(
+                                pixels, readConfiguration);
                             ++state->runs;
                             if (reading.error != GaugeError::None) {
                                 result->message =
@@ -425,6 +771,10 @@ void ImageTelemetryController::sample() {
                                             reading.stintLap.value,
                                             reading.brakeFillPct.value,
                                             reading.throttleFillPct.value};
+                            for (std::size_t field = 0;
+                                 field < selectedFields.size(); ++field)
+                                if (!selectedFields[field])
+                                    point.values[field].reset();
                             result->inferenceMs = reading.latencyMs;
                         }
                     }

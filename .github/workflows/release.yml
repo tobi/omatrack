@@ -77,6 +77,7 @@ jobs:
           echo "ONNXRUNTIME_ROOT=$ort_root" >> "$GITHUB_ENV"
           model_file=$(scripts/fetch-reader-test-model.sh)
           echo "OMATRACK_GAUGE_SMOKE_MODEL=$model_file" >> "$GITHUB_ENV"
+          echo "OMATRACK_GAUGE_MODEL=$model_file" >> "$GITHUB_ENV"
       - name: Restore Cargo cache
         uses: actions/cache@v4
         with:
@@ -233,6 +234,7 @@ jobs:
           echo "ONNXRUNTIME_ROOT=$ort_root" >> "$GITHUB_ENV"
           model_file=$(scripts/fetch-reader-test-model.sh)
           echo "OMATRACK_GAUGE_SMOKE_MODEL=$model_file" >> "$GITHUB_ENV"
+          echo "OMATRACK_GAUGE_MODEL=$model_file" >> "$GITHUB_ENV"
       - name: Restore Cargo cache
         uses: actions/cache@v4
         with:
@@ -360,6 +362,7 @@ jobs:
           echo "ONNXRUNTIME_ROOT=$ort_root" >> "$GITHUB_ENV"
           model_file=$(scripts/fetch-reader-test-model.sh)
           echo "OMATRACK_GAUGE_SMOKE_MODEL=$(cygpath -m "$model_file")" >> "$GITHUB_ENV"
+          echo "OMATRACK_GAUGE_MODEL=$(cygpath -m "$model_file")" >> "$GITHUB_ENV"
       - name: Read and validate release version
         run: |
           version=$(sed -n 's/project(omatrack VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)

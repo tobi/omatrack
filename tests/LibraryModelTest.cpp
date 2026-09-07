@@ -8,6 +8,37 @@
 class LibraryModelTest : public QObject {
     Q_OBJECT
 private slots:
+    void gaugeRetirementPreservesEditorIdentity() {
+        GaugeRegionModel model;
+        QVector<GaugeRegionRow> rows(3);
+        for (int i = 0; i < 3; ++i) rows[i].key = QString::number(i);
+        model.refresh(rows);
+        QPersistentModelIndex selected(model.index(1));
+        QSignalSpy resets(&model, &QAbstractItemModel::modelReset);
+        rows[1].semantic = "gear";
+        model.refresh(rows);
+        QCOMPARE(model.rowForKey("1").semantic, QString("gear"));
+        rows.removeAt(0);  // retired automatic false positive before editor
+        model.refresh(rows);
+        QVERIFY(selected.isValid());
+        QCOMPARE(selected.row(), 0);
+        QCOMPARE(selected.data(GaugeRegionModel::KeyRole).toString(),
+                 QString("1"));
+        QCOMPARE(resets.size(), 0);
+        GaugeRegionRow added;
+        added.key = "new";
+        rows.append(added);
+        model.refresh(rows);
+        QCOMPARE(model.count(), 3);
+        QCOMPARE(model.rowForKey("new").key, QString("new"));
+        rows.move(2, 0);
+        model.refresh(rows);
+        QCOMPARE(model.count(), 3);
+        QCOMPARE(selected.row(), 1);
+        QCOMPARE(selected.data(GaugeRegionModel::KeyRole).toString(),
+                 QString("1"));
+        QCOMPARE(resets.size(), 0);
+    }
     void filmstripOnlyFixesBookendsAndKeepsPitLapsVariable() {
         LapListModel model;
         QVector<LapRow> rows(5);

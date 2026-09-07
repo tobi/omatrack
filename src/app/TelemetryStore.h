@@ -9,6 +9,7 @@
 
 #include "AsyncJob.h"
 #include "ChannelAppearance.h"
+#include "GaugeSetup.h"
 #include "LibraryModel.h"
 #include "StoreModels.h"
 #include "UsbCopy.h"
@@ -494,6 +495,9 @@ class TelemetryStore : public QObject {
     Q_PROPERTY(
         QString imageTelemetryModel READ imageTelemetryModel WRITE
             setImageTelemetryModel NOTIFY imageTelemetrySettingsChanged FINAL)
+    Q_PROPERTY(
+        QString gaugeDetectorModel READ gaugeDetectorModel WRITE
+            setGaugeDetectorModel NOTIFY imageTelemetrySettingsChanged FINAL)
     Q_PROPERTY(
         bool imageModelManaged READ imageModelManaged WRITE setImageModelManaged
             NOTIFY imageTelemetrySettingsChanged FINAL)
@@ -1014,9 +1018,15 @@ public:
     QAbstractItemModel* libraryModel() const { return libraryModel_.get(); }
     bool videoMuted() const;
     void setVideoMuted(bool muted);
+    omatrack::GaugeSetup gaugeProposal(const QString& source) const;
+    void saveGaugeSetup(const QString& source,
+                        const omatrack::GaugeSetup& setup,
+                        bool extensionDefault);
     bool imageTelemetryEnabled() const;
     void setImageTelemetryEnabled(bool enabled);
     QString imageTelemetryModel() const;
+    QString gaugeDetectorModel() const;
+    void setGaugeDetectorModel(const QString& path);
     void setImageTelemetryModel(const QString& path);
     bool imageModelManaged() const;
     void setImageModelManaged(bool managed);

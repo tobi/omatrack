@@ -44,7 +44,8 @@ public:
     // false is valid for a load-only probe, but cannot be saved.
     Result prepare(const QString& sourcePath, const QString& modelPath,
                    std::int64_t durationNs, std::int64_t timelineOriginNs,
-                   bool nativeTelemetryAbsent, const Cancel& cancel = {}) const;
+                   bool nativeTelemetryAbsent, const Cancel& cancel = {},
+                   const QString& setupSha256 = {}) const;
     // expected supplies freshly prepared identities and exact duration. The
     // stored source origin is restored on hit (no decoder/ORT needed); the
     // prepare() origin can be zero until a decoder has established it on miss.

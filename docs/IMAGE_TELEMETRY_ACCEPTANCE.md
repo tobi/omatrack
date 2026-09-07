@@ -34,12 +34,15 @@ software scene graph is not proof that video or trace geometry rendered.
 
 The progressive scan harness (`OMATRACK_AUTOTEST_IMAGE_SCAN`) must verify:
 
-1. Watching accumulates observations, and seeking retains source coverage without
-   publishing stale current readings.
+1. Enabling starts discovery with no reader calls. Fresh independent PTS evidence,
+   explicit setup confirmation and a separate Start extraction action gate reading;
+   only then watching accumulates observations. Seeking retains source coverage
+   without publishing stale current readings. See [GAUGE_DISCOVERY.md](GAUGE_DISCOVERY.md).
 2. Ahead scanning works while paused, prioritizes the cursor, then wraps/backfills.
 3. Partial work survives reopening; full coverage publishes a real `.telemetry`
    whose channels, masks and timestamp data round-trip through the normal parser.
-4. Reopening a completed cache performs no new model inference.
+4. Reopening proposes the saved setup for fresh visual validation. After explicit
+   confirmation and extraction action, a completed cache performs no new reader inference.
 5. Native/data-track vetoes preserve source truth. Unsupported/no-gauge input
    remains unknown, not zero or a fabricated completed set of readings.
 6. The normal docked time-trace workspace visibly renders real collected data;

@@ -53,6 +53,12 @@ locations. This public document intentionally contains no private artifact links
 
 ## Supported sequence
 
+The harness now explicitly confirms the reviewed setup and invokes **Start
+extraction** before watch/scan work. Reopens first require a fresh decoded frame
+and an explicit acceptance-user visual confirmation, then a separate extraction
+action. The dedicated [discovery harness](GAUGE_DISCOVERY.md) tests the independent
+PTS evidence and both gates without these convenience actions.
+
 1. **Watch collection.** Play until several cells have actually been visited and
    model inference has produced known values. Leave fullscreen through the real
    enabled Escape shortcut handler and require the time traces in the normal
@@ -118,12 +124,10 @@ that native telemetry is absent.
 
 ### No HUD
 
-A truly blank/no-HUD source may legitimately cache **visited unknown coverage**
-so the application does not rescan the same unsupported frames forever. Complete
-coverage and persistence are required, with zero known fields and zero model
-calls. Its standard `.telemetry` roundtrip must preserve null values rather than
-turning them into zero. This is different from the native/metadata-veto case,
-where no inferred cache is allowed.
+A truly blank/no-HUD source remains in discovery with no confirmable setup, no
+reader calls and no predicted cache. Unsupported intervals encountered *after*
+explicit extraction of a valid setup can still become visited/unknown in its
+standard `.telemetry`; they never become fabricated zeros.
 
 ## Timing and failure semantics
 
@@ -155,7 +159,11 @@ raw source timestamps, credentials, or source/model contents. Existing scaler
 regression guards remain relevant; see
 [VIDEO_SCALER_COMPATIBILITY.md](VIDEO_SCALER_COMPATIBILITY.md).
 
-## Verification status
+## Historical progressive-scan verification (before discovery gating)
+
+The measurements below describe the earlier progressive-scan baseline, not a
+claim that the updated discovery-gated harness has completed every mode. Current
+verification is recorded in [GAUGE_DISCOVERY.md](GAUGE_DISCOVERY.md).
 
 **All four integrated modes passed** after the exact-parser fix: supported,
 native, blank and metadata veto. The supported run verified watch collection,

@@ -18,6 +18,29 @@
 #include <QVector>
 #include <QtQml/qqmlregistration.h>
 
+class GaugeRegionModel : public QAbstractListModel {
+    Q_OBJECT
+    QML_ANONYMOUS
+    Q_PROPERTY(int count READ count NOTIFY refreshed FINAL)
+public:
+    explicit GaugeRegionModel(QObject* parent = nullptr)
+        : QAbstractListModel(parent) {}
+    enum Role { RegionRole = Qt::UserRole, KeyRole };
+    int count() const { return rows_.size(); }
+    int rowCount(const QModelIndex& parent = {}) const override;
+    QVariant data(const QModelIndex& index, int role) const override;
+    QHash<int, QByteArray> roleNames() const override;
+    Q_INVOKABLE virtual GaugeRegionRow row(int index) const final;
+    Q_INVOKABLE virtual GaugeRegionRow rowForKey(
+        const QString& key) const final;
+    void refresh(const QVector<GaugeRegionRow>& rows);
+signals:
+    void refreshed();
+
+private:
+    QVector<GaugeRegionRow> rows_;
+};
+
 class UsbCopyListModel : public IdentityListModel {
     Q_OBJECT
     QML_ANONYMOUS

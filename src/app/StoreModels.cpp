@@ -4,6 +4,62 @@
 #include <algorithm>
 #include <cmath>
 
+int GaugeRegionModel::rowCount(const QModelIndex& parent) const {
+    return parent.isValid() ? 0 : rows_.size();
+}
+GaugeRegionRow GaugeRegionModel::row(int i) const {
+    return i >= 0 && i < rows_.size() ? rows_[i] : GaugeRegionRow{};
+}
+GaugeRegionRow GaugeRegionModel::rowForKey(const QString& key) const {
+    for (const auto& r : rows_)
+        if (r.key == key) return r;
+    return {};
+}
+QVariant GaugeRegionModel::data(const QModelIndex& i, int role) const {
+    if (!checkIndex(i, CheckIndexOption::IndexIsValid)) return {};
+    if (role == KeyRole) return rows_[i.row()].key;
+    if (role == RegionRole) return QVariant::fromValue(rows_[i.row()]);
+    return {};
+}
+QHash<int, QByteArray> GaugeRegionModel::roleNames() const {
+    return {{RegionRole, "region"}, {KeyRole, "key"}};
+}
+void GaugeRegionModel::refresh(const QVector<GaugeRegionRow>& rows) {
+    // Discovery retains track order, retires automatic misses and appends new
+    // tracks. Removing ghosts must never rebuild the user's editor delegates.
+    QSet<QString> keys;
+    for (const auto& r : rows) keys.insert(r.key);
+    for (int i = rows_.size() - 1; i >= 0; --i) {
+        if (keys.contains(rows_[i].key)) continue;
+        beginRemoveRows({}, i, i);
+        rows_.removeAt(i);
+        endRemoveRows();
+    }
+    for (int i = 0; i < rows.size(); ++i) {
+        int from = i;
+        while (from < rows_.size() && rows_[from].key != rows[i].key) ++from;
+        if (from == rows_.size()) {
+            beginInsertRows({}, i, i);
+            rows_.insert(i, rows[i]);
+            endInsertRows();
+        } else {
+            if (from != i) {
+                if (!beginMoveRows({}, from, from, {}, i)) return;
+                rows_.move(from, i);
+                endMoveRows();
+            }
+            rows_[i] = rows[i];
+            emit dataChanged(index(i), index(i));
+        }
+    }
+    if (rows_.size() > rows.size()) {
+        beginRemoveRows({}, rows.size(), rows_.size() - 1);
+        rows_.resize(rows.size());
+        endRemoveRows();
+    }
+    emit refreshed();
+}
+
 int UsbCopyListModel::rowCount(const QModelIndex& parent) const {
     return parent.isValid() ? 0 : rows_.size();
 }

@@ -1,6 +1,7 @@
-# Opt-in, local model deployment. Never downloads or publishes private weights.
-set(OMATRACK_GAUGE_MODEL "" CACHE FILEPATH
-  "Reviewed local gauge-reader.onnx to stage beside this private application build")
+# Offline reader deployment. Release recipes supply the pinned public artifact
+# at build time; source builds may explicitly stage it. No runtime download.
+set(OMATRACK_GAUGE_MODEL "$ENV{OMATRACK_GAUGE_MODEL}" CACHE FILEPATH
+  "Reviewed gauge-reader.onnx to bundle beside the application")
 if(OMATRACK_GAUGE_MODEL)
   if(NOT OMATRACK_ENABLE_IMAGE_TELEMETRY OR NOT ONNXRUNTIME_LIBRARY OR
      NOT TARGET PkgConfig::GAUGE_FFMPEG)
@@ -26,7 +27,7 @@ if(OMATRACK_GAUGE_MODEL)
   endif()
   install(FILES "${OMATRACK_GAUGE_MODEL}"
     DESTINATION "${_gauge_install_dir}" RENAME gauge-reader.onnx)
-  message(STATUS "Staging trusted local gauge model; this grants no redistribution rights")
+  message(STATUS "Bundling hash-verified offline gauge reader; no runtime download required")
 endif()
 
 if(WIN32 AND OMATRACK_ENABLE_IMAGE_TELEMETRY AND ONNXRUNTIME_RUNTIME_FILES)

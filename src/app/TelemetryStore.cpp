@@ -5786,6 +5786,17 @@ void TelemetryStore::setVideoMuted(bool muted) {
     if (was != muted) emit videoMutedChanged();
 }
 
+omatrack::GaugeSetup TelemetryStore::gaugeProposal(
+    const QString& source) const {
+    return prefs_->gaugeProposal(source);
+}
+void TelemetryStore::saveGaugeSetup(const QString& source,
+                                    const omatrack::GaugeSetup& setup,
+                                    bool extensionDefault) {
+    prefs_->saveGaugeSetup(source, setup, extensionDefault);
+    schedulePreferencesSave();
+}
+
 bool TelemetryStore::imageTelemetryEnabled() const {
     return prefs_->imageTelemetryEnabled();
 }
@@ -5793,6 +5804,16 @@ bool TelemetryStore::imageTelemetryEnabled() const {
 void TelemetryStore::setImageTelemetryEnabled(bool enabled) {
     if (enabled == prefs_->imageTelemetryEnabled()) return;
     prefs_->setImageTelemetryEnabled(enabled);
+    schedulePreferencesSave();
+    emit imageTelemetrySettingsChanged();
+}
+
+QString TelemetryStore::gaugeDetectorModel() const {
+    return prefs_->gaugeDetectorModel();
+}
+void TelemetryStore::setGaugeDetectorModel(const QString& path) {
+    if (path == prefs_->gaugeDetectorModel()) return;
+    prefs_->setGaugeDetectorModel(path);
     schedulePreferencesSave();
     emit imageTelemetrySettingsChanged();
 }

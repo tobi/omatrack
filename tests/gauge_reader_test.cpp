@@ -21,6 +21,8 @@ namespace fs = std::filesystem;
 #ifdef OMATRACK_GAUGE_READER_TESTING
 namespace omatrack::inference {
 std::vector<std::uint8_t> gaugeReaderTestPreprocess(const GaugeRgb24Frame&);
+std::vector<std::uint8_t> gaugeReaderTestConfiguredPreprocess(
+    const GaugeRgb24Frame&, const GaugeReadConfiguration&);
 std::string gaugeReaderTestDecode(const float*, const float*);
 }  // namespace omatrack::inference
 #endif
@@ -295,6 +297,100 @@ void unitTests() {
                  "negative images\n";
 }
 
+void configuredParity(GaugeReader& reader, const Image& original,
+                      const std::array<double, 4>& expected) {
+#ifdef OMATRACK_GAUGE_READER_TESTING
+    const auto oracle = gaugeReaderTestPreprocess(original.frame());
+    const std::array<GaugeCrop, 4> boxes{{{1399, 1010, 1475, 1079, true},
+                                          {408, 994, 479, 1044, true},
+                                          {956, 628, 999, 894, true},
+                                          {1011, 628, 1055, 894, true}}};
+    for (auto direction :
+         {GaugeFillDirection::BottomToTop, GaugeFillDirection::TopToBottom,
+          GaugeFillDirection::LeftToRight, GaugeFillDirection::RightToLeft}) {
+        Image moved;
+        moved.width = 1600;
+        moved.height = 900;
+        moved.stride = 4800;
+        moved.bytes.assign(moved.stride * moved.height, 0);
+        GaugeReadConfiguration config;
+        config.sourceWidth = moved.width;
+        config.sourceHeight = moved.height;
+        for (int i = 0; i < 4; ++i) {
+            const auto& b = boxes[i];
+            const int w = b.right - b.left, h = b.bottom - b.top;
+            const bool horizontal =
+                i >= 2 && (direction == GaugeFillDirection::LeftToRight ||
+                           direction == GaugeFillDirection::RightToLeft);
+            const int left = 103 + i * 310, top = 157;
+            config.crops[i] = {left,
+                               top,
+                               left + (horizontal ? h : w),
+                               top + (horizontal ? w : h),
+                               true,
+                               direction};
+            for (int y = 0; y < h; ++y)
+                for (int x = 0; x < w; ++x) {
+                    int dx = x, dy = y;
+                    if (i >= 2 &&
+                        direction == GaugeFillDirection::TopToBottom) {
+                        dx = w - 1 - x;
+                        dy = h - 1 - y;
+                    }
+                    if (i >= 2 &&
+                        direction == GaugeFillDirection::LeftToRight) {
+                        dx = h - 1 - y;
+                        dy = x;
+                    }
+                    if (i >= 2 &&
+                        direction == GaugeFillDirection::RightToLeft) {
+                        dx = y;
+                        dy = w - 1 - x;
+                    }
+                    std::copy_n(original.bytes.data() +
+                                    (b.top + y) * original.stride +
+                                    (b.left + x) * 3,
+                                3,
+                                moved.bytes.data() + (top + dy) * moved.stride +
+                                    (left + dx) * 3);
+                }
+        }
+        require(gaugeReaderTestConfiguredPreprocess(moved.frame(), config) ==
+                    oracle,
+                "relocated/configured direction crop bytes differ from "
+                "original Pillow oracle");
+        const auto r = reader.readConfigured(moved.frame(), config);
+        require(r.error == GaugeError::None,
+                "configured crop inference failed");
+        const std::array<const GaugeObservation*, 4> observations{
+            &r.gear, &r.stintLap, &r.brakeFillPct, &r.throttleFillPct};
+        for (int i = 0; i < 4; ++i)
+            require(observations[i]->value &&
+                        std::abs(*observations[i]->value - expected[i]) <
+                            (i < 2 ? .001 : .002),
+                    "relocated crop prediction mismatch");
+        config.crops[0].enabled = false;
+        config.crops[2].enabled = false;
+        const auto masked = reader.readConfigured(moved.frame(), config);
+        require(!masked.gear.value && !masked.brakeFillPct.value &&
+                    masked.stintLap.value && masked.throttleFillPct.value,
+                "disabled configured crops leaked values or erased selected "
+                "values");
+        const auto bytes =
+            gaugeReaderTestConfiguredPreprocess(moved.frame(), config);
+        for (int field : {0, 2})
+            require(std::all_of(bytes.begin() + field * 192 * 64 * 3,
+                                bytes.begin() + (field + 1) * 192 * 64 * 3,
+                                [](auto x) { return x == 0; }),
+                    "disabled crops were preprocessed");
+        config.crops[3].direction = GaugeFillDirection::Unknown;
+        const auto invalid = reader.readConfigured(moved.frame(), config);
+        require(invalid.error == GaugeError::InvalidFrame,
+                "unknown fill direction accepted");
+        allUnknown(invalid);
+    }
+#endif
+}
 void fixtures(const std::string& modelPath, const fs::path& directory) {
     require(GaugeReader::runtimeAvailable(),
             "real fixtures require ONNX Runtime build");
@@ -363,6 +459,7 @@ void fixtures(const std::string& modelPath, const fs::path& directory) {
                     "invalid latency");
             if (repetition) latencies.push_back(r.latencyMs);
         }
+        configuredParity(reader, image, values);
         // A padded libav-style stride, with no unnecessary final-row padding.
         Image padded;
         padded.stride += 37;

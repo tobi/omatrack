@@ -21,6 +21,7 @@
 #include "AutotestHarness.h"
 #include "ImageModelManagementAutotest.h"
 #include "ImageTelemetryScanAutotest.h"
+#include "GaugeDiscoveryAutotest.h"
 #endif
 #include "Headless.h"
 #include "SingleInstance.h"
@@ -252,7 +253,8 @@ int main(int argc, char** argv) {
                      openAndRaise);
 
 #ifdef OMATRACK_ENABLE_AUTOTEST_HARNESS
-    if (!omatrack::autotest::installImageModelManagement(engine, *store) &&
+    if (!omatrack::autotest::installGaugeDiscovery(engine, *store) &&
+        !omatrack::autotest::installImageModelManagement(engine, *store) &&
         !omatrack::autotest::installImageTelemetryScan(engine, *store))
         omatrack::autotest::install(engine, *store);
 #endif

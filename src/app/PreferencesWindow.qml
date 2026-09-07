@@ -15,6 +15,7 @@ ApplicationWindow {
     property int currentSection: 0
     required property ImageModelManager imageModelManager
 
+    signal chooseGaugeDetector
     signal chooseLocalImageModel
 
     function openEvent(): void {
@@ -244,6 +245,7 @@ ApplicationWindow {
                 PreferencesImageTelemetryPage {
                     modelManager: preferencesWindow.imageModelManager
 
+                    onChooseGaugeDetector: preferencesWindow.chooseGaugeDetector()
                     onChooseLocalModel: preferencesWindow.chooseLocalImageModel()
                 }
             }

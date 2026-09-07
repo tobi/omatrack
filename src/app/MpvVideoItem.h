@@ -119,6 +119,7 @@ private:
     static void wakeup(void* context);
     void loadPendingMedia();
     void setDisplaySize(qint64 width, qint64 height);
+    void requestDisplaySize();
     void setError(const QString& message);
     int command(const QList<QByteArray>& arguments);
 

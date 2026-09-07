@@ -222,6 +222,22 @@ void PreferencesStore::flush() {
     YamlConfig::instance().save();
 }
 
+omatrack::GaugeSetup PreferencesStore::gaugeProposal(
+    const QString& source) const {
+    const auto found = gaugeFiles_.constFind(source);
+    if (found != gaugeFiles_.cend()) return found.value();
+    return gaugeDefaults_.value(QFileInfo(source).suffix().toLower());
+}
+void PreferencesStore::saveGaugeSetup(const QString& source,
+                                      const omatrack::GaugeSetup& setup,
+                                      bool extensionDefault) {
+    if (source.isEmpty() || !setup.valid()) return;
+    gaugeFiles_.insert(source, setup);
+    const auto extension = QFileInfo(source).suffix().toLower();
+    if (extensionDefault && !extension.isEmpty())
+        gaugeDefaults_.insert(extension, setup);
+}
+
 void PreferencesStore::loadPreferences() {
     YamlConfig& config = YamlConfig::instance();
     const QVariantList pinRows =
@@ -263,12 +279,25 @@ void PreferencesStore::loadPreferences() {
         config.value(QStringLiteral("video/image_telemetry"), false).toBool();
     imageTelemetryModel_ =
         config.value(QStringLiteral("video/image_model")).toString();
+    gaugeDetectorModel_ =
+        config.value(QStringLiteral("video/gauge_detector")).toString();
     imageModelManaged_ =
         config.value(QStringLiteral("video/image_model_managed"), false)
             .toBool();
     imageModelUpdates_ =
         config.value(QStringLiteral("video/image_model_updates"), true)
             .toBool();
+    gaugeFiles_.clear();
+    gaugeDefaults_.clear();
+    const auto loadSetups = [&config](const QString& key, auto& target) {
+        const auto values = config.map({QStringLiteral("video"), key});
+        for (auto it = values.cbegin(); it != values.cend(); ++it) {
+            auto setup = omatrack::GaugeSetup::fromMap(it.value().toMap());
+            if (setup.valid()) target.insert(it.key(), std::move(setup));
+        }
+    };
+    loadSetups(QStringLiteral("gauge_files"), gaugeFiles_);
+    loadSetups(QStringLiteral("gauge_defaults"), gaugeDefaults_);
     const auto hudPosition =
         config.map({QStringLiteral("video"), QStringLiteral("hud_position")});
     bool xOk = false, yOk = false;
@@ -532,6 +561,16 @@ void PreferencesStore::scheduleSave() {
     config.setValue(QStringLiteral("video/image_telemetry"),
                     imageTelemetryEnabled_);
     config.setValue(QStringLiteral("video/image_model"), imageTelemetryModel_);
+    config.setValue(QStringLiteral("video/gauge_detector"),
+                    gaugeDetectorModel_);
+    const auto saveSetups = [&config](const QString& key, const auto& setups) {
+        QVariantMap values;
+        for (auto it = setups.cbegin(); it != setups.cend(); ++it)
+            values.insert(it.key(), it.value().toMap());
+        config.setMap({QStringLiteral("video"), key}, values);
+    };
+    saveSetups(QStringLiteral("gauge_files"), gaugeFiles_);
+    saveSetups(QStringLiteral("gauge_defaults"), gaugeDefaults_);
     config.setValue(QStringLiteral("video/image_model_managed"),
                     imageModelManaged_);
     config.setValue(QStringLiteral("video/image_model_updates"),

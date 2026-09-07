@@ -174,6 +174,24 @@ void run() {
               document.contains("\"native_used\":\"false\""),
           "missing prediction provenance");
 
+    // Confirmed setup is checked in BOTH the pathname and serialized pass
+    // provenance: copying valid data under another setup's key cannot reuse it.
+    auto configured = partial;
+    configured.identity.setupSha256 = std::string(64, 'a');
+    status(cache.save(configured), Status::Partial);
+    auto otherSetup = configured;
+    otherSetup.identity.setupSha256 = std::string(64, 'b');
+    check(cache.pathFor(configured) != cache.pathFor(otherSetup),
+          "setup omitted from cache key");
+    status(cache.load(otherSetup), Status::Miss);
+    write(cache.pathFor(otherSetup), read(cache.pathFor(configured)));
+    status(cache.load(otherSetup), Status::Invalid);
+    auto configuredHit = cache.load(configured);
+    status(configuredHit, Status::Partial);
+    check(configuredHit.series->identity.setupSha256 ==
+              configured.identity.setupSha256,
+          "setup identity lost on deserialize");
+
     // Renderer lookup is bounded and O(1); unknown cells remain represented.
     check(partial.slotRange(-1, 1) ==
               std::make_pair(std::size_t(0), std::size_t(1)),
