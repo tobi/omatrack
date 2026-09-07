@@ -484,6 +484,16 @@ private:
             timeline();
         }
         if (finished_) return;
+        // Discovery is a per-video opt-in that every source change clears;
+        // the enabled preference alone must not run it. Opt in here the way
+        // the user does through the overlay toggle for each opened source.
+        if (reader_->enabled() && !reader_->discovering() &&
+            player_->loaded()) {
+            if (!require(reader_->discoverySamples() == 0,
+                         "discovery ran without the per-video opt-in"))
+                return;
+            reader_->setDiscovering(true);
+        }
         switch (phase_) {
             case Phase::Startup:
                 if (!store_.ready() || !loaded(source_) || !player_->ready())

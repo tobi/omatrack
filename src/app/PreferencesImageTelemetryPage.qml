@@ -56,14 +56,14 @@ ScrollView {
 
             checked: Store.imageTelemetryEnabled
             objectName: "imageTelemetryEnabledPreference"
-            text: "Discover gauges while playing (confirm before extraction)"
+            text: "Allow image telemetry (gauge discovery and reading)"
 
             onToggled: Store.imageTelemetryEnabled = extractionToggle.checked
         }
         Label {
             Layout.fillWidth: true
             color: Style.mutedTextColor
-            text: "Discovery and reading run locally. The packaged reader (~2.2 MB) works offline. Turning discovery on never starts extraction: review the source-frame boxes, confirm the setup, then Start extraction. Native telemetry remains authoritative."
+            text: "Discovery and reading run locally. The packaged reader (~2.2 MB) works offline. Nothing runs by itself: choose Discover gauges on a video to scan it, review the source-frame boxes, confirm the setup, then Start extraction. Native telemetry remains authoritative."
             wrapMode: Text.Wrap
         }
         Rectangle {

@@ -138,6 +138,22 @@ private:
             if (!require(player_ && controller_, "missing player/controller"))
                 return;
         }
+        // Discovery is a per-video opt-in; every source change (blank swap,
+        // restart) clears it. Phase 1 first proves the enabled preference
+        // alone runs nothing, then opts in the way the user does through the
+        // overlay toggle; later source changes re-arm the same way.
+        if (phase_ >= 1 && controller_->enabled() &&
+            !controller_->discovering()) {
+            if (!require(controller_->discoverySamples() == 0 &&
+                             controller_->inferenceRuns() == 0,
+                         "discovery ran without the per-video opt-in"))
+                return;
+            if (phase_ == 1 && phaseClock_.elapsed() < 1000) return;
+            controller_->setDiscovering(true);
+            if (!require(controller_->discovering(), "opt-in was refused"))
+                return;
+            if (phase_ == 1) phaseClock_.restart();
+        }
         if (controller_->discoverySamples() > reportedSamples_) {
             reportedSamples_ = controller_->discoverySamples();
             qInfo() << "GAUGE DISCOVERY backend"

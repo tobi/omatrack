@@ -146,6 +146,33 @@ void ImageTelemetryController::setEnabled(bool enabled) {
     emit enabledChanged();
     emit scanStateChanged();
 }
+void ImageTelemetryController::setDiscovering(bool discovering) {
+    if (discovering && !enabled_) return;
+    if (discovering_ == discovering) return;
+    discovering_ = discovering;
+    if (discovering) {
+        // Fresh cadence so the first frame is sampled now, not up to three
+        // seconds from now. Evidence collected before a pause is kept.
+        lastDiscoveryTarget_ = -10;
+        nextDiscoveryMs_ = 0;
+        if (phase_ == Discovery && eligible_)
+            setStatus(QStringLiteral(
+                "Discover gauges · play video to gather independent frames"));
+        emit discoveringChanged();
+        sample();
+        return;
+    }
+    discoveryJob_.reset();
+    emit discoveringChanged();
+    if (phase_ == Discovery) setStatus(idleStatus());
+}
+QString ImageTelemetryController::idleStatus() const {
+    if (!enabled_) return QStringLiteral("Image telemetry off");
+    if (!eligible_)
+        return QStringLiteral("Native telemetry / no standalone video");
+    return QStringLiteral(
+        "Gauge discovery off · Discover gauges to scan this video");
+}
 void ImageTelemetryController::setEligible(bool eligible) {
     if (eligible_ == eligible) return;
     eligible_ = eligible;
@@ -230,13 +257,14 @@ void ImageTelemetryController::reset() {
     geometryCompatible_ = false;
     lastDiscoveryTarget_ = -10;
     nextDiscoveryMs_ = 0;
+    // Discovery is a per-video decision: a new source, a reopen or a settings
+    // change never carries the opt-in over.
+    if (discovering_) {
+        discovering_ = false;
+        emit discoveringChanged();
+    }
     refreshGauges();
-    setStatus(
-        !enabled_ ? QStringLiteral("Image telemetry off")
-        : eligible_
-            ? QStringLiteral(
-                  "Discover gauges · play video to gather independent frames")
-            : QStringLiteral("Native telemetry / no standalone video"));
+    setStatus(idleStatus());
 }
 void ImageTelemetryController::resetForSeek() {
     // A seek invalidates current readings, NOT already collected source data.
@@ -261,9 +289,10 @@ bool ImageTelemetryController::canConfirm() const {
         return false;
     bool selected = false;
     for (const auto& r : evidence_.setup.regions) {
-        if (!r.enabled) continue;
+        if (!r.enabled || !r.visible()) continue;
         selected = true;
-        if (r.hits < 3 && !r.confirmed) return false;
+        if (r.hits < omatrack::GaugeSetup::VotesToConfirm && !r.confirmed)
+            return false;
     }
     return selected;
 }
@@ -299,6 +328,9 @@ void ImageTelemetryController::refreshGeometry() {
 void ImageTelemetryController::refreshGauges() {
     QVector<GaugeRegionRow> rows;
     for (const auto& r : evidence_.setup.regions) {
+        // Hidden candidates keep voting in the evidence but never reach the
+        // panel or the video until they have earned their place.
+        if (!r.visible()) continue;
         GaugeRegionRow row;
         row.key = r.id;
         row.origin = !r.profileKey.isEmpty() ? QStringLiteral("AiM profile")
@@ -349,6 +381,9 @@ void ImageTelemetryController::confirmGauge(const QString& key) {
 void ImageTelemetryController::confirmSetup(bool extensionDefault) {
     if (!canConfirm()) return;
     discoveryJob_.reset();
+    // Only tracks that earned visibility are confirmed and saved; one-frame
+    // candidates and suppressed losers are noise, not setup.
+    evidence_.setup.pruneInvisible();
     for (auto& r : evidence_.setup.regions) {
         r.confirmed = r.enabled;
         r.proposal = true;
@@ -578,7 +613,7 @@ void ImageTelemetryController::sample() {
         awaitingSeek_)
         return;
     if (phase_ != Extracting) {
-        if (phase_ == Discovery) discover(player_->position());
+        if (phase_ == Discovery && discovering_) discover(player_->position());
         return;
     }
     if (!eligible_ || !geometryCompatible_)
