@@ -575,9 +575,14 @@ Native lap distance is accepted only when its continuity and total agree with in
   root selector. Mac strict checks anchor both Resources and Frameworks to the
   executable's actual package Contents; external subdirectory symlinks cannot
   satisfy the check. Mac packaging deduplicates LC_RPATH per Mach-O slice after
-  deployment, preserves the original ordered distinct paths, verifies all images,
-  then performs final signing. Developer paths fail instead of being silently
-  discarded. The mounted-DMG packaged self-check remains mandatory. Package
+  deployment, preserves ordered distinct paths, verifies all images, then signs.
+  One targeted Qt relocation is allowed: escaping `@loader_path/` + 2–5 parent
+  segments + `lib` in real PlugIns dylibs may become the package Frameworks root
+  only after every non-system dynamic dependency resolves uniquely inside Contents
+  through the proposed search paths, including a bundled Qt framework. Missing,
+  ambiguous, external and non-Qt cases fail before mutation. Other valid paths
+  retain their order; all other developer/escaping paths fail. Verify mode never
+  repairs paths or relaxes these checks. The mounted-DMG packaged self-check remains mandatory. Package
   audits verify actual AppImage/Windows nupkg/macOS dmg contents and run the
   packaged executable's production `--check-model-bundle --require-bundled-runtime`
   diagnostic. It verifies an embedded app-owned manifest, all 15 actual assets,

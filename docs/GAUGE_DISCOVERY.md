@@ -178,9 +178,17 @@ as code. Strict macOS checks anchor Resources/Frameworks to the executable's
 actual package Contents, rejecting external subdirectory symlinks.
 
 Mac packaging normalizes duplicate LC_RPATH commands after deployment and before
-final signing, independently per thin/fat Mach-O slice. Every distinct original
-path and its search order remain; developer paths are rejected, not silently
-removed. Stage and mounted-DMG verification inspect all Mach-O images, and the
+final signing, independently per thin/fat Mach-O slice. A narrowly scoped Qt SDK
+relocation handles real dylibs flattened into `Contents/PlugIns`: only escaping
+`@loader_path/../../lib` through `@loader_path/../../../../../lib` may be replaced
+in place with `@executable_path/../Frameworks`. Before mutation, all non-system
+load/weak/reexport/upward/lazy dependencies must resolve to exactly one canonical
+Mach-O file inside Contents through the proposed retained search paths, including
+a Qt framework in Frameworks. Direct dependencies are checked too; missing,
+ambiguous, external, non-Qt and non-PlugIns cases fail. Other distinct internal/
+system paths and their order remain. All other developer/escaping paths are
+rejected, never silently removed; verify mode performs no relocation.
+Stage and mounted-DMG verification inspect all Mach-O images, and the
 actual packaged CLI check is still mandatory. Mock-tool protocol and filesystem
 path tests are not substitutes for the subsequent native macOS dry run.
 
