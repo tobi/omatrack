@@ -206,7 +206,7 @@ Item {
                 color: Style.accentColor
                 font.bold: true
                 font.pixelSize: Style.smallFontSize
-                text: root.controller.phase === ImageTelemetryController.Extracting ? "3  EXTRACT · predicted values" : root.controller.phase === ImageTelemetryController.Confirmed ? "2  CONFIRMED · ready to extract" : "1  DISCOVER → 2  CONFIRM → 3  EXTRACT"
+                text: root.controller.phase === ImageTelemetryController.Extracting ? "3  EXTRACT · predicted values" : root.controller.phase === ImageTelemetryController.Confirmed ? (root.controller.canExtract ? "2  CONFIRMED · ready to extract" : "2  CONFIRMED · reading unavailable") : "1  DISCOVER → 2  CONFIRM → 3  EXTRACT"
             }
             Label {
                 Layout.fillWidth: true
@@ -219,6 +219,7 @@ Item {
                 Layout.fillWidth: true
                 color: Style.yellowColor
                 font.pixelSize: Style.smallFontSize
+                objectName: "gaugeExperimentalWarning"
                 text: "EXPERIMENTAL detector · proposals only, not approved reader crops"
                 visible: root.controller.experimentalDetector
                 wrapMode: Text.Wrap

@@ -259,7 +259,13 @@ private:
                 return;
             finish();
         } else if (phase_ == 8) {
-            if (!imageJob_.running()) finish();
+            if (imageJob_.running()) return;
+            const auto proposal = controller_->gauges()->row(0);
+            controller_->editGauge(proposal.key, proposal.semantic, true,
+                                   proposal.box);
+            controller_->confirmGauge(proposal.key);
+            controller_->confirmSetup(false);
+            enter(10);
         } else if (phase_ == 9) {
             if (!controller_->cacheComplete()) return;
             if (!require(controller_->inferenceRuns() == 0 &&
@@ -274,6 +280,25 @@ private:
                 "GAUGE DISCOVERY RESTART PASS: persisted proposal revalidated; "
                 "confirmed cache reused; reader calls 0");
             finish();
+        } else if (phase_ == 10) {
+            const auto* warning =
+                window_->findChild<QQuickItem*>("gaugeExperimentalWarning");
+            if (!require(controller_->phase() ==
+                                 ImageTelemetryController::Confirmed &&
+                             controller_->experimentalDetector() && warning &&
+                             warning->isVisible() &&
+                             !controller_->canExtract() &&
+                             controller_->inferenceRuns() == 0,
+                         "confirmation hid experimental warning or admitted "
+                         "detected crop"))
+                return;
+            qInfo(
+                "GAUGE DISCOVERY EXPERIMENTAL PASS: confirmed proposal keeps "
+                "warning; detected crop unreadable");
+            screenshot(QStringLiteral("-experimental-confirmed"));
+            enter(11);
+        } else if (phase_ == 11) {
+            if (!imageJob_.running()) finish();
         }
     }
     void finish() {
