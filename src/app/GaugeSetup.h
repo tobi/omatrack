@@ -16,6 +16,10 @@ struct GaugeRegion {
     QString id, representation = QStringLiteral("unknown"),
                 semantic = QStringLiteral("unknown"),
                 direction = QStringLiteral("unknown");
+    // Nonempty only for one of the four independently image-verified profile
+    // anchors. It survives user edits and never comes from the learned
+    // detector.
+    QString profileKey;
     QRectF box;
     bool enabled = true, confirmed = false, edited = false;
     bool proposal =
@@ -24,6 +28,8 @@ struct GaugeRegion {
     double score = 0;
 };
 struct GaugeSetup {
+    static constexpr int MaxInventoryRegions = 32;
+    static constexpr int MaxProfileRegions = 4;
     QSize sourceSize;
     QString detectorIdentity;
     QVector<GaugeRegion> regions;
@@ -31,6 +37,9 @@ struct GaugeSetup {
     QVariantMap toMap() const;
     static GaugeSetup fromMap(const QVariantMap& map);
     QString fingerprint() const;
+    // Extraction identity excludes disabled inventory and transient track IDs,
+    // but includes every selected confirmed crop, source size and backend.
+    QString readingFingerprint() const;
     // Compatibility is deliberately separate from localization/confirmation.
     // Until independently validated, arbitrary crops must not enter the reader.
     std::array<bool, 4> readableFields() const;
@@ -51,8 +60,10 @@ public:
     void propose(GaugeSetup proposal);
     void clear();
     int sampleCount() const { return seen_.size(); }
+    bool reviewedLayoutVerified() const { return reviewedLayoutVerified_; }
 
 private:
+    bool reviewedLayoutVerified_ = false;
     QSet<qint64> seen_;
     int nextId_ = 1;
 };

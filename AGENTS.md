@@ -485,16 +485,25 @@ Native lap distance is accepted only when its continuity and total agree with in
   `models/experimental-detector/gauge-detector.onnx` beside the executable;
   `heuristic` explicitly selects the reviewed-layout heuristic, and an ONNX path
   selects a local detector with verified companion metadata. Missing/failed detectors
-  fall back to the clearly labeled heuristic. Experimental proposals start unselected
-  and keep the EXPERIMENTAL warning after confirmation. Candidate v1 failed independent
+  fall back to the clearly labeled heuristic. Learned proposals start unselected
+  and keep the EXPERIMENTAL warning after confirmation. Independently image-verified
+  orange-AiM profile crops remain available alongside successful detection, labeled
+  AiM profile, not learned refinements. Four stable profile anchors have separate
+  matching/capacity from the 32-track experimental inventory; user edits and disabled
+  choices are never overwritten by a newly enabled profile duplicate. Fresh structural
+  evidence is required before Start, including for visually confirmed saved proposals.
+  Candidate v1 failed independent
   localization acceptance; larger candidates need separate review before admission. Arbitrary edited/detected crops remain
   unreadable despite the separately implemented configured-crop API: the incumbent
   fails crop-jitter robustness. See `docs/GAUGE_DISCOVERY.md` before relaxing this gate.
   After extraction starts, **Scan from cursor** runs bounded worker batches faster
   than playback, prioritizes the cursor and wraps to fill earlier holes. Seeking
   cancels stale jobs but retains same-setup coverage; edits reset setup-dependent
-  snapshots. Predicted cache keys and serialized provenance include confirmed setup
-  and detector identity in addition to the reader-content and source identity.
+  snapshots. Predicted cache keys and serialized provenance include the canonical
+  selected/confirmed reading setup, profile provenance, source geometry, detector
+  identity and reading-policy revision, in addition to reader-content and source
+  identity. Full inventory stays in preferences; unselected proposal churn and
+  transient track IDs cannot invalidate an otherwise identical reading cache.
 - Image-derived data appears in the docked `ImageTelemetryTraces` recording-time
   workspace, using the shared scene builders, Style and a cached static scene
   separate from the cursor. It is not a native `SessionHandle`, invented distance,

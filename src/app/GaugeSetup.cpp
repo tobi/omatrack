@@ -11,7 +11,10 @@ bool validBox(const QRectF& b) {
     return std::isfinite(b.x()) && std::isfinite(b.y()) &&
            std::isfinite(b.width()) && std::isfinite(b.height()) &&
            b.x() >= 0 && b.y() >= 0 && b.width() > 0 && b.height() > 0 &&
-           b.right() <= 1 && b.bottom() <= 1;
+           // Independently rounded YAML x/width or y/height can sum a tiny
+           // amount above one. This is subpixel serialization tolerance only;
+           // readerField's exact reviewed-crop admission remains unchanged.
+           b.right() <= 1 + 1e-9 && b.bottom() <= 1 + 1e-9;
 }
 double overlap(const QRectF& a, const QRectF& b) {
     const auto r = a.intersected(b);
@@ -23,15 +26,27 @@ double overlap(const QRectF& a, const QRectF& b) {
 bool GaugeSetup::valid() const {
     if (sourceSize.width() <= 0 || sourceSize.height() <= 0 ||
         sourceSize.width() > 16384 || sourceSize.height() > 16384 ||
-        regions.isEmpty() || regions.size() > 32 || detectorIdentity.isEmpty())
+        regions.isEmpty() ||
+        regions.size() > MaxInventoryRegions + MaxProfileRegions ||
+        detectorIdentity.isEmpty())
         return false;
-    QSet<QString> ids;
+    QSet<QString> ids, profiles;
+    int inventory = 0;
     for (const auto& r : regions) {
         if (!validBox(r.box) || r.id.isEmpty() || ids.contains(r.id) ||
             r.semantic.size() > 64 || r.representation.size() > 64 ||
             r.direction.size() > 32)
             return false;
         ids.insert(r.id);
+        if (r.profileKey.isEmpty()) {
+            if (++inventory > MaxInventoryRegions) return false;
+        } else {
+            if (!QStringList{"gear", "stint_lap", "brake", "throttle"}.contains(
+                    r.profileKey) ||
+                profiles.contains(r.profileKey))
+                return false;
+            profiles.insert(r.profileKey);
+        }
     }
     return true;
 }
@@ -46,6 +61,7 @@ QVariantMap GaugeSetup::toMap() const {
     QVariantList rows;
     for (const auto& r : regions)
         rows.append(QVariantMap{{"id", r.id},
+                                {"profile_key", r.profileKey},
                                 {"representation", r.representation},
                                 {"semantic", r.semantic},
                                 {"direction", r.direction},
@@ -69,11 +85,12 @@ GaugeSetup GaugeSetup::fromMap(const QVariantMap& map) {
                     map.value("source_height").toInt()};
     s.detectorIdentity = map.value("detector_identity").toString();
     const auto rows = map.value("regions").toList();
-    if (rows.size() > 32) return {};
+    if (rows.size() > MaxInventoryRegions + MaxProfileRegions) return {};
     for (const auto& value : rows) {
         const auto m = value.toMap();
         GaugeRegion r;
         r.id = m.value("id").toString();
+        r.profileKey = m.value("profile_key").toString();
         r.representation = m.value("representation").toString();
         r.semantic = m.value("semantic").toString();
         r.direction = m.value("direction").toString();
@@ -94,6 +111,31 @@ QString GaugeSetup::fingerprint() const {
             QCryptographicHash::Sha256)
             .toHex());
 }
+QString GaugeSetup::readingFingerprint() const {
+    if (!valid()) return {};
+    auto map = toMap();
+    QList<QByteArray> selected;
+    for (const auto& value : map.value("regions").toList()) {
+        auto row = value.toMap();
+        if (!row.value("enabled").toBool() || !row.value("confirmed").toBool())
+            continue;
+        row.remove("id");
+        row.remove("edited");
+        selected.append(
+            QJsonDocument::fromVariant(row).toJson(QJsonDocument::Compact));
+    }
+    std::sort(selected.begin(), selected.end());
+    QVariantList rows;
+    for (const auto& row : selected)
+        rows.append(QJsonDocument::fromJson(row).toVariant());
+    map["regions"] = rows;
+    map["identity_scope"] = QStringLiteral("confirmed-selection-v1");
+    return QString::fromLatin1(
+        QCryptographicHash::hash(
+            QJsonDocument::fromVariant(map).toJson(QJsonDocument::Compact),
+            QCryptographicHash::Sha256)
+            .toHex());
+}
 QVector<GaugeRegion> GaugeSetup::reviewedRegions() {
     const QRect boxes[] = {{1399, 1010, 76, 69},
                            {408, 994, 71, 50},
@@ -104,6 +146,7 @@ QVector<GaugeRegion> GaugeSetup::reviewedRegions() {
     for (int i = 0; i < 4; ++i) {
         GaugeRegion r;
         r.semantic = fields[i];
+        r.profileKey = fields[i];
         r.representation =
             i < 2 ? QStringLiteral("digits") : QStringLiteral("bar");
         r.direction =
@@ -182,6 +225,7 @@ inference::GaugeReadConfiguration GaugeSetup::readerConfiguration(
 }
 void GaugeEvidence::clear() {
     setup = {};
+    reviewedLayoutVerified_ = false;
     seen_.clear();
     nextId_ = 1;
 }
@@ -205,6 +249,14 @@ bool GaugeEvidence::observe(qint64 pts, QSize size,
     for (const auto stamp : seen_)
         if (std::abs(pts - stamp) < 2'000'000'000LL) return false;
     seen_.insert(pts);
+    // Runtime evidence only, never restored from extension/per-file proposals.
+    QSet<QString> observedProfiles;
+    for (const auto& observation : observations)
+        if (!observation.profileKey.isEmpty() &&
+            GaugeSetup::readerField(observation, size) >= 0)
+            observedProfiles.insert(observation.profileKey);
+    reviewedLayoutVerified_ =
+        observedProfiles.size() == GaugeSetup::MaxProfileRegions;
     if (setup.sourceSize.isValid() && setup.sourceSize != size) {
         // Preserve proposals visibly, but reset validation. Source geometry is
         // part of the config and reader compatibility will reject rescaling.
@@ -220,7 +272,16 @@ bool GaugeEvidence::observe(qint64 pts, QSize size,
         double bestOverlap = .5;
         for (int i = 0; i < observations.size(); ++i) {
             const auto& o = observations[i];
-            if (used.contains(i) || !validBox(o.box)) continue;
+            if (used.contains(i) || !validBox(o.box) ||
+                r.profileKey != o.profileKey)
+                continue;
+            if (!r.profileKey.isEmpty()) {
+                // Consume this stable profile anchor even after the user moves,
+                // relabels or disables it. Never respawn an enabled canonical
+                // duplicate over their edit or match a learned glyph box to it.
+                best = i;
+                break;
+            }
             const double iou = overlap(r.box, o.box);
             if (iou > bestOverlap) {
                 best = i;
@@ -231,7 +292,10 @@ bool GaugeEvidence::observe(qint64 pts, QSize size,
             used.insert(best);
             const auto& o = observations[best];
             if (o.semantic == r.semantic &&
-                o.representation == r.representation) {
+                o.representation == r.representation &&
+                (r.profileKey.isEmpty() ||
+                 (o.direction == r.direction &&
+                  GaugeSetup::readerField(r, size) >= 0))) {
                 r.hits = std::min(20, r.hits + 1);
                 r.misses = 0;
                 r.score = o.score;
@@ -249,9 +313,17 @@ bool GaugeEvidence::observe(qint64 pts, QSize size,
                                   !r.proposal;
                        }),
         setup.regions.end());
-    for (int i = 0; i < observations.size() && setup.regions.size() < 32; ++i) {
+    for (int i = 0; i < observations.size(); ++i) {
         if (used.contains(i) || !validBox(observations[i].box)) continue;
         auto r = observations[i];
+        const int inventory = std::count_if(
+            setup.regions.cbegin(), setup.regions.cend(),
+            [](const auto& region) { return region.profileKey.isEmpty(); });
+        if ((r.profileKey.isEmpty() &&
+             inventory >= GaugeSetup::MaxInventoryRegions) ||
+            (!r.profileKey.isEmpty() &&
+             setup.regions.size() - inventory >= GaugeSetup::MaxProfileRegions))
+            continue;
         do {
             r.id = QStringLiteral("g%1").arg(nextId_++);
         } while (std::any_of(

@@ -87,7 +87,9 @@ public:
     Phase phase() const { return phase_; }
     bool canConfirm() const;
     bool canExtract() const;
-    QString setupIdentity() const { return evidence_.setup.fingerprint(); }
+    QString setupIdentity() const {
+        return evidence_.setup.readingFingerprint();
+    }
     int discoverySamples() const { return evidence_.sampleCount(); }
     bool geometryCompatible() const { return geometryCompatible_; }
     bool experimentalDetector() const {

@@ -1,5 +1,6 @@
 #include "app/GaugeSetup.h"
 #include <QtTest>
+#include <algorithm>
 
 using namespace omatrack;
 class GaugeSetupTest : public QObject {
@@ -31,9 +32,11 @@ private slots:
         const auto decoded = GaugeSetup::fromMap(original.toMap());
         QVERIFY(decoded.valid());
         QCOMPARE(decoded.fingerprint(), original.fingerprint());
+        QCOMPARE(decoded.readingFingerprint(), original.readingFingerprint());
         QVERIFY(decoded.readableFields()[0]);
         e.propose(decoded);
         QCOMPARE(e.sampleCount(), 0);
+        QVERIFY(!e.reviewedLayoutVerified());
         QVERIFY(!e.setup.regions[0].confirmed);
         QVERIFY(!e.setup.readableFields()[0]);
         e.observe(0, {1280, 720}, {});
@@ -58,6 +61,7 @@ private slots:
         persisted["regions"] = rows;  // Same numeric precision as omatrack.yml.
         const auto restored = GaugeSetup::fromMap(persisted);
         QCOMPARE(restored.fingerprint(), e.setup.fingerprint());
+        QCOMPARE(restored.readingFingerprint(), e.setup.readingFingerprint());
         const auto before = e.setup.readerConfiguration();
         const auto after = restored.readerConfiguration();
         for (int i = 0; i < 4; ++i) {
@@ -93,6 +97,123 @@ private slots:
         e.propose(proposal);
         for (auto& r : e.setup.regions) r.confirmed = true;
         QCOMPARE(e.setup.fingerprint(), hash);
+    }
+    void boundaryInventorySurvivesYamlRounding() {
+        GaugeEvidence e;
+        e.setup.detectorIdentity = "experimental-v2";
+        e.observe(0, {1920, 1080}, GaugeSetup::reviewedRegions());
+        for (auto& r : e.setup.regions) r.confirmed = true;
+        GaugeRegion edge;
+        edge.id = "unselected-edge";
+        edge.enabled = false;
+        edge.box = {.8, .95387518095, .1, .04612481905};
+        e.setup.regions.append(edge);
+        QVERIFY(e.setup.valid());
+        const auto restored = GaugeSetup::fromMap(e.setup.toMap());
+        QVERIFY(restored.valid());
+        QCOMPARE(restored.readingFingerprint(), e.setup.readingFingerprint());
+        auto outside = restored;
+        outside.regions.last().box.setHeight(.05);
+        QVERIFY(!outside.valid());
+    }
+    void reviewedProfileAlongsideInventory() {
+        GaugeEvidence e;
+        e.setup.detectorIdentity = "experimental-v2";
+        auto profile = GaugeSetup::reviewedRegions();
+        auto inventory = profile;
+        for (auto& r : inventory) {
+            r.profileKey.clear();
+            r.enabled = false;
+        }
+        for (int i = 0; i < 3; ++i)
+            QVERIFY(e.observe(i * 3'000'000'000LL, {1920, 1080},
+                              inventory + profile));
+        QCOMPARE(e.setup.regions.size(), 8);
+        QVERIFY(e.reviewedLayoutVerified());
+        for (const auto& r : e.setup.regions) {
+            QCOMPARE(r.hits, 3);
+            QCOMPARE(r.enabled, !r.profileKey.isEmpty());
+        }
+        // Same pixels in the learned inventory cannot consume profile evidence.
+        auto& gear = e.setup.regions[4];
+        QCOMPARE(gear.profileKey, QString("gear"));
+        gear.box.translate(.01, 0);
+        gear.semantic = "speed";
+        gear.enabled = false;
+        gear.edited = true;
+        const auto id = gear.id;
+        const auto box = gear.box;
+        for (int i = 3; i < 6; ++i)
+            QVERIFY(e.observe(i * 3'000'000'000LL, {1920, 1080},
+                              profile + inventory));
+        QCOMPARE(e.setup.regions.size(), 8);
+        const auto edited = e.setup.regions[4];
+        QCOMPARE(edited.id, id);
+        QCOMPARE(edited.box, box);
+        QCOMPARE(edited.semantic, QString("speed"));
+        QVERIFY(!edited.enabled);
+        QCOMPARE(edited.hits, 0);
+        const auto saved = GaugeSetup::fromMap(e.setup.toMap());
+        e.propose(saved);
+        QCOMPARE(e.sampleCount(), 0);
+        QVERIFY(e.observe(0, {1920, 1080}, profile + inventory));
+        QCOMPARE(e.setup.regions[4].profileKey, QString("gear"));
+        QVERIFY(!e.setup.regions[4].enabled);
+        QCOMPARE(e.setup.regions.size(), 8);
+    }
+    void profileCapacityIsReserved() {
+        GaugeEvidence e;
+        e.setup.detectorIdentity = "experimental-v2";
+        QVector<GaugeRegion> inventory;
+        for (int i = 0; i < GaugeSetup::MaxInventoryRegions; ++i) {
+            GaugeRegion r;
+            r.box = {i / 40.0, .2, .02, .02};
+            r.enabled = false;
+            inventory.append(r);
+        }
+        QVERIFY(e.observe(0, {1920, 1080}, inventory));
+        QCOMPARE(e.setup.regions.size(), 32);
+        QVERIFY(e.observe(3'000'000'000LL, {1920, 1080},
+                          inventory + GaugeSetup::reviewedRegions()));
+        QCOMPARE(e.setup.regions.size(), 36);
+        QVERIFY(e.setup.valid());
+        QCOMPARE(e.setup.regions[32].profileKey, QString("gear"));
+    }
+    void readingIdentityIgnoresUnselectedInventoryChurn() {
+        GaugeEvidence e;
+        e.setup.detectorIdentity = "experimental-v2:model-and-metadata-hashes";
+        e.observe(0, {1920, 1080}, GaugeSetup::reviewedRegions());
+        for (auto& r : e.setup.regions) r.confirmed = true;
+        const auto original = e.setup;
+        const auto reading = original.readingFingerprint();
+        auto changed = original;
+        GaugeRegion extra;
+        extra.id = "detector-glyph";
+        extra.box = {.2, .2, .1, .1};
+        extra.enabled = false;
+        changed.regions.prepend(extra);
+        std::reverse(changed.regions.begin(), changed.regions.end());
+        changed.regions[0].id = "new-track-id";
+        changed.regions[0].edited = true;
+        QVERIFY(changed.fingerprint() != original.fingerprint());
+        QCOMPARE(changed.readingFingerprint(), reading);
+        changed.regions[0].box.translate(.001, 0);
+        QVERIFY(changed.readingFingerprint() != reading);
+        changed = original;
+        changed.regions[0].enabled = false;
+        QVERIFY(changed.readingFingerprint() != reading);
+        changed = original;
+        changed.detectorIdentity += "different-model";
+        QVERIFY(changed.readingFingerprint() != reading);
+        changed = original;
+        changed.sourceSize = {1280, 720};
+        QVERIFY(changed.readingFingerprint() != reading);
+        changed = original;
+        changed.regions[2].direction = "top_to_bottom";
+        QVERIFY(changed.readingFingerprint() != reading);
+        changed = original;
+        changed.regions[0].semantic = "speed";
+        QVERIFY(changed.readingFingerprint() != reading);
     }
     void editsAndUnknowns() {
         GaugeEvidence e;

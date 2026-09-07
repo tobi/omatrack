@@ -1,6 +1,9 @@
 #include "GaugeDiscoveryAutotest.h"
 #include "ImageTelemetryController.h"
 #include "TelemetryStore.h"
+#include "inference/GaugeReader.h"
+#include "inference/VideoFrameDecoder.h"
+#include <QDir>
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QImage>
@@ -12,10 +15,45 @@
 #include <cmath>
 
 namespace {
+bool matchesIncumbent(const QString& source, const QString& model,
+                      omatrack::inference::ImageTelemetrySnapshot series,
+                      omatrack::IoCancel cancel) {
+    using namespace omatrack::inference;
+    VideoFrameDecoder decoder;
+    GaugeReader reader(model.toStdString());
+    if (!series || !reader.ready() ||
+        !decoder.open(source.toStdString(), cancel))
+        return false;
+    int compared = 0;
+    for (const auto& cell : series->cells) {
+        if (!cell.presentationPtsNs ||
+            !std::all_of(cell.values.begin(), cell.values.end(),
+                         [](const auto& v) { return v.has_value(); }))
+            continue;
+        DecodedRgbFrame frame;
+        if (!decoder.frameAtOrAfter(*cell.presentationPtsNs, frame, cancel) ||
+            frame.presentationPtsNs != *cell.presentationPtsNs)
+            return false;
+        const auto expected =
+            reader.read({frame.pixels.data(), frame.pixels.size(), frame.width,
+                         frame.height, frame.stride});
+        const std::array<std::optional<double>, 4> values{
+            expected.gear.value, expected.stintLap.value,
+            expected.brakeFillPct.value, expected.throttleFillPct.value};
+        if (expected.error != GaugeError::None || values != cell.values)
+            return false;
+        if (++compared == 3) return true;
+    }
+    return false;
+}
 class GaugeDiscoveryCheck : public QObject {
 public:
     GaugeDiscoveryCheck(QQmlApplicationEngine& engine, TelemetryStore& store)
-        : QObject(&engine), engine_(engine), store_(store), imageJob_(this) {
+        : QObject(&engine),
+          engine_(engine),
+          store_(store),
+          imageJob_(this),
+          oracleJob_(this) {
         total_.start();
         phaseClock_.start();
         timer_.setInterval(100);
@@ -101,7 +139,7 @@ private:
             const auto mode =
                 qEnvironmentVariable("OMATRACK_AUTOTEST_GAUGE_DISCOVERY");
             store_.setGaugeDetectorModel(
-                mode == "detector"
+                mode.startsWith("detector")
                     ? qEnvironmentVariable(
                           "OMATRACK_AUTOTEST_GAUGE_DETECTOR_MODEL")
                     : QStringLiteral("heuristic"));
@@ -110,9 +148,15 @@ private:
             if (!require(remember && remember->property("checked").toBool(),
                          "remember extension proposal must default ON"))
                 return;
+            persistedIdentity_ =
+                store_.gaugeProposal(player_->source().toLocalFile())
+                    .readingFingerprint();
+            persistedSetupIdentity_ =
+                store_.gaugeProposal(player_->source().toLocalFile())
+                    .fingerprint();
             controller_->retry();
             player_->setPaused(true);
-            player_->seek(0);
+            player_->seek(mode == "detector-restart" ? 9 : 0);
             enter(1);
         } else if (phase_ == 1) {
             if (phaseClock_.elapsed() < 4500) return;
@@ -131,7 +175,7 @@ private:
             enter(2);
         } else if (phase_ == 2) {
             if (qEnvironmentVariable("OMATRACK_AUTOTEST_GAUGE_DISCOVERY") ==
-                "detector") {
+                "detector-only") {
                 if (controller_->discoverySamples() < 3) return;
                 if (!require(controller_->status().contains(
                                  "EXPERIMENTAL detector") &&
@@ -155,6 +199,32 @@ private:
                 return;
             }
             if (!controller_->canConfirm()) return;
+            if (qEnvironmentVariable("OMATRACK_AUTOTEST_GAUGE_DISCOVERY")
+                    .startsWith("detector")) {
+                int profiles = 0, inventory = 0;
+                for (int i = 0; i < controller_->gauges()->count(); ++i) {
+                    const auto row = controller_->gauges()->row(i);
+                    if (row.origin == "AiM profile") {
+                        if (!require(row.selected && row.readable &&
+                                         row.evidence >= 3,
+                                     "reviewed profile missing fresh "
+                                     "evidence/selection/compatibility"))
+                            return;
+                        ++profiles;
+                    } else {
+                        if (!require(!row.selected,
+                                     "experimental inventory auto-selected"))
+                            return;
+                        ++inventory;
+                    }
+                }
+                if (!require(controller_->experimentalDetector() &&
+                                 profiles == 4 && inventory > 0 &&
+                                 store_.gaugeDetectorModel().isEmpty(),
+                             "default staged V2 did not retain independent "
+                             "reviewed profile and inventory"))
+                    return;
+            }
             if (!require(controller_->discoverySamples() >= 3 &&
                              controller_->inferenceRuns() == 0 &&
                              player_->position() > 4 && !player_->paused(),
@@ -162,16 +232,38 @@ private:
                 return;
             if (!projectionMatchesPlayer()) return;
             screenshot(QStringLiteral("-discovery"));
+            if (qEnvironmentVariable("OMATRACK_AUTOTEST_GAUGE_DISCOVERY") ==
+                "detector-restart") {
+                // An unselected inventory edit must persist without
+                // invalidating an otherwise identical confirmed reading's
+                // complete cache.
+                for (int i = 0; i < controller_->gauges()->count(); ++i) {
+                    const auto row = controller_->gauges()->row(i);
+                    if (row.selected) continue;
+                    auto box = row.box;
+                    box.moveLeft(
+                        std::clamp(box.x() + .001, 0.0, 1.0 - box.width()));
+                    controller_->editGauge(row.key, row.semantic, false, box);
+                    break;
+                }
+            }
             controller_->confirmSetup();
             identity_ = controller_->setupIdentity();
             const auto path = player_->source().toLocalFile();
-            if (!require(
-                    store_.gaugeProposal(path).fingerprint() == identity_ &&
-                        store_.gaugeProposal(path + ".new." +
-                                             path.section('.', -1))
-                                .fingerprint() == identity_,
-                    "confirmation did not remember per-file and extension "
-                    "proposals"))
+            if (!require(store_.gaugeProposal(path).readingFingerprint() ==
+                                 identity_ &&
+                             store_.gaugeProposal(path + ".new." +
+                                                  path.section('.', -1))
+                                     .readingFingerprint() == identity_,
+                         "confirmation did not remember per-file and extension "
+                         "proposals"))
+                return;
+            if (qEnvironmentVariable("OMATRACK_AUTOTEST_GAUGE_DISCOVERY") ==
+                    "detector-restart" &&
+                !require(store_.gaugeProposal(path).fingerprint() !=
+                             persistedSetupIdentity_,
+                         "cold restart did not exercise changed unselected "
+                         "inventory"))
                 return;
             if (!require(controller_->phase() ==
                                  ImageTelemetryController::Confirmed &&
@@ -184,8 +276,8 @@ private:
             if (!require(controller_->inferenceRuns() == 0,
                          "confirmed state read without explicit action"))
                 return;
-            if (qEnvironmentVariable("OMATRACK_AUTOTEST_GAUGE_DISCOVERY") ==
-                "native") {
+            if (qEnvironmentVariable("OMATRACK_AUTOTEST_GAUGE_DISCOVERY")
+                    .endsWith("native")) {
                 if (!require(
                         !controller_->eligible() && !controller_->canExtract(),
                         "native priority lost"))
@@ -197,10 +289,15 @@ private:
                          "reviewed offline reader unavailable"))
                 return;
             controller_->startExtraction();
-            enter(qEnvironmentVariable("OMATRACK_AUTOTEST_GAUGE_DISCOVERY") ==
-                          "restart"
-                      ? 9
-                      : 4);
+            if (qEnvironmentVariable("OMATRACK_AUTOTEST_GAUGE_DISCOVERY")
+                    .endsWith("restart")) {
+                if (!require(identity_ == persistedIdentity_,
+                             "inventory churn changed identical confirmed "
+                             "reading identity"))
+                    return;
+                enter(9);
+            } else
+                enter(4);
         } else if (phase_ == 4) {
             if (controller_->knownSamples() < 3) return;
             if (!require(controller_->inferenceRuns() > 0 &&
@@ -208,6 +305,25 @@ private:
                                  ImageTelemetryController::Extracting,
                          "explicit action did not extract"))
                 return;
+            if (qEnvironmentVariable("OMATRACK_AUTOTEST_GAUGE_DISCOVERY")
+                    .startsWith("detector")) {
+                const auto source = player_->source().toLocalFile();
+                const auto model =
+                    controller_->modelPath().isEmpty()
+                        ? QDir(QCoreApplication::applicationDirPath())
+                              .filePath("models/gauge-reader.onnx")
+                        : controller_->modelPath();
+                oracleJob_.start(
+                    [source, model, series = controller_->series()](
+                        omatrack::IoCancel cancel) {
+                        return matchesIncumbent(source, model, series, cancel);
+                    },
+                    [this](bool ok) { oraclePassed_ = ok; });
+                enter(12);
+                return;
+            }
+            enter(13);
+        } else if (phase_ == 13) {
             const auto gear = controller_->gauges()->row(0);
             controller_->editGauge(gear.key, gear.semantic, false, gear.box);
             if (!require(controller_->phase() ==
@@ -257,6 +373,18 @@ private:
                          "source switch/default proposal trusted stale "
                          "readings or confirmation"))
                 return;
+            // Visual confirmation of an extension proposal is not a substitute
+            // for current-image structural admission on an unknown layout.
+            for (int i = 0; i < controller_->gauges()->count(); ++i)
+                controller_->confirmGauge(controller_->gauges()->row(i).key);
+            controller_->confirmSetup(false);
+            controller_->startExtraction();
+            if (!require(!controller_->canExtract() &&
+                             controller_->inferenceRuns() == 0 &&
+                             !controller_->series(),
+                         "unknown layout accepted a visually confirmed saved "
+                         "profile"))
+                return;
             finish();
         } else if (phase_ == 8) {
             if (imageJob_.running()) return;
@@ -299,6 +427,29 @@ private:
             enter(11);
         } else if (phase_ == 11) {
             if (!imageJob_.running()) finish();
+        } else if (phase_ == 12) {
+            if (oracleJob_.running()) return;
+            if (!require(oraclePassed_,
+                         "staged-V2 profile extraction disagrees with "
+                         "incumbent reader at actual decoded PTS"))
+                return;
+            qInfo(
+                "GAUGE DISCOVERY PROFILE PASS: staged V2 plus independent AiM "
+                "profile; 12/12 values exactly match incumbent; no Preferences "
+                "switch");
+            if (qEnvironmentVariable("OMATRACK_AUTOTEST_GAUGE_DISCOVERY") ==
+                "detector-seed") {
+                controller_->setScanAhead(true);
+                enter(14);
+            } else
+                enter(13);
+        } else if (phase_ == 14) {
+            if (!controller_->cacheComplete()) return;
+            qInfo()
+                << "GAUGE DISCOVERY SEED PASS: complete selected-profile cache"
+                << controller_->setupIdentity();
+            screenshot(QStringLiteral("-profile-complete"));
+            enter(11);
         }
     }
     void finish() {
@@ -315,8 +466,9 @@ private:
     ImageTelemetryController* controller_ = nullptr;
     QTimer timer_;
     QElapsedTimer total_, phaseClock_;
-    AsyncJob<bool> imageJob_;
-    QString identity_;
+    AsyncJob<bool> imageJob_, oracleJob_;
+    QString identity_, persistedIdentity_, persistedSetupIdentity_;
+    bool oraclePassed_ = false;
     int phase_ = 0;
 };
 }  // namespace

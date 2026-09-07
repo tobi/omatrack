@@ -23,12 +23,13 @@ class GaugeRegionRow {
     Q_PROPERTY(QString direction MEMBER direction)
     Q_PROPERTY(QRectF box MEMBER box)
     Q_PROPERTY(QString support MEMBER support)
+    Q_PROPERTY(QString origin MEMBER origin)
     Q_PROPERTY(bool selected MEMBER selected)
     Q_PROPERTY(bool confirmed MEMBER confirmed)
     Q_PROPERTY(bool readable MEMBER readable)
     Q_PROPERTY(int evidence MEMBER evidence)
 public:
-    QString key, semantic, representation, direction, support;
+    QString key, semantic, representation, direction, support, origin;
     QRectF box;
     bool selected = false, confirmed = false, readable = false;
     int evidence = 0;

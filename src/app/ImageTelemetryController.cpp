@@ -266,7 +266,8 @@ bool ImageTelemetryController::canConfirm() const {
 }
 bool ImageTelemetryController::canExtract() const {
     if (!enabled_ || !eligible_ || !geometryCompatible_ ||
-        phase_ != Confirmed || !available())
+        phase_ != Confirmed || !available() ||
+        !evidence_.reviewedLayoutVerified())
         return false;
     const auto fields = evidence_.setup.readableFields();
     return std::any_of(fields.begin(), fields.end(),
@@ -297,6 +298,9 @@ void ImageTelemetryController::refreshGauges() {
     for (const auto& r : evidence_.setup.regions) {
         GaugeRegionRow row;
         row.key = r.id;
+        row.origin = !r.profileKey.isEmpty()  ? QStringLiteral("AiM profile")
+                     : experimentalDetector() ? QStringLiteral("Experimental")
+                                              : QStringLiteral("Proposal");
         row.semantic = r.semantic;
         row.representation = r.representation;
         row.direction = r.direction;
@@ -311,6 +315,10 @@ void ImageTelemetryController::refreshGauges() {
                 ? QStringLiteral("Reviewed crop · visible values only")
                 : QStringLiteral(
                       "Unsupported reader crop/type · remains unknown");
+        if (!r.profileKey.isEmpty())
+            row.support.prepend(
+                QStringLiteral("Reviewed AiM profile (image structure, not "
+                               "learned detection) · "));
         if (r.misses >= 2)
             row.support +=
                 QStringLiteral(" · stale: missed on %1 independent frames")
@@ -348,6 +356,9 @@ void ImageTelemetryController::confirmSetup(bool extensionDefault) {
                                     "priority; image extraction withheld")
         : canExtract()
             ? QStringLiteral("Setup confirmed · Start extraction when ready")
+        : !evidence_.reviewedLayoutVerified()
+            ? QStringLiteral("Setup saved · reviewed AiM layout is not "
+                             "verified in fresh source frames")
             : QStringLiteral("Setup saved · selected gauges are not supported "
                              "by this reader"));
 }
@@ -467,12 +478,10 @@ void ImageTelemetryController::discover(double seconds) {
                     QStringLiteral("orange-structure-heuristic-v1");
                 result->detectorNotice = QStringLiteral(
                     "Heuristic fallback (fixed reviewed layout)");
-                bool learned = false;
                 if (state->detectorArtifact.detector) {
                     const auto detected =
                         state->detectorArtifact.detector->detect(pixels);
                     if (detected.error == GaugeError::None) {
-                        learned = true;
                         result->detectorIdentity =
                             state->detectorArtifact.identity;
                         result->detectorNotice = QStringLiteral(
@@ -499,11 +508,16 @@ void ImageTelemetryController::discover(double seconds) {
                         QStringLiteral(
                             "Detector rejected (%1) · heuristic fallback")
                             .arg(state->detectorArtifact.error);
-                // Fixed-layout heuristic is a separate backend, never a claim
-                // that the experimental detector localized these exact crops.
-                if (!learned && GaugeReader::inspectLayout(pixels).admission ==
-                                    GaugeAdmission::Supported)
-                    result->regions = omatrack::GaugeSetup::reviewedRegions();
+                // This independent image check remains available even when
+                // learned detection succeeds. Its exact crops are separate
+                // profile anchors, not claimed as detector localizations.
+                if (GaugeReader::inspectLayout(pixels).admission ==
+                    GaugeAdmission::Supported) {
+                    result->regions = omatrack::GaugeSetup::reviewedRegions() +
+                                      result->regions;
+                    result->detectorNotice += QStringLiteral(
+                        " · image-verified reviewed AiM profile");
+                }
             } catch (const std::exception&) {
                 result->error =
                     QStringLiteral("Discovery failed; video remains available");
@@ -619,7 +633,7 @@ void ImageTelemetryController::sample() {
     reanchor_ = false;
     const auto state = worker_;
     const bool ahead = scanAhead_, enabled = enabled_;
-    const auto setupHash = evidence_.setup.fingerprint();
+    const auto setupHash = evidence_.setup.readingFingerprint();
     const auto selectedFields = evidence_.setup.readableFields();
     const auto readConfiguration = evidence_.setup.readerConfiguration();
     job_.start(

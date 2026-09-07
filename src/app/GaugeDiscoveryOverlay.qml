@@ -39,10 +39,6 @@ Item {
         const y = Math.max(0, Math.min(1 - box.height, box.y + dy / root.imageHeight));
         root.controller.editGauge(key, semantic, selected, Qt.rect(x, y, box.width, box.height));
     }
-    function representationLabel(value: string): string {
-        const index = root.representationIds.indexOf(value);
-        return index >= 0 ? root.representationLabels[index] : value;
-    }
     function resizeBox(key: string, semantic: string, selected: bool, box: rect, dx: real, dy: real): void {
         const w = Math.max(0.001, Math.min(1 - box.x, box.width + dx / root.imageWidth));
         const h = Math.max(0.001, Math.min(1 - box.y, box.height + dy / root.imageHeight));
@@ -90,7 +86,7 @@ Item {
                 font.family: Style.monoFontFamily
                 font.pixelSize: Style.smallFontSize
                 padding: 2
-                text: root.fieldLabel(boxItem.region.semantic) + " · " + root.representationLabel(boxItem.region.representation) + (boxItem.region.confirmed ? " ✓" : " · seen " + boxItem.region.evidence)
+                text: root.fieldLabel(boxItem.region.semantic) + " · " + boxItem.region.origin + (boxItem.region.confirmed ? " ✓" : " · seen " + boxItem.region.evidence)
                 x: Math.max(-boxItem.x, Math.min(root.width - boxItem.x - caption.width, boxItem.region.representation === "bar" && boxItem.width < 80 ? (boxItem.index % 2 === 0 ? -caption.width : boxItem.width) : 0))
 
                 background: Rectangle {
@@ -220,7 +216,7 @@ Item {
                 color: Style.yellowColor
                 font.pixelSize: Style.smallFontSize
                 objectName: "gaugeExperimentalWarning"
-                text: "EXPERIMENTAL detector · proposals only, not approved reader crops"
+                text: "EXPERIMENTAL inventory · AiM profile crops are checked separately from image structure. Other boxes remain unreadable."
                 visible: root.controller.experimentalDetector
                 wrapMode: Text.Wrap
             }
@@ -245,7 +241,7 @@ Item {
                     font.pixelSize: Style.smallFontSize
                     height: 32
                     highlighted: root.selectedKey === regionItem.region.key
-                    text: (regionItem.region.selected ? "☑ " : "☐ ") + root.fieldLabel(regionItem.region.semantic) + " · " + root.representationLabel(regionItem.region.representation) + (regionItem.region.confirmed ? " ✓" : " · seen " + regionItem.region.evidence) + (regionItem.region.readable ? "" : " · unreadable")
+                    text: (regionItem.region.selected ? "☑ " : "☐ ") + root.fieldLabel(regionItem.region.semantic) + " · " + regionItem.region.origin + (regionItem.region.confirmed ? " ✓" : " · seen " + regionItem.region.evidence) + (regionItem.region.readable ? "" : " · unreadable")
                     width: regions.width
 
                     onClicked: root.selectedKey = regionItem.region.key
