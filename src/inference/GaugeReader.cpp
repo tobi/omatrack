@@ -480,10 +480,16 @@ bool GaugeReader::runtimeAvailable() {
 std::string GaugeReader::runtimeLibraryPath() {
 #if OMATRACK_HAVE_ONNXRUNTIME
 #if defined(_WIN32)
+    // An imported C symbol can resolve to an executable-local jump thunk
+    // (notably without ORT_DLL_IMPORT). A function pointer returned by the
+    // runtime itself identifies the DLL that is actually serving this API.
+    const auto* base = OrtGetApiBase();
+    if (!base || !base->GetVersionString) return {};
     HMODULE module = nullptr;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
                                 GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            reinterpret_cast<LPCWSTR>(&OrtGetApiBase), &module))
+                            reinterpret_cast<LPCWSTR>(base->GetVersionString),
+                            &module))
         return {};
     std::vector<wchar_t> path(32768);
     const auto size =
