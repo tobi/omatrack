@@ -43,14 +43,15 @@ target_link_libraries(gauge-detector-artifact-test PRIVATE Qt6::Core omatrack_in
 add_test(NAME gauge-detector-artifact-test COMMAND gauge-detector-artifact-test)
 set_tests_properties(gauge-detector-artifact-test PROPERTIES LABELS unit)
 if(OMATRACK_GAUGE_BUNDLE)
+  get_target_property(_gauge_test_models omatrack OMATRACK_GAUGE_BUNDLE_DIRECTORY)
   add_test(NAME gauge-bundle-manifest-test COMMAND ${CMAKE_COMMAND}
-    -DMODE=verify "-DBUNDLE_DIR=$<TARGET_FILE_DIR:omatrack>/models"
+    -DMODE=verify "-DBUNDLE_DIR=${_gauge_test_models}"
     -P "${CMAKE_SOURCE_DIR}/scripts/gauge-bundle.cmake")
   add_test(NAME gauge-offline-bundle-test COMMAND gauge-detector-artifact-test
-    --bundle "$<TARGET_FILE_DIR:omatrack>/models")
+    --bundle "${_gauge_test_models}")
   add_test(NAME gauge-production-selfcheck-test COMMAND omatrack --check-model-bundle)
   add_test(NAME gauge-bundle-negative-test COMMAND ${CMAKE_COMMAND}
-    "-DSOURCE_DIR=$<TARGET_FILE_DIR:omatrack>/models"
+    "-DSOURCE_DIR=${_gauge_test_models}"
     "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/bundle-negative"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/GaugeBundleTest.cmake")
   set_tests_properties(gauge-bundle-manifest-test gauge-offline-bundle-test gauge-bundle-negative-test gauge-production-selfcheck-test
@@ -59,6 +60,16 @@ if(OMATRACK_GAUGE_BUNDLE)
   set_tests_properties(gauge-offline-bundle-test gauge-bundle-negative-test
     PROPERTIES DEPENDS gauge-bundle-manifest-test)
 endif()
+
+qt_add_executable(gauge-model-paths-test GaugeModelPathsTest.cpp)
+target_include_directories(gauge-model-paths-test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(gauge-model-paths-test PRIVATE Qt6::Test Qt6::Core omatrack_warnings)
+add_test(NAME gauge-model-paths-test COMMAND gauge-model-paths-test)
+set_tests_properties(gauge-model-paths-test PROPERTIES LABELS unit)
+add_test(NAME mac-rpaths-protocol-test COMMAND ${CMAKE_COMMAND}
+  "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/mac-rpaths-fixtures"
+  -P "${CMAKE_CURRENT_SOURCE_DIR}/MacRpathsTest.cmake")
+set_tests_properties(mac-rpaths-protocol-test PROPERTIES LABELS unit)
 
 qt_add_executable(gauge-setup-test GaugeSetupTest.cpp
   ${CMAKE_SOURCE_DIR}/src/app/GaugeSetup.cpp)

@@ -170,7 +170,19 @@ allowlisted model/companion/model-card/notice files at build time; configure wit
 bundle. Staging and install revalidate it; archive checks verify the actual
 AppImage, Windows nupkg and macOS dmg model payloads against the app-owned manifest,
 not a potentially modified manifest inside the archive. All upstream notices are
-installed under `models/licenses/`, alongside `NOTICE.md` and the model card.
+installed under the model root's `licenses/`, alongside `NOTICE.md` and the model
+card. The shared `GaugeModelPaths` helper selects `models/` beside the executable
+on Linux/Windows and `Contents/Resources/models` on macOS. Non-code models/notices
+must not be placed in macOS `Contents/MacOS`, where signing tools classify them
+as code. Strict macOS checks anchor Resources/Frameworks to the executable's
+actual package Contents, rejecting external subdirectory symlinks.
+
+Mac packaging normalizes duplicate LC_RPATH commands after deployment and before
+final signing, independently per thin/fat Mach-O slice. Every distinct original
+path and its search order remain; developer paths are rejected, not silently
+removed. Stage and mounted-DMG verification inspect all Mach-O images, and the
+actual packaged CLI check is still mandatory. Mock-tool protocol and filesystem
+path tests are not substitutes for the subsequent native macOS dry run.
 
 The user authorized distribution of these selected weights inside the release;
 no new task-weight license is asserted. Original export metadata is unchanged,

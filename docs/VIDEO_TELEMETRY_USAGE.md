@@ -123,7 +123,9 @@ cmake --build --preset release
 
 `OMATRACK_GAUGE_BUNDLE` is a **build-time staging** choice: it verifies all 15
 allowlisted model/contract/notice files and installs them under `models/` beside
-the executable. Runtime has no download ceremony. The selected weights were
+the executable on Linux/Windows, or `Contents/Resources/models` in the macOS app
+bundle. The reader, detectors and self-check use the same model-root helper.
+Runtime has no download ceremony. The selected weights were
 authorized for this release; task-weight licensing remains unspecified and the
 bundle includes scoped notices. Alternatively select a trusted local reader
 through **Model… → Choose local model…**. Configuration uses

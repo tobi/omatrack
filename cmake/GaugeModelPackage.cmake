@@ -14,17 +14,20 @@ if(OMATRACK_GAUGE_BUNDLE)
   omatrack_verify_gauge_bundle("${OMATRACK_GAUGE_BUNDLE}")
   omatrack_gauge_bundle_files(_gauge_files)
   set_property(TARGET omatrack APPEND PROPERTY LINK_DEPENDS "${OMATRACK_GAUGE_BUNDLE_MANIFEST}")
+  if(APPLE)
+    set(_gauge_build_dir "$<TARGET_FILE_DIR:omatrack>/../Resources/models")
+    set(_gauge_install_dir "Omatrack.app/Contents/Resources/models")
+  else()
+    set(_gauge_build_dir "$<TARGET_FILE_DIR:omatrack>/models")
+    set(_gauge_install_dir "${CMAKE_INSTALL_BINDIR}/models")
+  endif()
+  set_property(TARGET omatrack PROPERTY OMATRACK_GAUGE_BUNDLE_DIRECTORY "${_gauge_build_dir}")
   add_custom_command(TARGET omatrack POST_BUILD
     COMMAND ${CMAKE_COMMAND} -DMODE=stage
       "-DSOURCE_DIR=${OMATRACK_GAUGE_BUNDLE}"
-      "-DBUNDLE_DIR=$<TARGET_FILE_DIR:omatrack>/models"
+      "-DBUNDLE_DIR=${_gauge_build_dir}"
       -P "${PROJECT_SOURCE_DIR}/scripts/gauge-bundle.cmake"
     VERBATIM)
-  if(APPLE)
-    set(_gauge_install_dir "Omatrack.app/Contents/MacOS/models")
-  else()
-    set(_gauge_install_dir "${CMAKE_INSTALL_BINDIR}/models")
-  endif()
   configure_file("${CMAKE_CURRENT_LIST_DIR}/GaugeBundleInstall.cmake.in"
     "${CMAKE_CURRENT_BINARY_DIR}/GaugeBundleInstall.cmake" @ONLY)
   install(SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/GaugeBundleInstall.cmake")

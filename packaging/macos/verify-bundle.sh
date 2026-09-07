@@ -9,6 +9,8 @@ fi
 bundle=$(cd -- "$1" && pwd -P)
 contents="$bundle/Contents"
 executable_dir="$contents/MacOS"
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+cmake -DMODE=verify "-DBUNDLE_DIR=$bundle" -P "$script_dir/rpaths.cmake"
 failures=0
 macho_count=0
 

@@ -102,7 +102,8 @@ Choose a trusted reader through **Model…** in the application. To match the
 release, run `scripts/fetch-gauge-bundle.sh` and add
 `-DOMATRACK_GAUGE_BUNDLE=/path/to/verified/bundle` when configuring. It stages the
 unchanged reader, tiny/general and large/AiM detectors, companion contracts and
-upstream notices beside the executable and into its install tree. The large
+upstream notices into the install tree: `models/` beside the executable on
+Linux/Windows, `Contents/Resources/models` inside the macOS app bundle. The large
 model is routed only on current image-verified reviewed AiM frames. Source builds
 can omit the bundle; CI/releases require it. The user authorized this selected
 bundle's distribution, but task-weight licensing remains unspecified; do not

@@ -276,6 +276,8 @@ jobs:
         timeout-minutes: 10
         run: |
           test -f "${ONNXRUNTIME_ROOT:?}/lib/libonnxruntime.dylib"
+          # Non-code assets must never be copied from a stale executable-dir layout.
+          test ! -e build-ci/Omatrack.app/Contents/MacOS/models
           mkdir -p build-ci/Omatrack.app/Contents/Frameworks
           dylibbundler \
             --bundle-deps \
@@ -289,8 +291,11 @@ jobs:
           test -f stage/Omatrack.app/Contents/Resources/doc/LICENSE
           test -f stage/Omatrack.app/Contents/Resources/doc/onnxruntime/LICENSE
           test -f stage/Omatrack.app/Contents/Resources/doc/onnxruntime/ThirdPartyNotices.txt
+          test ! -e stage/Omatrack.app/Contents/MacOS/models
+          cmake -DMODE=dedupe -DBUNDLE_DIR="$PWD/stage/Omatrack.app" \
+            -P .release-workflow/packaging/macos/rpaths.cmake
           .release-workflow/packaging/macos/verify-bundle.sh stage/Omatrack.app
-          scripts/verify-gauge-bundle.sh stage/Omatrack.app/Contents/MacOS/models
+          scripts/verify-gauge-bundle.sh stage/Omatrack.app/Contents/Resources/models
           codesign --force --deep --sign - stage/Omatrack.app
           codesign --verify --deep --strict stage/Omatrack.app
       - name: Build disk image
@@ -305,7 +310,8 @@ jobs:
           mkdir dmg-model-audit
           hdiutil attach -readonly -nobrowse -mountpoint "$PWD/dmg-model-audit" "$artifact"
           trap 'hdiutil detach "$PWD/dmg-model-audit"' EXIT
-          scripts/verify-gauge-bundle.sh dmg-model-audit/Omatrack.app/Contents/MacOS/models
+          .release-workflow/packaging/macos/verify-bundle.sh dmg-model-audit/Omatrack.app
+          scripts/verify-gauge-bundle.sh dmg-model-audit/Omatrack.app/Contents/Resources/models
           env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH -u DYLD_INSERT_LIBRARIES \
             HF_HUB_OFFLINE=1 http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 \
             dmg-model-audit/Omatrack.app/Contents/MacOS/Omatrack \

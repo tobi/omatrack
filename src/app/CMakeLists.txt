@@ -109,6 +109,7 @@ qt_add_qml_module(omatrack
     GaugeSetup.h GaugeSetup.cpp
     GaugeDetectorArtifact.h GaugeDetectorArtifact.cpp
     GaugeBundleCheck.h GaugeBundleCheck.cpp
+    GaugeModelPaths.h
     ImageModelManager.h ImageModelManager.cpp
     ImageModelManifest.h ImageModelManifest.cpp
     ImageTelemetryTraces.h ImageTelemetryTraces.cpp

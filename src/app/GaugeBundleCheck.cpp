@@ -1,5 +1,6 @@
 #include "GaugeBundleCheck.h"
 #include "GaugeDetectorArtifact.h"
+#include "GaugeModelPaths.h"
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
@@ -97,7 +98,7 @@ int checkGaugeBundle(bool requireBundledRuntime) {
             const bool bundled = inside(runtime, appDirectory);
 #elif defined(Q_OS_MACOS)
             const bool bundled =
-                inside(runtime, QDir(appDirectory).filePath("../Frameworks"));
+                gaugeMacPackageContains(runtime, appDirectory, "Frameworks");
 #else
             const bool bundled =
                 inside(runtime, QDir(appDirectory).filePath("../lib")) ||
@@ -116,10 +117,16 @@ int checkGaugeBundle(bool requireBundledRuntime) {
         require(manifest.value("schema").toString() ==
                     "omatrack-offline-model-bundle-v1",
                 "Unknown embedded bundle schema");
-        const auto root = QFileInfo(QDir(appDirectory).filePath("models"))
-                              .canonicalFilePath();
+        const auto root =
+            QFileInfo(gaugeModelRoot(appDirectory)).canonicalFilePath();
+#ifdef Q_OS_MACOS
+        require(gaugeMacPackageContains(root, appDirectory, "Resources"),
+                "Model directory is missing or escapes actual package "
+                "Contents/Resources");
+#else
         require(inside(root, appDirectory),
                 "Model directory is missing or escapes the executable tree");
+#endif
         require(hashFile(QDir(root).filePath("bundle.json"), bytes.size()) ==
                     QString::fromLatin1(QCryptographicHash::hash(
                                             bytes, QCryptographicHash::Sha256)

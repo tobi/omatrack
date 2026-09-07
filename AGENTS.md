@@ -569,7 +569,15 @@ Native lap distance is accepted only when its continuity and total agree with in
   contracts, model card and scoped upstream notices. `models/bundle.json` pins all
   15 public files at immutable HF revision; fetch/stage/install/archive validation
   uses that app-owned allowlist, not a mutable downloaded catalog. Models and
-  notices live beside the executable under `models/` on every platform. Package
+  notices live under `models/` beside the executable on Linux/Windows and under
+  `Omatrack.app/Contents/Resources/models` on macOS (non-code assets must not live
+  in `Contents/MacOS`). `GaugeModelPaths` is the common reader/detector/diagnostic
+  root selector. Mac strict checks anchor both Resources and Frameworks to the
+  executable's actual package Contents; external subdirectory symlinks cannot
+  satisfy the check. Mac packaging deduplicates LC_RPATH per Mach-O slice after
+  deployment, preserves the original ordered distinct paths, verifies all images,
+  then performs final signing. Developer paths fail instead of being silently
+  discarded. The mounted-DMG packaged self-check remains mandatory. Package
   audits verify actual AppImage/Windows nupkg/macOS dmg contents and run the
   packaged executable's production `--check-model-bundle --require-bundled-runtime`
   diagnostic. It verifies an embedded app-owned manifest, all 15 actual assets,

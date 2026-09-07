@@ -2,6 +2,7 @@
 
 #include "GaugeReader.h"
 #include "GaugeDetectorArtifact.h"
+#include "GaugeModelPaths.h"
 #include "ImageTelemetryCache.h"
 #include "VideoFrameDecoder.h"
 #include "TelemetryStore.h"
@@ -442,8 +443,7 @@ void ImageTelemetryController::discover(double seconds) {
     }
     const auto state = worker_;
     const auto detectorPath = detectorPath_;
-    const auto modelDirectory = QDir(QCoreApplication::applicationDirPath())
-                                    .filePath(QStringLiteral("models"));
+    const auto modelDirectory = omatrack::gaugeModelRoot();
     lastDiscoveryTarget_ = seconds;
     nextDiscoveryMs_ = clock_.elapsed() + 3000;
     discoveryJob_.start(
@@ -615,10 +615,7 @@ void ImageTelemetryController::sample() {
         series_ ? series_->revision : std::numeric_limits<std::uint64_t>::max();
     const auto source = player_->source().toLocalFile();
     const auto model =
-        modelPath_.isEmpty()
-            ? QDir(QCoreApplication::applicationDirPath())
-                  .filePath(QStringLiteral("models/gauge-reader.onnx"))
-            : modelPath_;
+        modelPath_.isEmpty() ? omatrack::gaugeReaderModelPath() : modelPath_;
     const bool reanchor = reanchor_;
     reanchor_ = false;
     const auto state = worker_;

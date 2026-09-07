@@ -112,10 +112,17 @@ bool VideoFrameDecoder::open(const std::string& path, const Cancel& cancel) {
     const bool identity =
         !transform || identityDisplayMatrix(transform->data, transform->size);
 #else
+#if LIBAVFORMAT_VERSION_MAJOR < 59
+    // FFmpeg 4.x (including the Ubuntu 22.04 release runner) uses int*.
+    int transformSize = 0;
+#else
     std::size_t transformSize = 0;
+#endif
     const auto* transform = av_stream_get_side_data(
         stream, AV_PKT_DATA_DISPLAYMATRIX, &transformSize);
-    const bool identity = identityDisplayMatrix(transform, transformSize);
+    const bool identity = identityDisplayMatrix(
+        transform,
+        transformSize > 0 ? static_cast<std::size_t>(transformSize) : 0);
 #endif
     // mpv applies this transform for display; this source-pixel decoder does
     // not. Withhold even 180-degree/mirrored input (same aspect ratio) rather

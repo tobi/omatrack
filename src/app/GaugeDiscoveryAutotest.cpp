@@ -1,4 +1,5 @@
 #include "GaugeDiscoveryAutotest.h"
+#include "GaugeModelPaths.h"
 #include "ImageTelemetryController.h"
 #include "TelemetryStore.h"
 #include "inference/GaugeReader.h"
@@ -358,11 +359,9 @@ private:
             if (qEnvironmentVariable("OMATRACK_AUTOTEST_GAUGE_DISCOVERY")
                     .startsWith("detector")) {
                 const auto source = player_->source().toLocalFile();
-                const auto model =
-                    controller_->modelPath().isEmpty()
-                        ? QDir(QCoreApplication::applicationDirPath())
-                              .filePath("models/gauge-reader.onnx")
-                        : controller_->modelPath();
+                const auto model = controller_->modelPath().isEmpty()
+                                       ? omatrack::gaugeReaderModelPath()
+                                       : controller_->modelPath();
                 oracleJob_.start(
                     [source, model, series = controller_->series()](
                         omatrack::IoCancel cancel) {
