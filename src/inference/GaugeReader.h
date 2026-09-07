@@ -84,6 +84,10 @@ public:
     GaugeReader& operator=(const GaugeReader&) = delete;
 
     static bool runtimeAvailable();
+    // Read-only package diagnostics: the actually loaded module, not SDK
+    // config.
+    static std::string runtimeLibraryPath();
+    static std::string runtimeVersion();
     bool ready() const;
     const std::string& modelError() const;
     const std::map<std::string, std::string>& modelMetadata() const;

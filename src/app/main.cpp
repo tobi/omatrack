@@ -24,6 +24,7 @@
 #include "GaugeDiscoveryAutotest.h"
 #endif
 #include "Headless.h"
+#include "GaugeBundleCheck.h"
 #include "SingleInstance.h"
 #include "FileOpenEvents.h"
 #include "TelemetryStore.h"
@@ -67,6 +68,9 @@ void printHelp(const char* executable) {
         "Options:\n"
         "  -h, --help     Show this help and exit.\n"
         "  -V, --version  Print the version and exit.\n"
+        "  --check-model-bundle [--require-bundled-runtime]\n"
+        "                 Read-only offline model/runtime integrity check;\n"
+        "                 no GUI, preferences, writes, or accuracy claim.\n"
         "  -n, --new-instance\n"
         "                 Start a separate process instead of handing the\n"
         "                 path to the Omatrack that is already running.\n"
@@ -92,6 +96,18 @@ int main(int argc, char** argv) {
     // Headless commands never touch Qt, omatrack.yml, or a display.
     if (argc >= 2 && omatrack::headless::isCommand(argv[1]))
         return omatrack::headless::run(argc, argv, argv[0]);
+    if (argc >= 2 && std::strcmp(argv[1], "--check-model-bundle") == 0) {
+        const bool strict =
+            argc == 3 && std::strcmp(argv[2], "--require-bundled-runtime") == 0;
+        if (argc != 2 && !strict) {
+            std::fprintf(stderr,
+                         "usage: omatrack --check-model-bundle "
+                         "[--require-bundled-runtime]\n");
+            return 2;
+        }
+        QCoreApplication application(argc, argv);
+        return omatrack::checkGaugeBundle(strict);
+    }
     const bool helpRequested = takeFlag(argc, argv, "--help", "-h");
     const bool versionRequested = takeFlag(argc, argv, "--version", "-V");
     const bool newInstance = takeFlag(argc, argv, "--new-instance", "-n");

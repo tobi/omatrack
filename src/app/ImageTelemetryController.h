@@ -33,6 +33,11 @@ class ImageTelemetryController : public QObject {
     Q_PROPERTY(bool canExtract READ canExtract NOTIFY setupChanged FINAL)
     Q_PROPERTY(bool experimentalDetector READ experimentalDetector NOTIFY
                    setupChanged FINAL)
+    Q_PROPERTY(QString discoveryBackend READ discoveryBackend NOTIFY
+                   setupChanged FINAL)
+    Q_PROPERTY(double discoveryMs READ discoveryMs NOTIFY setupChanged FINAL)
+    Q_PROPERTY(
+        double discoveryLoadMs READ discoveryLoadMs NOTIFY setupChanged FINAL)
     Q_PROPERTY(bool geometryCompatible READ geometryCompatible NOTIFY
                    setupChanged FINAL)
     Q_PROPERTY(
@@ -96,6 +101,9 @@ public:
         return evidence_.setup.detectorIdentity.startsWith(
             QStringLiteral("experimental-"));
     }
+    QString discoveryBackend() const { return discoveryBackend_; }
+    double discoveryMs() const { return discoveryMs_; }
+    double discoveryLoadMs() const { return discoveryLoadMs_; }
     Q_INVOKABLE virtual void confirmSetup(bool extensionDefault = true) final;
     Q_INVOKABLE virtual void confirmGauge(const QString& key) final;
     Q_INVOKABLE virtual void startExtraction() final;
@@ -188,7 +196,8 @@ private:
     std::shared_ptr<ImageTelemetryWorker> worker_;
     omatrack::inference::ImageTelemetrySnapshot series_;
     QElapsedTimer clock_;
-    QString modelPath_, detectorPath_, status_, cachePath_;
+    QString modelPath_, detectorPath_, status_, cachePath_, discoveryBackend_;
+    double discoveryMs_ = 0, discoveryLoadMs_ = 0;
     bool enabled_ = true, eligible_ = false, scanAhead_ = false;
     bool valid_ = false, blocked_ = false, awaitingSeek_ = false;
     bool complete_ = false, cacheComplete_ = false, pendingSave_ = false,

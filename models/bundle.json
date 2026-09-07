@@ -1,0 +1,22 @@
+{
+  "schema": "omatrack-offline-model-bundle-v1",
+  "repository": "tobil/omatrack-telemetry-models",
+  "revision": "27ebca08c2b97bacb73e8ea795d55257342ffb8b",
+  "files": [
+    {"path":"NOTICE.md","bytes":1495,"sha256":"4485d59783551e3cd30c25a7b80a5acc0ae5490364a17dbf69ae8954e6529d54"},
+    {"path":"README.md","bytes":4117,"sha256":"480168ada8b3e17514702db0d906aae1e114c214a6303e03fad4a9d38651b366"},
+    {"path":"detectors/aim-large-v1/contract.json","bytes":3308,"sha256":"bfd0df6a83f714e00a5b92e441bf7c45ae777899a6976eee2353f728c7080645"},
+    {"path":"detectors/aim-large-v1/gauge-detector.onnx","bytes":112025875,"sha256":"92bbc4a61395c3fea309986986cbd41ef78d1ab735ecaa755a7e57c0c1fcb8c1"},
+    {"path":"detectors/aim-large-v1/metadata.json","bytes":4519,"sha256":"92b755bbb91b7991f564369c57b9545207bfca8f3f083d1b68d30c6abd2d99d4"},
+    {"path":"detectors/tiny-v2/contract.json","bytes":3125,"sha256":"87a4cec9e0466250b635e561c74be81f2ce5f15fbd79804a1be639c3719a69d3"},
+    {"path":"detectors/tiny-v2/gauge-detector.onnx","bytes":966419,"sha256":"99bdd483402444e8c799452d9885c1184980a41f2cd80d4af4d7a6b3ae00abc6"},
+    {"path":"detectors/tiny-v2/metadata.json","bytes":4356,"sha256":"44af06b2619f3a8e084eec836245cc70038bc8cce3cbe80fddd6b3d397d6e970"},
+    {"path":"gauge-reader.onnx","bytes":2213746,"sha256":"97029f70068f4ec276b3d6bc28810763275806f579d91ddd4701b544af392147"},
+    {"path":"inventory.json","bytes":2658,"sha256":"ed5bdd26b818acf60642fb8593bec3389a34fba20908da666db45ece49d333b1"},
+    {"path":"licenses/detectors/LICENSE-TORCHVISION-BSD-3-CLAUSE.txt","bytes":1517,"sha256":"6502f676851cfe25f8af75531dfb32375b7325b73c37e7b43741fa422893e71d"},
+    {"path":"licenses/detectors/NOTICE","bytes":1259,"sha256":"4721e1cd64cca08cb27bdbce1ade017ad7d5cf3541b4142cf5dd44cd29e03da3"},
+    {"path":"licenses/reader/LICENSE-APACHE-2.0-UPSTREAM.txt","bytes":11343,"sha256":"71b111620fa32c17a80ccd6db2da759d31a591e497d8b5f382174f59d1b59d49"},
+    {"path":"licenses/reader/LICENSE-MIT-OMATRACK-CODE.txt","bytes":1078,"sha256":"f14ce1144836b7d366f77f79e0a8d15a8add9689fddc2c9c05d4af0e81882d77"},
+    {"path":"licenses/reader/NOTICE","bytes":1449,"sha256":"56dd06fceed7b5c52ab2696e67aa3dc61954379c5a42b9fac5b386726214782f"}
+  ]
+}

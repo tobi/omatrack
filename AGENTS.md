@@ -480,20 +480,27 @@ Native lap distance is accepted only when its continuity and total agree with in
   revalidate, never trusted file-extension layouts. Remembering the extension proposal
   defaults ON; every confirmation saves the per-file setup. Normalized geometry retains
   source dimensions; source/display mismatch withholds incorrect placement/reads.
-  `video.image_model` remains the reader override. Empty `video.gauge_detector` tries
-  the locally staged, hash-pinned experimental V2 at
-  `models/experimental-detector/gauge-detector.onnx` beside the executable;
-  `heuristic` explicitly selects the reviewed-layout heuristic, and an ONNX path
-  selects a local detector with verified companion metadata. Missing/failed detectors
-  fall back to the clearly labeled heuristic. Learned proposals start unselected
+  `video.image_model` remains the reader override. Empty `video.gauge_detector`
+  selects image-based routing through the offline bundle: large ConvNeXt only on
+  current frames independently passing the reviewed 1920x1080 orange-AiM structure
+  gate, tiny V2 otherwise and on large missing/tamper/load/inference failure.
+  Neither extension nor filename chooses the large model. `small` forces tiny,
+  `heuristic` selects the reviewed-layout heuristic, and an ONNX path selects a
+  registered local export (including the same image gate for a local large model).
+  If tiny also fails, the labeled heuristic remains. `GaugeDetectorArtifact` owns
+  the exact per-candidate size/model/metadata/contract/scope registry; model SHA256
+  verification streams in 256 KiB chunks before and after ORT load on the worker.
+  Actual backend provenance distinguishes learned tracks; confirmation cancels
+  discovery and freezes backend/setup identity before Start. Learned proposals start unselected
   and keep the EXPERIMENTAL warning after confirmation. Independently image-verified
   orange-AiM profile crops remain available alongside successful detection, labeled
   AiM profile, not learned refinements. Four stable profile anchors have separate
   matching/capacity from the 32-track experimental inventory; user edits and disabled
   choices are never overwritten by a newly enabled profile duplicate. Fresh structural
   evidence is required before Start, including for visually confirmed saved proposals.
-  Candidate v1 failed independent
-  localization acceptance; larger candidates need separate review before admission. Arbitrary edited/detected crops remain
+  Candidate v1 failed localization acceptance; the released large model is admitted
+  only for reviewed AiM images because it regresses on VBOX. Future candidates
+  still require separate review. Arbitrary edited/detected crops remain
   unreadable despite the separately implemented configured-crop API: the incumbent
   fails crop-jitter robustness. See `docs/GAUGE_DISCOVERY.md` before relaxing this gate.
   After extraction starts, **Scan from cursor** runs bounded worker batches faster
@@ -557,11 +564,22 @@ Native lap distance is accepted only when its continuity and total agree with in
 - CI and release packaging require ONNX Runtime plus FFmpeg image-reader support;
   ordinary source builds may still omit it explicitly. Linux/macOS use the pinned,
   hash-verified public SDK bootstrap; Windows uses its native MSYS2 runtime package.
-  Release build recipes bundle the pinned public ~2.2 MB reader offline through
-  immutable-commit download plus SHA256 verification at build time; development
-  builds may stage it with `OMATRACK_GAUGE_MODEL`. Runtime Hugging Face downloads
-  remain optional opt-in updates. Experimental detector/reader candidates and
-  private training artifacts are not bundled into public releases.
+  CI and release recipes require `OMATRACK_GAUGE_BUNDLE`: the proven ~2.2 MB reader,
+  tiny V2 (~0.97 MB) and image-gated large detector (~112 MB), plus companion
+  contracts, model card and scoped upstream notices. `models/bundle.json` pins all
+  15 public files at immutable HF revision; fetch/stage/install/archive validation
+  uses that app-owned allowlist, not a mutable downloaded catalog. Models and
+  notices live beside the executable under `models/` on every platform. Package
+  audits verify actual AppImage/Windows nupkg/macOS dmg contents and run the
+  packaged executable's production `--check-model-bundle --require-bundled-runtime`
+  diagnostic. It verifies an embedded app-owned manifest, all 15 actual assets,
+  registry/tensor/finite inference and the loaded ORT module's package-local path;
+  an external SDK/system DLL cannot mask a missing bundled runtime. This read-only
+  Qt Core CLI path runs before GUI/store/harness creation, with no settings,
+  source media, writes or network; its synthetic fixture is not an accuracy test. Runtime reader updates remain optional opt-in.
+  The user authorized distributing these selected weights; task-weight licensing
+  remains unspecified (no blanket upstream-code license grant). Failed framing
+  readers, private footage, datasets, checkpoints and fixtures are not shipped.
 
 ### Corner intelligence
 

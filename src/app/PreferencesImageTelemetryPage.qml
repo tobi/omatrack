@@ -73,12 +73,12 @@ ScrollView {
         }
         Label {
             font.bold: true
-            text: "Experimental detector (local research candidate)"
+            text: "Offline discovery models"
         }
         Label {
             Layout.fillWidth: true
             color: Style.yellowColor
-            text: "Discovery tries the pinned V2 detector if staged locally, otherwise the reviewed-layout heuristic. EXPERIMENTAL proposals start unselected: false boxes and wrong labels are expected, and arbitrary crops remain unreadable. Only the exact reviewed orange-AiM crops can be extracted. Local exports require metadata.json and contract.json."
+            text: "The bundle includes a tiny general detector and a larger AiM detector. Automatic routing uses the large model only when the current source image passes the reviewed 1920×1080 orange-AiM check—not a filename or extension. Other images and large-model failures use the tiny fallback. Learned proposals remain experimental and unselected; only separately verified profile crops are readable. Local exports must match an approved model and companion metadata/contract."
             wrapMode: Text.Wrap
         }
         RowLayout {
@@ -94,11 +94,19 @@ ScrollView {
                 onClicked: Store.gaugeDetectorModel = "heuristic"
             }
         }
-        CompactButton {
-            enabled: Store.gaugeDetectorModel !== ""
-            text: "Use staged detector / fallback"
+        RowLayout {
+            CompactButton {
+                enabled: Store.gaugeDetectorModel !== ""
+                text: "Automatic image-based routing"
 
-            onClicked: Store.gaugeDetectorModel = ""
+                onClicked: Store.gaugeDetectorModel = ""
+            }
+            CompactButton {
+                enabled: Store.gaugeDetectorModel !== "small"
+                text: "Tiny detector only"
+
+                onClicked: Store.gaugeDetectorModel = "small"
+            }
         }
         Label {
             font.bold: true

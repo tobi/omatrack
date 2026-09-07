@@ -36,8 +36,7 @@ struct ImageTelemetryWorker {
     // Mutated only on the serial pool, never by the GUI or renderer.
     VideoFrameDecoder decoder;
     std::unique_ptr<GaugeReader> reader;
-    omatrack::GaugeDetectorArtifact detectorArtifact;
-    bool detectorChecked = false;
+    std::unique_ptr<omatrack::GaugeDetectorRouter> detectorRouter;
     Cache cache;
     std::shared_ptr<ImageTelemetrySeries> draft;
     ImageScanScheduler scheduler;
@@ -62,7 +61,8 @@ struct GaugeDiscoveryResult {
     QVector<omatrack::GaugeRegion> regions;
     QSize size;
     qint64 ptsNs = -1;
-    QString error, detectorIdentity, detectorNotice;
+    QString error, detectorIdentity, detectorNotice, candidateId;
+    double inferenceMs = 0, loadMs = 0;
     bool fatal = false;
 };
 
@@ -222,6 +222,8 @@ void ImageTelemetryController::reset() {
     discoveryJob_.reset();
     clearReading();
     evidence_.clear();
+    discoveryBackend_.clear();
+    discoveryMs_ = discoveryLoadMs_ = 0;
     phase_ = Discovery;
     proposalLoaded_ = false;
     geometryCompatible_ = false;
@@ -298,7 +300,11 @@ void ImageTelemetryController::refreshGauges() {
     for (const auto& r : evidence_.setup.regions) {
         GaugeRegionRow row;
         row.key = r.id;
-        row.origin = !r.profileKey.isEmpty()  ? QStringLiteral("AiM profile")
+        row.origin = !r.profileKey.isEmpty() ? QStringLiteral("AiM profile")
+                     : r.detectorIdentity.contains("aim-large-v1")
+                         ? QStringLiteral("AiM detector")
+                     : r.detectorIdentity.contains("tiny-v2")
+                         ? QStringLiteral("Tiny detector")
                      : experimentalDetector() ? QStringLiteral("Experimental")
                                               : QStringLiteral("Proposal");
         row.semantic = r.semantic;
@@ -436,15 +442,13 @@ void ImageTelemetryController::discover(double seconds) {
     }
     const auto state = worker_;
     const auto detectorPath = detectorPath_;
-    const auto stagedDetector =
-        QDir(QCoreApplication::applicationDirPath())
-            .filePath(QStringLiteral(
-                "models/experimental-detector/gauge-detector.onnx"));
+    const auto modelDirectory = QDir(QCoreApplication::applicationDirPath())
+                                    .filePath(QStringLiteral("models"));
     lastDiscoveryTarget_ = seconds;
     nextDiscoveryMs_ = clock_.elapsed() + 3000;
     discoveryJob_.start(
         [state, source, seconds, detectorPath,
-         stagedDetector](omatrack::IoCancel cancel) {
+         modelDirectory](omatrack::IoCancel cancel) {
             auto result = std::make_shared<GaugeDiscoveryResult>();
             try {
                 if (!state->opened) {
@@ -468,51 +472,34 @@ void ImageTelemetryController::discover(double seconds) {
                 const GaugeRgb24Frame pixels{frame.pixels.data(),
                                              frame.pixels.size(), frame.width,
                                              frame.height, frame.stride};
-                if (!state->detectorChecked) {
-                    state->detectorArtifact =
-                        omatrack::GaugeDetectorArtifact::discover(
-                            detectorPath, stagedDetector, cancel);
-                    state->detectorChecked = true;
+                if (!state->detectorRouter)
+                    state->detectorRouter =
+                        std::make_unique<omatrack::GaugeDetectorRouter>(
+                            detectorPath, modelDirectory);
+                const auto detected =
+                    state->detectorRouter->detect(pixels, cancel);
+                if (detected.cancelled || cancel->load()) return result;
+                result->detectorIdentity = detected.identity;
+                result->detectorNotice = detected.notice;
+                result->candidateId = detected.candidateId;
+                result->inferenceMs = detected.result.latencyMs;
+                result->loadMs = detected.loadMs;
+                for (const auto& d : detected.result.detections) {
+                    omatrack::GaugeRegion region;
+                    region.box = {d.bbox[0], d.bbox[1], d.bbox[2] - d.bbox[0],
+                                  d.bbox[3] - d.bbox[1]};
+                    region.semantic = QString::fromStdString(d.semantic);
+                    region.representation =
+                        QString::fromStdString(d.representation);
+                    region.detectorIdentity = detected.identity;
+                    region.score = d.score;
+                    region.enabled = false;
+                    result->regions.append(region);
                 }
-                result->detectorIdentity =
-                    QStringLiteral("orange-structure-heuristic-v1");
-                result->detectorNotice = QStringLiteral(
-                    "Heuristic fallback (fixed reviewed layout)");
-                if (state->detectorArtifact.detector) {
-                    const auto detected =
-                        state->detectorArtifact.detector->detect(pixels);
-                    if (detected.error == GaugeError::None) {
-                        result->detectorIdentity =
-                            state->detectorArtifact.identity;
-                        result->detectorNotice = QStringLiteral(
-                            "EXPERIMENTAL detector · unvalidated boxes/types, "
-                            "not reader approval");
-                        for (const auto& d : detected.detections) {
-                            omatrack::GaugeRegion region;
-                            region.box = {d.bbox[0], d.bbox[1],
-                                          d.bbox[2] - d.bbox[0],
-                                          d.bbox[3] - d.bbox[1]};
-                            region.semantic =
-                                QString::fromStdString(d.semantic);
-                            region.representation =
-                                QString::fromStdString(d.representation);
-                            region.score = d.score;
-                            region.enabled = false;
-                            result->regions.append(region);
-                        }
-                    } else
-                        result->detectorNotice = QStringLiteral(
-                            "Detector failed · heuristic fallback");
-                } else if (!state->detectorArtifact.error.isEmpty())
-                    result->detectorNotice =
-                        QStringLiteral(
-                            "Detector rejected (%1) · heuristic fallback")
-                            .arg(state->detectorArtifact.error);
                 // This independent image check remains available even when
                 // learned detection succeeds. Its exact crops are separate
                 // profile anchors, not claimed as detector localizations.
-                if (GaugeReader::inspectLayout(pixels).admission ==
-                    GaugeAdmission::Supported) {
+                if (detected.reviewedAim) {
                     result->regions = omatrack::GaugeSetup::reviewedRegions() +
                                       result->regions;
                     result->detectorNotice += QStringLiteral(
@@ -533,6 +520,9 @@ void ImageTelemetryController::discover(double seconds) {
                 return;
             }
             evidence_.setup.detectorIdentity = result->detectorIdentity;
+            discoveryBackend_ = result->candidateId;
+            discoveryMs_ = result->inferenceMs;
+            discoveryLoadMs_ = result->loadMs;
             if (!evidence_.observe(result->ptsNs, result->size,
                                    result->regions))
                 return;

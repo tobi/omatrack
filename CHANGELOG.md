@@ -2,6 +2,31 @@
 
 All notable user-facing changes are documented here.
 
+## 1.8.3 — 2026-09-07
+
+- Discover gauges while video plays, review/edit the source-frame boxes, confirm
+  the setup, then explicitly start extraction. Remembered extension proposals
+  default on but always require fresh image validation; native telemetry wins.
+- Include the proven reader, tiny general detector and larger AiM detector
+  offline, with verified companion contracts and upstream notices. No model
+  download or account is needed to use the shipped bundle; footage stays local.
+- Route to the larger detector only when the current image independently passes
+  the reviewed 1080p orange-AiM structural check. Other layouts, missing/corrupt
+  large models and detector failures use the tiny fallback. Model selection is
+  never inferred from a filename or extension; explicit tiny/heuristic options
+  remain available.
+- Keep separately image-verified AiM profile crops alongside experimental
+  detector proposals. User edits/disabled choices survive rediscovery. Only
+  exact compatible profile crops are readable; framing-reader experiments and
+  arbitrary-box reading are not enabled.
+- Preserve complete/partial caches across YAML round trips and unselected
+  proposal changes, without sharing predictions across changed crops/models or
+  source recordings. Same-size video reopen and rotated/mirrored source guards
+  remain explicit.
+- Validate each registered model's exact size, hash and contract on a worker;
+  large-file hashes use bounded streaming buffers. CI and package audits verify
+  all bundled models/notices and exercise cold offline loading on every platform.
+
 ## 1.8.2 — 2026-09-06
 
 - Collect image-derived telemetry while watching supported videos, or scan ahead

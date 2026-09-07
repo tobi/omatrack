@@ -18,6 +18,7 @@ permissions:
 
 env:
   OMATRACK_REQUIRE_IMAGE_TELEMETRY: 'ON'
+  OMATRACK_REQUIRE_GAUGE_BUNDLE: 'ON'
   OMATRACK_RELEASE_TAG: ${{ inputs.release_tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
 
 concurrency:
@@ -75,9 +76,9 @@ jobs:
             pkg-config zsync libavformat-dev libavcodec-dev libavutil-dev libswscale-dev
           ort_root=$(.release-workflow/scripts/fetch-onnxruntime.sh linux-x64)
           echo "ONNXRUNTIME_ROOT=$ort_root" >> "$GITHUB_ENV"
-          model_file=$(scripts/fetch-reader-test-model.sh)
-          echo "OMATRACK_GAUGE_SMOKE_MODEL=$model_file" >> "$GITHUB_ENV"
-          echo "OMATRACK_GAUGE_MODEL=$model_file" >> "$GITHUB_ENV"
+          bundle_dir=$(scripts/fetch-gauge-bundle.sh)
+          echo "OMATRACK_GAUGE_BUNDLE=$bundle_dir" >> "$GITHUB_ENV"
+          echo "OMATRACK_GAUGE_SMOKE_MODEL=$bundle_dir/gauge-reader.onnx" >> "$GITHUB_ENV"
       - name: Restore Cargo cache
         uses: actions/cache@v4
         with:
@@ -168,6 +169,11 @@ jobs:
             "../$artifact" --appimage-extract >/dev/null
           )
           .release-workflow/packaging/linux/verify-bundle.sh appimage-audit/squashfs-root
+          scripts/verify-gauge-bundle.sh appimage-audit/squashfs-root/usr/bin/models
+          env -u LD_LIBRARY_PATH -u LD_PRELOAD HF_HUB_OFFLINE=1 \
+            http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 \
+            appimage-audit/squashfs-root/usr/bin/omatrack \
+            --check-model-bundle --require-bundled-runtime
           # The headless commands run before Qt starts: this proves the
           # bundled binary resolves its libraries without a display.
           set +e
@@ -232,9 +238,9 @@ jobs:
           brew install ccache clang-format dylibbundler libyaml mpv ninja pkg-config zstd
           ort_root=$(.release-workflow/scripts/fetch-onnxruntime.sh osx-arm64)
           echo "ONNXRUNTIME_ROOT=$ort_root" >> "$GITHUB_ENV"
-          model_file=$(scripts/fetch-reader-test-model.sh)
-          echo "OMATRACK_GAUGE_SMOKE_MODEL=$model_file" >> "$GITHUB_ENV"
-          echo "OMATRACK_GAUGE_MODEL=$model_file" >> "$GITHUB_ENV"
+          bundle_dir=$(scripts/fetch-gauge-bundle.sh)
+          echo "OMATRACK_GAUGE_BUNDLE=$bundle_dir" >> "$GITHUB_ENV"
+          echo "OMATRACK_GAUGE_SMOKE_MODEL=$bundle_dir/gauge-reader.onnx" >> "$GITHUB_ENV"
       - name: Restore Cargo cache
         uses: actions/cache@v4
         with:
@@ -284,6 +290,7 @@ jobs:
           test -f stage/Omatrack.app/Contents/Resources/doc/onnxruntime/LICENSE
           test -f stage/Omatrack.app/Contents/Resources/doc/onnxruntime/ThirdPartyNotices.txt
           .release-workflow/packaging/macos/verify-bundle.sh stage/Omatrack.app
+          scripts/verify-gauge-bundle.sh stage/Omatrack.app/Contents/MacOS/models
           codesign --force --deep --sign - stage/Omatrack.app
           codesign --verify --deep --strict stage/Omatrack.app
       - name: Build disk image
@@ -295,6 +302,14 @@ jobs:
             -format UDZO \
             -ov "$artifact"
           hdiutil verify "$artifact"
+          mkdir dmg-model-audit
+          hdiutil attach -readonly -nobrowse -mountpoint "$PWD/dmg-model-audit" "$artifact"
+          trap 'hdiutil detach "$PWD/dmg-model-audit"' EXIT
+          scripts/verify-gauge-bundle.sh dmg-model-audit/Omatrack.app/Contents/MacOS/models
+          env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH -u DYLD_INSERT_LIBRARIES \
+            HF_HUB_OFFLINE=1 http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 \
+            dmg-model-audit/Omatrack.app/Contents/MacOS/Omatrack \
+            --check-model-bundle --require-bundled-runtime
       - uses: actions/upload-artifact@v7
         with:
           name: release-macos
@@ -360,9 +375,9 @@ jobs:
         run: |
           ort_root=$(cygpath -m /ucrt64)
           echo "ONNXRUNTIME_ROOT=$ort_root" >> "$GITHUB_ENV"
-          model_file=$(scripts/fetch-reader-test-model.sh)
-          echo "OMATRACK_GAUGE_SMOKE_MODEL=$(cygpath -m "$model_file")" >> "$GITHUB_ENV"
-          echo "OMATRACK_GAUGE_MODEL=$(cygpath -m "$model_file")" >> "$GITHUB_ENV"
+          bundle_dir=$(scripts/fetch-gauge-bundle.sh)
+          echo "OMATRACK_GAUGE_BUNDLE=$(cygpath -m "$bundle_dir")" >> "$GITHUB_ENV"
+          echo "OMATRACK_GAUGE_SMOKE_MODEL=$(cygpath -m "$bundle_dir/gauge-reader.onnx")" >> "$GITHUB_ENV"
       - name: Read and validate release version
         run: |
           version=$(sed -n 's/project(omatrack VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)
@@ -450,6 +465,7 @@ jobs:
           done
           ((unresolved == 0))
           .release-workflow/packaging/windows/verify-bundle.sh stage
+          scripts/verify-gauge-bundle.sh stage/models
           test -f stage/omatrack.exe
           test -f stage/qt.conf
           set +e
@@ -491,6 +507,18 @@ jobs:
           # naming because Update.exe and releases.win.json depend on it.
           Move-Item $setup.FullName `
             "velopack-out/Omatrack-$env:OMATRACK_RELEASE_VERSION-windows-x86_64-Setup.exe"
+      - name: Verify models inside the published Windows package
+        run: |
+          shopt -s nullglob
+          packages=(velopack-out/*-full.nupkg)
+          test "${#packages[@]}" -eq 1
+          7z x "${packages[0]}" -omodel-package-audit -y >/dev/null
+          roots=(model-package-audit/lib/*/models)
+          test "${#roots[@]}" -eq 1
+          scripts/verify-gauge-bundle.sh "${roots[0]}"
+          HF_HUB_OFFLINE=1 http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 \
+            "${roots[0]%/models}/omatrack.exe" \
+            --check-model-bundle --require-bundled-runtime
       - uses: actions/upload-artifact@v7
         with:
           name: release-windows

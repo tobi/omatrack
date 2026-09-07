@@ -42,6 +42,23 @@ target_include_directories(gauge-detector-artifact-test PRIVATE ${CMAKE_SOURCE_D
 target_link_libraries(gauge-detector-artifact-test PRIVATE Qt6::Core omatrack_inference omatrack_warnings)
 add_test(NAME gauge-detector-artifact-test COMMAND gauge-detector-artifact-test)
 set_tests_properties(gauge-detector-artifact-test PROPERTIES LABELS unit)
+if(OMATRACK_GAUGE_BUNDLE)
+  add_test(NAME gauge-bundle-manifest-test COMMAND ${CMAKE_COMMAND}
+    -DMODE=verify "-DBUNDLE_DIR=$<TARGET_FILE_DIR:omatrack>/models"
+    -P "${CMAKE_SOURCE_DIR}/scripts/gauge-bundle.cmake")
+  add_test(NAME gauge-offline-bundle-test COMMAND gauge-detector-artifact-test
+    --bundle "$<TARGET_FILE_DIR:omatrack>/models")
+  add_test(NAME gauge-production-selfcheck-test COMMAND omatrack --check-model-bundle)
+  add_test(NAME gauge-bundle-negative-test COMMAND ${CMAKE_COMMAND}
+    "-DSOURCE_DIR=$<TARGET_FILE_DIR:omatrack>/models"
+    "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/bundle-negative"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/GaugeBundleTest.cmake")
+  set_tests_properties(gauge-bundle-manifest-test gauge-offline-bundle-test gauge-bundle-negative-test gauge-production-selfcheck-test
+    PROPERTIES LABELS integration
+    ENVIRONMENT "HF_HUB_OFFLINE=1;http_proxy=http://127.0.0.1:9;https_proxy=http://127.0.0.1:9")
+  set_tests_properties(gauge-offline-bundle-test gauge-bundle-negative-test
+    PROPERTIES DEPENDS gauge-bundle-manifest-test)
+endif()
 
 qt_add_executable(gauge-setup-test GaugeSetupTest.cpp
   ${CMAKE_SOURCE_DIR}/src/app/GaugeSetup.cpp)
@@ -90,7 +107,7 @@ add_executable(gauge-reader-test gauge_reader_test.cpp
   ${CMAKE_SOURCE_DIR}/src/inference/GaugeReader.cpp)
 target_include_directories(gauge-reader-test PRIVATE ${CMAKE_SOURCE_DIR}/src/inference)
 target_compile_definitions(gauge-reader-test PRIVATE OMATRACK_GAUGE_READER_TESTING=1)
-target_link_libraries(gauge-reader-test PRIVATE omatrack_warnings)
+target_link_libraries(gauge-reader-test PRIVATE omatrack_warnings ${CMAKE_DL_LIBS})
 if(OMATRACK_ENABLE_IMAGE_TELEMETRY AND ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRARY)
   target_compile_definitions(gauge-reader-test PRIVATE OMATRACK_HAVE_ONNXRUNTIME=1)
   target_include_directories(gauge-reader-test PRIVATE "${ONNXRUNTIME_INCLUDE_DIR}")

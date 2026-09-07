@@ -124,7 +124,28 @@ private:
             player_ = window_->findChild<MpvVideoItem*>("videoPlayer");
             controller_ = window_->findChild<ImageTelemetryController*>(
                 "imageTelemetryController");
+            connect(window_, &QQuickWindow::frameSwapped, this, [this] {
+                if (phase_ != 2 || !player_ || player_->paused()) {
+                    lastFrameMs_ = -1;
+                    return;
+                }
+                const auto now = total_.elapsed();
+                if (lastFrameMs_ >= 0)
+                    frameIntervals_.push_back(now - lastFrameMs_);
+                lastFrameMs_ = now;
+            });
             if (!require(player_ && controller_, "missing player/controller"))
+                return;
+        }
+        if (controller_->discoverySamples() > reportedSamples_) {
+            reportedSamples_ = controller_->discoverySamples();
+            qInfo() << "GAUGE DISCOVERY backend"
+                    << controller_->discoveryBackend() << "inference ms"
+                    << controller_->discoveryMs() << "load/hash ms"
+                    << controller_->discoveryLoadMs();
+            if (!require(
+                    controller_->discoveryMs() < 3000,
+                    "discovery inference exceeded three-second cadence budget"))
                 return;
         }
         if (phase_ == 0) {
@@ -139,7 +160,8 @@ private:
             const auto mode =
                 qEnvironmentVariable("OMATRACK_AUTOTEST_GAUGE_DISCOVERY");
             store_.setGaugeDetectorModel(
-                mode.startsWith("detector")
+                mode == "detector-small" ? QStringLiteral("small")
+                : mode.startsWith("detector")
                     ? qEnvironmentVariable(
                           "OMATRACK_AUTOTEST_GAUGE_DETECTOR_MODEL")
                     : QStringLiteral("heuristic"));
@@ -159,6 +181,21 @@ private:
             player_->seek(mode == "detector-restart" ? 9 : 0);
             enter(1);
         } else if (phase_ == 1) {
+            if (qEnvironmentVariable("OMATRACK_AUTOTEST_GAUGE_DISCOVERY") ==
+                "detector-cancel") {
+                if (phaseClock_.elapsed() < 500 || !controller_->running())
+                    return;
+                const auto blank =
+                    qEnvironmentVariable("OMATRACK_AUTOTEST_IMAGE_BLANK");
+                if (!require(controller_->discoverySamples() == 0 &&
+                                 !blank.isEmpty(),
+                             "large source cancellation was not exercised "
+                             "during initial work"))
+                    return;
+                player_->openMedia(QUrl::fromLocalFile(blank));
+                enter(15);
+                return;
+            }
             if (phaseClock_.elapsed() < 4500) return;
             if (!require(controller_->discoverySamples() == 1 &&
                              controller_->inferenceRuns() == 0 &&
@@ -177,8 +214,8 @@ private:
             if (qEnvironmentVariable("OMATRACK_AUTOTEST_GAUGE_DISCOVERY") ==
                 "detector-only") {
                 if (controller_->discoverySamples() < 3) return;
-                if (!require(controller_->status().contains(
-                                 "EXPERIMENTAL detector") &&
+                if (!require(controller_->status().contains("EXPERIMENTAL") &&
+                                 controller_->discoveryBackend() == "tiny-v2" &&
                                  controller_->gauges()->count() > 0 &&
                                  controller_->inferenceRuns() == 0 &&
                                  !controller_->canConfirm() &&
@@ -218,11 +255,17 @@ private:
                         ++inventory;
                     }
                 }
-                if (!require(controller_->experimentalDetector() &&
-                                 profiles == 4 && inventory > 0 &&
-                                 store_.gaugeDetectorModel().isEmpty(),
-                             "default staged V2 did not retain independent "
-                             "reviewed profile and inventory"))
+                if (!require(
+                        controller_->experimentalDetector() && profiles == 4 &&
+                            inventory > 0 &&
+                            controller_->discoveryBackend() ==
+                                (qEnvironmentVariable(
+                                     "OMATRACK_AUTOTEST_GAUGE_DISCOVERY") ==
+                                         "detector-small"
+                                     ? QStringLiteral("tiny-v2")
+                                     : QStringLiteral("aim-large-v1")),
+                        "default staged V2 did not retain independent "
+                        "reviewed profile and inventory"))
                     return;
             }
             if (!require(controller_->discoverySamples() >= 3 &&
@@ -249,6 +292,8 @@ private:
             }
             controller_->confirmSetup();
             identity_ = controller_->setupIdentity();
+            confirmedBackend_ = controller_->discoveryBackend();
+            confirmedSamples_ = controller_->discoverySamples();
             const auto path = player_->source().toLocalFile();
             if (!require(store_.gaugeProposal(path).readingFingerprint() ==
                                  identity_ &&
@@ -273,8 +318,13 @@ private:
             enter(3);
         } else if (phase_ == 3) {
             if (phaseClock_.elapsed() < 2200 || imageJob_.running()) return;
-            if (!require(controller_->inferenceRuns() == 0,
-                         "confirmed state read without explicit action"))
+            if (!require(
+                    controller_->inferenceRuns() == 0 &&
+                        controller_->setupIdentity() == identity_ &&
+                        controller_->discoveryBackend() == confirmedBackend_ &&
+                        controller_->discoverySamples() == confirmedSamples_,
+                    "confirmed state read or changed routing identity without "
+                    "explicit action"))
                 return;
             if (qEnvironmentVariable("OMATRACK_AUTOTEST_GAUGE_DISCOVERY")
                     .endsWith("native")) {
@@ -434,7 +484,8 @@ private:
                          "incumbent reader at actual decoded PTS"))
                 return;
             qInfo(
-                "GAUGE DISCOVERY PROFILE PASS: staged V2 plus independent AiM "
+                "GAUGE DISCOVERY PROFILE PASS: routed detector plus "
+                "independent AiM "
                 "profile; 12/12 values exactly match incumbent; no Preferences "
                 "switch");
             if (qEnvironmentVariable("OMATRACK_AUTOTEST_GAUGE_DISCOVERY") ==
@@ -450,9 +501,43 @@ private:
                 << controller_->setupIdentity();
             screenshot(QStringLiteral("-profile-complete"));
             enter(11);
+        } else if (phase_ == 15) {
+            if (phaseClock_.elapsed() < 4000 || !player_->loaded() ||
+                controller_->running())
+                return;
+            if (!require(controller_->phase() ==
+                                 ImageTelemetryController::Discovery &&
+                             controller_->discoveryBackend() == "tiny-v2" &&
+                             controller_->inferenceRuns() == 0 &&
+                             !controller_->series() &&
+                             !controller_->canConfirm() &&
+                             !controller_->canExtract(),
+                         "cancelled large/source work leaked backend, evidence "
+                         "or readings"))
+                return;
+            qInfo(
+                "GAUGE DISCOVERY CANCEL PASS: in-flight large initialization "
+                "discarded; new unknown source uses tiny; no reader calls");
+            screenshot(QStringLiteral("-cancelled-source"));
+            enter(11);
         }
     }
     void finish() {
+        if (!frameIntervals_.empty()) {
+            std::sort(frameIntervals_.begin(), frameIntervals_.end());
+            const auto p95 = frameIntervals_[std::min(
+                frameIntervals_.size() - 1,
+                std::size_t(std::ceil(frameIntervals_.size() * .95)) - 1)];
+            qInfo() << "GAUGE DISCOVERY responsiveness: frames"
+                    << frameIntervals_.size() << "interval ms p50/p95/max"
+                    << frameIntervals_[frameIntervals_.size() / 2] << p95
+                    << frameIntervals_.back();
+            if (!require(
+                    frameIntervals_.size() >= 30 && p95 < 100 &&
+                        frameIntervals_.back() < 500,
+                    "playback callbacks stalled during background discovery"))
+                return;
+        }
         qInfo(
             "GAUGE DISCOVERY PASS: fresh PTS, confirmation/action gate, "
             "offline model, masks, setup identity, source/seek cancellation");
@@ -467,9 +552,12 @@ private:
     QTimer timer_;
     QElapsedTimer total_, phaseClock_;
     AsyncJob<bool> imageJob_, oracleJob_;
-    QString identity_, persistedIdentity_, persistedSetupIdentity_;
+    QString identity_, persistedIdentity_, persistedSetupIdentity_,
+        confirmedBackend_;
     bool oraclePassed_ = false;
-    int phase_ = 0;
+    int phase_ = 0, confirmedSamples_ = 0, reportedSamples_ = 0;
+    qint64 lastFrameMs_ = -1;
+    std::vector<qint64> frameIntervals_;
 };
 }  // namespace
 bool omatrack::autotest::installGaugeDiscovery(QQmlApplicationEngine& engine,

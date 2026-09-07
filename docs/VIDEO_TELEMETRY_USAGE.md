@@ -4,15 +4,24 @@ Omatrack collects image-derived telemetry as **data**, not as a screenshot/demo
 panel. It keeps native telemetry first and uses the image reader for supported
 local videos without a telemetry/data track.
 
-## Enable the reader
+## Discover, confirm, extract
 
-Image extraction and managed model downloads are **off on a fresh install**.
-Opening a video or Preferences does not contact the model host before you opt in.
-Existing explicit extraction settings and local/staged model paths remain usable.
+Image telemetry and managed model downloads are **off on a fresh install**.
+Omatrack 1.8.3 includes the proven reader and both discovery models offline;
+opening a video or Preferences does not contact the model host. Enable
+**Discover gauges**, review the full-source boxes, **Confirm setup**, then choose
+**Start extraction**. Remembering an extension proposal defaults on, but every
+new/reopened source requires fresh image validation. Native telemetry wins.
 
-Open **Preferences → Image telemetry** (also available from **Model…** in the
-video controls). **Enable & download reader (~2.2 MB)** enables extraction and
-consents to downloading the compatible reader from the public
+Automatic discovery uses the large detector only on current image-verified
+1920×1080 orange-AiM frames, tiny V2 otherwise or on large-model failure. Filename
+and extension never choose the model. Independently verified **AiM profile** crops
+remain readable alongside unselected experimental proposals; other crops do not
+become readable merely because the user confirms them.
+
+**Preferences → Image telemetry** (also available from **Model…**) offers optional
+managed reader updates. **Enable & download reader (~2.2 MB)** enables discovery,
+not extraction, and consents to downloading the compatible reader from the public
 [tobil/omatrack-telemetry-reader](https://huggingface.co/tobil/omatrack-telemetry-reader)
 repository. No Hugging Face account or token is needed. Video, crops and telemetry
 stay local; only model files and update metadata are downloaded. The preferences
@@ -21,8 +30,8 @@ page shows download progress, cancellation, failures and available updates.
 **Keep reader up to date** is on by default after opt-in and can be turned off
 independently of extraction. Automatic activation waits until no video is open,
 including paused videos. A downloaded update can be activated deliberately with
-**Apply now** while a video is open; it restarts extraction and invalidates
-incompatible prediction caches through the existing model-content identity.
+**Apply now** while a video is open; it restarts discovery/confirmation and keeps
+prediction caches separated through the model-content identity.
 
 **Choose local model…** remains available without network consent. Selecting a
 local file turns managed downloads off before changing the active path, so a
@@ -34,8 +43,8 @@ choice.
 
 - Opening a new video starts fullscreen; Escape returns to the workspace and F
   restores fullscreen. Changing the cursor or lap does not continuously force it.
-- **Extract telemetry** enables image-derived collection while watching. Values
-  are collected on a 5 Hz video-time grid. Already collected coverage survives
+- After discovery and confirmation, **Start extraction** enables image-derived
+  collection while watching. Values are collected on a 5 Hz video-time grid. Already collected coverage survives
   seeks; current readouts never borrow values from another source/model.
 - **Scan from cursor** fills faster than playback, including while paused. The
   current cursor has priority. The scan proceeds forward, then wraps to backfill
@@ -51,10 +60,12 @@ choice.
 ## `.telemetry` caching
 
 Partial progress is saved automatically in the application's private cache under
-`image-telemetry/v1/`. Reopening the original recording loads matching coverage;
-fully scanned recordings use their completed cache without running inference
-again. Source file identity, model content and sampling/layout/schema revisions
-bind the cache. A changed source/model cannot silently reuse mismatched data.
+`image-telemetry/v1/`. After fresh setup validation, confirmation and Start,
+reopening the original recording loads matching coverage; completed caches need
+no further reader inference. Source identity, reader/detector content, canonical
+selected/confirmed crops and policy revisions bind the cache. Unselected inventory
+churn does not invalidate an identical reading; changed crops/source/models cannot
+silently reuse mismatched data.
 
 The file is standard **zstd-compressed MTJ JSONL `.telemetry`**, not a new sidecar
 format. It contains:
@@ -98,21 +109,24 @@ Omatrack's source license does not grant rights to input footage.
 
 Install the normal Qt/libmpv development dependencies, an explicit ONNX Runtime
 C/C++ SDK, FFmpeg development libraries and zstd development support. The Python
-ONNX wheel alone is not the C++ SDK. Export a trusted compatible model using the
-[documented recipe](GAUGE_READER_RUNTIME.md), then configure:
+ONNX wheel alone is not the C++ SDK. Fetch the immutable public bundle at build
+time, then configure:
 
 ```sh
+bundle=$(scripts/fetch-gauge-bundle.sh)
 cmake --preset release \
   -DONNXRUNTIME_ROOT=/path/to/onnxruntime-sdk \
-  -DOMATRACK_GAUGE_MODEL=/path/to/gauge-reader.onnx
+  -DOMATRACK_GAUGE_BUNDLE="$bundle"
 cmake --build --preset release
 ./build/omatrack --new-instance /path/to/video.mp4
 ```
 
-`OMATRACK_GAUGE_MODEL` is an explicit **build-time staging** choice: it verifies the
-known export hash and places the model in `models/gauge-reader.onnx` beside the
-executable. It neither downloads nor publishes weights. Alternatively select a
-trusted local model through **Model… → Choose local model…**. Configuration uses
+`OMATRACK_GAUGE_BUNDLE` is a **build-time staging** choice: it verifies all 15
+allowlisted model/contract/notice files and installs them under `models/` beside
+the executable. Runtime has no download ceremony. The selected weights were
+authorized for this release; task-weight licensing remains unspecified and the
+bundle includes scoped notices. Alternatively select a trusted local reader
+through **Model… → Choose local model…**. Configuration uses
 the existing single `omatrack.yml` document. For an explicitly enabled local reader:
 
 ```yaml
@@ -129,12 +143,22 @@ managed-download consent. `image_telemetry` defaults to `false`; an existing
 explicit value is preserved. The UI writes these preferences through the normal
 debounced configuration writer.
 
-An empty `image_model` uses the staged model. The source/model identities must be
-readable to validate cache reuse, but a complete cache does not construct the
-reader or decode the video again for extraction. The video player independently
+An empty `image_model` uses the bundled reader. Empty `gauge_detector` selects
+automatic image-based routing; `small` forces tiny and `heuristic` forces the
+reviewed heuristic. Source/model identities must be readable to validate cache
+reuse. Discovery revalidates the setup, but a complete extraction cache does not
+construct the reader or decode additional frames for extraction. The video player independently
 decodes for playback. Missing or incompatible models fail explicitly rather than
 inventing values. Without the optional runtime, ordinary playback/native telemetry
 remain available.
+
+`omatrack --check-model-bundle --require-bundled-runtime` is a read-only production
+package diagnostic: it verifies the embedded manifest against installed assets,
+reports the actual loaded ONNX Runtime module/version, requires that runtime to
+be inside the package, and runs all three models on an explicitly synthetic
+fixture. It does not open a GUI, read Omatrack preferences, write files or contact
+the network. This is runtime integrity, not an accuracy claim. Source builds may
+omit `--require-bundled-runtime` to report/use their external SDK.
 
 The [isolated Linux development helper](VIDEO_BUILD_ENVIRONMENT.md) is optional;
 other platforms need their matching SDK and normal build dependencies.

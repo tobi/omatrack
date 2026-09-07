@@ -11,15 +11,10 @@
 
 namespace omatrack::inference {
 
-// Frozen center-v1 tensor/decode ABI with the pilot-v2 training-scope contract.
-// The caller MUST verify this scope and its trusted metadata/contract/model
-// hashes before constructing this component. Tensor validation is compatibility
-// checking, not authentication of an ONNX graph or reader support approval.
+// Frozen center-v1 tensor/decode ABI. The app's per-candidate registry MUST
+// validate exact size, model/metadata/contract hashes and scope before loading.
+// Tensor compatibility is neither graph authentication nor reader approval.
 inline constexpr char GaugeDetectorContract[] = "gauge-detector-center-v1";
-inline constexpr char GaugeDetectorTrainingScope[] =
-    "pilot-v2-mil-strong4-backgrounds";
-inline constexpr char GaugeDetectorContractSha256[] =
-    "87a4cec9e0466250b635e561c74be81f2ce5f15fbd79804a1be639c3719a69d3";
 
 struct GaugeDetectorOptions {
     // Full-source stretch, NOT letterbox/crop. Positive multiples of 32;

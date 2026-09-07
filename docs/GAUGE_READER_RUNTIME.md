@@ -192,9 +192,10 @@ The validated local artifact is
 
 The source tree includes no model weights or evaluation images. Release recipes
 now stage this exact public reader at build time for offline operation, with
-immutable-revision download and SHA256 verification. `OMATRACK_GAUGE_MODEL`
-also stages it into a local development build/install. Experimental candidates
-are not silently substituted or published. Generate the complete bad-model,
+immutable-revision download and SHA256 verification. `OMATRACK_GAUGE_BUNDLE`
+stages the complete approved public bundle (unchanged reader plus tiny/general
+and image-gated large/AiM detectors, contracts and notices) into development and
+release installs. Other candidates are not silently substituted or published. Generate the complete bad-model,
 nonfinite and negative fixtures under **`<output-dir>/fixtures`** with the exporter
 above, and keep them private.
 
@@ -250,11 +251,12 @@ cmake --build --preset release
 
 Use the [isolated development helper](VIDEO_BUILD_ENVIRONMENT.md) when Qt/libmpv
 are supplied by a project-local prefix. Select a trusted model with **Reader
-model…**, or set `OMATRACK_GAUGE_MODEL=/path/to/reviewed/gauge-reader.onnx` at
-configure time to stage it into that build and install tree. Source builds stage
-nothing by default; release recipes fetch the immutable, hash-verified public
-~2.2 MB reader at build time for offline use. Staging an arbitrary local model
-does not grant redistribution rights.
+model…**, or run `scripts/fetch-gauge-bundle.sh` and configure with
+`-DOMATRACK_GAUGE_BUNDLE=/path/to/verified/bundle` to stage the complete bundle.
+Source builds stage nothing by default; CI/release requires the immutable,
+hash-verified public bundle for offline use. The selected task-weight license
+remains unspecified; scoped upstream notices accompany the authorized distribution.
+Staging an arbitrary local model does not grant redistribution rights.
 
 Build and deployment contracts:
 
@@ -274,7 +276,8 @@ Build and deployment contracts:
   SDK linkage. Exact byte/CTC test hooks are absent from the production binary.
   Set both `OMATRACK_GAUGE_TEST_MODEL` and `OMATRACK_GAUGE_TEST_FIXTURES` at
   configure time to register the optional private `gauge-reader-parity-test`.
-  Do not publish its input model, fixture images or expected readings.
+  Fixture images, expected readings and unapproved input models remain private;
+  only the explicitly approved public bundle weights may be redistributed here.
 
 Equivalent standalone build, usable without Qt or CMake:
 

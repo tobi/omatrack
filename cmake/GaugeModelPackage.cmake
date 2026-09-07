@@ -1,33 +1,40 @@
-# Offline reader deployment. Release recipes supply the pinned public artifact
-# at build time; source builds may explicitly stage it. No runtime download.
-set(OMATRACK_GAUGE_MODEL "$ENV{OMATRACK_GAUGE_MODEL}" CACHE FILEPATH
-  "Reviewed gauge-reader.onnx to bundle beside the application")
-if(OMATRACK_GAUGE_MODEL)
+# Build-time-only, immutable public bundle. No runtime download ceremony.
+set(OMATRACK_GAUGE_BUNDLE "$ENV{OMATRACK_GAUGE_BUNDLE}" CACHE PATH
+  "Verified offline reader/detectors/companions/notices bundle directory")
+option(OMATRACK_REQUIRE_GAUGE_BUNDLE "Require all release model assets" "$ENV{OMATRACK_REQUIRE_GAUGE_BUNDLE}")
+if(OMATRACK_REQUIRE_GAUGE_BUNDLE AND NOT OMATRACK_GAUGE_BUNDLE)
+  message(FATAL_ERROR "Release/CI requires OMATRACK_GAUGE_BUNDLE; run scripts/fetch-gauge-bundle.sh")
+endif()
+if(OMATRACK_GAUGE_BUNDLE)
   if(NOT OMATRACK_ENABLE_IMAGE_TELEMETRY OR NOT ONNXRUNTIME_LIBRARY OR
      NOT TARGET PkgConfig::GAUGE_FFMPEG)
-    message(FATAL_ERROR "OMATRACK_GAUGE_MODEL requires the ONNX Runtime SDK and FFmpeg decoder")
+    message(FATAL_ERROR "OMATRACK_GAUGE_BUNDLE requires ONNX Runtime and FFmpeg")
   endif()
-  if(NOT EXISTS "${OMATRACK_GAUGE_MODEL}")
-    message(FATAL_ERROR "OMATRACK_GAUGE_MODEL does not exist")
-  endif()
-  file(SHA256 "${OMATRACK_GAUGE_MODEL}" _gauge_model_hash)
-  if(NOT _gauge_model_hash STREQUAL
-      "97029f70068f4ec276b3d6bc28810763275806f579d91ddd4701b544af392147")
-    message(FATAL_ERROR "Gauge model is not the verified current-reader export; reproduce the documented pinned export")
-  endif()
+  include(${CMAKE_CURRENT_LIST_DIR}/GaugeBundle.cmake)
+  omatrack_verify_gauge_bundle("${OMATRACK_GAUGE_BUNDLE}")
+  omatrack_gauge_bundle_files(_gauge_files)
+  set_property(TARGET omatrack APPEND PROPERTY LINK_DEPENDS "${OMATRACK_GAUGE_BUNDLE_MANIFEST}")
   add_custom_command(TARGET omatrack POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:omatrack>/models"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${OMATRACK_GAUGE_MODEL}"
-      "$<TARGET_FILE_DIR:omatrack>/models/gauge-reader.onnx"
+    COMMAND ${CMAKE_COMMAND} -DMODE=stage
+      "-DSOURCE_DIR=${OMATRACK_GAUGE_BUNDLE}"
+      "-DBUNDLE_DIR=$<TARGET_FILE_DIR:omatrack>/models"
+      -P "${PROJECT_SOURCE_DIR}/scripts/gauge-bundle.cmake"
     VERBATIM)
   if(APPLE)
     set(_gauge_install_dir "Omatrack.app/Contents/MacOS/models")
   else()
     set(_gauge_install_dir "${CMAKE_INSTALL_BINDIR}/models")
   endif()
-  install(FILES "${OMATRACK_GAUGE_MODEL}"
-    DESTINATION "${_gauge_install_dir}" RENAME gauge-reader.onnx)
-  message(STATUS "Bundling hash-verified offline gauge reader; no runtime download required")
+  configure_file("${CMAKE_CURRENT_LIST_DIR}/GaugeBundleInstall.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/GaugeBundleInstall.cmake" @ONLY)
+  install(SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/GaugeBundleInstall.cmake")
+  foreach(_gauge_file IN LISTS _gauge_files)
+    get_filename_component(_gauge_parent "${_gauge_file}" DIRECTORY)
+    install(FILES "${OMATRACK_GAUGE_BUNDLE}/${_gauge_file}"
+      DESTINATION "${_gauge_install_dir}/${_gauge_parent}")
+  endforeach()
+  install(FILES "${OMATRACK_GAUGE_BUNDLE_MANIFEST}" DESTINATION "${_gauge_install_dir}")
+  message(STATUS "Bundling verified offline reader + tiny/general and large/AiM detectors with all notices")
 endif()
 
 if(WIN32 AND OMATRACK_ENABLE_IMAGE_TELEMETRY AND ONNXRUNTIME_RUNTIME_FILES)

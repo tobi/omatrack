@@ -10,7 +10,7 @@ add_library(omatrack_inference STATIC
   ${PROJECT_SOURCE_DIR}/src/inference/VideoFrameDecoder.cpp)
 target_include_directories(omatrack_inference PUBLIC
   ${PROJECT_SOURCE_DIR}/src/inference)
-target_link_libraries(omatrack_inference PRIVATE omatrack_warnings)
+target_link_libraries(omatrack_inference PRIVATE omatrack_warnings ${CMAKE_DL_LIBS})
 
 if(OMATRACK_ENABLE_IMAGE_TELEMETRY)
   # Never silently substitute a system SDK or a cached SDK from another root.

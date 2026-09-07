@@ -20,6 +20,9 @@ struct GaugeRegion {
     // anchors. It survives user edits and never comes from the learned
     // detector.
     QString profileKey;
+    // Actual learned backend/content identity; profile anchors leave this
+    // empty.
+    QString detectorIdentity;
     QRectF box;
     bool enabled = true, confirmed = false, edited = false;
     bool proposal =

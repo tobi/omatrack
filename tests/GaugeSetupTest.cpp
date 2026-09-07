@@ -161,6 +161,22 @@ private slots:
         QVERIFY(!e.setup.regions[4].enabled);
         QCOMPARE(e.setup.regions.size(), 8);
     }
+    void detectorBackendsDoNotShareEvidence() {
+        GaugeEvidence e;
+        e.setup.detectorIdentity = "experimental-route-v1";
+        GaugeRegion proposal;
+        proposal.box = {.2, .2, .1, .1};
+        proposal.enabled = false;
+        proposal.detectorIdentity = "tiny-v2:hash";
+        QVERIFY(e.observe(0, {1920, 1080}, {proposal}));
+        proposal.detectorIdentity = "aim-large-v1:hash";
+        QVERIFY(e.observe(3'000'000'000LL, {1920, 1080}, {proposal}));
+        QVERIFY(e.observe(6'000'000'000LL, {1920, 1080}, {proposal}));
+        QCOMPARE(e.setup.regions.size(), 2);
+        QCOMPARE(e.setup.regions[0].hits, 0);
+        QCOMPARE(e.setup.regions[1].hits, 2);
+        QVERIFY(!e.setup.regions[1].enabled);
+    }
     void profileCapacityIsReserved() {
         GaugeEvidence e;
         e.setup.detectorIdentity = "experimental-v2";

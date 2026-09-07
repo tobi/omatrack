@@ -1,0 +1,7 @@
+# Revalidate the source bundle at install time, not just at configure time.
+# Generated cmake_install.cmake does not inherit configure-time policies.
+cmake_policy(PUSH)
+cmake_policy(VERSION 3.21)
+include("@PROJECT_SOURCE_DIR@/cmake/GaugeBundle.cmake")
+omatrack_verify_gauge_bundle("@OMATRACK_GAUGE_BUNDLE@")
+cmake_policy(POP)

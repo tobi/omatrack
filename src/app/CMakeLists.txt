@@ -108,6 +108,7 @@ qt_add_qml_module(omatrack
     ImageTelemetryController.h ImageTelemetryController.cpp
     GaugeSetup.h GaugeSetup.cpp
     GaugeDetectorArtifact.h GaugeDetectorArtifact.cpp
+    GaugeBundleCheck.h GaugeBundleCheck.cpp
     ImageModelManager.h ImageModelManager.cpp
     ImageModelManifest.h ImageModelManifest.cpp
     ImageTelemetryTraces.h ImageTelemetryTraces.cpp
@@ -191,6 +192,11 @@ qt_add_resources(omatrack "omatrack_plugin_examples"
   BASE ${CMAKE_SOURCE_DIR}
   FILES
     ${CMAKE_SOURCE_DIR}/plugins/weather/plugin.lua)
+
+qt_add_resources(omatrack "omatrack_model_manifest"
+  PREFIX "/omatrack-models"
+  BASE "${PROJECT_SOURCE_DIR}/models"
+  FILES "${PROJECT_SOURCE_DIR}/models/bundle.json")
 
 target_link_libraries(omatrack PRIVATE
   lua_sandbox

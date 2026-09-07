@@ -35,7 +35,7 @@ bool GaugeSetup::valid() const {
     for (const auto& r : regions) {
         if (!validBox(r.box) || r.id.isEmpty() || ids.contains(r.id) ||
             r.semantic.size() > 64 || r.representation.size() > 64 ||
-            r.direction.size() > 32)
+            r.direction.size() > 32 || r.detectorIdentity.size() > 512)
             return false;
         ids.insert(r.id);
         if (r.profileKey.isEmpty()) {
@@ -62,6 +62,7 @@ QVariantMap GaugeSetup::toMap() const {
     for (const auto& r : regions)
         rows.append(QVariantMap{{"id", r.id},
                                 {"profile_key", r.profileKey},
+                                {"detector_identity", r.detectorIdentity},
                                 {"representation", r.representation},
                                 {"semantic", r.semantic},
                                 {"direction", r.direction},
@@ -91,6 +92,7 @@ GaugeSetup GaugeSetup::fromMap(const QVariantMap& map) {
         GaugeRegion r;
         r.id = m.value("id").toString();
         r.profileKey = m.value("profile_key").toString();
+        r.detectorIdentity = m.value("detector_identity").toString();
         r.representation = m.value("representation").toString();
         r.semantic = m.value("semantic").toString();
         r.direction = m.value("direction").toString();
@@ -273,7 +275,9 @@ bool GaugeEvidence::observe(qint64 pts, QSize size,
         for (int i = 0; i < observations.size(); ++i) {
             const auto& o = observations[i];
             if (used.contains(i) || !validBox(o.box) ||
-                r.profileKey != o.profileKey)
+                r.profileKey != o.profileKey ||
+                (r.profileKey.isEmpty() &&
+                 r.detectorIdentity != o.detectorIdentity))
                 continue;
             if (!r.profileKey.isEmpty()) {
                 // Consume this stable profile anchor even after the user moves,

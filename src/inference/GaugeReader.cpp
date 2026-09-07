@@ -15,6 +15,17 @@
 #define OMATRACK_HAVE_ONNXRUNTIME 0
 #endif
 #if OMATRACK_HAVE_ONNXRUNTIME
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 #include <onnxruntime_cxx_api.h>
 #endif
 
@@ -464,6 +475,37 @@ bool GaugeReader::runtimeAvailable() {
     return base && base->GetApi(ORT_API_VERSION);
 #else
     return false;
+#endif
+}
+std::string GaugeReader::runtimeLibraryPath() {
+#if OMATRACK_HAVE_ONNXRUNTIME
+#if defined(_WIN32)
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(&OrtGetApiBase), &module))
+        return {};
+    std::vector<wchar_t> path(32768);
+    const auto size =
+        GetModuleFileNameW(module, path.data(), DWORD(path.size()));
+    if (!size || size >= path.size()) return {};
+    return std::filesystem::path(std::wstring(path.data(), size)).u8string();
+#else
+    Dl_info info{};
+    const auto* symbol = dlsym(RTLD_DEFAULT, "OrtGetApiBase");
+    if (!symbol || !dladdr(symbol, &info) || !info.dli_fname) return {};
+    return info.dli_fname;
+#endif
+#else
+    return {};
+#endif
+}
+std::string GaugeReader::runtimeVersion() {
+#if OMATRACK_HAVE_ONNXRUNTIME
+    const auto* base = OrtGetApiBase();
+    return base && base->GetVersionString ? base->GetVersionString() : "";
+#else
+    return {};
 #endif
 }
 bool GaugeReader::ready() const {

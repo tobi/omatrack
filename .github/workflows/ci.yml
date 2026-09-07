@@ -10,6 +10,7 @@ permissions:
 
 env:
   OMATRACK_REQUIRE_IMAGE_TELEMETRY: 'ON'
+  OMATRACK_REQUIRE_GAUGE_BUNDLE: 'ON'
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -32,8 +33,9 @@ jobs:
             libavformat-dev libavcodec-dev libavutil-dev libswscale-dev
           ort_root=$(scripts/fetch-onnxruntime.sh linux-x64)
           echo "ONNXRUNTIME_ROOT=$ort_root" >> "$GITHUB_ENV"
-          model_file=$(scripts/fetch-reader-test-model.sh)
-          echo "OMATRACK_GAUGE_SMOKE_MODEL=$model_file" >> "$GITHUB_ENV"
+          bundle_dir=$(scripts/fetch-gauge-bundle.sh)
+          echo "OMATRACK_GAUGE_BUNDLE=$bundle_dir" >> "$GITHUB_ENV"
+          echo "OMATRACK_GAUGE_SMOKE_MODEL=$bundle_dir/gauge-reader.onnx" >> "$GITHUB_ENV"
       - name: Restore Cargo cache
         uses: actions/cache@v4
         with:
@@ -76,8 +78,9 @@ jobs:
           brew install ccache clang-format libyaml mpv ninja pkg-config zstd
           ort_root=$(scripts/fetch-onnxruntime.sh osx-arm64)
           echo "ONNXRUNTIME_ROOT=$ort_root" >> "$GITHUB_ENV"
-          model_file=$(scripts/fetch-reader-test-model.sh)
-          echo "OMATRACK_GAUGE_SMOKE_MODEL=$model_file" >> "$GITHUB_ENV"
+          bundle_dir=$(scripts/fetch-gauge-bundle.sh)
+          echo "OMATRACK_GAUGE_BUNDLE=$bundle_dir" >> "$GITHUB_ENV"
+          echo "OMATRACK_GAUGE_SMOKE_MODEL=$bundle_dir/gauge-reader.onnx" >> "$GITHUB_ENV"
       - name: Restore Cargo cache
         uses: actions/cache@v4
         with:
@@ -141,8 +144,9 @@ jobs:
         run: |
           ort_root=$(cygpath -m /ucrt64)
           echo "ONNXRUNTIME_ROOT=$ort_root" >> "$GITHUB_ENV"
-          model_file=$(scripts/fetch-reader-test-model.sh)
-          echo "OMATRACK_GAUGE_SMOKE_MODEL=$(cygpath -m "$model_file")" >> "$GITHUB_ENV"
+          bundle_dir=$(scripts/fetch-gauge-bundle.sh)
+          echo "OMATRACK_GAUGE_BUNDLE=$(cygpath -m "$bundle_dir")" >> "$GITHUB_ENV"
+          echo "OMATRACK_GAUGE_SMOKE_MODEL=$(cygpath -m "$bundle_dir/gauge-reader.onnx")" >> "$GITHUB_ENV"
       - name: Restore Cargo cache
         uses: actions/cache@v4
         with:

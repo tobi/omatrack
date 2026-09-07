@@ -98,13 +98,16 @@ scripts/setup-video-dev.sh exec cmake --preset acceptance \
 scripts/setup-video-dev.sh exec cmake --build build-video-dev/image-acceptance --parallel 8
 ```
 
-Choose a trusted model through **Reader model…** in the application. Alternatively,
-add `-DOMATRACK_GAUGE_MODEL=/path/to/reviewed/gauge-reader.onnx` when configuring
-to stage the matching model beside that executable and include it in that
-build's install rules. This option is empty by default and grants **no model
-redistribution rights**. Do not publish a model-bearing install tree without
-separate authorization. See the runtime guide for the pinned export and parity
-checks.
+Choose a trusted reader through **Model…** in the application. To match the
+release, run `scripts/fetch-gauge-bundle.sh` and add
+`-DOMATRACK_GAUGE_BUNDLE=/path/to/verified/bundle` when configuring. It stages the
+unchanged reader, tiny/general and large/AiM detectors, companion contracts and
+upstream notices beside the executable and into its install tree. The large
+model is routed only on current image-verified reviewed AiM frames. Source builds
+can omit the bundle; CI/releases require it. The user authorized this selected
+bundle's distribution, but task-weight licensing remains unspecified; do not
+assume arbitrary local models inherit Omatrack's source license. See the
+[routing/runtime contract](GAUGE_DISCOVERY.md) for pinned artifacts and checks.
 
 ## Isolated OpenGL acceptance
 
