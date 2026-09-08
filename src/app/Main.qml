@@ -493,6 +493,48 @@ ApplicationWindow {
                     text: "0.25×"
                     visible: videoSync.videoSlowMotion
                 }
+                Label {
+                    color: Style.comparisonLapColor
+                    font.family: Style.uiFontFamily
+                    font.pixelSize: 10
+                    text: Store.primaryDriverName || "—"
+                    visible: root.telemetryVideoActive
+                }
+                Label {
+                    color: Style.mutedTextColor
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: 10
+                    text: "LAP " + Store.primaryLapOrdinal + "/" + Store.primaryLapTotal
+                    visible: root.telemetryVideoActive
+                }
+                Label {
+                    color: Style.mutedTextColor
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: 10
+                    text: "FUEL " + (Store.primaryFuelLoad || "—")
+                    visible: root.telemetryVideoActive
+                }
+                Label {
+                    color: Style.referenceLapColor
+                    font.family: Style.uiFontFamily
+                    font.pixelSize: 10
+                    text: Store.compareDriverName || "—"
+                    visible: root.telemetryVideoActive && root.dualVideo
+                }
+                Label {
+                    color: Style.mutedTextColor
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: 10
+                    text: "LAP " + Store.compareLapOrdinal + "/" + Store.compareLapTotal
+                    visible: root.telemetryVideoActive && root.dualVideo
+                }
+                Label {
+                    color: Style.mutedTextColor
+                    font.family: Style.monoFontFamily
+                    font.pixelSize: 10
+                    text: "FUEL " + (Store.compareFuelLoad || "—")
+                    visible: root.telemetryVideoActive && root.dualVideo
+                }
                 Item {
                     Layout.fillWidth: true
                 }
@@ -1404,6 +1446,8 @@ ApplicationWindow {
     }
     ChannelsWindow {
         id: channelsWindow
+
+        trace: trace
     }
     UsbSyncWindow {
         id: usbSyncWindow
@@ -1701,10 +1745,10 @@ ApplicationWindow {
                                 trace.confidenceHeld = false;
                             }
                         }
-                        onChannelMenuRequested: (key, title, weight, x, y) => {
+                        onChannelMenuRequested: (key, title, heightPercent, x, y) => {
                             channelMenu.channelKey = key;
                             channelMenu.channelTitle = title;
-                            channelMenu.channelWeight = weight;
+                            channelMenu.channelHeightPercent = heightPercent;
                             channelMenu.popup(trace, x, y);
                         }
                         onChannelsRequested: {
@@ -1744,9 +1788,9 @@ ApplicationWindow {
                         Menu {
                             id: channelMenu
 
+                            property real channelHeightPercent: 5
                             property string channelKey: ""
                             property string channelTitle: ""
-                            property real channelWeight: 1
 
                             objectName: "channelMenu"
 
@@ -1760,17 +1804,26 @@ ApplicationWindow {
                             MenuItem {
                                 text: "Double size"
 
-                                onTriggered: Store.setChannelWeight(channelMenu.channelKey, channelMenu.channelWeight * 2)
+                                onTriggered: {
+                                    Store.setChannelLaneHeightPercent(channelMenu.channelKey, Math.min(100, channelMenu.channelHeightPercent * 2));
+                                    trace.fitChannels = false;
+                                }
                             }
                             MenuItem {
                                 text: "Half size"
 
-                                onTriggered: Store.setChannelWeight(channelMenu.channelKey, channelMenu.channelWeight / 2)
+                                onTriggered: {
+                                    Store.setChannelLaneHeightPercent(channelMenu.channelKey, Math.max(1, channelMenu.channelHeightPercent / 2));
+                                    trace.fitChannels = false;
+                                }
                             }
                             MenuItem {
-                                text: "Normal size"
+                                text: "Default size"
 
-                                onTriggered: Store.setChannelWeight(channelMenu.channelKey, 1)
+                                onTriggered: {
+                                    Store.resetChannelLaneHeightPercent(channelMenu.channelKey);
+                                    trace.fitChannels = false;
+                                }
                             }
                             MenuSeparator {
                             }
@@ -1916,7 +1969,7 @@ ApplicationWindow {
                         anchors.leftMargin: 6
                         anchors.top: parent.top
                         anchors.topMargin: 5
-                        color: Style.accentColor
+                        color: Style.comparisonLapColor
                         elide: Text.ElideRight
                         font.family: Style.monoFontFamily
                         font.pixelSize: 8
@@ -1928,7 +1981,7 @@ ApplicationWindow {
                         anchors.bottomMargin: 5
                         anchors.left: parent.left
                         anchors.leftMargin: 6
-                        color: Style.orangeColor
+                        color: Style.referenceLapColor
                         elide: Text.ElideRight
                         font.family: Style.monoFontFamily
                         font.pixelSize: 8
@@ -1952,7 +2005,7 @@ ApplicationWindow {
                         anchors.right: dragLabel.left
                         anchors.rightMargin: 4
                         anchors.top: parent.top
-                        color: Style.orangeColor
+                        color: Style.referenceLapColor
                         series: DamperStripView.Compare
                         shift: Store.referenceAlignment
                         store: Store
@@ -1967,7 +2020,7 @@ ApplicationWindow {
                         anchors.right: dragLabel.left
                         anchors.rightMargin: 4
                         anchors.top: parent.top
-                        color: Style.accentColor
+                        color: Style.comparisonLapColor
                         series: DamperStripView.Primary
                         store: Store
                         strokeOpacity: 0.78

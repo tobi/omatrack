@@ -23,6 +23,7 @@ namespace {
 struct Check {
     QElapsedTimer elapsed;
     int phase = 0;
+    int resizeLane = 0;
     QString rawKey;
     QList<TraceLaneRow> original;
     QPointer<QQuickItem> label;
@@ -142,17 +143,24 @@ bool omatrack::autotest::installTraceResize(QQmlApplicationEngine& engine,
                 state->phase = 2;
             } else if (state->phase == 2) {
                 state->original = samples(trace);
-                state->label = visualItem(window->contentItem(),
-                                          QStringLiteral("traceLane-speed"));
                 if (!require(state->original.size() >= 4 &&
                                  state->original.back().key == state->rawKey,
                              "need standard and raw lanes"))
                     return;
+                for (int i = 1; i + 1 < state->original.size(); ++i) {
+                    if (state->original[i].height <
+                        state->original[state->resizeLane].height)
+                        state->resizeLane = i;
+                }
+                state->label = visualItem(
+                    window->contentItem(),
+                    QStringLiteral("traceLane-") +
+                        state->original[state->resizeLane].key);
                 if (!require(click(window, "resizeTracesButton") &&
                                  store.resizingTraces(),
                              "toolbar entry"))
                     return;
-                const auto& lane = state->original.front();
+                const auto& lane = state->original[state->resizeLane];
                 drag(trace, lane.y + lane.height, trace->height() * 0.55);
                 state->phase = 3;
             } else if (state->phase == 3) {
@@ -161,11 +169,14 @@ bool omatrack::autotest::installTraceResize(QQmlApplicationEngine& engine,
                         state->label &&
                             state->label ==
                                 visualItem(window->contentItem(),
-                                           QStringLiteral("traceLane-speed")),
+                                           QStringLiteral("traceLane-") +
+                                               state->original[state->resizeLane]
+                                                   .key),
                         "lane delegates rebuilt during drag"))
                     return;
-                if (!require(rows.front().height >
-                                     state->original.front().height * 2.0 &&
+                if (!require(rows[state->resizeLane].height >
+                                     state->original[state->resizeLane].height *
+                                         2.0 &&
                                  fits(rows, state->original),
                              "grow beyond 2x and keep all lanes fitted"))
                     return;
@@ -184,7 +195,7 @@ bool omatrack::autotest::installTraceResize(QQmlApplicationEngine& engine,
                                           : QStringLiteral("#7fbbb3"));
                 if (!require(near(YamlConfig::instance()
                                       .value({QStringLiteral("channels"),
-                                              rows.front().key,
+                                              rows[state->resizeLane].key,
                                               QStringLiteral("weight")},
                                              1.0)
                                       .toDouble(),

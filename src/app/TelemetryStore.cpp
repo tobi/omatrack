@@ -76,6 +76,14 @@ const QUrl kTrackAtlasUrl(QStringLiteral(
 const QString kTrackAtlasRawBase = QStringLiteral(
     "https://raw.githubusercontent.com/tobi/track-atlas/main/tracks/");
 QPointer<TelemetryStore> s_storeInstance;
+double defaultChannelHeightPercent(const QString& key) {
+    if (key == QStringLiteral("speed")) return 50.0;
+    if (key == QStringLiteral("throttle") ||
+        key == QStringLiteral("brake"))
+        return 30.0;
+    return 5.0;
+}
+
 bool isTelemetryFilePath(const QString& path) {
     return QFileInfo(path).suffix().compare(QStringLiteral("telemetry"),
                                             Qt::CaseInsensitive) == 0;
@@ -293,15 +301,8 @@ double geoDistanceKm(double firstLat, double firstLon, double secondLat,
 }
 
 QColor defaultChannelColor(const QString& key) {
-    static const QHash<QString, QColor> colors = {
-        {"speed", QColor("#a7c080")},   {"throttle", QColor("#a7c080")},
-        {"brake", QColor("#e67e80")},   {"steering", QColor("#dbbc7f")},
-        {"gear", QColor("#d699b6")},    {"dampers", QColor("#7fbbb3")},
-        {"g_long", QColor("#e09d7f")},  {"delta", QColor("#83c092")},
-        {"clutch", QColor("#d3c6aa")},  {"driver_throttle", QColor("#9da9a0")},
-        {"gps_lat", QColor("#83c092")}, {"gps_lon", QColor("#e09d7f")},
-    };
-    return colors.value(key, QColor("#9da9a0"));
+    if (key == QStringLiteral("delta")) return QColor(QStringLiteral("#83c092"));
+    return QColor(QStringLiteral("#ffd400"));
 }
 
 std::pair<QString, QString> channelMetadata(const QString& key) {
@@ -5328,7 +5329,8 @@ void TelemetryStore::resetPrimarySessionOverlays() {
     };
     removeSidecarKeys(prefs_->channelVisible());
     removeSidecarKeys(prefs_->channelColors());
-    removeSidecarKeys(prefs_->channelWeights());
+    removeSidecarKeys(prefs_->channelHeightPercent());
+    removeSidecarKeys(prefs_->channelCombined());
     removeSidecarKeys(prefs_->channelAppearance());
     overlays_->clear();
     overlays_->discoverSidecarSiblings();
@@ -7448,6 +7450,7 @@ void TelemetryStore::invalidateExtraChannelCache() {
 
 QVector<ChannelRow> TelemetryStore::buildChannelRows() const {
     QVector<ChannelRow> out;
+    bool hasPreviousSample = false;
     for (const QString& key : prefs_->channelOrder()) {
         const auto meta = channelMetadata(key);
         ChannelRow row;
@@ -7456,8 +7459,11 @@ QVector<ChannelRow> TelemetryStore::buildChannelRows() const {
         row.unit = meta.second;
         row.visible = channelVisible(key);
         row.color = channelColor(key);
-        row.weight = channelWeight(key);
+        row.heightPercent = channelHeightPercent(key);
+        row.combineWithPrevious = channelCombined(key);
+        row.canCombine = hasPreviousSample;
         out.append(row);
+        hasPreviousSample = true;
     }
     if (primarySession_) {
         for (const SourceChannelSummary& channel :
@@ -7469,19 +7475,23 @@ QVector<ChannelRow> TelemetryStore::buildChannelRows() const {
             row.unit = channel.unit;
             row.visible = channelVisible(key);
             row.color = channelColor(key);
-            row.weight = channelWeight(key);
+            row.heightPercent = channelHeightPercent(key);
+            row.combineWithPrevious = channelCombined(key);
+            row.canCombine = hasPreviousSample;
             row.source = true;
             out.append(row);
+            hasPreviousSample = true;
         }
     }
     for (const OverlayGroup& group : overlays_->overlayGroups()) {
+        hasPreviousSample = false;
         for (const OverlaySpanLane& lane : group.spanLanes) {
             ChannelRow row;
             row.key = lane.key;
             row.title = group.name + QStringLiteral(" / ") + lane.name;
             row.visible = channelVisible(lane.key);
             row.color = channelColor(lane.key);
-            row.weight = channelWeight(lane.key);
+            row.heightPercent = channelHeightPercent(lane.key);
             row.sidecar = true;
             row.span = true;
             out.append(row);
@@ -7493,10 +7503,28 @@ QVector<ChannelRow> TelemetryStore::buildChannelRows() const {
             row.unit = channel.unit;
             row.visible = channelVisible(channel.key);
             row.color = channelColor(channel.key);
-            row.weight = channelWeight(channel.key);
+            row.heightPercent = channelHeightPercent(channel.key);
+            row.combineWithPrevious = channelCombined(channel.key);
+            row.canCombine = hasPreviousSample;
             row.sidecar = true;
             out.append(row);
+            hasPreviousSample = true;
         }
+    }
+    double activeLaneHeightPercent = 5.0;
+    bool previousSampleVisible = false;
+    for (ChannelRow& row : out) {
+        if (row.span) {
+            previousSampleVisible = false;
+            continue;
+        }
+        const bool sharesVisibleLane =
+            row.canCombine && row.combineWithPrevious && row.visible &&
+            previousSampleVisible;
+        if (!sharesVisibleLane)
+            activeLaneHeightPercent = row.heightPercent;
+        row.heightPercent = activeLaneHeightPercent;
+        previousSampleVisible = row.visible;
     }
     for (ChannelRow& row : out) {
         const ChannelAppearance style = channelAppearance(row.key);
@@ -7620,6 +7648,36 @@ double TelemetryStore::channelWeight(const QString& key) const {
     return 1.0;
 }
 
+void TelemetryStore::setChannelTraceColors(const QString& key,
+                                           const QString& activeColor,
+                                           const QString& referenceColor) {
+    const QColor active(activeColor);
+    const QColor reference(referenceColor);
+    if (!active.isValid() || !reference.isValid()) return;
+
+    const QString normalizedActive = active.name(QColor::HexRgb);
+    ChannelAppearance appearance = channelAppearance(key);
+    const bool activeChanged = channelColor(key) != normalizedActive;
+    const bool referenceChanged = appearance.referenceColor != reference;
+    if (!activeChanged && !referenceChanged) return;
+
+    if (activeChanged) {
+        prefs_->channelColors()[key] = active;
+        if (key.startsWith(QStringLiteral("raw:"))) {
+            YamlConfig::instance().setValue(
+                {QStringLiteral("channels"), key, QStringLiteral("color")},
+                normalizedActive);
+        }
+    }
+    if (referenceChanged) {
+        appearance.referenceColor = reference;
+        prefs_->channelAppearance().insert(key, appearance);
+    }
+    if (!key.startsWith(QStringLiteral("sidecar:")))
+        schedulePreferencesSave();
+    emit channelConfigChanged();
+}
+
 void TelemetryStore::setChannelWeight(const QString& key, double weight) {
     if (!std::isfinite(weight) || weight <= 0 ||
         qFuzzyCompare(channelWeight(key), weight))
@@ -7632,6 +7690,122 @@ void TelemetryStore::setChannelWeight(const QString& key, double weight) {
             schedulePreferencesSave();
     }
     emit channelHeightsChanged();
+}
+
+double TelemetryStore::channelHeightPercent(const QString& key) const {
+    if (prefs_->channelHeightPercent().contains(key))
+        return prefs_->channelHeightPercent().value(key);
+    const double defaultPercent = defaultChannelHeightPercent(key);
+    if (key.startsWith(QStringLiteral("raw:"))) {
+        const double percent =
+            qBound(1.0,
+                   YamlConfig::instance()
+                       .value({QStringLiteral("channels"), key,
+                               QStringLiteral("height_percent")},
+                              defaultPercent)
+                       .toDouble(),
+                   100.0);
+        prefs_->channelHeightPercent().insert(key, percent);
+        return percent;
+    }
+    return defaultPercent;
+}
+
+void TelemetryStore::setChannelHeightPercent(const QString& key,
+                                             double percent) {
+    percent = qBound(1.0, percent, 100.0);
+    if (qFuzzyCompare(channelHeightPercent(key), percent)) return;
+    prefs_->channelHeightPercent()[key] = percent;
+    if (key.startsWith(QStringLiteral("raw:"))) {
+        YamlConfig& config = YamlConfig::instance();
+        config.setValue(
+            {QStringLiteral("channels"), key,
+             QStringLiteral("height_percent")},
+            percent);
+        schedulePreferencesSave();
+    } else if (!key.startsWith(QStringLiteral("sidecar:"))) {
+        schedulePreferencesSave();
+    }
+    emit channelConfigChanged();
+}
+
+void TelemetryStore::setChannelLaneHeightPercent(const QString& key,
+                                                 double percent) {
+    const QVector<ChannelRow> rows = buildChannelRows();
+    int rowIndex = -1;
+    for (int i = 0; i < rows.size(); ++i) {
+        if (rows[i].key == key) {
+            rowIndex = i;
+            break;
+        }
+    }
+    if (rowIndex < 0 || rows[rowIndex].span) {
+        setChannelHeightPercent(key, percent);
+        return;
+    }
+
+    int first = rowIndex;
+    while (first > 0 && rows[first].canCombine &&
+           rows[first].combineWithPrevious && !rows[first - 1].span) {
+        --first;
+    }
+    int last = rowIndex;
+    while (last + 1 < rows.size() && rows[last + 1].canCombine &&
+           rows[last + 1].combineWithPrevious && !rows[last + 1].span) {
+        ++last;
+    }
+    for (int i = first; i <= last; ++i)
+        setChannelHeightPercent(rows[i].key, percent);
+}
+
+void TelemetryStore::resetChannelLaneHeightPercent(const QString& key) {
+    const QVector<ChannelRow> rows = buildChannelRows();
+    int rowIndex = -1;
+    for (int i = 0; i < rows.size(); ++i) {
+        if (rows[i].key == key) {
+            rowIndex = i;
+            break;
+        }
+    }
+    while (rowIndex > 0 && rows[rowIndex].canCombine &&
+           rows[rowIndex].combineWithPrevious && !rows[rowIndex - 1].span) {
+        --rowIndex;
+    }
+    const QString rootKey = rowIndex >= 0 ? rows[rowIndex].key : key;
+    setChannelLaneHeightPercent(key, defaultChannelHeightPercent(rootKey));
+}
+
+bool TelemetryStore::channelCombined(const QString& key) const {
+    if (prefs_->channelCombined().contains(key))
+        return prefs_->channelCombined().value(key);
+    if (key.startsWith(QStringLiteral("raw:"))) {
+        const bool combined =
+            YamlConfig::instance()
+                .value({QStringLiteral("channels"), key,
+                        QStringLiteral("combine_with_previous")},
+                       false)
+                .toBool();
+        prefs_->channelCombined().insert(key, combined);
+        return combined;
+    }
+    return key == QStringLiteral("brake");
+}
+
+void TelemetryStore::setChannelCombined(const QString& key, bool combined) {
+    if (channelCombined(key) == combined) return;
+    prefs_->channelCombined()[key] = combined;
+    if (key.startsWith(QStringLiteral("raw:"))) {
+        YamlConfig& config = YamlConfig::instance();
+        config.setValue(
+            {QStringLiteral("channels"), key,
+             QStringLiteral("combine_with_previous")},
+            combined);
+        schedulePreferencesSave();
+    } else if (!key.startsWith(QStringLiteral("sidecar:"))) {
+        schedulePreferencesSave();
+    }
+    refreshChannelsModel();
+    emit channelConfigChanged();
 }
 
 void TelemetryStore::beginTraceResize() {
@@ -7679,7 +7853,7 @@ void TelemetryStore::previewTraceHeights(const QStringList& keys,
     if (!resizingTraces_ || keys.size() != qsizetype(heights.size()) ||
         keys.isEmpty())
         return;
-    double total = 0.0, normalWeight = 0.0;
+    double total = 0.0, totalBaseShare = 0.0;
     QSet<QString> unique;
     for (qsizetype i = 0; i < keys.size(); ++i) {
         if (unique.contains(keys[i]) || !std::isfinite(heights[size_t(i)]) ||
@@ -7687,12 +7861,14 @@ void TelemetryStore::previewTraceHeights(const QStringList& keys,
             return;
         unique.insert(keys[i]);
         total += heights[size_t(i)];
-        normalWeight += trace::laneHeightBoost(keys[i]);
+        totalBaseShare += channelHeightPercent(keys[i]) / 100.0;
     }
-    if (!std::isfinite(total) || total <= 0) return;
-    for (qsizetype i = 0; i < keys.size(); ++i)
-        traceResizeDraft_[keys[i]] = heights[size_t(i)] / total * normalWeight /
-                                     trace::laneHeightBoost(keys[i]);
+    if (!std::isfinite(total) || total <= 0 || totalBaseShare <= 0) return;
+    for (qsizetype i = 0; i < keys.size(); ++i) {
+        const double baseShare = channelHeightPercent(keys[i]) / 100.0;
+        traceResizeDraft_[keys[i]] =
+            heights[size_t(i)] / total * totalBaseShare / baseShare;
+    }
     // One atomic layout change; no channel resampling or range invalidation.
     emit channelHeightsChanged();
 }
@@ -7721,6 +7897,11 @@ void TelemetryStore::setChannelAppearance(const QString& key,
 }
 
 void TelemetryStore::resetChannelAppearance(const QString& key) {
+    const QColor activeColor = key.startsWith(QStringLiteral("sidecar:"))
+                                   ? sidecarChannelColorFor(
+                                         key.section(QLatin1Char(':'), 2))
+                                   : defaultChannelColor(key);
+    setChannelColor(key, activeColor.name(QColor::HexRgb));
     const auto style = ChannelAppearance::defaults(key);
     setChannelAppearance(key, style.strokeWidth, style.fillOpacity,
                          style.referenceColor.name(QColor::HexRgb));

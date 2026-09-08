@@ -46,8 +46,9 @@ const QColor kForeground("#d3c6aa");
 const QColor kMuted("#9da9a0");
 const QColor kDim("#4f585e");
 const QColor kAccent("#7fbbb3");
+const QColor kComparedLap("#ffd400");
 const QColor kGreen("#a7c080");
-const QColor kRed("#e67e80");
+const QColor kRed("#ff2d2d");
 const QColor kOrange("#e09d7f");
 const QColor kMagenta("#d699b6");
 
@@ -114,9 +115,9 @@ TraceView::TraceView(QQuickItem* parent) : QQuickItem(parent) {
     };
     interaction_.onCornerEdited = [this]() { emit cornerEdited(); };
     interaction_.onChannelMenuRequested =
-        [this](const QString& key, const QString& title, double weight, qreal x,
-               qreal y) {
-            emit channelMenuRequested(key, title, weight, x, y);
+        [this](const QString& key, const QString& title,
+               double heightPercent, qreal x, qreal y) {
+            emit channelMenuRequested(key, title, heightPercent, x, y);
         };
     interaction_.onOverlayChanged = [this]() { emit overlayChanged(); };
     interaction_.onSpanHoverChanged = [this]() { emit spanHoverChanged(); };
@@ -133,6 +134,14 @@ void TraceView::setBackgroundColor(const QColor& color) {
     backgroundColor_ = color;
     update();
     emit backgroundColorChanged();
+}
+void TraceView::setFitChannels(bool fit) {
+    if (layout_.fitChannels() == fit) return;
+    layout_.setFitChannels(fit);
+    layout_.setVerticalScroll(0.0);
+    emit fitChannelsChanged();
+    emit laneLayoutChanged();
+    invalidateScene();
 }
 qreal TraceView::rulerHeight() const { return kTopPad; }
 
@@ -171,6 +180,7 @@ void TraceView::setStore(TelemetryStore* store) {
             invalidateScene();
         });
         connect(store_, &TelemetryStore::traceResizeChanged, this, [this]() {
+            if (store_ && store_->resizingTraces()) setFitChannels(true);
             interaction_.cancelLaneResize();
             interaction_.resetSelection();
             interaction_.resetHover();
@@ -291,10 +301,21 @@ void TraceView::buildScene(TraceSceneBuilder& builder) {
             buildGroupHeader(builder, spec, rect);
         else if (spec.kind == ChannelSpec::Kind::SpanTrack)
             buildSpanTrack(builder, spec, rect);
-        else if (spec.key == QStringLiteral("delta"))
-            buildDelta(builder, rect);
-        else
-            buildChannel(builder, spec, rect, primary, compare);
+        else {
+            const bool sharedLane = !lane.overlays.isEmpty();
+            int valueSlot = 0;
+            const auto buildSample = [&](const ChannelSpec& sample,
+                                         bool overlay) {
+                if (sample.key == QStringLiteral("delta"))
+                    buildDelta(builder, rect);
+                else
+                    buildChannel(builder, sample, rect, primary, compare,
+                                 overlay, valueSlot++, sharedLane);
+            };
+            buildSample(spec, false);
+            for (int overlayIndex : lane.overlays)
+                buildSample(channelSpecs()[overlayIndex], true);
+        }
         builder.hLine(lane.y, labelWidth(), width(), 1.0,
                       alpha(kGridStrong, 110));
     }
@@ -545,7 +566,8 @@ void TraceView::buildConsistencyStrip(TraceSceneBuilder& builder,
 void TraceView::buildChannel(TraceSceneBuilder& builder,
                              const ChannelSpec& spec, const QRectF& rect,
                              const UnifiedLap* primary,
-                             const UnifiedLap* compare) {
+                             const UnifiedLap* compare,
+                             bool overlay, int valueSlot, bool sharedLane) {
     const bool rawChannel = spec.field.startsWith(QStringLiteral("raw:"));
     const bool sidecarChannel =
         spec.field.startsWith(QStringLiteral("sidecar:"));
@@ -560,13 +582,17 @@ void TraceView::buildChannel(TraceSceneBuilder& builder,
                           : fieldFor(*compare, spec.field))
             : nullptr;
 
-    QColor traceColor(store_->channelColor(spec.key));
-    if (!traceColor.isValid()) traceColor = spec.color;
-    const ChannelRange& range = rangeFor(spec, primary, compare);
     const ChannelAppearance appearance = store_->channelAppearance(spec.key);
+    QColor activeColor(store_->channelColor(spec.key));
+    if (!activeColor.isValid()) activeColor = kComparedLap;
+    const QColor referenceColor = appearance.referenceColor.isValid()
+                                      ? appearance.referenceColor
+                                      : kRed;
+    const ChannelRange& range = rangeFor(spec, primary, compare);
 
-    builder.vLine(rect.left() - 1, rect.top(), rect.bottom(), 1.0,
-                  alpha(kGridStrong, 110));
+    if (!overlay)
+        builder.vLine(rect.left() - 1, rect.top(), rect.bottom(), 1.0,
+                      alpha(kGridStrong, 110));
 
     const QRectF dataRect = rect.adjusted(1, 1, -1, -1);
     const double span = std::max(1.0e-12, range.max - range.min);
@@ -575,14 +601,16 @@ void TraceView::buildChannel(TraceSceneBuilder& builder,
                (1.0 - (value - range.min) / span) * dataRect.height();
     };
 
-    for (int grid = 1; grid < 4; ++grid) {
-        const double y = dataRect.top() + dataRect.height() * grid / 4.0;
-        builder.hLine(y, dataRect.left(), dataRect.right(), 1.0,
-                      alpha(kGrid, 110));
+    if (!overlay) {
+        for (int grid = 1; grid < 4; ++grid) {
+            const double y = dataRect.top() + dataRect.height() * grid / 4.0;
+            builder.hLine(y, dataRect.left(), dataRect.right(), 1.0,
+                          alpha(kGrid, 110));
+        }
+        if (range.min < 0 && range.max > 0)
+            builder.dashedHLine(toY(0), dataRect.left(), dataRect.right(),
+                                kGridStrong);
     }
-    if (range.min < 0 && range.max > 0)
-        builder.dashedHLine(toY(0), dataRect.left(), dataRect.right(),
-                            kGridStrong);
 
     // Whatever the viewport shows before lap start / after lap end is the
     // neighbouring lap, drawn faintly so it reads as context, not as data.
@@ -590,14 +618,14 @@ void TraceView::buildChannel(TraceSceneBuilder& builder,
     if (store_->viewStart() < 0.0) {
         if (const UnifiedLap* previous = snapshot_.neighbourPrev) {
             const std::vector<double>* data = fieldFor(*previous, spec.field);
-            buildSeries(builder, data, dataRect, range, alpha(traceColor, 150),
+            buildSeries(builder, data, dataRect, range, alpha(activeColor, 150),
                         0.0, false, -1.0, appearance.strokeWidth, -1.0, 0.0);
         }
     }
     if (store_->viewEnd() > 1.0) {
         if (const UnifiedLap* next = snapshot_.neighbourNext) {
             const std::vector<double>* data = fieldFor(*next, spec.field);
-            buildSeries(builder, data, dataRect, range, alpha(traceColor, 150),
+            buildSeries(builder, data, dataRect, range, alpha(activeColor, 150),
                         0.0, false, 1.0, appearance.strokeWidth, 1.0, 2.0);
         }
     }
@@ -615,22 +643,29 @@ void TraceView::buildChannel(TraceSceneBuilder& builder,
     TraceSceneBuilder::EnvelopeStyle style;
     style.width = 0.0;
     style.fill = appearance.fillOpacity > 0;
-    style.color = traceColor;
-    style.fillColor = traceColor;
+    style.color = activeColor;
+    style.fillColor = activeColor;
     style.fillColor.setAlphaF(appearance.fillOpacity);
     if (style.fill)
         builder.seriesPath(primaryPath_, dataRect, range.min, span, style);
     buildSeries(builder, compareData, dataRect, range,
-                alpha(appearance.referenceColor, 220), 0.0, true, 0.0,
+                alpha(referenceColor, 220), 0.0, true, 0.0,
                 appearance.strokeWidth);
     style.fill = false;
     style.width = appearance.strokeWidth;
     builder.seriesPath(primaryPath_, dataRect, range.min, span, style);
 
-    if (!range.empty || sidecarChannel)
+    if (!range.empty || sidecarChannel) {
+        QString valuePrefix = spec.title.left(3).toUpper();
+        if (spec.key == QStringLiteral("throttle"))
+            valuePrefix = QStringLiteral("T");
+        else if (spec.key == QStringLiteral("brake"))
+            valuePrefix = QStringLiteral("B");
         cursorLanes_.append(CursorLane{spec.field, dataRect, range.min,
-                                       range.max, traceColor, range.gear,
-                                       appearance.referenceColor});
+                                       range.max, activeColor, range.gear,
+                                       referenceColor, valuePrefix, valueSlot,
+                                       sharedLane});
+    }
 }
 
 void TraceView::buildGroupHeader(TraceSceneBuilder& builder,
@@ -1055,12 +1090,14 @@ void TraceView::buildCursorScene(TraceSceneBuilder& builder) {
             valueText = QString::number(value, 'f', 1);
         else
             valueText = QString::number(value, 'f', 2);
+        if (lane.combined) valueText.prepend(lane.valuePrefix + " ");
 
         if (lane.rect.height() >= 12.0) {
             const bool compact = lane.rect.height() < 24.0;
             const QRectF valueRect(
                 compact ? labelWidth() - 48.0 : 0.0,
-                compact ? lane.rect.top() : lane.rect.top() + 15.0,
+                compact ? lane.rect.top()
+                        : lane.rect.top() + 15.0 + lane.valueSlot * 12.0,
                 compact ? 42.0 : labelWidth() - 6.0,
                 compact ? lane.rect.height() : 12.0);
             builder.rect(valueRect, backgroundColor_);

@@ -6,6 +6,7 @@
 #include "core/TelemetryEngine.h"
 
 #include <QFontMetricsF>
+#include <QStringList>
 
 #include <algorithm>
 #include <cmath>
@@ -36,6 +37,10 @@ void TraceLaneLayout::rebuildChannelSpecs() {
     auto add = [&](const QString& key, const QString& title,
                    const QString& unit, QColor color, Clamp clamp,
                    const QString& field) {
+        if (store_) {
+            const QColor configured(store_->channelColor(key));
+            if (configured.isValid()) color = configured;
+        }
         ChannelSpec s;
         s.key = key;
         s.title = title;
@@ -126,11 +131,22 @@ void TraceLaneLayout::updateLabelWidth() {
     for (const ChannelSpec& spec : channelSpecs_) {
         if (spec.kind == ChannelSpec::Kind::GroupHeader) continue;
         if (store_ && !store_->channelVisible(spec.key)) continue;
-        if (!spec.title.isEmpty())
-            widest =
-                std::max(widest, titleMetrics.horizontalAdvance(spec.title));
-        if (!spec.unit.isEmpty())
-            widest = std::max(widest, unitMetrics.horizontalAdvance(spec.unit));
+        const bool combinedThrottleBrake =
+            store_ && spec.key == QStringLiteral("throttle") &&
+            store_->channelVisible(QStringLiteral("brake"));
+        const QString title = combinedThrottleBrake
+                                  ? QStringLiteral("Throttle / Brake")
+                                  : spec.title;
+        const QString unit = combinedThrottleBrake
+                                 ? QStringLiteral("% / bar")
+                                 : spec.unit;
+        if (!title.isEmpty()) {
+            const double titleWidth = titleMetrics.horizontalAdvance(title) +
+                                      (combinedThrottleBrake ? 18.0 : 0.0);
+            widest = std::max(widest, titleWidth);
+        }
+        if (!unit.isEmpty())
+            widest = std::max(widest, unitMetrics.horizontalAdvance(unit));
     }
     double next = std::ceil(widest + 10.0);
     if (itemWidth_ > 200.0)
@@ -140,12 +156,14 @@ void TraceLaneLayout::updateLabelWidth() {
     if (onLabelWidthChanged) onLabelWidthChanged();
 }
 
-double TraceLaneLayout::laneWeightFor(const ChannelSpec& spec) const {
+double TraceLaneLayout::laneHeightShareFor(const ChannelSpec& spec) const {
     if (spec.kind != ChannelSpec::Kind::Sample) return 0.0;
-    const double boost = trace::laneHeightBoost(spec.key);
+    const double heightShare =
+        std::clamp(store_->channelHeightPercent(spec.key) / 100.0, 0.01, 1.0);
+    if (!fitChannels_ && !store_->resizingTraces()) return heightShare;
     return std::min(trace::validLaneWeight(store_->channelWeight(spec.key)),
-                    std::numeric_limits<double>::max() / boost) *
-           boost;
+                    std::numeric_limits<double>::max() / heightShare) *
+           heightShare;
 }
 
 QVector<TraceLaneLayout::Lane> TraceLaneLayout::layoutLanes() const {
@@ -157,8 +175,11 @@ QVector<TraceLaneLayout::Lane> TraceLaneLayout::layoutLanes() const {
     for (const OverlayGroup& group : store_->overlayGroups()) {
         if (!group.expanded) collapsed.insert(group.id);
     }
+    int lastSampleSpecIndex = -1;
     for (int i = 0; i < channelSpecs_.size(); ++i) {
         const ChannelSpec& spec = channelSpecs_[i];
+        const int previousSampleSpecIndex = lastSampleSpecIndex;
+        if (spec.kind == ChannelSpec::Kind::Sample) lastSampleSpecIndex = i;
         if (spec.key == QStringLiteral("delta") && !compare) continue;
         if (spec.kind == ChannelSpec::Kind::GroupHeader) {
             // Headers stay visible so a collapsed folder can be reopened.
@@ -183,6 +204,21 @@ QVector<TraceLaneLayout::Lane> TraceLaneLayout::layoutLanes() const {
                    !store_->channelVisible(spec.key)) {
             continue;
         }
+        if (spec.kind == ChannelSpec::Kind::Sample &&
+            store_->channelCombined(spec.key) && !lanes.isEmpty()) {
+            Lane& previousLane = lanes.last();
+            const int previousSpecIndex = previousLane.overlays.isEmpty()
+                                              ? previousLane.spec
+                                              : previousLane.overlays.last();
+            const ChannelSpec& previousSpec =
+                channelSpecs_[previousSpecIndex];
+            if (previousSpecIndex == previousSampleSpecIndex &&
+                previousSpec.kind == ChannelSpec::Kind::Sample &&
+                previousSpec.groupId == spec.groupId) {
+                previousLane.overlays.append(i);
+                continue;
+            }
+        }
         Lane lane;
         lane.spec = i;
         if (spec.kind == ChannelSpec::Kind::GroupHeader)
@@ -190,17 +226,42 @@ QVector<TraceLaneLayout::Lane> TraceLaneLayout::layoutLanes() const {
         else if (spec.kind == ChannelSpec::Kind::SpanTrack)
             lane.height = kSpanTrackHeight;
         else {
-            lane.height = laneWeightFor(spec);
+            lane.height = laneHeightShareFor(spec);
             weights.push_back(lane.height);
         }
         lanes.append(lane);
     }
-    if (lanes.isEmpty()) return lanes;
+    if (lanes.isEmpty()) {
+        contentHeight_ = 0.0;
+        return lanes;
+    }
 
     const double consistencyHeight =
         store_->traceConfidenceMode() ? kConsistencyStripHeight : 0.0;
     const double available =
         std::max(0.0, itemHeight_ - kTopPad - kBottomPad - consistencyHeight);
+    if (!fitChannels_ && !store_->resizingTraces()) {
+        double y = kTopPad + consistencyHeight - verticalScroll_;
+        for (Lane& lane : lanes) {
+            const ChannelSpec& spec = channelSpecs_[lane.spec];
+            if (spec.kind == ChannelSpec::Kind::Sample)
+                lane.height = available * lane.height;
+            lane.y = y;
+            y += lane.height;
+        }
+        contentHeight_ = y + kBottomPad + verticalScroll_;
+        const qreal maxScroll =
+            std::max<qreal>(0.0, contentHeight_ - itemHeight_);
+        if (verticalScroll_ > maxScroll) {
+            verticalScroll_ = maxScroll;
+            y = kTopPad + consistencyHeight - verticalScroll_;
+            for (Lane& lane : lanes) {
+                lane.y = y;
+                y += lane.height;
+            }
+        }
+        return lanes;
+    }
     double preferredFixed = 0.0;
     for (const Lane& lane : lanes) {
         const ChannelSpec& spec = channelSpecs_[lane.spec];
@@ -226,6 +287,7 @@ QVector<TraceLaneLayout::Lane> TraceLaneLayout::layoutLanes() const {
             lane.height *= fixedScale;
         y += lane.height;
     }
+    contentHeight_ = itemHeight_;
     return lanes;
 }
 
@@ -233,6 +295,16 @@ QList<TraceLaneRow> TraceLaneLayout::laneRows() const {
     QList<TraceLaneRow> rows;
     for (const Lane& lane : layoutLanes()) {
         const ChannelSpec& spec = channelSpecs_[lane.spec];
+        QStringList titles{spec.title};
+        QStringList units;
+        if (!spec.unit.isEmpty()) units.append(spec.unit);
+        for (int overlayIndex : lane.overlays) {
+            const ChannelSpec& overlay = channelSpecs_[overlayIndex];
+            titles.append(overlay.title);
+            if (!overlay.unit.isEmpty()) units.append(overlay.unit);
+        }
+        titles.removeDuplicates();
+        units.removeDuplicates();
         QString kind = QStringLiteral("sample");
         if (spec.kind == ChannelSpec::Kind::GroupHeader)
             kind = QStringLiteral("group");
@@ -242,8 +314,8 @@ QList<TraceLaneRow> TraceLaneLayout::laneRows() const {
         TraceLaneRow row;
         row.key = spec.key;
         row.kind = kind;
-        row.title = spec.title;
-        row.unit = spec.unit;
+        row.title = titles.join(QStringLiteral(" / "));
+        row.unit = units.join(QStringLiteral(" / "));
         row.y = lane.y;
         row.height = lane.height;
         if (spec.kind == ChannelSpec::Kind::GroupHeader) {

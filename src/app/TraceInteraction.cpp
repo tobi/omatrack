@@ -170,8 +170,8 @@ void TraceInteraction::showChannelMenu(const QPointF& position) {
     const auto& spec = specs[index];
     if (onChannelMenuRequested)
         onChannelMenuRequested(spec.key, spec.title,
-                               store_->channelWeight(spec.key), position.x(),
-                               position.y());
+                               store_->channelHeightPercent(spec.key),
+                               position.x(), position.y());
 }
 
 int TraceInteraction::groupHeaderAt(const QPointF& position) const {

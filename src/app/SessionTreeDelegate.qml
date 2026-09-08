@@ -86,9 +86,9 @@ Item {
                 showVideoIcon: row.videoSession
                 title: row.driver || "Unknown"
                 titleBold: row.activeSession
-                titleColor: row.activeSession ? Style.accentColor : row.referenceSession ? Style.orangeColor : Style.foregroundColor
+                titleColor: row.activeSession ? Style.comparisonLapColor : row.referenceSession ? Style.referenceLapColor : Style.foregroundColor
                 titleSpacing: 4
-                videoIconColor: row.activeSession ? Style.accentColor : row.referenceSession ? Style.orangeColor : Style.foregroundColor
+                videoIconColor: row.activeSession ? Style.comparisonLapColor : row.referenceSession ? Style.referenceLapColor : Style.foregroundColor
                 visible: row.role === "session"
             }
             Label {

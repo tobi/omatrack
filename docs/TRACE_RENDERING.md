@@ -75,25 +75,35 @@ Official Qt 6.11 references:
 
 ## Controls and persistence
 
-**Channels** has active and reference color pickers for each channel. **Style…**
-expands width and area controls without rebuilding the delegate. **Reset style**
-restores the width, fill, and reference defaults; it does not reset active color
-or lane height.
+Every channel row has a **Style…** panel containing its active/reference color
+pickers, line width, and area fill. **Reset style** restores those four values
+for that channel; it does not change lane height or same-line grouping.
 
 ```yaml
 channels:
   throttle:
     visible: true
-    color: "#a7c080"
-    reference_color: "#e09d7f"
+    color: "#ffd400"
+    reference_color: "#ff2d2d"
     stroke_width: 1.25
     fill_opacity: 0.28
-    weight: 1
+    height_percent: 30
+    combine_with_previous: false
 ```
 
 Defaults are 1.25 logical px for both roles, no fill for most channels, 28% peak
-fill for throttle/brake/clutch, and 20% for delta. The reference is warm orange,
-except channels already using that default get a neutral reference instead.
+fill for throttle/brake/clutch, and 20% for delta. The lap being compared is
+bright yellow, while the reference lap is bright red. Speed reserves 50% of the
+trace area, throttle and brake share a 30% overlaid lane, and gear uses 5%.
+Each sample channel has an independent **Same line** checkbox and editable
+height stepper.
+Consecutive checked channels share the preceding visible sample lane while
+retaining independent vertical scales. Changing the height from any channel in
+that shared line updates the whole line. The stepper accepts 1–100% of the
+visible trace area in 1% increments. Editing it switches off FIT so the chosen
+percentage is exact; configurations above 100% remain available by vertical
+scrolling. Brake uses Same line by default to preserve the pedal overlay.
+Speed, pedals, and Gear default to 50%, 30%, and 5% respectively.
 Width accepts 0.5–4 px; fill accepts 0–100%. Values are validated in C++, exposed
 as typed model roles, and saved through the existing debounced `omatrack.yml`
 writer. Raw-channel appearance persists; sidecars retain their existing

@@ -861,14 +861,17 @@ public:
 
     Q_INVOKABLE QString channelColor(const QString& key) const;
     Q_INVOKABLE void setChannelColor(const QString& key, const QString& color);
+    Q_INVOKABLE void setChannelTraceColors(const QString& key,
+                                           const QString& activeColor,
+                                           const QString& referenceColor);
     Q_INVOKABLE QString channelExample(const QString& key);
-    Q_INVOKABLE double channelWeight(const QString& key) const;
     ChannelAppearance channelAppearance(const QString& key) const;
     Q_INVOKABLE void setChannelAppearance(const QString& key,
                                           double strokeWidth,
                                           double fillOpacity,
                                           const QString& referenceColor);
     Q_INVOKABLE void resetChannelAppearance(const QString& key);
+    Q_INVOKABLE double channelWeight(const QString& key) const;
     Q_INVOKABLE void setChannelWeight(const QString& key, double weight);
     bool resizingTraces() const { return resizingTraces_; }
     Q_INVOKABLE void beginTraceResize();
@@ -877,6 +880,14 @@ public:
     Q_INVOKABLE void resetTraceHeights();
     void previewTraceHeights(const QStringList& keys,
                              const std::vector<double>& heights);
+    Q_INVOKABLE double channelHeightPercent(const QString& key) const;
+    Q_INVOKABLE void setChannelHeightPercent(const QString& key,
+                                             double percent);
+    Q_INVOKABLE void setChannelLaneHeightPercent(const QString& key,
+                                                 double percent);
+    Q_INVOKABLE void resetChannelLaneHeightPercent(const QString& key);
+    Q_INVOKABLE bool channelCombined(const QString& key) const;
+    Q_INVOKABLE void setChannelCombined(const QString& key, bool combined);
 
     Q_INVOKABLE QStringList channelOrder() const;
 

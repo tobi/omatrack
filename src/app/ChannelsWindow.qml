@@ -14,6 +14,7 @@ ApplicationWindow {
     property string filterText: ""
     property var pluginRows: []
     property var sidecarRows: []
+    required property TraceView trace
 
     function refresh(): void {
         channelsWindow.sidecarRows = Store.sidecarLibrary();
@@ -30,11 +31,11 @@ ApplicationWindow {
     font.pixelSize: 11
     height: 620
     minimumHeight: 420
-    minimumWidth: 740
+    minimumWidth: 720
     objectName: "channelsWindow"
-    title: "Trace Channels"
+    title: "Channels"
     visible: false
-    width: 780
+    width: 820
 
     RowFilterModel {
         id: channelFilter
@@ -77,7 +78,7 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 font.bold: true
                 font.pixelSize: 15
-                text: "Trace channels"
+                text: "Channels"
             }
             CompactButton {
                 enabled: Store.ready
@@ -93,18 +94,12 @@ ApplicationWindow {
 
                 Layout.preferredHeight: 32
                 Layout.preferredWidth: 220
-                placeholderText: "Type to filter channels"
+                placeholderText: "Search channels"
                 selectByMouse: true
                 text: channelsWindow.filterText
 
                 onTextChanged: channelsWindow.filterText = text
             }
-        }
-        Label {
-            Layout.fillWidth: true
-            color: Style.mutedTextColor
-            elide: Text.ElideRight
-            text: "Active / reference colors · Style: line width and area fill · Resize lanes in the workspace"
         }
         Rectangle {
             Layout.fillWidth: true
@@ -277,9 +272,12 @@ ApplicationWindow {
             delegate: Rectangle {
                 id: channelRow
 
+                required property bool canCombine
                 required property string channelColor
                 required property bool channelVisible
+                required property bool combineWithPrevious
                 required property double fillOpacity
+                required property double heightPercent
                 required property int index
                 required property string key
                 required property string referenceColor
@@ -288,18 +286,29 @@ ApplicationWindow {
                 required property string title
                 required property string unit
 
-                color: channelRow.index % 2 === 0 ? Style.surfaceColor : Style.backgroundColor
-                height: channelsWindow.appearanceKey === channelRow.key ? 76 : 34
+                color: channelsWindow.appearanceKey === channelRow.key ? Style.surfaceColor : channelRow.index % 2 === 0 ? Style.surfaceColor : Style.backgroundColor
+                height: channelsWindow.appearanceKey === channelRow.key ? (channelRow.span ? 82 : 126) : 40
                 radius: 2
                 width: ListView.view.width
 
+                Rectangle {
+                    anchors.bottom: parent.bottom
+                    anchors.left: parent.left
+                    anchors.leftMargin: 6
+                    anchors.right: parent.right
+                    anchors.rightMargin: 6
+                    color: Style.darkBackgroundColor
+                    height: channelRow.span ? 36 : 80
+                    radius: 2
+                    visible: channelsWindow.appearanceKey === channelRow.key
+                }
                 RowLayout {
                     anchors.left: parent.left
                     anchors.leftMargin: 7
                     anchors.right: parent.right
                     anchors.rightMargin: 7
                     anchors.top: parent.top
-                    height: 34
+                    height: 40
                     spacing: 7
 
                     Switch {
@@ -308,6 +317,13 @@ ApplicationWindow {
                         scale: 0.78
 
                         onToggled: Store.setChannelVisible(channelRow.key, checked)
+                    }
+                    Rectangle {
+                        Accessible.ignored: true
+                        Layout.preferredHeight: 20
+                        Layout.preferredWidth: 4
+                        color: channelRow.channelColor
+                        radius: 2
                     }
                     Label {
                         Layout.fillWidth: true
@@ -334,82 +350,145 @@ ApplicationWindow {
                         horizontalAlignment: Text.AlignRight
                         text: channelsWindow.cursorTick >= 0 ? Store.channelExample(channelRow.key) : "—"
                     }
-                    TraceColorButton {
-                        text: "Active"
-                        traceColor: channelRow.channelColor
-
-                        onColorSelected: value => Store.setChannelColor(channelRow.key, value)
-                    }
-                    TraceColorButton {
-                        enabled: !channelRow.span
-                        text: "Ref"
-                        traceColor: channelRow.referenceColor
-
-                        onColorSelected: value => Store.setChannelAppearance(channelRow.key, channelRow.strokeWidth, channelRow.fillOpacity, value)
-                    }
                     CompactButton {
-                        enabled: !channelRow.span
-                        text: "Style…"
+                        ToolTip.text: "Colors and line appearance"
+                        ToolTip.visible: hovered
+                        text: "Style"
 
                         onClicked: channelsWindow.appearanceKey = channelsWindow.appearanceKey === channelRow.key ? "" : channelRow.key
                     }
+                    CheckBox {
+                        Layout.preferredWidth: 82
+                        checked: channelRow.combineWithPrevious
+                        enabled: channelRow.canCombine && !channelRow.span
+                        text: "Overlay"
+                        visible: channelRow.canCombine && !channelRow.span
+
+                        onToggled: Store.setChannelCombined(channelRow.key, checked)
+                    }
+                    Label {
+                        color: Style.mutedTextColor
+                        text: "Height"
+                    }
+                    SpinBox {
+                        id: laneHeightSpin
+
+                        Accessible.name: channelRow.title + " lane height"
+                        Layout.preferredHeight: 26
+                        Layout.preferredWidth: 78
+                        ToolTip.text: channelRow.combineWithPrevious ? "Height of this shared line" : "Lane height"
+                        ToolTip.visible: hovered
+                        editable: true
+                        enabled: !channelRow.span
+                        from: 1
+                        stepSize: 1
+                        textFromValue: function (value, locale) {
+                            return Number(value).toLocaleString(locale, 'f', 0) + "%";
+                        }
+                        to: 100
+                        value: Math.round(channelRow.heightPercent)
+                        valueFromText: function (text, locale) {
+                            return Number.fromLocaleString(locale, text.replace("%", ""));
+                        }
+
+                        onValueModified: {
+                            Store.setChannelLaneHeightPercent(channelRow.key, value);
+                            channelsWindow.trace.fitChannels = false;
+                        }
+                    }
                 }
-                RowLayout {
-                    anchors.bottom: parent.bottom
+                ColumnLayout {
                     anchors.left: parent.left
-                    anchors.leftMargin: 52
+                    anchors.leftMargin: 16
                     anchors.right: parent.right
-                    anchors.rightMargin: 10
-                    height: 38
-                    spacing: 8
+                    anchors.rightMargin: 16
+                    anchors.top: parent.top
+                    anchors.topMargin: 44
+                    spacing: 4
                     visible: channelsWindow.appearanceKey === channelRow.key
 
-                    Label {
-                        color: Style.mutedTextColor
-                        text: "Stroke"
-                    }
-                    Slider {
-                        id: strokeSlider
-
-                        Accessible.name: channelRow.title + " stroke width"
-                        Layout.preferredWidth: 120
-                        from: 0.5
-                        stepSize: 0.25
-                        to: 4.0
-                        value: channelRow.strokeWidth
-
-                        onMoved: Store.setChannelAppearance(channelRow.key, strokeSlider.value, channelRow.fillOpacity, channelRow.referenceColor)
-                    }
-                    Label {
-                        Layout.preferredWidth: 48
-                        font.family: Style.monoFontFamily
-                        text: channelRow.strokeWidth.toFixed(2) + " px"
-                    }
-                    Label {
-                        color: Style.mutedTextColor
-                        text: "Fill"
-                    }
-                    Slider {
-                        id: fillSlider
-
-                        Accessible.name: channelRow.title + " area opacity"
+                    RowLayout {
                         Layout.fillWidth: true
-                        from: 0.0
-                        stepSize: 0.01
-                        to: 1.0
-                        value: channelRow.fillOpacity
+                        Layout.preferredHeight: 32
+                        spacing: 8
 
-                        onMoved: Store.setChannelAppearance(channelRow.key, channelRow.strokeWidth, fillSlider.value, channelRow.referenceColor)
-                    }
-                    Label {
-                        Layout.preferredWidth: 34
-                        font.family: Style.monoFontFamily
-                        text: Math.round(channelRow.fillOpacity * 100) + "%"
-                    }
-                    CompactButton {
-                        text: "Reset style"
+                        Label {
+                            Layout.preferredWidth: 72
+                            color: Style.mutedTextColor
+                            text: "Colors"
+                        }
+                        TraceColorButton {
+                            text: "Active"
+                            traceColor: channelRow.channelColor
 
-                        onClicked: Store.resetChannelAppearance(channelRow.key)
+                            onColorSelected: value => Store.setChannelTraceColors(channelRow.key, value, channelRow.referenceColor)
+                        }
+                        TraceColorButton {
+                            enabled: !channelRow.span
+                            text: "Reference"
+                            traceColor: channelRow.referenceColor
+
+                            onColorSelected: value => Store.setChannelTraceColors(channelRow.key, channelRow.channelColor, value)
+                        }
+                        Item {
+                            Layout.fillWidth: true
+                        }
+                        CompactButton {
+                            text: "Reset"
+
+                            onClicked: Store.resetChannelAppearance(channelRow.key)
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 36
+                        spacing: 8
+                        visible: !channelRow.span
+
+                        Label {
+                            Layout.preferredWidth: 72
+                            color: Style.mutedTextColor
+                            text: "Line width"
+                        }
+                        Slider {
+                            id: strokeSlider
+
+                            Accessible.name: channelRow.title + " stroke width"
+                            Layout.preferredWidth: 110
+                            from: 0.5
+                            stepSize: 0.25
+                            to: 4.0
+                            value: channelRow.strokeWidth
+
+                            onMoved: Store.setChannelAppearance(channelRow.key, strokeSlider.value, channelRow.fillOpacity, channelRow.referenceColor)
+                        }
+                        Label {
+                            Layout.preferredWidth: 48
+                            font.family: Style.monoFontFamily
+                            text: channelRow.strokeWidth.toFixed(2) + " px"
+                        }
+                        Label {
+                            Layout.preferredWidth: 24
+                            color: Style.mutedTextColor
+                            text: "Fill"
+                        }
+                        Slider {
+                            id: fillSlider
+
+                            Accessible.name: channelRow.title + " area opacity"
+                            Layout.fillWidth: true
+                            from: 0.0
+                            stepSize: 0.01
+                            to: 1.0
+                            value: channelRow.fillOpacity
+
+                            onMoved: Store.setChannelAppearance(channelRow.key, channelRow.strokeWidth, fillSlider.value, channelRow.referenceColor)
+                        }
+                        Label {
+                            Layout.preferredWidth: 34
+                            font.family: Style.monoFontFamily
+                            text: Math.round(channelRow.fillOpacity * 100) + "%"
+                        }
                     }
                 }
             }

@@ -11,11 +11,11 @@
 // gear, dampers, delta-time), a shared cursor, zoom/pan viewport, and corner
 // zones with drag-to-edit.
 //
-// Every visible lane always fits the item height: lane height is the channel's
-// weight share of the available space, so the workspace never scrolls
-// vertically. A focused corner zooms the viewport, dims the traces outside
-// the zone, and annotates the zoomed view with brake / turn-in / apex /
-// throttle markers.
+// FIT distributes every visible lane inside the item. Manual sizing uses an
+// exact percentage of the available trace height and scrolls vertically when
+// the requested percentages exceed the viewport. A focused corner zooms the
+// viewport, dims the traces outside the zone, and annotates the zoomed view
+// with brake / turn-in / apex / throttle markers.
 //
 // Lane layout (channel specs, geometry, range caching) is delegated to
 // TraceLaneLayout; mouse gestures and hit-testing are delegated to
@@ -54,6 +54,8 @@ class TraceView : public QQuickItem {
     Q_PROPERTY(QColor backgroundColor READ backgroundColor WRITE
                    setBackgroundColor NOTIFY backgroundColorChanged)
     Q_PROPERTY(qreal labelWidth READ labelWidth NOTIFY labelWidthChanged)
+    Q_PROPERTY(bool fitChannels READ fitChannels WRITE setFitChannels NOTIFY
+                   fitChannelsChanged)
     Q_PROPERTY(
         QList<TraceLaneRow> laneRows READ laneRows NOTIFY laneLayoutChanged)
     Q_PROPERTY(qreal rulerHeight READ rulerHeight CONSTANT)
@@ -79,6 +81,8 @@ public:
     void setBackgroundColor(const QColor& color);
     qreal labelWidth() const { return layout_.labelWidth(); }
     qreal rulerHeight() const;
+    bool fitChannels() const { return layout_.fitChannels(); }
+    void setFitChannels(bool fit);
     QList<TraceLaneRow> laneRows() const { return layout_.laneRows(); }
 
     bool spanHoverVisible() const { return interaction_.spanHoverVisible(); }
@@ -122,11 +126,12 @@ signals:
     void backgroundColorChanged();
     void labelWidthChanged();
     void laneLayoutChanged();
+    void fitChannelsChanged();
 
     void cursorChangedFromCanvas();
     void cornerEdited();
     void channelMenuRequested(const QString& key, const QString& title,
-                              double weight, qreal x, qreal y);
+                              double heightPercent, qreal x, qreal y);
     void overlayChanged();
     void spanHoverChanged();
     void channelsRequested();
@@ -140,6 +145,9 @@ private:
         QColor color;
         bool gear = false;
         QColor referenceColor;
+        QString valuePrefix;
+        int valueSlot = 0;
+        bool combined = false;
     };
 
     // ── rendering ──────────────────────────────────────────────────
@@ -153,7 +161,9 @@ private:
     void buildChannel(TraceSceneBuilder& builder,
                       const TraceLaneLayout::ChannelSpec& spec,
                       const QRectF& rect, const omatrack::UnifiedLap* primary,
-                      const omatrack::UnifiedLap* compare);
+                      const omatrack::UnifiedLap* compare,
+                      bool overlay = false, int valueSlot = 0,
+                      bool sharedLane = false);
     void buildGroupHeader(TraceSceneBuilder& builder,
                           const TraceLaneLayout::ChannelSpec& spec,
                           const QRectF& rect);
