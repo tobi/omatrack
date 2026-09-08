@@ -2,11 +2,8 @@
 
 All notable user-facing changes are documented here.
 
-## 1.8.3 — 2026-09-07
+## 1.8.4 — 2026-09-08
 
-- Discover gauges while video plays, review/edit the source-frame boxes, confirm
-  the setup, then explicitly start extraction. Remembered extension proposals
-  default on but always require fresh image validation; native telemetry wins.
 - Gauge discovery is opt-in per video: nothing is decoded or detected until
   **Discover gauges** is chosen on that video, and opening another video turns
   it off again. The image-telemetry preference only allows the feature.
@@ -14,6 +11,12 @@ All notable user-facing changes are documented here.
   frames agree and fades when frames stop seeing it, overlapping boxes are
   resolved so a consistently seen larger gauge wins over the small glyph boxes
   inside it, and user-edited or confirmed boxes are never hidden by detections.
+
+## 1.8.3 — 2026-09-07
+
+- Discover gauges while video plays, review/edit the source-frame boxes, confirm
+  the setup, then explicitly start extraction. Remembered extension proposals
+  default on but always require fresh image validation; native telemetry wins.
 - Include the proven reader, tiny general detector and larger AiM detector
   offline, with verified companion contracts and upstream notices. No model
   download or account is needed to use the shipped bundle; footage stays local.
