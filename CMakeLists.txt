@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(omatrack VERSION 1.8.4 LANGUAGES CXX)
+project(omatrack VERSION 1.8.5 LANGUAGES CXX)
 if(WIN32)
   # Windows release layout: the app ships as a flat zip, so executables and
   # their load-time DLLs install at the prefix root and every non-binary
@@ -61,6 +61,9 @@ endif()
 find_package(Qt6 6.5 REQUIRED COMPONENTS
   Concurrent Core Gui Quick QuickControls2 Qml Network)
 if(WIN32)
+  # Private headers for the QWindowsWindow native interface used by
+  # src/app/WindowsIntegration.cpp; Qt exports Qt6::GuiPrivate only on request.
+  find_package(Qt6 6.5 REQUIRED COMPONENTS GuiPrivate)
   get_filename_component(OMATRACK_TOOLCHAIN_BIN_DIR
     "${CMAKE_CXX_COMPILER}" DIRECTORY)
   get_filename_component(OMATRACK_TOOLCHAIN_PREFIX

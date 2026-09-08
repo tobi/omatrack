@@ -2,6 +2,13 @@
 
 All notable user-facing changes are documented here.
 
+## 1.8.5 — 2026-09-08
+
+- Keep Windows fullscreen video a composited window instead of a game-style
+  exclusive surface: no display re-mode or refresh-rate switch, no black
+  flicker entering and leaving fullscreen, and Preferences/Channels/dialogs can
+  appear above the video.
+
 ## 1.8.4 — 2026-09-08
 
 - Gauge discovery is opt-in per video: nothing is decoded or detected until
