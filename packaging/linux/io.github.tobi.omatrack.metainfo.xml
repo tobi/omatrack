@@ -24,6 +24,13 @@
   <url type="bugtracker">https://github.com/tobi/omatrack/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.8.5" date="2026-09-08">
+      <description>
+        <p>Windows fullscreen video stays a composited window: no display
+        re-mode or refresh-rate switch, no black flicker, and dialogs can
+        appear above the video.</p>
+      </description>
+    </release>
     <release version="1.8.4" date="2026-09-08">
       <description>
         <p>Gauge discovery is opt-in per video and builds confidence by vote:
