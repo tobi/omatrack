@@ -60,7 +60,7 @@ Item {
         target: root.controller
     }
     Repeater {
-        model: root.controller.enabled && root.controller.geometryCompatible ? root.controller.gauges : null
+        model: (root.controller.discovering || root.controller.phase !== ImageTelemetryController.Discovery) && root.controller.geometryCompatible ? root.controller.gauges : null
 
         delegate: Rectangle {
             id: boxItem
@@ -157,18 +157,27 @@ Item {
         spacing: 4
 
         CheckBox {
+            id: discoverToggle
+
             Material.foreground: Style.foregroundColor
-            checked: root.controller.enabled
+            checked: root.controller.discovering
             font.pixelSize: Style.smallFontSize
+            objectName: "gaugeDiscoverToggle"
             text: "Discover gauges"
 
-            onToggled: Store.imageTelemetryEnabled = checked
+            // Opt in for this video only. Opening another video turns it off
+            // again; the preference merely allows image telemetry at all.
+            onToggled: {
+                if (discoverToggle.checked && !Store.imageTelemetryEnabled)
+                    Store.imageTelemetryEnabled = true;
+                root.controller.discovering = discoverToggle.checked;
+            }
         }
         ToolButton {
             Material.foreground: Style.foregroundColor
             font.pixelSize: Style.smallFontSize
             text: root.reviewOpen ? "Hide setup" : "Review setup"
-            visible: root.controller.enabled
+            visible: root.controller.discovering || root.controller.phase !== ImageTelemetryController.Discovery
 
             onClicked: root.reviewOpen = !root.reviewOpen
         }
@@ -184,7 +193,9 @@ Item {
         color: Style.videoControlBackgroundColor
         height: Math.max(0, Math.min(root.height - 136, contents.implicitHeight + 16))
         radius: 4
-        visible: root.controller.enabled && root.reviewOpen
+        // A confirmed or extracting setup stays reviewable even after the
+        // discovery toggle is turned off again.
+        visible: (root.controller.discovering || root.controller.phase !== ImageTelemetryController.Discovery) && root.reviewOpen
         width: Math.min(360, root.width - 16)
 
         MouseArea {

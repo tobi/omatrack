@@ -466,11 +466,24 @@ Native lap distance is accepted only when its continuity and total agree with in
 - Opening a video without embedded telemetry clears active/reference laps and
   gives the video the full analysis workspace. Telemetry-bearing videos retain
   the synchronized trace workspace below playback when leaving fullscreen.
-- `ImageTelemetryController` uses **Discover → Confirm → Extract**. Enabling
-  `video.image_telemetry` starts pixel-only discovery, not reading. Full-source
+- `ImageTelemetryController` uses **Discover → Confirm → Extract**.
+  `video.image_telemetry` only allows the feature; discovery itself is the
+  runtime `discovering` opt-in the overlay toggle sets for the current video,
+  and every source change or settings reset clears it. Nothing decodes or
+  detects until the user asks. Discovery is pixel-only, not reading. Full-source
   boxes stay on the video while a serial worker samples approximately every three
-  seconds. Confidence is repeated spatial/type evidence at independent actual PTS,
-  never repeated paused frames or calibrated probabilities. The user may edit,
+  seconds. Confidence is a ballot: each independent actual-PTS frame votes for
+  the tracks it re-detects and against those it does not; an automatic learned
+  track is shown only after `GaugeSetup::VotesToShow` votes, and can be
+  confirmed without visual confirmation only after `VotesToConfirm`. Repeated
+  paused frames are not votes and nothing is a calibrated probability.
+  `GaugeEvidence::resolveOverlaps` keeps boxes disjoint: profile anchors and
+  user-owned tracks (edited, confirmed, persisted proposals) always keep their
+  place; automatic tracks are admitted heaviest first with weight votes × √area,
+  so a consistently seen large gauge suppresses the small glyph boxes nested in
+  it. Suppressed tracks keep voting and return if they outweigh the winner;
+  candidates below the vote threshold cannot suppress anything. Confirmation
+  prunes hidden and suppressed automatic tracks before saving. The user may edit,
   relabel, choose fill direction, disable and visually confirm boxes. Confirm saves
   the setup; only the separate **Start extraction** action admits compatible selected
   crops into the progressive 5 Hz recording. Discovery can inspect native-bearing

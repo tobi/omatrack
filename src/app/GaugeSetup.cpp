@@ -16,13 +16,48 @@ bool validBox(const QRectF& b) {
            // readerField's exact reviewed-crop admission remains unchanged.
            b.right() <= 1 + 1e-9 && b.bottom() <= 1 + 1e-9;
 }
-double overlap(const QRectF& a, const QRectF& b) {
+double area(const QRectF& r) { return r.width() * r.height(); }
+double intersection(const QRectF& a, const QRectF& b) {
     const auto r = a.intersected(b);
-    const double i = r.isEmpty() ? 0 : r.width() * r.height();
-    const double u = a.width() * a.height() + b.width() * b.height() - i;
+    return r.isEmpty() ? 0 : area(r);
+}
+double overlap(const QRectF& a, const QRectF& b) {
+    const double i = intersection(a, b);
+    const double u = area(a) + area(b) - i;
     return u > 0 ? i / u : 0;
 }
+// Named product decisions for the per-frame ballot (see GaugeEvidence).
+// A detection re-identifies a track above this IoU.
+constexpr double kMatchIou = 0.5;
+// Two tracks conflict when their intersection covers this fraction of the
+// smaller box: nesting and near-duplicates, not touching neighbours.
+constexpr double kConflictFraction = 0.5;
+// Weight = votes × area^kAreaExponent. 0.5 makes a box four times the area
+// worth twice the votes, so consistent large gauges beat many small glyphs
+// without a one-vote screen-sized box beating an established small gauge.
+constexpr double kAreaExponent = 0.5;
+constexpr int kMaxVotes = 20;
+// Consecutive independent frames without a vote before an automatic track
+// is dropped and before a validated track loses its confirmation.
+constexpr int kMissesToRetire = 3;
+constexpr int kMissesToUnconfirm = 2;
+
+bool conflicts(const QRectF& a, const QRectF& b) {
+    const double smaller = std::min(area(a), area(b));
+    return smaller > 0 && intersection(a, b) / smaller >= kConflictFraction;
+}
+double weight(const GaugeRegion& r) {
+    return r.hits * std::pow(area(r.box), kAreaExponent);
+}
 }  // namespace
+bool GaugeRegion::visible() const {
+    return !suppressed && (anchored() || hits >= GaugeSetup::VotesToShow);
+}
+void GaugeSetup::pruneInvisible() {
+    regions.erase(std::remove_if(regions.begin(), regions.end(),
+                                 [](const auto& r) { return !r.visible(); }),
+                  regions.end());
+}
 bool GaugeSetup::valid() const {
     if (sourceSize.width() <= 0 || sourceSize.height() <= 0 ||
         sourceSize.width() > 16384 || sourceSize.height() > 16384 ||
@@ -268,10 +303,12 @@ bool GaugeEvidence::observe(qint64 pts, QSize size,
         }
     }
     setup.sourceSize = size;
+    // Ballot: every existing track either collects this frame's vote or
+    // loses one.
     QSet<int> used;
     for (auto& r : setup.regions) {
         int best = -1;
-        double bestOverlap = .5;
+        double bestOverlap = kMatchIou;
         for (int i = 0; i < observations.size(); ++i) {
             const auto& o = observations[i];
             if (used.contains(i) || !validBox(o.box) ||
@@ -300,7 +337,7 @@ bool GaugeEvidence::observe(qint64 pts, QSize size,
                 (r.profileKey.isEmpty() ||
                  (o.direction == r.direction &&
                   GaugeSetup::readerField(r, size) >= 0))) {
-                r.hits = std::min(20, r.hits + 1);
+                r.hits = std::min(kMaxVotes, r.hits + 1);
                 r.misses = 0;
                 r.score = o.score;
                 continue;
@@ -308,15 +345,16 @@ bool GaugeEvidence::observe(qint64 pts, QSize size,
         }
         r.hits = std::max(0, r.hits - 1);
         ++r.misses;
-        if (r.misses >= 2) r.confirmed = false;
+        if (r.misses >= kMissesToUnconfirm) r.confirmed = false;
     }
     setup.regions.erase(
         std::remove_if(setup.regions.begin(), setup.regions.end(),
                        [](const auto& r) {
-                           return r.misses >= 3 && !r.edited && !r.confirmed &&
-                                  !r.proposal;
+                           return r.misses >= kMissesToRetire && !r.userOwned();
                        }),
         setup.regions.end());
+    // Unmatched detections become hidden candidates with one vote; they show
+    // once a second independent frame agrees.
     for (int i = 0; i < observations.size(); ++i) {
         if (used.contains(i) || !validBox(observations[i].box)) continue;
         auto r = observations[i];
@@ -335,8 +373,45 @@ bool GaugeEvidence::observe(qint64 pts, QSize size,
             [&r](const auto& existing) { return existing.id == r.id; }));
         r.confirmed = false;
         r.hits = 1;
+        r.misses = 0;
         setup.regions.append(r);
     }
+    resolveOverlaps();
     return true;
+}
+void GaugeEvidence::resolveOverlaps() {
+    // Anchored tracks keep their place unconditionally (a user may deliberately
+    // overlap two edits). Automatic tracks are admitted heaviest first and
+    // suppressed when they conflict with anything already admitted. A
+    // candidate below the vote threshold is hidden anyway and cannot
+    // suppress anything: one frame's screen-sized box never hides an
+    // established gauge. Order is deterministic: weight, then area, then id.
+    QVector<int> automatic, kept;
+    for (int i = 0; i < setup.regions.size(); ++i) {
+        auto& r = setup.regions[i];
+        r.suppressed = false;
+        if (r.anchored())
+            kept.append(i);
+        else
+            automatic.append(i);
+    }
+    std::sort(automatic.begin(), automatic.end(), [this](int a, int b) {
+        const auto& ra = setup.regions[a];
+        const auto& rb = setup.regions[b];
+        const double wa = weight(ra), wb = weight(rb);
+        if (wa != wb) return wa > wb;
+        const double aa = area(ra.box), ab = area(rb.box);
+        if (aa != ab) return aa > ab;
+        return ra.id < rb.id;
+    });
+    for (const int i : automatic) {
+        auto& r = setup.regions[i];
+        for (const int k : kept)
+            if (conflicts(r.box, setup.regions[k].box)) {
+                r.suppressed = true;
+                break;
+            }
+        if (!r.suppressed && r.hits >= GaugeSetup::VotesToShow) kept.append(i);
+    }
 }
 }  // namespace omatrack
