@@ -960,6 +960,7 @@ Requirements: CMake 3.21+, `pkg-config`, libmpv and libyaml development files, a
 ```sh
 cmake --preset release
 cmake --build --preset release
+make install # defaults to ~/.local/bin/omatrack, no sudo; PREFIX overrides ~/.local
 
 ./build/omatrack /path/to/telemetry-directory
 ./build/omatrack --verbose /path/to/telemetry-directory
