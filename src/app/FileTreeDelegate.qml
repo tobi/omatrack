@@ -45,7 +45,7 @@ Item {
     readonly property string sessionStart: row.startTimeText
     required property string startTimeText
     required property string title
-    readonly property color titleColor: !row.available ? Style.redColor : row.activeFile ? Style.accentColor : row.referenceFile ? Style.orangeColor : Style.foregroundColor
+    readonly property color titleColor: !row.available ? Style.redColor : row.activeFile ? Style.comparisonLapColor : row.referenceFile ? Style.referenceLapColor : Style.foregroundColor
     readonly property string titleText: row.sessionName !== "" && row.driver !== "" ? row.sessionName + " " + row.driver : row.sessionName || row.driver || "Untitled"
     required property string topQuartileTime
     readonly property bool videoFile: row.kind === "file" && row.isVideo
@@ -112,7 +112,7 @@ Item {
                 Layout.fillWidth: true
                 detail: row.detailText
                 detailColor: !row.available ? Style.redColor : Style.mutedTextColor
-                rightColor: row.activeFile ? Style.accentColor : row.referenceFile ? Style.orangeColor : Style.foregroundColor
+                rightColor: row.activeFile ? Style.comparisonLapColor : row.referenceFile ? Style.referenceLapColor : Style.foregroundColor
                 rightValue: row.bestTime || "—"
                 title: row.titleText
                 titleBold: row.activeFile
@@ -132,7 +132,7 @@ Item {
             }
             Label {
                 Layout.fillWidth: true
-                color: !row.available ? Style.redColor : row.activeFile ? Style.accentColor : row.referenceFile ? Style.orangeColor : row.role === "day" ? Style.dimTextColor : Style.foregroundColor
+                color: !row.available ? Style.redColor : row.activeFile ? Style.comparisonLapColor : row.referenceFile ? Style.referenceLapColor : row.role === "day" ? Style.dimTextColor : Style.foregroundColor
                 elide: Text.ElideRight
                 font.bold: row.sectionRow || row.role === "day" || row.activeFile
                 font.family: row.role === "day" ? Style.monoFontFamily : Style.uiFontFamily

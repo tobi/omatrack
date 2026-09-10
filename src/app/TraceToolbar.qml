@@ -105,6 +105,19 @@ Item {
             }
         }
         CompactToolButton {
+            Layout.fillHeight: true
+            Layout.maximumWidth: 42
+            Layout.minimumWidth: 42
+            Layout.preferredWidth: 42
+            checked: toolbar.trace.fitChannels
+            enabled: Store.ready && !Store.resizingTraces
+            objectName: "fitTraceChannelsButton"
+            text: "FIT"
+            tip: toolbar.trace.fitChannels ? "Use exact channel percentages (wheel scrolls overflow; Ctrl+wheel zooms)" : "Fit all channel lanes into the pane"
+
+            onClicked: toolbar.trace.fitChannels = !toolbar.trace.fitChannels
+        }
+        CompactToolButton {
             id: eventModeButton
 
             Layout.fillHeight: true

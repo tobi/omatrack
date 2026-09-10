@@ -15,7 +15,7 @@ BUILD_DIR ?= $(patsubst release,build,\
 BINARY := $(BUILD_DIR)/omatrack
 CLI    := $(BUILD_DIR)/omatrack-cli
 
-PREFIX  ?= /usr/local
+PREFIX  ?= $(HOME)/.local
 DESTDIR ?=
 
 .PHONY: all build check lint memcheck install run run-debug clean distclean help
@@ -49,8 +49,8 @@ memcheck:
 	ctest --preset asan -L unit -E headless-contract --output-on-failure
 
 # -- install --------------------------------------------------------------
-#   make install                  -> /usr/local
-#   make install PREFIX=~/.local
+#   make install                  -> ~/.local/bin (no sudo)
+#   make install PREFIX=/usr/local
 #   make install DESTDIR=/tmp/stage PREFIX=/usr   (staged packaging)
 install: build
 	cmake --install $(BUILD_DIR) --prefix $(PREFIX)

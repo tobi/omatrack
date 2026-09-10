@@ -60,7 +60,7 @@ Rectangle {
                 readonly property int selectedOrdinal: sessionStrip.reference ? Store.compareLapOrdinal : Store.primaryLapOrdinal
                 required property string sessionKey
 
-                color: sessionStrip.reference ? Qt.tint(Style.surfaceColor, Qt.rgba(Style.orangeColor.r, Style.orangeColor.g, Style.orangeColor.b, 0.08)) : Style.surfaceColor
+                color: sessionStrip.reference ? Qt.tint(Style.surfaceColor, Qt.rgba(Style.referenceLapColor.r, Style.referenceLapColor.g, Style.referenceLapColor.b, 0.08)) : Style.surfaceColor
                 height: 30
                 radius: 4
                 width: parent.width
@@ -81,13 +81,13 @@ Rectangle {
                         DenseTwoLineRow {
                             anchors.fill: parent
                             detailVisible: false
-                            rightColor: sessionStrip.reference ? Style.orangeColor : Style.accentColor
+                            rightColor: sessionStrip.reference ? Style.referenceLapColor : Style.comparisonLapColor
                             rightFamily: Style.monoFontFamily
                             rightSize: 9
                             rightValue: (sessionStrip.selectedOrdinal > 0 ? "L" + sessionStrip.selectedOrdinal + " · " : "") + sessionStrip.selectedLapTime
                             title: (sessionStrip.reference ? "REF · " : "ACTIVE · ") + (sessionStrip.driverName !== "" && sessionStrip.driverName !== "Unknown" ? sessionStrip.driverName : "Unknown driver")
                             titleBold: true
-                            titleColor: sessionStrip.reference ? Style.orangeColor : Style.accentColor
+                            titleColor: sessionStrip.reference ? Style.referenceLapColor : Style.comparisonLapColor
                             titleFamily: Style.monoFontFamily
                             titleSize: 9
                             titleSpacing: 4
@@ -159,7 +159,7 @@ Rectangle {
                                     // bindings before it is reparented,
                                     // so `parent` is null on creation.
                                     anchors.verticalCenter: proportionalLapRow.verticalCenter
-                                    border.color: sessionStrip.reference ? Style.orangeColor : Style.accentColor
+                                    border.color: sessionStrip.reference ? Style.referenceLapColor : Style.comparisonLapColor
                                     border.width: proportionalLap.selectedLap || proportionalLap.confidenceLap ? 1 : 0
                                     color: proportionalLap.selectedLap ? Style.selectionColor : proportionalLap.confidenceLap ? Qt.tint(Style.traceBackgroundColor, Qt.rgba(Style.accentColor.r, Style.accentColor.g, Style.accentColor.b, 0.2)) : proportionalLapMouse.containsMouse ? Style.backgroundColor : Style.traceBackgroundColor
                                     height: proportionalLapRow.height - 8
@@ -181,7 +181,7 @@ Rectangle {
                                         anchors.fill: parent
                                         anchors.leftMargin: 5
                                         anchors.rightMargin: 5
-                                        color: proportionalLap.selectedLap ? (sessionStrip.reference ? Style.orangeColor : Style.accentColor) : proportionalLap.isFastest ? Style.greenColor : Style.foregroundColor
+                                        color: proportionalLap.selectedLap ? (sessionStrip.reference ? Style.referenceLapColor : Style.comparisonLapColor) : proportionalLap.isFastest ? Style.greenColor : Style.foregroundColor
                                         elide: Text.ElideRight
                                         font.bold: proportionalLap.selectedLap || proportionalLap.confidenceLap
                                         font.family: Style.monoFontFamily
@@ -194,7 +194,7 @@ Rectangle {
                                         anchors.bottomMargin: 2
                                         anchors.top: parent.top
                                         anchors.topMargin: 2
-                                        color: sessionStrip.reference ? Style.orangeColor : Style.accentColor
+                                        color: sessionStrip.reference ? Style.referenceLapColor : Style.comparisonLapColor
                                         visible: proportionalLap.selectedLap && isFinite(proportionalLap.playheadFrac)
                                         width: 2
                                         x: Math.min(Math.max(proportionalLap.playheadFrac, 0), 1) * (parent.width - width)
