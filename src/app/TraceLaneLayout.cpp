@@ -137,9 +137,8 @@ void TraceLaneLayout::updateLabelWidth() {
         const QString title = combinedThrottleBrake
                                   ? QStringLiteral("Throttle / Brake")
                                   : spec.title;
-        const QString unit = combinedThrottleBrake
-                                 ? QStringLiteral("% / bar")
-                                 : spec.unit;
+        const QString unit =
+            combinedThrottleBrake ? QStringLiteral("% / bar") : spec.unit;
         if (!title.isEmpty()) {
             const double titleWidth = titleMetrics.horizontalAdvance(title) +
                                       (combinedThrottleBrake ? 18.0 : 0.0);
@@ -156,17 +155,38 @@ void TraceLaneLayout::updateLabelWidth() {
     if (onLabelWidthChanged) onLabelWidthChanged();
 }
 
+bool TraceLaneLayout::fitChannels() const {
+    return !store_ || store_->fitTraceChannels();
+}
+
+qreal TraceLaneLayout::plotTop() const {
+    return kTopPad + (store_ && store_->traceConfidenceMode()
+                          ? kConsistencyStripHeight
+                          : 0.0);
+}
+
+qreal TraceLaneLayout::plotHeight() const {
+    return std::max(0.0, itemHeight_ - plotTop() - kBottomPad);
+}
+
+qreal TraceLaneLayout::contentHeight() const {
+    const auto lanes = layoutLanes(false);
+    return lanes.isEmpty() ? itemHeight_
+                           : lanes.back().y + lanes.back().height + kBottomPad;
+}
+
 double TraceLaneLayout::laneHeightShareFor(const ChannelSpec& spec) const {
     if (spec.kind != ChannelSpec::Kind::Sample) return 0.0;
     const double heightShare =
         std::clamp(store_->channelHeightPercent(spec.key) / 100.0, 0.01, 1.0);
-    if (!fitChannels_ && !store_->resizingTraces()) return heightShare;
+    if (!fitChannels() && !store_->resizingTraces()) return heightShare;
     return std::min(trace::validLaneWeight(store_->channelWeight(spec.key)),
                     std::numeric_limits<double>::max() / heightShare) *
            heightShare;
 }
 
-QVector<TraceLaneLayout::Lane> TraceLaneLayout::layoutLanes() const {
+QVector<TraceLaneLayout::Lane> TraceLaneLayout::layoutLanes(
+    bool scrolled) const {
     QVector<Lane> lanes;
     if (!store_) return lanes;
     const omatrack::UnifiedLap* compare = store_->compareUnified();
@@ -175,11 +195,8 @@ QVector<TraceLaneLayout::Lane> TraceLaneLayout::layoutLanes() const {
     for (const OverlayGroup& group : store_->overlayGroups()) {
         if (!group.expanded) collapsed.insert(group.id);
     }
-    int lastSampleSpecIndex = -1;
     for (int i = 0; i < channelSpecs_.size(); ++i) {
         const ChannelSpec& spec = channelSpecs_[i];
-        const int previousSampleSpecIndex = lastSampleSpecIndex;
-        if (spec.kind == ChannelSpec::Kind::Sample) lastSampleSpecIndex = i;
         if (spec.key == QStringLiteral("delta") && !compare) continue;
         if (spec.kind == ChannelSpec::Kind::GroupHeader) {
             // Headers stay visible so a collapsed folder can be reopened.
@@ -204,20 +221,11 @@ QVector<TraceLaneLayout::Lane> TraceLaneLayout::layoutLanes() const {
                    !store_->channelVisible(spec.key)) {
             continue;
         }
-        if (spec.kind == ChannelSpec::Kind::Sample &&
-            store_->channelCombined(spec.key) && !lanes.isEmpty()) {
-            Lane& previousLane = lanes.last();
-            const int previousSpecIndex = previousLane.overlays.isEmpty()
-                                              ? previousLane.spec
-                                              : previousLane.overlays.last();
-            const ChannelSpec& previousSpec =
-                channelSpecs_[previousSpecIndex];
-            if (previousSpecIndex == previousSampleSpecIndex &&
-                previousSpec.kind == ChannelSpec::Kind::Sample &&
-                previousSpec.groupId == spec.groupId) {
-                previousLane.overlays.append(i);
-                continue;
-            }
+        if (spec.kind == ChannelSpec::Kind::Sample && !lanes.isEmpty() &&
+            store_->channelLaneKey(spec.key) ==
+                channelSpecs_[lanes.last().spec].key) {
+            lanes.last().overlays.append(i);
+            continue;
         }
         Lane lane;
         lane.spec = i;
@@ -231,17 +239,11 @@ QVector<TraceLaneLayout::Lane> TraceLaneLayout::layoutLanes() const {
         }
         lanes.append(lane);
     }
-    if (lanes.isEmpty()) {
-        contentHeight_ = 0.0;
-        return lanes;
-    }
+    if (lanes.isEmpty()) return lanes;
 
-    const double consistencyHeight =
-        store_->traceConfidenceMode() ? kConsistencyStripHeight : 0.0;
-    const double available =
-        std::max(0.0, itemHeight_ - kTopPad - kBottomPad - consistencyHeight);
-    if (!fitChannels_ && !store_->resizingTraces()) {
-        double y = kTopPad + consistencyHeight - verticalScroll_;
+    const double available = plotHeight();
+    if (!fitChannels() && !store_->resizingTraces()) {
+        double y = plotTop();
         for (Lane& lane : lanes) {
             const ChannelSpec& spec = channelSpecs_[lane.spec];
             if (spec.kind == ChannelSpec::Kind::Sample)
@@ -249,17 +251,11 @@ QVector<TraceLaneLayout::Lane> TraceLaneLayout::layoutLanes() const {
             lane.y = y;
             y += lane.height;
         }
-        contentHeight_ = y + kBottomPad + verticalScroll_;
-        const qreal maxScroll =
-            std::max<qreal>(0.0, contentHeight_ - itemHeight_);
-        if (verticalScroll_ > maxScroll) {
-            verticalScroll_ = maxScroll;
-            y = kTopPad + consistencyHeight - verticalScroll_;
-            for (Lane& lane : lanes) {
-                lane.y = y;
-                y += lane.height;
-            }
-        }
+        const double scroll =
+            scrolled ? std::clamp(verticalScroll_, 0.0,
+                                  std::max(0.0, y + kBottomPad - itemHeight_))
+                     : 0.0;
+        for (Lane& lane : lanes) lane.y -= scroll;
         return lanes;
     }
     double preferredFixed = 0.0;
@@ -277,7 +273,7 @@ QVector<TraceLaneLayout::Lane> TraceLaneLayout::layoutLanes() const {
     const auto heights =
         trace::fitLaneHeights(std::move(weights), weightedAvailable);
     size_t sample = 0;
-    double y = kTopPad + consistencyHeight;
+    double y = plotTop();
     for (Lane& lane : lanes) {
         const ChannelSpec& spec = channelSpecs_[lane.spec];
         lane.y = y;
@@ -287,7 +283,6 @@ QVector<TraceLaneLayout::Lane> TraceLaneLayout::layoutLanes() const {
             lane.height *= fixedScale;
         y += lane.height;
     }
-    contentHeight_ = itemHeight_;
     return lanes;
 }
 

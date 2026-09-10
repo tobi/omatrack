@@ -131,6 +131,8 @@ public:
     bool visible = false;
     QString color;
     double heightPercent = 5.0;
+    QString
+        laneKey;  // resolved sample-lane root, shared by editor and renderer
     bool combineWithPrevious = false;
     bool canCombine = false;
     double strokeWidth = 1.25;

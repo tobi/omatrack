@@ -27,7 +27,8 @@ QString normalizedSidebarPinPath(const QString& path) {
 }
 
 QColor defaultChannelColor(const QString& key) {
-    if (key == QStringLiteral("delta")) return QColor(QStringLiteral("#83c092"));
+    if (key == QStringLiteral("delta"))
+        return QColor(QStringLiteral("#83c092"));
     return QColor(QStringLiteral("#ffd400"));
 }
 
@@ -268,6 +269,8 @@ void PreferencesStore::loadPreferences() {
         config.save();
     }
     videoMuted_ = config.value(QStringLiteral("video/muted"), false).toBool();
+    fitTraceChannels_ =
+        config.value(QStringLiteral("trace/fit_channels"), true).toBool();
     imageTelemetryEnabled_ =
         config.value(QStringLiteral("video/image_telemetry"), false).toBool();
     imageTelemetryModel_ =
@@ -551,6 +554,7 @@ void PreferencesStore::scheduleSave() {
         locationRows.isEmpty() ? QVariant() : QVariant(locationRows));
     config.setValue(QStringLiteral("recent_files"), recentFiles_);
     config.setValue(QStringLiteral("video/muted"), videoMuted_);
+    config.setValue(QStringLiteral("trace/fit_channels"), fitTraceChannels_);
     config.setValue(QStringLiteral("video/image_telemetry"),
                     imageTelemetryEnabled_);
     config.setValue(QStringLiteral("video/image_model"), imageTelemetryModel_);
@@ -638,8 +642,7 @@ void PreferencesStore::scheduleSave() {
                 {QStringLiteral("height_percent"),
                  channelHeightPercent_.value(key, 5.0)},
                 {QStringLiteral("combine_with_previous"),
-                 channelCombined_.value(key,
-                                        key == QStringLiteral("brake"))}});
+                 channelCombined_.value(key, key == QStringLiteral("brake"))}});
     // Include raw-channel weights too. Resize drafts live in TelemetryStore,
     // not here, so another preference save cannot publish an unsaved resize.
     for (auto it = channelWeights_.cbegin(); it != channelWeights_.cend();
@@ -670,10 +673,10 @@ void PreferencesStore::scheduleSave() {
 void PreferencesStore::loadChannelsConfig() {
     // The dialog exposes every UnifiedLap channel; extras start hidden so
     // enabling them never changes the default overview.
-    static const char* order[] = {"delta",   "speed",    "throttle",
-                                  "brake",   "steering", "gear",
-                                  "dampers", "g_long",   "clutch",
-                                  "driver_throttle", "gps_lat", "gps_lon"};
+    static const char* order[] = {"delta",           "speed",    "throttle",
+                                  "brake",           "steering", "gear",
+                                  "dampers",         "g_long",   "clutch",
+                                  "driver_throttle", "gps_lat",  "gps_lon"};
     channelOrder_ =
         QStringList{order, order + sizeof(order) / sizeof(order[0])};
     YamlConfig& config = YamlConfig::instance();
@@ -708,18 +711,17 @@ void PreferencesStore::loadChannelsConfig() {
         channelColors_[k] = color.isValid() ? color : defaultChannelColor(k);
         channelWeights_[k] = trace::validLaneWeight(
             entry.value(QStringLiteral("weight"), 1.0).toDouble());
-        const double defaultHeight =
-            k == QStringLiteral("speed")
-                ? 50.0
-                : (k == QStringLiteral("throttle") ||
-                           k == QStringLiteral("brake")
-                       ? 30.0
-                       : 5.0);
-        channelHeightPercent_[k] = qBound(
-            1.0,
-            entry.value(QStringLiteral("height_percent"), defaultHeight)
-                .toDouble(),
-            100.0);
+        const double defaultHeight = k == QStringLiteral("speed")
+                                         ? 50.0
+                                         : (k == QStringLiteral("throttle") ||
+                                                    k == QStringLiteral("brake")
+                                                ? 30.0
+                                                : 5.0);
+        channelHeightPercent_[k] =
+            qBound(1.0,
+                   entry.value(QStringLiteral("height_percent"), defaultHeight)
+                       .toDouble(),
+                   100.0);
         channelCombined_[k] =
             entry
                 .value(QStringLiteral("combine_with_previous"),

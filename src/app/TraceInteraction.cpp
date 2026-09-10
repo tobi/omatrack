@@ -48,6 +48,9 @@ int TraceInteraction::cornerIndexAt(const QPointF& position) const {
 }
 
 int TraceInteraction::channelIndexAt(const QPointF& position) const {
+    if (position.y() < layout_->plotTop() ||
+        position.y() >= layout_->plotTop() + layout_->plotHeight())
+        return -1;
     for (const auto& lane : layout_->layoutLanes())
         if (position.y() >= lane.y && position.y() < lane.y + lane.height)
             return lane.spec;
@@ -137,7 +140,9 @@ void TraceInteraction::updateHoveredSpan(const QPointF& position) {
     spanHoverY_ = position.y();
     int index = -1;
     for (int i = 0; i < spanHits_.size(); ++i) {
-        if (spanHits_.at(i).rect.contains(position)) {
+        if (position.y() >= layout_->plotTop() &&
+            position.y() < layout_->plotTop() + layout_->plotHeight() &&
+            spanHits_.at(i).rect.contains(position)) {
             index = i;
             break;
         }
@@ -175,6 +180,9 @@ void TraceInteraction::showChannelMenu(const QPointF& position) {
 }
 
 int TraceInteraction::groupHeaderAt(const QPointF& position) const {
+    if (position.y() < layout_->plotTop() ||
+        position.y() >= layout_->plotTop() + layout_->plotHeight())
+        return -1;
     const auto& specs = layout_->channelSpecs();
     for (const auto& lane : layout_->layoutLanes()) {
         if (position.y() < lane.y || position.y() >= lane.y + lane.height)
@@ -455,6 +463,16 @@ void TraceInteraction::wheelEvent(QWheelEvent* event) {
         const double dataWidth =
             std::max(1.0, itemWidth_ - layout_->labelWidth());
         store_->pan(-dx / dataWidth * store_->viewSpan());
+        event->accept();
+        return;
+    }
+    if (!layout_->fitChannels() && event->modifiers() == Qt::NoModifier &&
+        layout_->contentHeight() > itemHeight_) {
+        // Manual overflow scrolls; modified wheel keeps the existing zoom
+        // gesture. Horizontal trackpad motion remains a lap pan above.
+        if (onVerticalScroll)
+            onVerticalScroll(pixel.y() != 0 ? -double(pixel.y())
+                                            : -dy / 120.0 * 48.0);
         event->accept();
         return;
     }

@@ -126,6 +126,9 @@ public:
     }
     QHash<QString, double>& channelWeights() { return channelWeights_; }
 
+    bool fitTraceChannels() const { return fitTraceChannels_; }
+    void setFitTraceChannels(bool fit) { fitTraceChannels_ = fit; }
+
     const QHash<QString, double>& channelHeightPercent() const {
         return channelHeightPercent_;
     }
@@ -218,6 +221,7 @@ private:
     QHash<QString, bool> channelVisible_;
     QHash<QString, QColor> channelColors_;
     QHash<QString, double> channelWeights_;
+    bool fitTraceChannels_ = true;
     QHash<QString, double> channelHeightPercent_;
     QHash<QString, bool> channelCombined_;
     QHash<QString, ChannelAppearance> channelAppearance_;

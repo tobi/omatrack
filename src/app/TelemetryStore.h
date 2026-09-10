@@ -880,6 +880,9 @@ public:
     Q_INVOKABLE void resetTraceHeights();
     void previewTraceHeights(const QStringList& keys,
                              const std::vector<double>& heights);
+    bool fitTraceChannels() const;
+    void setFitTraceChannels(bool fit);
+    QString channelLaneKey(const QString& key) const;
     Q_INVOKABLE double channelHeightPercent(const QString& key) const;
     Q_INVOKABLE void setChannelHeightPercent(const QString& key,
                                              double percent);
@@ -1077,6 +1080,7 @@ signals:
     void channelConfigChanged();
     void channelHeightsChanged();
     void traceResizeChanged();
+    void traceSizingChanged();
     void referenceAlignmentChanged();
     void comparisonSyncStrategyChanged();
     void trackAtlasChanged();
@@ -1358,6 +1362,7 @@ private:
     std::shared_ptr<std::atomic<qint64>> usbSyncBytes_;
     QString usbSyncDevice() const;
     std::unique_ptr<ChannelListModel> channelsModel_;
+    QHash<QString, QString> channelLaneKeys_;  // cached visible lane membership
     std::unique_ptr<CornerListModel> cornersModel_;
     std::unique_ptr<DriverMappingModel> driverMappingsModel_;
     std::unique_ptr<SyncStrategyModel> syncStrategyModel_;

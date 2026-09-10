@@ -1859,6 +1859,27 @@ ApplicationWindow {
                         trace: trace
                         z: 1
                     }
+                    ThinScrollBar {
+                        id: traceScrollBar
+
+                        active: true
+                        anchors.right: trace.right
+                        anchors.top: trace.top
+                        anchors.topMargin: trace.plotTop
+                        height: trace.plotHeight
+                        objectName: "traceScrollBar"
+                        orientation: Qt.Vertical
+                        position: trace.verticalScroll / Math.max(1, trace.plotHeight + trace.scrollMaximum)
+                        size: trace.plotHeight / Math.max(1, trace.plotHeight + trace.scrollMaximum)
+                        visible: !Store.resizingTraces && trace.scrollMaximum > 0
+                        width: 10
+                        z: 2
+
+                        onPositionChanged: {
+                            if (traceScrollBar.pressed)
+                                trace.verticalScroll = traceScrollBar.position * (trace.plotHeight + trace.scrollMaximum);
+                        }
+                    }
                     TraceCornerRuler {
                         anchors.left: trace.left
                         anchors.leftMargin: trace.labelWidth

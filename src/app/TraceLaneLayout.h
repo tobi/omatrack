@@ -81,11 +81,12 @@ public:
     }
 
     double labelWidth() const { return labelWidth_; }
-    bool fitChannels() const { return fitChannels_; }
-    void setFitChannels(bool fit) { fitChannels_ = fit; }
+    bool fitChannels() const;
     qreal verticalScroll() const { return verticalScroll_; }
     void setVerticalScroll(qreal scroll) { verticalScroll_ = scroll; }
-    qreal contentHeight() const { return contentHeight_; }
+    qreal contentHeight() const;
+    qreal plotTop() const;
+    qreal plotHeight() const;
     double deltaMaxAbs() const { return deltaMaxAbs_; }
     double& deltaMaxAbsRef() { return deltaMaxAbs_; }
     double itemWidth() const { return itemWidth_; }
@@ -94,7 +95,7 @@ public:
     const QVector<ChannelSpec>& channelSpecs() const { return channelSpecs_; }
 
     void rebuildChannelSpecs();
-    QVector<Lane> layoutLanes() const;
+    QVector<Lane> layoutLanes(bool scrolled = true) const;
     QList<TraceLaneRow> laneRows() const;
     void updateLabelWidth();
     void invalidateRanges();
@@ -122,9 +123,7 @@ private:
     double itemWidth_ = 0.0;
     double itemHeight_ = 0.0;
     double labelWidth_ = 62.0;
-    bool fitChannels_ = true;
-    mutable qreal verticalScroll_ = 0.0;
-    mutable qreal contentHeight_ = 0.0;
+    qreal verticalScroll_ = 0.0;
     QVector<ChannelSpec> channelSpecs_;
     QHash<QString, ChannelRange> rangeCache_;
     mutable QHash<const omatrack::UnifiedLap*, std::vector<double>> gearCache_;

@@ -59,6 +59,11 @@ class TraceView : public QQuickItem {
     Q_PROPERTY(
         QList<TraceLaneRow> laneRows READ laneRows NOTIFY laneLayoutChanged)
     Q_PROPERTY(qreal rulerHeight READ rulerHeight CONSTANT)
+    Q_PROPERTY(qreal plotTop READ plotTop NOTIFY laneLayoutChanged)
+    Q_PROPERTY(qreal plotHeight READ plotHeight NOTIFY laneLayoutChanged)
+    Q_PROPERTY(qreal scrollMaximum READ scrollMaximum NOTIFY laneLayoutChanged)
+    Q_PROPERTY(qreal verticalScroll READ verticalScroll WRITE setVerticalScroll
+                   NOTIFY laneLayoutChanged)
     Q_PROPERTY(
         bool spanHoverVisible READ spanHoverVisible NOTIFY spanHoverChanged)
     Q_PROPERTY(
@@ -83,6 +88,11 @@ public:
     qreal rulerHeight() const;
     bool fitChannels() const { return layout_.fitChannels(); }
     void setFitChannels(bool fit);
+    qreal plotTop() const { return layout_.plotTop(); }
+    qreal plotHeight() const { return layout_.plotHeight(); }
+    qreal scrollMaximum() const;
+    qreal verticalScroll() const { return layout_.verticalScroll(); }
+    void setVerticalScroll(qreal scroll);
     QList<TraceLaneRow> laneRows() const { return layout_.laneRows(); }
 
     bool spanHoverVisible() const { return interaction_.spanHoverVisible(); }
@@ -151,7 +161,8 @@ private:
     };
 
     // ── rendering ──────────────────────────────────────────────────
-    void buildScene(TraceSceneBuilder& builder);
+    void buildScene(TraceSceneBuilder& builder, TraceSceneBuilder& laneBuilder);
+    void refreshLaneLayout();
     void buildCursorScene(TraceSceneBuilder& builder);
     void buildLaneResizeGuides(TraceSceneBuilder& builder);
     void buildSelection(TraceSceneBuilder& builder);
@@ -161,9 +172,8 @@ private:
     void buildChannel(TraceSceneBuilder& builder,
                       const TraceLaneLayout::ChannelSpec& spec,
                       const QRectF& rect, const omatrack::UnifiedLap* primary,
-                      const omatrack::UnifiedLap* compare,
-                      bool overlay = false, int valueSlot = 0,
-                      bool sharedLane = false);
+                      const omatrack::UnifiedLap* compare, bool overlay = false,
+                      int valueSlot = 0, bool sharedLane = false);
     void buildGroupHeader(TraceSceneBuilder& builder,
                           const TraceLaneLayout::ChannelSpec& spec,
                           const QRectF& rect);
@@ -250,6 +260,7 @@ private:
     QFont pillFont_;
     QVector<CursorLane> cursorLanes_;
     TraceSceneBuilder builder_;
+    TraceSceneBuilder laneBuilder_;  // vertically clipped sample/span scene
     QVector<QPointF> primaryPath_;
     TraceSnapshot snapshot_;
     TraceLaneLayout layout_;
@@ -281,4 +292,5 @@ signals:
 private:
     TraceView* trace_ = nullptr;
     TraceSceneBuilder builder_;
+    TraceSceneBuilder rulerBuilder_;
 };

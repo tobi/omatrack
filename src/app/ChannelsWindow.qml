@@ -379,7 +379,7 @@ ApplicationWindow {
                         ToolTip.text: channelRow.combineWithPrevious ? "Height of this shared line" : "Lane height"
                         ToolTip.visible: hovered
                         editable: true
-                        enabled: !channelRow.span
+                        enabled: !channelRow.span && !Store.resizingTraces
                         from: 1
                         stepSize: 1
                         textFromValue: function (value, locale) {

@@ -1,4 +1,5 @@
 #include "TraceView.h"
+#include <QSGClipNode>
 #include "TraceDecimator.h"
 
 #include "StoreModels.h"
@@ -106,7 +107,7 @@ TraceView::TraceView(QQuickItem* parent) : QQuickItem(parent) {
     layout_.setLabelFont(labelFont_);
     layout_.setUnitFont(unitFont_);
     interaction_.setLayout(&layout_);
-    layout_.onLaneLayoutChanged = [this]() { emit laneLayoutChanged(); };
+    layout_.onLaneLayoutChanged = [this]() { refreshLaneLayout(); };
     layout_.onLabelWidthChanged = [this]() { emit labelWidthChanged(); };
     layout_.onInvalidateScene = [this]() { invalidateScene(); };
 
@@ -114,9 +115,12 @@ TraceView::TraceView(QQuickItem* parent) : QQuickItem(parent) {
         emit cursorChangedFromCanvas();
     };
     interaction_.onCornerEdited = [this]() { emit cornerEdited(); };
+    interaction_.onVerticalScroll = [this](qreal delta) {
+        setVerticalScroll(verticalScroll() + delta);
+    };
     interaction_.onChannelMenuRequested =
-        [this](const QString& key, const QString& title,
-               double heightPercent, qreal x, qreal y) {
+        [this](const QString& key, const QString& title, double heightPercent,
+               qreal x, qreal y) {
             emit channelMenuRequested(key, title, heightPercent, x, y);
         };
     interaction_.onOverlayChanged = [this]() { emit overlayChanged(); };
@@ -136,10 +140,27 @@ void TraceView::setBackgroundColor(const QColor& color) {
     emit backgroundColorChanged();
 }
 void TraceView::setFitChannels(bool fit) {
-    if (layout_.fitChannels() == fit) return;
-    layout_.setFitChannels(fit);
-    layout_.setVerticalScroll(0.0);
-    emit fitChannelsChanged();
+    if (store_ && !store_->resizingTraces()) store_->setFitTraceChannels(fit);
+}
+
+qreal TraceView::scrollMaximum() const {
+    return std::max(0.0, layout_.contentHeight() - height());
+}
+
+void TraceView::setVerticalScroll(qreal scroll) {
+    if (!std::isfinite(scroll) || (store_ && store_->resizingTraces())) return;
+    scroll = std::clamp(scroll, 0.0, scrollMaximum());
+    if (qFuzzyCompare(verticalScroll() + 1.0, scroll + 1.0)) return;
+    layout_.setVerticalScroll(scroll);
+    refreshLaneLayout();
+}
+
+void TraceView::refreshLaneLayout() {
+    // Resize is a temporary FIT projection. Keep the manual offset intact
+    // until Save; Cancel must restore both size and position without a jump.
+    if (!store_ || !store_->resizingTraces())
+        layout_.setVerticalScroll(
+            std::clamp(verticalScroll(), 0.0, scrollMaximum()));
     emit laneLayoutChanged();
     invalidateScene();
 }
@@ -175,16 +196,18 @@ void TraceView::setStore(TelemetryStore* store) {
             rebuildChannelSpecs();
             invalidateRanges();
         });
-        connect(store_, &TelemetryStore::channelHeightsChanged, this, [this]() {
-            emit laneLayoutChanged();
-            invalidateScene();
+        connect(store_, &TelemetryStore::channelHeightsChanged, this,
+                &TraceView::refreshLaneLayout);
+        connect(store_, &TelemetryStore::traceSizingChanged, this, [this]() {
+            layout_.setVerticalScroll(0.0);
+            emit fitChannelsChanged();
+            refreshLaneLayout();
         });
         connect(store_, &TelemetryStore::traceResizeChanged, this, [this]() {
-            if (store_ && store_->resizingTraces()) setFitChannels(true);
             interaction_.cancelLaneResize();
             interaction_.resetSelection();
             interaction_.resetHover();
-            invalidateScene();
+            refreshLaneLayout();
         });
         // Hover-peek previews another lap at the same cursor: same static
         // rebuild as a selection, but the trace range selection survives.
@@ -203,10 +226,12 @@ void TraceView::setStore(TelemetryStore* store) {
         connect(store_, &TelemetryStore::traceConfidenceChanged, this,
                 [this]() {
                     invalidateRanges();
-                    emit laneLayoutChanged();
+                    refreshLaneLayout();
                 });
     }
+    rebuildChannelSpecs();
     invalidateRanges();
+    emit fitChannelsChanged();
     emit storeChanged();
 }
 
@@ -216,10 +241,21 @@ void TraceView::invalidateScene() {
 }
 
 QSGNode* TraceView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
-    QSGNode* root = oldNode ? oldNode : new QSGNode;
+    QSGNode* root = oldNode;
+    if (!root) {
+        root = new QSGNode;
+        root->appendChildNode(new QSGNode);
+        auto* clip = new QSGClipNode;
+        clip->setIsRectangular(true);
+        root->appendChildNode(clip);
+    }
+    auto* clip = static_cast<QSGClipNode*>(root->lastChild());
+    clip->setClipRect(QRectF(0, plotTop(), width(), plotHeight()));
     builder_.begin(window());
-    buildScene(builder_);
-    builder_.commit(root);
+    laneBuilder_.begin(window());
+    buildScene(builder_, laneBuilder_);
+    builder_.commit(root->firstChild());
+    laneBuilder_.commit(clip);
     // The overlay reads the lane rectangles this build produced.
     QMetaObject::invokeMethod(
         this, [this]() { emit overlayChanged(); }, Qt::QueuedConnection);
@@ -228,6 +264,7 @@ QSGNode* TraceView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
 
 void TraceView::releaseResources() {
     builder_.releaseResources();
+    laneBuilder_.releaseResources();
     QQuickItem::releaseResources();
 }
 
@@ -239,14 +276,13 @@ void TraceView::geometryChange(const QRectF& newGeometry,
         layout_.setItemSize(width(), height());
         interaction_.setItemSize(width(), height());
         updateLabelWidth();
-        invalidateScene();
-        emit laneLayoutChanged();
+        refreshLaneLayout();
     }
 }
 
 QVariantMap TraceView::benchmarkGeometry(int frames) {
     frames = std::clamp(frames, 1, 2000);
-    TraceSceneBuilder scratch;
+    TraceSceneBuilder scratch, laneScratch;
     QElapsedTimer clock;
     clock.start();
     int quads = 0;
@@ -254,8 +290,9 @@ QVariantMap TraceView::benchmarkGeometry(int frames) {
         // A null window skips texture creation: text is cached across frames
         // in the real renderer, so the measurement is the geometry work.
         scratch.begin(nullptr, devicePixelRatio());
-        buildScene(scratch);
-        quads = scratch.quadCount();
+        laneScratch.begin(nullptr, devicePixelRatio());
+        buildScene(scratch, laneScratch);
+        quads = scratch.quadCount() + laneScratch.quadCount();
     }
     const double elapsed = double(clock.nsecsElapsed()) / 1.0e6;
     return QVariantMap{{QStringLiteral("averageMs"), elapsed / frames},
@@ -263,7 +300,8 @@ QVariantMap TraceView::benchmarkGeometry(int frames) {
                        {QStringLiteral("lanes"), layoutLanes().size()}};
 }
 
-void TraceView::buildScene(TraceSceneBuilder& builder) {
+void TraceView::buildScene(TraceSceneBuilder& builder,
+                           TraceSceneBuilder& laneBuilder) {
     cursorLanes_.clear();
     setCursorTop(0.0);
     setCursorBottom(0.0);
@@ -286,7 +324,7 @@ void TraceView::buildScene(TraceSceneBuilder& builder) {
 
     const QVector<Lane> lanes = layoutLanes();
     if (lanes.isEmpty()) return;
-    buildCornerMarkerGuides(builder);
+    buildCornerMarkerGuides(laneBuilder);
     if (store_->traceConfidenceMode())
         buildConsistencyStrip(
             builder, QRectF(labelWidth(), kTopPad, width() - labelWidth(),
@@ -294,30 +332,33 @@ void TraceView::buildScene(TraceSceneBuilder& builder) {
 
     interaction_.clearSpanHits();
     for (const Lane& lane : lanes) {
+        if (lane.y + lane.height <= plotTop() ||
+            lane.y >= plotTop() + plotHeight())
+            continue;
         const ChannelSpec& spec = channelSpecs()[lane.spec];
         const QRectF rect(labelWidth(), lane.y, width() - labelWidth(),
                           lane.height);
         if (spec.kind == ChannelSpec::Kind::GroupHeader)
-            buildGroupHeader(builder, spec, rect);
+            buildGroupHeader(laneBuilder, spec, rect);
         else if (spec.kind == ChannelSpec::Kind::SpanTrack)
-            buildSpanTrack(builder, spec, rect);
+            buildSpanTrack(laneBuilder, spec, rect);
         else {
             const bool sharedLane = !lane.overlays.isEmpty();
             int valueSlot = 0;
             const auto buildSample = [&](const ChannelSpec& sample,
                                          bool overlay) {
                 if (sample.key == QStringLiteral("delta"))
-                    buildDelta(builder, rect);
+                    buildDelta(laneBuilder, rect);
                 else
-                    buildChannel(builder, sample, rect, primary, compare,
+                    buildChannel(laneBuilder, sample, rect, primary, compare,
                                  overlay, valueSlot++, sharedLane);
             };
             buildSample(spec, false);
             for (int overlayIndex : lane.overlays)
                 buildSample(channelSpecs()[overlayIndex], true);
         }
-        builder.hLine(lane.y, labelWidth(), width(), 1.0,
-                      alpha(kGridStrong, 110));
+        laneBuilder.hLine(lane.y, labelWidth(), width(), 1.0,
+                          alpha(kGridStrong, 110));
     }
 
     const double axisTop = height() - kBottomPad;
@@ -364,9 +405,9 @@ void TraceView::buildScene(TraceSceneBuilder& builder) {
     const double traceHeight = std::max(0.0, height() - kTopPad - kBottomPad);
     const QRectF traceRect(labelWidth(), kTopPad, width() - labelWidth(),
                            traceHeight);
-    buildCornerZones(builder, traceRect);
-    buildCornerFocus(builder, traceRect);
-    buildOutOfLap(builder, traceRect);
+    buildCornerZones(laneBuilder, traceRect);
+    buildCornerFocus(laneBuilder, traceRect);
+    buildOutOfLap(laneBuilder, traceRect);
 
     setCursorTop(kTopPad - 3);
     setCursorBottom(height() - kBottomPad);
@@ -566,8 +607,8 @@ void TraceView::buildConsistencyStrip(TraceSceneBuilder& builder,
 void TraceView::buildChannel(TraceSceneBuilder& builder,
                              const ChannelSpec& spec, const QRectF& rect,
                              const UnifiedLap* primary,
-                             const UnifiedLap* compare,
-                             bool overlay, int valueSlot, bool sharedLane) {
+                             const UnifiedLap* compare, bool overlay,
+                             int valueSlot, bool sharedLane) {
     const bool rawChannel = spec.field.startsWith(QStringLiteral("raw:"));
     const bool sidecarChannel =
         spec.field.startsWith(QStringLiteral("sidecar:"));
@@ -585,9 +626,8 @@ void TraceView::buildChannel(TraceSceneBuilder& builder,
     const ChannelAppearance appearance = store_->channelAppearance(spec.key);
     QColor activeColor(store_->channelColor(spec.key));
     if (!activeColor.isValid()) activeColor = kComparedLap;
-    const QColor referenceColor = appearance.referenceColor.isValid()
-                                      ? appearance.referenceColor
-                                      : kRed;
+    const QColor referenceColor =
+        appearance.referenceColor.isValid() ? appearance.referenceColor : kRed;
     const ChannelRange& range = rangeFor(spec, primary, compare);
 
     if (!overlay)
@@ -661,10 +701,9 @@ void TraceView::buildChannel(TraceSceneBuilder& builder,
             valuePrefix = QStringLiteral("T");
         else if (spec.key == QStringLiteral("brake"))
             valuePrefix = QStringLiteral("B");
-        cursorLanes_.append(CursorLane{spec.field, dataRect, range.min,
-                                       range.max, activeColor, range.gear,
-                                       referenceColor, valuePrefix, valueSlot,
-                                       sharedLane});
+        cursorLanes_.append(CursorLane{
+            spec.field, dataRect, range.min, range.max, activeColor, range.gear,
+            referenceColor, valuePrefix, valueSlot, sharedLane});
     }
 }
 
@@ -1125,7 +1164,6 @@ void TraceView::buildCursorScene(TraceSceneBuilder& builder) {
     }
 
     buildCornerMarkers(builder);
-    buildHoveredCornerDelta(builder);
 }
 
 void TraceView::buildSelection(TraceSceneBuilder& builder) {
@@ -1379,15 +1417,32 @@ void TraceCursorOverlay::setTrace(TraceView* trace) {
 
 QSGNode* TraceCursorOverlay::updatePaintNode(QSGNode* oldNode,
                                              UpdatePaintNodeData*) {
-    QSGNode* root = oldNode ? oldNode : new QSGNode;
+    QSGNode* root = oldNode;
+    if (!root) {
+        root = new QSGNode;
+        auto* clip = new QSGClipNode;
+        clip->setIsRectangular(true);
+        root->appendChildNode(clip);
+        root->appendChildNode(new QSGNode);
+    }
+    auto* clip = static_cast<QSGClipNode*>(root->firstChild());
+    clip->setClipRect(
+        trace_ ? QRectF(0, trace_->plotTop(), width(), trace_->plotHeight())
+               : QRectF());
     builder_.begin(window());
-    if (trace_) trace_->buildCursorScene(builder_);
-    builder_.commit(root);
+    rulerBuilder_.begin(window());
+    if (trace_) {
+        trace_->buildCursorScene(builder_);
+        trace_->buildHoveredCornerDelta(rulerBuilder_);
+    }
+    builder_.commit(clip);
+    rulerBuilder_.commit(root->lastChild());
     return root;
 }
 
 void TraceCursorOverlay::releaseResources() {
     builder_.releaseResources();
+    rulerBuilder_.releaseResources();
     QQuickItem::releaseResources();
 }
 
@@ -1397,15 +1452,20 @@ QVariantMap TraceCursorOverlay::benchmarkGeometry(int frames) {
     // The overlay draws into the lane rectangles the trace scene produces,
     // so build that once first or the measurement is of an empty frame.
     if (trace_) {
+        TraceSceneBuilder laneScratch;
         scratch.begin(nullptr);
-        trace_->buildScene(scratch);
+        laneScratch.begin(nullptr);
+        trace_->buildScene(scratch, laneScratch);
     }
     QElapsedTimer clock;
     clock.start();
     int quads = 0;
     for (int i = 0; i < frames; ++i) {
         scratch.begin(nullptr);
-        if (trace_) trace_->buildCursorScene(scratch);
+        if (trace_) {
+            trace_->buildCursorScene(scratch);
+            trace_->buildHoveredCornerDelta(scratch);
+        }
         quads = scratch.quadCount();
     }
     const double elapsed = double(clock.nsecsElapsed()) / 1.0e6;
