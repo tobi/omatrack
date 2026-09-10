@@ -48,6 +48,10 @@ class ImageTelemetryController : public QObject {
                    playerChanged FINAL)
     Q_PROPERTY(
         bool enabled READ enabled WRITE setEnabled NOTIFY enabledChanged FINAL)
+    // Per-video opt-in. Nothing is decoded or detected until the user asks;
+    // a new source, a reopen or a settings change turns it off again.
+    Q_PROPERTY(bool discovering READ discovering WRITE setDiscovering NOTIFY
+                   discoveringChanged FINAL)
     Q_PROPERTY(bool eligible READ eligible WRITE setEligible NOTIFY
                    eligibleChanged FINAL)
     Q_PROPERTY(QString modelPath READ modelPath WRITE setModelPath NOTIFY
@@ -119,6 +123,8 @@ public:
     void setPlayer(MpvVideoItem* player);
     bool enabled() const { return enabled_; }
     void setEnabled(bool enabled);
+    bool discovering() const { return discovering_; }
+    void setDiscovering(bool discovering);
     bool eligible() const { return eligible_; }
     void setEligible(bool eligible);
     const QString& modelPath() const { return modelPath_; }
@@ -158,6 +164,7 @@ signals:
     void setupChanged();
     void playerChanged();
     void enabledChanged();
+    void discoveringChanged();
     void eligibleChanged();
     void modelPathChanged();
     void detectorPathChanged();
@@ -176,6 +183,7 @@ private:
     void retireWorker();
     void sample();
     void setStatus(const QString& message);
+    QString idleStatus() const;
     void invalidate();
     void refreshCurrent();
     void apply(const std::shared_ptr<ImageTelemetryResult>& result);
@@ -198,7 +206,8 @@ private:
     QElapsedTimer clock_;
     QString modelPath_, detectorPath_, status_, cachePath_, discoveryBackend_;
     double discoveryMs_ = 0, discoveryLoadMs_ = 0;
-    bool enabled_ = true, eligible_ = false, scanAhead_ = false;
+    bool enabled_ = true, discovering_ = false, eligible_ = false,
+         scanAhead_ = false;
     bool valid_ = false, blocked_ = false, awaitingSeek_ = false;
     bool complete_ = false, cacheComplete_ = false, pendingSave_ = false,
          pendingWatch_ = false;

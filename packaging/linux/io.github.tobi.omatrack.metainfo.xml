@@ -24,6 +24,27 @@
   <url type="bugtracker">https://github.com/tobi/omatrack/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.8.5" date="2026-09-08">
+      <description>
+        <p>Windows fullscreen video stays a composited window: no display
+        re-mode or refresh-rate switch, no black flicker, and dialogs can
+        appear above the video.</p>
+      </description>
+    </release>
+    <release version="1.8.4" date="2026-09-08">
+      <description>
+        <p>Gauge discovery is opt-in per video and builds confidence by vote:
+        boxes appear only after independent frames agree, larger gauges win
+        over the glyph boxes nested in them, and boxes never overlap.</p>
+      </description>
+    </release>
+    <release version="1.8.3" date="2026-09-07">
+      <description>
+        <p>Discover, confirm and extract gauges from video with the offline
+        model bundle: proven reader, tiny general detector and the larger AiM
+        detector, all verified and shipped without downloads.</p>
+      </description>
+    </release>
     <release version="1.8.2" date="2026-09-06">
       <description>
         <p>Progressive image-derived telemetry for supported video overlays,

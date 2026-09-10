@@ -402,6 +402,15 @@ Native lap distance is accepted only when its continuity and total agree with in
   must not force fullscreen again. Finder document-open events use the same file
   path as CLI/dialog/drop opens, queued until the store is available.
 - Render through libmpv's OpenGL Render API in `MpvVideoItem`; never spawn the mpv CLI or embed a foreign native window.
+- Fullscreen is `Window.FullScreen` on the one application window, never a
+  second window. On Windows, `WindowsIntegration.cpp` sets the platform
+  window's `HasBorderInFullScreen` flag on first show: Qt's fullscreen is a
+  borderless popup matching the monitor exactly, which DWM and the GPU driver
+  treat as an exclusive OpenGL surface (display re-mode, refresh-rate switch,
+  black flicker, other top-levels unable to appear on top). The 1-px
+  `WS_BORDER` inset keeps it a composited window; Qt still reports
+  `FullScreen`. Do not replace this with a frameless screen-sized window —
+  that is the same exclusive-surface shape.
 - Embedded playback explicitly uses builtin bilinear scale/cscale/dscale. This
   avoids proven uninitialized padded scaler LUTs in mpv0.41 that can propagate
   NaNs into black video. It is a display-filter tradeoff, not altered image-model
@@ -465,11 +474,24 @@ Native lap distance is accepted only when its continuity and total agree with in
 - Opening a video without embedded telemetry clears active/reference laps and
   gives the video the full analysis workspace. Telemetry-bearing videos retain
   the synchronized trace workspace below playback when leaving fullscreen.
-- `ImageTelemetryController` uses **Discover → Confirm → Extract**. Enabling
-  `video.image_telemetry` starts pixel-only discovery, not reading. Full-source
+- `ImageTelemetryController` uses **Discover → Confirm → Extract**.
+  `video.image_telemetry` only allows the feature; discovery itself is the
+  runtime `discovering` opt-in the overlay toggle sets for the current video,
+  and every source change or settings reset clears it. Nothing decodes or
+  detects until the user asks. Discovery is pixel-only, not reading. Full-source
   boxes stay on the video while a serial worker samples approximately every three
-  seconds. Confidence is repeated spatial/type evidence at independent actual PTS,
-  never repeated paused frames or calibrated probabilities. The user may edit,
+  seconds. Confidence is a ballot: each independent actual-PTS frame votes for
+  the tracks it re-detects and against those it does not; an automatic learned
+  track is shown only after `GaugeSetup::VotesToShow` votes, and can be
+  confirmed without visual confirmation only after `VotesToConfirm`. Repeated
+  paused frames are not votes and nothing is a calibrated probability.
+  `GaugeEvidence::resolveOverlaps` keeps boxes disjoint: profile anchors and
+  user-owned tracks (edited, confirmed, persisted proposals) always keep their
+  place; automatic tracks are admitted heaviest first with weight votes × √area,
+  so a consistently seen large gauge suppresses the small glyph boxes nested in
+  it. Suppressed tracks keep voting and return if they outweigh the winner;
+  candidates below the vote threshold cannot suppress anything. Confirmation
+  prunes hidden and suppressed automatic tracks before saving. The user may edit,
   relabel, choose fill direction, disable and visually confirm boxes. Confirm saves
   the setup; only the separate **Start extraction** action admits compatible selected
   crops into the progressive 5 Hz recording. Discovery can inspect native-bearing

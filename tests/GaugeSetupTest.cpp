@@ -133,6 +133,10 @@ private slots:
         for (const auto& r : e.setup.regions) {
             QCOMPARE(r.hits, 3);
             QCOMPARE(r.enabled, !r.profileKey.isEmpty());
+            // The learned duplicate of a reviewed anchor keeps voting but is
+            // never shown on top of it.
+            QCOMPARE(r.suppressed, r.profileKey.isEmpty());
+            QCOMPARE(r.visible(), !r.profileKey.isEmpty());
         }
         // Same pixels in the learned inventory cannot consume profile evidence.
         auto& gear = e.setup.regions[4];
@@ -176,6 +180,128 @@ private slots:
         QCOMPARE(e.setup.regions[0].hits, 0);
         QCOMPARE(e.setup.regions[1].hits, 2);
         QVERIFY(!e.setup.regions[1].enabled);
+    }
+    static GaugeRegion learned(const QRectF& box,
+                               const char* semantic = "unknown",
+                               const char* representation = "digits") {
+        GaugeRegion r;
+        r.box = box;
+        r.semantic = semantic;
+        r.representation = representation;
+        r.detectorIdentity = "tiny-v2:hash";
+        r.enabled = false;
+        r.score = .9;
+        return r;
+    }
+    static int visibleCount(const GaugeSetup& setup) {
+        return std::count_if(setup.regions.cbegin(), setup.regions.cend(),
+                             [](const auto& r) { return r.visible(); });
+    }
+    void candidatesNeedASecondIndependentVote() {
+        GaugeEvidence e;
+        e.setup.detectorIdentity = "experimental-route-v1";
+        const auto glyph = learned({.2, .2, .05, .05});
+        QVERIFY(e.observe(0, {1920, 1080}, {glyph}));
+        QCOMPARE(e.setup.regions.size(), 1);
+        QCOMPARE(e.setup.regions[0].hits, 1);
+        QVERIFY(!e.setup.regions[0].visible());  // one frame is a candidate
+        // A repeated paused frame is not a vote.
+        QVERIFY(!e.observe(1'000'000'000, {1920, 1080}, {glyph}));
+        QVERIFY(!e.setup.regions[0].visible());
+        QVERIFY(e.observe(3'000'000'000, {1920, 1080}, {glyph}));
+        QCOMPARE(e.setup.regions[0].hits, GaugeSetup::VotesToShow);
+        QVERIFY(e.setup.regions[0].visible());
+        // A frame without it takes a vote back and hides it again.
+        QVERIFY(e.observe(6'000'000'000, {1920, 1080}, {}));
+        QCOMPARE(e.setup.regions[0].hits, 1);
+        QVERIFY(!e.setup.regions[0].visible());
+        // A different phantom every frame never accumulates anything shown.
+        for (int i = 3; i < 8; ++i)
+            QVERIFY(e.observe(i * 3'000'000'000LL, {1920, 1080},
+                              {learned({.1 * i, .5, .03, .03})}));
+        QCOMPARE(visibleCount(e.setup), 0);
+    }
+    void largerGaugeOutvotesNestedGlyphs() {
+        GaugeEvidence e;
+        e.setup.detectorIdentity = "experimental-route-v1";
+        const auto dial = learned({.2, .2, .2, .2}, "rpm", "needle");
+        const QVector<GaugeRegion> glyphs{
+            learned({.22, .22, .03, .03}), learned({.30, .22, .03, .03}),
+            learned({.22, .34, .03, .03}), learned({.30, .34, .03, .03})};
+        // The small glyphs are seen on more frames than the dial...
+        QVERIFY(e.observe(0, {1920, 1080}, glyphs));
+        QVERIFY(e.observe(3'000'000'000, {1920, 1080}, glyphs));
+        QCOMPARE(visibleCount(e.setup), 4);
+        QVERIFY(e.observe(6'000'000'000, {1920, 1080},
+                          glyphs + QVector<GaugeRegion>{dial}));
+        QCOMPARE(visibleCount(e.setup), 4);  // dial is still a candidate
+        QVERIFY(e.observe(9'000'000'000, {1920, 1080},
+                          glyphs + QVector<GaugeRegion>{dial}));
+        // ...but two votes for a box sixteen times their area outweigh four.
+        QCOMPARE(e.setup.regions.size(), 5);
+        QCOMPARE(visibleCount(e.setup), 1);
+        const auto& winner = e.setup.regions[4];
+        QCOMPARE(winner.representation, QString("needle"));
+        QVERIFY(winner.visible());
+        for (int i = 0; i < 4; ++i) {
+            QVERIFY(e.setup.regions[i].suppressed);
+            QCOMPARE(e.setup.regions[i].hits, 4);  // still voting
+        }
+        // When the dial stops appearing its votes decay and the glyphs return.
+        QVERIFY(e.observe(12'000'000'000, {1920, 1080}, glyphs));
+        QVERIFY(e.observe(15'000'000'000, {1920, 1080}, glyphs));
+        QCOMPARE(e.setup.regions[4].hits, 0);
+        QCOMPARE(visibleCount(e.setup), 4);
+        QVERIFY(e.observe(18'000'000'000, {1920, 1080}, glyphs));
+        QCOMPARE(e.setup.regions.size(), 4);  // retired after three misses
+        // Two boxes that merely touch are not a conflict.
+        const auto neighbour =
+            learned({.25, .22, .03, .03});  // right of glyph 0
+        QVERIFY(e.observe(21'000'000'000, {1920, 1080},
+                          glyphs + QVector<GaugeRegion>{neighbour}));
+        QVERIFY(e.observe(24'000'000'000, {1920, 1080},
+                          glyphs + QVector<GaugeRegion>{neighbour}));
+        QCOMPARE(visibleCount(e.setup), 5);
+    }
+    void oneFrameScreenBoxCannotHideEstablishedGauge() {
+        GaugeEvidence e;
+        e.setup.detectorIdentity = "experimental-route-v1";
+        const auto gauge = learned({.4, .8, .05, .05});
+        for (int i = 0; i < 5; ++i)
+            QVERIFY(e.observe(i * 3'000'000'000LL, {1920, 1080}, {gauge}));
+        QVERIFY(e.observe(
+            15'000'000'000, {1920, 1080},
+            {gauge, learned({.05, .05, .9, .9}, "unknown", "needle")}));
+        QCOMPARE(e.setup.regions.size(), 2);
+        QVERIFY(e.setup.regions[0].visible());
+        QVERIFY(!e.setup.regions[1].visible());
+        QVERIFY(!e.setup.regions[0].suppressed);
+    }
+    void userOwnedTracksAreNeverOutvoted() {
+        GaugeEvidence e;
+        e.setup.detectorIdentity = "experimental-route-v1";
+        const auto glyph = learned({.22, .22, .03, .03});
+        const auto dial = learned({.2, .2, .2, .2}, "rpm", "needle");
+        QVERIFY(e.observe(0, {1920, 1080}, {glyph}));
+        e.setup.regions[0].edited = true;  // the user moved/kept this box
+        e.setup.regions[0].enabled = true;
+        for (int i = 1; i < 5; ++i)
+            QVERIFY(
+                e.observe(i * 3'000'000'000LL, {1920, 1080}, {glyph, dial}));
+        QCOMPARE(e.setup.regions.size(), 2);
+        QVERIFY(e.setup.regions[0].visible());
+        QVERIFY(!e.setup.regions[0].suppressed);
+        QVERIFY(
+            e.setup.regions[1].suppressed);  // heavier, but nested on an edit
+        QCOMPARE(e.setup.regions[1].hits, 4);
+        // Saving keeps the evidence and drops the loser and any candidates.
+        QVERIFY(e.observe(15'000'000'000, {1920, 1080},
+                          {glyph, dial, learned({.7, .7, .05, .05})}));
+        QCOMPARE(e.setup.regions.size(), 3);
+        e.setup.pruneInvisible();
+        QCOMPARE(e.setup.regions.size(), 1);
+        QVERIFY(e.setup.regions[0].edited);
+        QVERIFY(e.setup.valid());
     }
     void profileCapacityIsReserved() {
         GaugeEvidence e;

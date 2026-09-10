@@ -216,7 +216,9 @@ target_link_libraries(omatrack PRIVATE
   Qt6::Qml
   Qt6::Network)
 if(WIN32)
-  target_link_libraries(omatrack PRIVATE dwmapi shell32)
+  # Qt6::GuiPrivate exposes <QtGui/qpa/qplatformwindow_p.h>, the native
+  # interface WindowsIntegration.cpp uses to keep fullscreen composited.
+  target_link_libraries(omatrack PRIVATE Qt6::GuiPrivate dwmapi shell32)
 endif()
 
 # After link libraries so the PCH sees the same include dirs as the TUs.

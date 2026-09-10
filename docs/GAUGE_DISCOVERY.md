@@ -2,13 +2,44 @@
 
 ## Native workflow
 
+The `video.image_telemetry` preference only allows image telemetry. Discovery is
+a per-video opt-in: the overlay's **Discover gauges** toggle sets the
+controller's runtime `discovering` flag, which every source change, reopen or
+settings reset clears. Until then nothing is decoded and no detector runs; a
+saved per-file or extension proposal is not even loaded. Choosing the toggle
+while the preference is off turns the preference on as well — that is the
+explicit opt-in.
+
 Enabling **Discover gauges** starts discovery, not reading or cache scanning.
 Playback continues. A serial `AsyncJob` decodes a full source frame approximately
 every three seconds; observations retain the decoder's actual presentation PTS.
 Temporal evidence requires at least two seconds separation from **every** earlier
 sample, including frames revisited after seeking. Repeated paused frames do not
-increase evidence. Repeated spatial/type matches increase the displayed seen
-count; misses/conflicts lower it. This is not a calibrated probability.
+increase evidence. This is not a calibrated probability.
+
+Each independent frame is one ballot (`GaugeEvidence::observe`). A detection
+that overlaps an existing track by IoU > 0.5 with the same backend,
+representation and semantic votes for it (+1, capped at 20); a track no
+detection voted for loses a vote (−1, floor 0) and counts a consecutive miss.
+Unmatched detections enter as hidden candidates with one vote. An automatic
+learned track becomes visible on the video and in the setup panel only at
+`GaugeSetup::VotesToShow` (2) votes, so a glyph seen on a single frame never
+appears; it retires after three consecutive misses, and a validated track loses
+its confirmation after two. Profile anchors are shown from their first frame
+because they come from the reviewed structural check, not learned detection.
+
+After the ballot, `resolveOverlaps` keeps the inventory disjoint. Two boxes
+conflict when their intersection covers at least half of the smaller one
+(nesting and near-duplicates, not touching neighbours). Anchored tracks —
+profile anchors, user edits, visual confirmations and persisted proposals —
+always keep their place. Automatic tracks are admitted heaviest first, weight
+being votes × √area: a box four times the area counts double, so two votes for
+a needle dial outweigh four votes for each digit glyph nested inside it, while
+a single frame's screen-sized box cannot hide an established gauge because
+candidates below the vote threshold never suppress anything. A suppressed
+track is hidden, not deleted: it keeps voting and returns if the winner fades.
+**Confirm setup** prunes hidden and suppressed automatic tracks before saving,
+so a saved setup carries evidence rather than per-frame noise.
 
 The source-normalized boxes cover the whole displayed video, not a HUD subregion.
 Display letterboxing is removed before projecting boxes, using the actual player
@@ -204,7 +235,14 @@ optional opt-in; all three shipped models work without first-run network access.
 - `gauge-setup-test`: independent PTS, seek revisits, geometry mismatch, proposal
   revalidation, stable identity, stale-track retirement, selected masks and unknowns;
   separate profile/inventory matching, edit/disable preservation, reserved profile
-  capacity, boundary serialization and reading identity under unselected churn.
+  capacity, boundary serialization and reading identity under unselected churn;
+  two-vote visibility with decay, nested glyphs losing to a larger gauge and
+  returning when it fades, touching neighbours coexisting, a one-frame
+  screen-sized box unable to hide an established gauge, user-owned tracks never
+  outvoted, and confirmation pruning.
+- Both GL harnesses (`GaugeDiscoveryAutotest`, `ImageTelemetryScanAutotest`)
+  first require that the enabled preference alone ran no discovery, then opt in
+  per opened source the way the overlay toggle does.
 - `gauge-reader-parity-test` (private fixtures): original numerical parity plus
   relocated configured crops, four directions, exact bytes and disabled fields.
 - `gauge-detector-test`: synthetic resize/decode/loader/finite guards; optional private
