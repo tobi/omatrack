@@ -8,6 +8,8 @@ All notable user-facing changes are documented here.
   exclusive surface: no display re-mode or refresh-rate switch, no black
   flicker entering and leaving fullscreen, and Preferences/Channels/dialogs can
   appear above the video.
+- Make the corner-analysis close button reliably clickable and restore the
+  trace viewport that was active before the corner was opened.
 
 ## 1.8.4 — 2026-09-08
 

@@ -1153,7 +1153,7 @@ Add feature flags as needed:
 - `OMATRACK_AUTOTEST_SELECTION=1`
 - `OMATRACK_AUTOTEST_ALIGNMENT=1`
 - `OMATRACK_AUTOTEST_CORNER=1`
-- `OMATRACK_AUTOTEST_CORNER_NAVIGATION=/path/to/copied-multi-lap-file` checks previous/next buttons, the H/J shortcut handlers, intermediate animation frames, rapid retargeting, cancellation/restoration, unclamped lap edges and typing protection, then captures the focused overlay.
+- `OMATRACK_AUTOTEST_CORNER_NAVIGATION=/path/to/copied-multi-lap-file` checks previous/next/close buttons, the H/J shortcut handlers, intermediate animation frames, rapid retargeting, cancellation/restoration, unclamped lap edges and typing protection, then captures the focused overlay.
 - `OMATRACK_AUTOTEST_TRACE_RESIZE=/path/to/copied-recording` checks native divider drags beyond 2× height, borrowing across neighbours, pane fit, unchanged cursor/viewport, draft isolation from preference writes, Cancel, Reset, raw-channel Save and geometry cost. Repeat with the same scratch config and `OMATRACK_AUTOTEST_TRACE_RESIZE_RESTORE=1` to check persisted raw weights.
 - `OMATRACK_AUTOTEST_SESSION_CHROME=/path/to/copied-recording` with optional `OMATRACK_AUTOTEST_CHROME_REFERENCE=/path/to/second-recording` checks the larger track heading, event controls beneath it and aligned fixed filmstrip bookends. On video it also checks fullscreen role labels and a real HUD drag. Repeat with the same scratch config and `OMATRACK_AUTOTEST_CHROME_RESTORE=1` to verify the HUD position is restored.
 - `OMATRACK_AUTOTEST_HOVER=1`

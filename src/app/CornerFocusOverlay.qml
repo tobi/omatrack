@@ -212,20 +212,22 @@ OverlayCard {
 
                     onClicked: Store.stepFocusedCorner(1)
                 }
-                Label {
-                    Accessible.name: "Close corner"
-                    Accessible.role: Accessible.Button
-                    color: Style.mutedTextColor
+                CompactToolButton {
+                    id: closeCornerButton
+
+                    Layout.preferredHeight: 24
+                    Layout.preferredWidth: 24
+                    ToolTip.delay: 400
+                    ToolTip.text: "Close corner analysis"
+                    ToolTip.visible: closeCornerButton.hovered
+                    focusPolicy: Qt.NoFocus
                     font.pixelSize: Style.fontSize + 4
                     objectName: "cornerFocusClose"
+                    padding: 0
                     text: "×"
+                    tip: "Close corner analysis"
 
-                    MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-
-                        onClicked: Store.clearCornerFocus()
-                    }
+                    onClicked: Store.clearCornerFocus()
                 }
             }
             Rectangle {
