@@ -10,7 +10,7 @@
 struct ChannelAppearance {
     double strokeWidth = 1.25;  // logical screen pixels, independent of zoom
     double fillOpacity = 0.0;   // peak alpha; fades to zero at the baseline
-    QColor referenceColor = QColor(QStringLiteral("#e09d7f"));
+    QColor referenceColor = QColor(QStringLiteral("#ff2d2d"));
 
     static ChannelAppearance defaults(const QString& key) {
         ChannelAppearance style;
@@ -18,8 +18,6 @@ struct ChannelAppearance {
             key == QStringLiteral("brake") || key == QStringLiteral("clutch"))
             style.fillOpacity = 0.28;
         if (key == QStringLiteral("delta")) style.fillOpacity = 0.20;
-        if (key == QStringLiteral("g_long") || key == QStringLiteral("gps_lon"))
-            style.referenceColor = QColor(QStringLiteral("#d3c6aa"));
         return style;
     }
 

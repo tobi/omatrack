@@ -28,6 +28,7 @@ private slots:
         auto style = ChannelAppearance::defaults(QStringLiteral("throttle"));
         QCOMPARE(style.strokeWidth, 1.25);
         QCOMPARE(style.fillOpacity, 0.28);
+        QCOMPARE(style.referenceColor, QColor(QStringLiteral("#ff2d2d")));
         QCOMPARE(
             ChannelAppearance::defaults(QStringLiteral("speed")).fillOpacity,
             0.0);

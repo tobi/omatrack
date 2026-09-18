@@ -162,7 +162,9 @@ public:
         UnitRole,
         VisibleRole,
         ColorRole,
-        WeightRole,
+        HeightPercentRole,
+        CombineWithPreviousRole,
+        CanCombineRole,
         StrokeWidthRole,
         FillOpacityRole,
         ReferenceColorRole,
@@ -258,6 +260,8 @@ public:
     QHash<int, QByteArray> roleNames() const override;
 
     void refresh(const QVector<CornerRow>& rows);
+    /// Live drag: update start/end in place without rebuilding rows.
+    void updateGeometry(int index, double start, double end);
 
 private:
     QVector<CornerRow> rows_;

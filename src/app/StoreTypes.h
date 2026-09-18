@@ -115,7 +115,9 @@ class ChannelRow {
     Q_PROPERTY(QString unit MEMBER unit)
     Q_PROPERTY(bool visible MEMBER visible)
     Q_PROPERTY(QString color MEMBER color)
-    Q_PROPERTY(double weight MEMBER weight)
+    Q_PROPERTY(double heightPercent MEMBER heightPercent)
+    Q_PROPERTY(bool combineWithPrevious MEMBER combineWithPrevious)
+    Q_PROPERTY(bool canCombine MEMBER canCombine)
     Q_PROPERTY(double strokeWidth MEMBER strokeWidth)
     Q_PROPERTY(double fillOpacity MEMBER fillOpacity)
     Q_PROPERTY(QString referenceColor MEMBER referenceColor)
@@ -128,7 +130,11 @@ public:
     QString unit;
     bool visible = false;
     QString color;
-    double weight = 1.0;
+    double heightPercent = 5.0;
+    QString
+        laneKey;  // resolved sample-lane root, shared by editor and renderer
+    bool combineWithPrevious = false;
+    bool canCombine = false;
     double strokeWidth = 1.25;
     double fillOpacity = 0.0;
     QString referenceColor;

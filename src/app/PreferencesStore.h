@@ -126,6 +126,21 @@ public:
     }
     QHash<QString, double>& channelWeights() { return channelWeights_; }
 
+    bool fitTraceChannels() const { return fitTraceChannels_; }
+    void setFitTraceChannels(bool fit) { fitTraceChannels_ = fit; }
+
+    const QHash<QString, double>& channelHeightPercent() const {
+        return channelHeightPercent_;
+    }
+    QHash<QString, double>& channelHeightPercent() {
+        return channelHeightPercent_;
+    }
+
+    const QHash<QString, bool>& channelCombined() const {
+        return channelCombined_;
+    }
+    QHash<QString, bool>& channelCombined() { return channelCombined_; }
+
     const QHash<QString, ChannelAppearance>& channelAppearance() const {
         return channelAppearance_;
     }
@@ -206,6 +221,9 @@ private:
     QHash<QString, bool> channelVisible_;
     QHash<QString, QColor> channelColors_;
     QHash<QString, double> channelWeights_;
+    bool fitTraceChannels_ = true;
+    QHash<QString, double> channelHeightPercent_;
+    QHash<QString, bool> channelCombined_;
     QHash<QString, ChannelAppearance> channelAppearance_;
     QVector<omatrack::LibraryLocation> locations_;
     QString lastPrimaryKey_;

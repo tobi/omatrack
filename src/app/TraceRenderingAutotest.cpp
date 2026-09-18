@@ -64,7 +64,7 @@ bool omatrack::autotest::installTraceRendering(QQmlApplicationEngine& engine,
                     const bool restored = style.strokeWidth == 0.75 &&
                                           style.fillOpacity == 0.55 &&
                                           style.referenceColor ==
-                                              QColor(QStringLiteral("#7fbbb3"));
+                                              QColor(QStringLiteral("#e67e80"));
                     qWarning() << "AUTOTEST traces restored style:" << restored;
                     if (!restored) {
                         QCoreApplication::exit(1);
@@ -140,11 +140,21 @@ bool omatrack::autotest::installTraceRendering(QQmlApplicationEngine& engine,
                                << "frames:" << state->intervals.size()
                                << "dpr:" << window->effectiveDevicePixelRatio();
                     store.setChannelAppearance(QStringLiteral("throttle"), 0.75,
-                                               0.55, QStringLiteral("#7fbbb3"));
+                                               0.55, QStringLiteral("#e67e80"));
                     const auto style =
                         store.channelAppearance(QStringLiteral("throttle"));
                     state->saved &=
                         style.strokeWidth == 0.75 && style.fillOpacity == 0.55;
+                    store.setChannelTraceColors(QStringLiteral("speed"),
+                                                QStringLiteral("#11aa33"),
+                                                QStringLiteral("#3355dd"));
+                    state->saved &=
+                        store.channelColor(QStringLiteral("speed")) ==
+                            QStringLiteral("#11aa33") &&
+                        store.channelAppearance(QStringLiteral("speed"))
+                                .referenceColor ==
+                            QColor(QStringLiteral("#3355dd"));
+                    store.resetChannelAppearance(QStringLiteral("speed"));
                     store.resetView();
                     auto* channels = window->findChild<QQuickWindow*>(
                         QStringLiteral("channelsWindow"));
@@ -153,7 +163,7 @@ bool omatrack::autotest::installTraceRendering(QQmlApplicationEngine& engine,
                         return;
                     }
                     channels->setProperty("appearanceKey",
-                                          QStringLiteral("throttle"));
+                                          QStringLiteral("speed"));
                     channels->show();
                     QTimer::singleShot(
                         350, &engine, [channels, window, state, prefix] {

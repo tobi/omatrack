@@ -24,6 +24,13 @@
   <url type="bugtracker">https://github.com/tobi/omatrack/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.8.6" date="2026-09-18">
+      <description>
+        <p>Custom trace layouts add exact heights, manual scrolling, shared
+        lanes, and independent styling. Corner editing stays responsive, and
+        closing corner analysis reliably restores the previous viewport.</p>
+      </description>
+    </release>
     <release version="1.8.5" date="2026-09-08">
       <description>
         <p>Windows fullscreen video stays a composited window: no display

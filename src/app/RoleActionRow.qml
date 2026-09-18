@@ -25,7 +25,7 @@ Row {
     spacing: 8
 
     RoleDot {
-        activeColor: Style.accentColor
+        activeColor: Style.comparisonLapColor
         selected: dots.primarySelected
         size: dots.dotSize
         tip: "Make current lap"
@@ -34,7 +34,7 @@ Row {
         onActivated: dots.primaryActivated()
     }
     RoleDot {
-        activeColor: Style.orangeColor
+        activeColor: Style.referenceLapColor
         selected: dots.referenceSelected
         size: dots.dotSize
         tip: dots.referenceSelected ? "Clear reference" : "Make reference lap"

@@ -75,25 +75,42 @@ Official Qt 6.11 references:
 
 ## Controls and persistence
 
-**Channels** has active and reference color pickers for each channel. **Style…**
-expands width and area controls without rebuilding the delegate. **Reset style**
-restores the width, fill, and reference defaults; it does not reset active color
-or lane height.
+Every channel row has a **Style…** panel containing its active/reference color
+pickers, line width, and area fill. **Reset style** restores those four values
+for that channel; it does not change lane height or same-line grouping.
 
 ```yaml
 channels:
   throttle:
     visible: true
-    color: "#a7c080"
-    reference_color: "#e09d7f"
+    color: "#ffd400"
+    reference_color: "#ff2d2d"
     stroke_width: 1.25
     fill_opacity: 0.28
-    weight: 1
+    height_percent: 30
+    combine_with_previous: false
 ```
 
 Defaults are 1.25 logical px for both roles, no fill for most channels, 28% peak
-fill for throttle/brake/clutch, and 20% for delta. The reference is warm orange,
-except channels already using that default get a neutral reference instead.
+fill for throttle/brake/clutch, and 20% for delta. The lap being compared is
+bright yellow, while the reference lap is bright red. Speed reserves 50% of the
+trace area, throttle and brake share a 30% overlaid lane, and gear uses 5%.
+Each sample channel has an independent **Same line** checkbox and editable
+height stepper.
+Consecutive checked channels share the preceding visible sample lane while
+retaining independent vertical scales. Changing the height from any channel in
+that shared line updates the whole line. Hidden samples, delta without a reference,
+and overlay-group boundaries break adjacency. The store resolves lane roots once;
+the renderer, displayed percentages, edits and resets consume that same grouping.
+The stepper accepts 1–100% of the
+visible trace area in 1% increments. Editing it switches off FIT so the chosen
+percentage is exact; configurations above 100% remain available by vertical
+scrolling. The toolbar **FIT** toggle switches between these modes, persisted as
+`trace.fit_channels` in `omatrack.yml` (default true). With manual overflow,
+unmodified vertical wheel/trackpad motion scrolls and the right-edge scrollbar
+reaches the last lane; Ctrl/Shift+wheel still zooms and horizontal motion still
+pans. The ruler and distance axis stay fixed. Brake uses Overlay by default to preserve the pedal overlay.
+Speed, pedals, and Gear default to 50%, 30%, and 5% respectively.
 Width accepts 0.5–4 px; fill accepts 0–100%. Values are validated in C++, exposed
 as typed model roles, and saved through the existing debounced `omatrack.yml`
 writer. Raw-channel appearance persists; sidecars retain their existing
@@ -105,15 +122,16 @@ The toolbar's **Resize** action enters a dedicated mode like corner editing.
 Every sample-lane divider gets a visible grip and the lanes show their current
 height. Dragging beyond the next lane's minimum pushes through further
 neighbours; a lane can occupy nearly the entire pane. **Save** / Ctrl+S keeps
-the new proportions; **Cancel** / Escape restores the previous layout;
+the new proportions and selects FIT; **Cancel** / Escape restores the previous layout,
+including manual mode and scroll position;
 **Reset heights** previews the defaults. Channels and the right-click lane menu
 also offer entry points.
 
 `TraceLaneSizing.h` fits positive finite weights to the available pixel budget,
 with a 20 px minimum (reduced when the pane is too small). There is no 2× weight
 cap. Fixed group/span chrome is reserved first; all sample traces, including raw
-channels and delta, share the rest. The former FIT/vertical-scroll branch and
-fixed size-choice dropdown are removed.
+channels and delta, share the rest. Manual mode uses the exact percentages instead.
+Resize temporarily projects these lanes into FIT without changing the saved mode.
 
 Preview weights live in a store draft, not in preferences. Other preference
 writes therefore cannot accidentally save an unfinished resize. Save writes
@@ -127,12 +145,44 @@ Run `OMATRACK_AUTOTEST_TRACE_RESIZE=/path/to/copied-recording` through the nativ
 acceptance wrapper. It tests growing past 2×, neighbour borrowing, fit, unchanged
 playhead/viewport, draft isolation, Cancel, Reset, and saving a raw lane. Repeat
 with the same scratch configuration and
-`OMATRACK_AUTOTEST_TRACE_RESIZE_RESTORE=1` to check reload persistence.
+`OMATRACK_AUTOTEST_TRACE_RESIZE_RESTORE=1` to check raw-weight and exact manual-mode
+reload persistence. The extended run checks hidden-middle overlay chains, wheel
+scroll versus modified-wheel zoom, native scrollbar dragging to the final lane,
+manual→Resize→Cancel (including scroll and preference isolation), Save selecting
+FIT, the FIT button, and scroll clamping after height or window changes.
 The native check also verifies that label delegates survive a drag, that a
 raw-channel-ready notification does not cancel it, and that Escape, Ctrl+S,
 and switching edit modes preserve the committed layout. All 25 unit-test
 executables passed; the tall/raw-lane geometry check averaged 3.1 ms on the
 DPR-2 setup below, and the saved raw weight reloaded without the old 2× clamp.
+
+### Scrolling scene layers
+
+Static trace content and cursor/readout content each have a rectangular scene-graph
+clip for the visible lane area. Ruler/axis chrome and ruler hover annotations stay
+outside that clip. Each layer still uses the same indexed `TraceSceneBuilder`
+batch; offscreen lanes are not submitted, and scrolling does not invalidate sample
+or range caches. QML lane labels use the same plot bounds and resolved row geometry.
+Layout calculation is read-only on the render thread; only GUI-thread layout/input
+changes clamp the transient scroll offset.
+
+## PR #7 follow-up verification (2026-09-10)
+
+Copied multi-lap VBO, native Hyprland/OpenGL, DPR 2, isolated configuration:
+
+- Expanded resize/manual acceptance and a second-process restore both passed:
+  hidden-middle grouping, exact heights, wheel/scrollbar reachability, manual
+  Cancel, Save/FIT selection, preference isolation and scroll clamping.
+- Static resize geometry averaged 1.32 ms; manual visible-lane geometry 1.17 ms.
+- Single-lap hover averaged 0.0347 ms before / 0.0349 ms after; zoom geometry
+  averaged 1.63 / 1.51 ms (worst 1.98 / 2.65 ms), with the same 11,119 quads.
+- At 120 Hz, the two-lap 10,000× zoom sweep passed before and after: frame
+  callback p50/p95/p99 were 8.05/10.37/13.07 ms before and 8.01/11.03/14.51 ms
+  after (310 intervals each). This remains a cadence measurement, not a claim
+  of locked 120 fps. Inspected overview, detail, Channels and scrolled-lane captures.
+- All 45 configured CTest entries passed, including Qt 6 semantic QML lint
+  and C++/QML formatting. This local build omits the optional ORT SDK; packaged
+  inference/runtime validation remains the responsibility of cross-platform CI.
 
 ## Verification (2026-09-03)
 

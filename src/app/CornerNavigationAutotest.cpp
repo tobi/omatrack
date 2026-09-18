@@ -93,6 +93,8 @@ bool omatrack::autotest::installCornerNavigation(QQmlApplicationEngine& engine,
                 QStringLiteral("previousCornerButton"));
             auto* next = window->findChild<QQuickItem*>(
                 QStringLiteral("nextCornerButton"));
+            auto* close = window->findChild<QQuickItem*>(
+                QStringLiteral("cornerFocusClose"));
             if (check->phase == 0) {
                 store.openFile(source);
                 check->phase = 1;
@@ -161,7 +163,7 @@ bool omatrack::autotest::installCornerNavigation(QQmlApplicationEngine& engine,
                 if (!require(click(previous) && store.focusedCorner() == 1,
                              "previous button"))
                     return;
-                store.clearCornerFocus();
+                if (!require(click(close), "close button")) return;
                 check->phaseTime.start();
                 check->phase = 5;
             } else if (check->phase == 5) {
@@ -204,9 +206,9 @@ bool omatrack::autotest::installCornerNavigation(QQmlApplicationEngine& engine,
                              "manual zoom cancels transition"))
                     return;
                 timer->stop();
-                qWarning() << "AUTOTEST corner navigation: buttons, H/J, "
-                              "interpolation, rapid retarget, cancel, lap "
-                              "edges, typing PASS";
+                qWarning() << "AUTOTEST corner navigation: buttons, close, "
+                              "H/J, interpolation, rapid retarget, cancel, "
+                              "lap edges, typing PASS";
                 QCoreApplication::exit(0);
             }
         });

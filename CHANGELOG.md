@@ -2,6 +2,19 @@
 
 All notable user-facing changes are documented here.
 
+## 1.8.6 — 2026-09-18
+
+- Customize trace layouts with exact channel-height percentages, manual
+  scrolling or FIT mode, shared lanes, and independent active/reference
+  colors, line widths, and fills.
+- Keep live corner dragging on the lightweight overlay so it does not rebuild
+  traces, comparison alignment, inspector statistics, or video timing on every
+  pointer move.
+- Make the corner-analysis close button reliably clickable and restore the
+  trace viewport that was active before the corner was opened.
+- Install to `~/.local` by default when using `make install`; system-wide and
+  staged prefixes remain available explicitly.
+
 ## 1.8.5 — 2026-09-08
 
 - Keep Windows fullscreen video a composited window instead of a game-style
