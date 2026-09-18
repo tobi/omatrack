@@ -28,6 +28,7 @@ QtObject {
     // Offered when picking a trace color; deliberately theme-independent so a
     // saved channel color keeps meaning across desktop themes.
     readonly property list<string> colorChoices: ["#a7c080", "#7fbbb3", "#e67e80", "#dbbc7f", "#d699b6", "#e09d7f", "#d3c6aa", "#9da9a0"]
+    readonly property color comparisonLapColor: "#ffd400"
 
     // ── density ─────────────────────────────────────────────────────
     // Material's own metrics are sized for touch. These are the compact
@@ -48,6 +49,7 @@ QtObject {
     readonly property color mutedTextColor: Theme.colors.light_foreground || "#9da9a0"
     readonly property color orangeColor: Theme.colors.orange || "#e09d7f"
     readonly property color redColor: Theme.colors.red || "#e67e80"
+    readonly property color referenceLapColor: "#ff2d2d"
     readonly property color referenceSelectionColor: Qt.rgba(style.orangeColor.r, style.orangeColor.g, style.orangeColor.b, 0.14)
     readonly property int scrollBarWidth: 6
     // Always a background tone. A theme without `selection` gets a faint

@@ -274,7 +274,9 @@ QVariant ChannelListModel::data(const QModelIndex& index, int role) const {
         case UnitRole: return row.unit;
         case VisibleRole: return row.visible;
         case ColorRole: return row.color;
-        case WeightRole: return row.weight;
+        case HeightPercentRole: return row.heightPercent;
+        case CombineWithPreviousRole: return row.combineWithPrevious;
+        case CanCombineRole: return row.canCombine;
         case StrokeWidthRole: return row.strokeWidth;
         case FillOpacityRole: return row.fillOpacity;
         case ReferenceColorRole: return row.referenceColor;
@@ -292,7 +294,9 @@ QHash<int, QByteArray> ChannelListModel::roleNames() const {
         {UnitRole, "unit"},
         {VisibleRole, "channelVisible"},
         {ColorRole, "channelColor"},
-        {WeightRole, "weight"},
+        {HeightPercentRole, "heightPercent"},
+        {CombineWithPreviousRole, "combineWithPrevious"},
+        {CanCombineRole, "canCombine"},
         {StrokeWidthRole, "strokeWidth"},
         {FillOpacityRole, "fillOpacity"},
         {ReferenceColorRole, "referenceColor"},
@@ -308,7 +312,10 @@ void ChannelListModel::refresh(const QVector<ChannelRow>& rows) {
         [](const ChannelRow& a, const ChannelRow& b) {
             return a.key == b.key && a.title == b.title && a.unit == b.unit &&
                    a.visible == b.visible && a.color == b.color &&
-                   a.weight == b.weight && a.strokeWidth == b.strokeWidth &&
+                   a.heightPercent == b.heightPercent &&
+                   a.combineWithPrevious == b.combineWithPrevious &&
+                   a.canCombine == b.canCombine &&
+                   a.strokeWidth == b.strokeWidth &&
                    a.fillOpacity == b.fillOpacity &&
                    a.referenceColor == b.referenceColor &&
                    a.source == b.source && a.sidecar == b.sidecar &&

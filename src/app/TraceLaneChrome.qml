@@ -40,104 +40,112 @@ Item {
         width: chrome.trace.labelWidth
         y: chrome.trace.rulerHeight
     }
-    Repeater {
-        model: chrome.rows.length
+    Item {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        clip: true
+        height: chrome.trace.plotHeight
+        y: chrome.trace.plotTop
 
-        delegate: Item {
-            id: lane
+        Repeater {
+            model: chrome.rows.length
 
-            required property int index
-            readonly property real laneHeight: lane.row.height
-            readonly property string laneKind: lane.row.kind
-            readonly property traceLaneRow row: chrome.rows[lane.index]
+            delegate: Item {
+                id: lane
 
-            clip: true
-            height: lane.laneHeight
-            objectName: "traceLane-" + lane.row.key
-            width: chrome.width
-            y: lane.row.y
+                required property int index
+                readonly property real laneHeight: lane.row.height
+                readonly property string laneKind: lane.row.kind
+                readonly property traceLaneRow row: chrome.rows[lane.index]
 
-            Item {
-                id: channelLabel
+                clip: true
+                height: lane.laneHeight
+                objectName: "traceLane-" + lane.row.key
+                width: chrome.width
+                y: lane.row.y - chrome.trace.plotTop
 
-                height: parent.height
-                visible: lane.laneKind !== "group" && lane.laneHeight >= 7
-                width: chrome.trace.labelWidth
+                Item {
+                    id: channelLabel
 
-                Label {
-                    color: Style.mutedTextColor
-                    elide: Text.ElideRight
-                    font.bold: true
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: Math.max(6, Math.min(Style.smallFontSize, lane.laneHeight - 2))
-                    height: lane.laneHeight >= 24 ? 14 : lane.laneHeight
-                    horizontalAlignment: Text.AlignRight
-                    leftPadding: 2
-                    rightPadding: !Store.resizingTraces && lane.laneHeight >= 12 && lane.laneHeight < 24 ? 48 : 6
-                    text: lane.row.title
-                    verticalAlignment: Text.AlignVCenter
+                    height: parent.height
+                    visible: lane.laneKind !== "group" && lane.laneHeight >= 7
+                    width: chrome.trace.labelWidth
+
+                    Label {
+                        color: Style.mutedTextColor
+                        elide: Text.ElideRight
+                        font.bold: true
+                        font.family: Style.monoFontFamily
+                        font.pixelSize: Math.max(6, Math.min(Style.smallFontSize, lane.laneHeight - 2))
+                        height: lane.laneHeight >= 24 ? 14 : lane.laneHeight
+                        horizontalAlignment: Text.AlignRight
+                        leftPadding: 2
+                        rightPadding: !Store.resizingTraces && lane.laneHeight >= 12 && lane.laneHeight < 24 ? 48 : 6
+                        text: lane.row.title
+                        verticalAlignment: Text.AlignVCenter
+                        width: parent.width
+                        y: lane.laneHeight >= 24 ? 2 : 0
+                    }
+                    Label {
+                        color: Style.dimTextColor
+                        font.family: Style.monoFontFamily
+                        font.pixelSize: Math.max(6, Style.smallFontSize - 2)
+                        height: 12
+                        horizontalAlignment: Text.AlignRight
+                        leftPadding: 2
+                        rightPadding: 6
+                        text: lane.row.unit
+                        verticalAlignment: Text.AlignVCenter
+                        visible: lane.laneHeight >= 24 && text !== ""
+                        width: parent.width
+                        y: 15
+                    }
+                }
+                Item {
+                    id: groupLabel
+
+                    height: parent.height
+                    visible: lane.laneKind === "group" && lane.laneHeight >= 10
                     width: parent.width
-                    y: lane.laneHeight >= 24 ? 2 : 0
-                }
-                Label {
-                    color: Style.dimTextColor
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: Math.max(6, Style.smallFontSize - 2)
-                    height: 12
-                    horizontalAlignment: Text.AlignRight
-                    leftPadding: 2
-                    rightPadding: 6
-                    text: lane.row.unit
-                    verticalAlignment: Text.AlignVCenter
-                    visible: lane.laneHeight >= 24 && text !== ""
-                    width: parent.width
-                    y: 15
-                }
-            }
-            Item {
-                id: groupLabel
 
-                height: parent.height
-                visible: lane.laneKind === "group" && lane.laneHeight >= 10
-                width: parent.width
-
-                Label {
-                    color: Style.foregroundColor
-                    font.bold: true
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: Math.min(Style.smallFontSize, Math.max(7, lane.laneHeight - 5))
-                    height: parent.height
-                    horizontalAlignment: Text.AlignLeft
-                    text: lane.row.expanded ? "▾" : "▸"
-                    verticalAlignment: Text.AlignVCenter
-                    width: 14
-                    x: 6
-                }
-                Label {
-                    color: Style.foregroundColor
-                    elide: Text.ElideRight
-                    font.bold: true
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: Math.min(Style.smallFontSize, Math.max(7, lane.laneHeight - 5))
-                    height: parent.height
-                    horizontalAlignment: Text.AlignLeft
-                    text: lane.row.title
-                    verticalAlignment: Text.AlignVCenter
-                    width: Math.max(0, parent.width * 0.56 - 28)
-                    x: 20
-                }
-                Label {
-                    color: Style.mutedTextColor
-                    elide: Text.ElideRight
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: Math.min(Style.smallFontSize, Math.max(7, lane.laneHeight - 6))
-                    height: parent.height
-                    horizontalAlignment: Text.AlignRight
-                    rightPadding: 8
-                    text: lane.row.chromeText
-                    verticalAlignment: Text.AlignVCenter
-                    width: parent.width * 0.42
-                    x: parent.width - width
+                    Label {
+                        color: Style.foregroundColor
+                        font.bold: true
+                        font.family: Style.monoFontFamily
+                        font.pixelSize: Math.min(Style.smallFontSize, Math.max(7, lane.laneHeight - 5))
+                        height: parent.height
+                        horizontalAlignment: Text.AlignLeft
+                        text: lane.row.expanded ? "▾" : "▸"
+                        verticalAlignment: Text.AlignVCenter
+                        width: 14
+                        x: 6
+                    }
+                    Label {
+                        color: Style.foregroundColor
+                        elide: Text.ElideRight
+                        font.bold: true
+                        font.family: Style.monoFontFamily
+                        font.pixelSize: Math.min(Style.smallFontSize, Math.max(7, lane.laneHeight - 5))
+                        height: parent.height
+                        horizontalAlignment: Text.AlignLeft
+                        text: lane.row.title
+                        verticalAlignment: Text.AlignVCenter
+                        width: Math.max(0, parent.width * 0.56 - 28)
+                        x: 20
+                    }
+                    Label {
+                        color: Style.mutedTextColor
+                        elide: Text.ElideRight
+                        font.family: Style.monoFontFamily
+                        font.pixelSize: Math.min(Style.smallFontSize, Math.max(7, lane.laneHeight - 6))
+                        height: parent.height
+                        horizontalAlignment: Text.AlignRight
+                        rightPadding: 8
+                        text: lane.row.chromeText
+                        verticalAlignment: Text.AlignVCenter
+                        width: parent.width * 0.42
+                        x: parent.width - width
+                    }
                 }
             }
         }

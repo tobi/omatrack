@@ -15,6 +15,7 @@
 #include <QQmlApplicationEngine>
 #include <QQuickWindow>
 #include <QTimer>
+#include <QWheelEvent>
 
 #include <cmath>
 #include <memory>
@@ -23,8 +24,11 @@ namespace {
 struct Check {
     QElapsedTimer elapsed;
     int phase = 0;
+    int resizeLane = 0;
     QString rawKey;
     QList<TraceLaneRow> original;
+    QList<TraceLaneRow> manual;
+    double manualScroll = 0;
     QPointer<QQuickItem> label;
     double cursor = 0, start = 0, end = 1;
 };
@@ -130,29 +134,55 @@ bool omatrack::autotest::installTraceResize(QQmlApplicationEngine& engine,
                     if (!require(store.channelWeight(state->rawKey) > 2.0,
                                  "raw height not restored"))
                         return;
-                    qWarning() << "AUTOTEST trace resize restored raw weight:"
+                    if (!require(
+                            !trace->fitChannels() &&
+                                near(store.channelHeightPercent("speed"),
+                                     40.0) &&
+                                near(store.channelHeightPercent(state->rawKey),
+                                     70.0),
+                            "manual mode / percentages not restored"))
+                        return;
+                    const auto restored = samples(trace);
+                    if (!require(!restored.isEmpty() &&
+                                     near(restored.front().height,
+                                          trace->plotHeight() * 0.40) &&
+                                     near(restored.back().height,
+                                          trace->plotHeight() * 0.70) &&
+                                     trace->scrollMaximum() > 0,
+                                 "restored percentages are not exact"))
+                        return;
+                    qWarning() << "AUTOTEST trace resize restored raw weight "
+                                  "and exact manual layout:"
                                << store.channelWeight(state->rawKey);
                     timer->stop();
                     QCoreApplication::exit(0);
                     return;
                 }
+                trace->setFitChannels(true);
                 state->cursor = store.cursorFrac();
                 state->start = store.viewStart();
                 state->end = store.viewEnd();
                 state->phase = 2;
             } else if (state->phase == 2) {
                 state->original = samples(trace);
-                state->label = visualItem(window->contentItem(),
-                                          QStringLiteral("traceLane-speed"));
                 if (!require(state->original.size() >= 4 &&
                                  state->original.back().key == state->rawKey,
                              "need standard and raw lanes"))
                     return;
+                for (int i = 1; i + 1 < state->original.size(); ++i) {
+                    if (state->original[i].height <
+                        state->original[state->resizeLane].height)
+                        state->resizeLane = i;
+                }
+                state->label =
+                    visualItem(window->contentItem(),
+                               QStringLiteral("traceLane-") +
+                                   state->original[state->resizeLane].key);
                 if (!require(click(window, "resizeTracesButton") &&
                                  store.resizingTraces(),
                              "toolbar entry"))
                     return;
-                const auto& lane = state->original.front();
+                const auto& lane = state->original[state->resizeLane];
                 drag(trace, lane.y + lane.height, trace->height() * 0.55);
                 state->phase = 3;
             } else if (state->phase == 3) {
@@ -160,12 +190,15 @@ bool omatrack::autotest::installTraceResize(QQmlApplicationEngine& engine,
                 if (!require(
                         state->label &&
                             state->label ==
-                                visualItem(window->contentItem(),
-                                           QStringLiteral("traceLane-speed")),
+                                visualItem(
+                                    window->contentItem(),
+                                    QStringLiteral("traceLane-") +
+                                        state->original[state->resizeLane].key),
                         "lane delegates rebuilt during drag"))
                     return;
-                if (!require(rows.front().height >
-                                     state->original.front().height * 2.0 &&
+                if (!require(rows[state->resizeLane].height >
+                                     state->original[state->resizeLane].height *
+                                         2.0 &&
                                  fits(rows, state->original),
                              "grow beyond 2x and keep all lanes fitted"))
                     return;
@@ -184,7 +217,7 @@ bool omatrack::autotest::installTraceResize(QQmlApplicationEngine& engine,
                                           : QStringLiteral("#7fbbb3"));
                 if (!require(near(YamlConfig::instance()
                                       .value({QStringLiteral("channels"),
-                                              rows.front().key,
+                                              rows[state->resizeLane].key,
                                               QStringLiteral("weight")},
                                              1.0)
                                       .toDouble(),
@@ -227,7 +260,7 @@ bool omatrack::autotest::installTraceResize(QQmlApplicationEngine& engine,
                              "save button"))
                     return;
                 state->phase = 5;
-            } else {
+            } else if (state->phase == 5) {
                 if (!store.extraChannelData(state->rawKey, false)) return;
                 if (!require(store.channelWeight(state->rawKey) > 2.0,
                              "saved raw weight clamped"))
@@ -263,10 +296,190 @@ bool omatrack::autotest::installTraceResize(QQmlApplicationEngine& engine,
                 const auto result = trace->benchmarkGeometry(60);
                 qWarning() << "AUTOTEST trace resize geometry average_ms:"
                            << result.value("averageMs").toDouble();
+                state->phase = 6;
+            } else if (state->phase == 6) {
+                for (const auto& key : store.channelOrder()) {
+                    store.setChannelVisible(
+                        key, key == "speed" || key == "throttle" ||
+                                 key == "brake" || key == "gear");
+                    store.setChannelCombined(
+                        key, key == "throttle" || key == "brake");
+                }
+                store.setChannelCombined(state->rawKey, false);
+                store.setChannelHeightPercent("speed", 50);
+                store.setChannelHeightPercent("throttle", 30);
+                store.setChannelHeightPercent("brake", 30);
+                store.setChannelHeightPercent("gear", 5);
+                store.setChannelHeightPercent(state->rawKey, 20);
+                trace->setFitChannels(false);
+                if (!require(store.channelLaneKey("brake") == "speed",
+                             "three-channel shared lane"))
+                    return;
+                store.setChannelVisible("throttle", false);
+                if (!require(store.channelLaneKey("brake") == "brake",
+                             "hidden channel did not split lanes"))
+                    return;
+                store.setChannelLaneHeightPercent("brake", 20);
+                if (!require(
+                        near(store.channelHeightPercent("speed"), 50) &&
+                            near(store.channelHeightPercent("throttle"), 30),
+                        "editing Brake changed separate/hidden lanes"))
+                    return;
+                store.resetChannelLaneHeightPercent("brake");
+                if (!require(near(store.channelHeightPercent("brake"), 30) &&
+                                 near(store.channelHeightPercent("speed"), 50),
+                             "reset crossed a hidden lane boundary"))
+                    return;
+                store.setChannelCombined("throttle", false);
+                store.setChannelVisible("throttle", true);
+                store.setChannelLaneHeightPercent("brake", 70);
+                if (!require(near(store.channelHeightPercent("throttle"), 70) &&
+                                 store.channelLaneKey("brake") == "throttle" &&
+                                 trace->scrollMaximum() > 0,
+                             "shared lane edit / manual overflow"))
+                    return;
+                const auto before = samples(trace);
+                if (!require(
+                        near(before.front().height, trace->plotHeight() * 0.5),
+                        "manual percentage not exact"))
+                    return;
+                const QPointF p(trace->labelWidth() + 80,
+                                trace->plotTop() + 30);
+                QWheelEvent wheel(p, p, QPoint(), QPoint(0, -120), Qt::NoButton,
+                                  Qt::NoModifier, Qt::NoScrollPhase, false);
+                QCoreApplication::sendEvent(trace, &wheel);
+                if (!require(
+                        trace->verticalScroll() > 0 &&
+                            near(samples(trace).front().y,
+                                 before.front().y - trace->verticalScroll()) &&
+                            near(store.cursorFrac(), state->cursor) &&
+                            near(store.viewStart(), state->start) &&
+                            near(store.viewEnd(), state->end),
+                        "wheel failed to scroll or moved horizontal viewport"))
+                    return;
+                QWheelEvent zoom(p, p, QPoint(), QPoint(0, 120), Qt::NoButton,
+                                 Qt::ControlModifier, Qt::NoScrollPhase, false);
+                const double scroll = trace->verticalScroll();
+                QCoreApplication::sendEvent(trace, &zoom);
+                if (!require(near(trace->verticalScroll(), scroll) &&
+                                 !near(store.viewEnd() - store.viewStart(),
+                                       state->end - state->start),
+                             "Ctrl+wheel no longer zooms"))
+                    return;
+                store.setViewStart(state->start);
+                store.setViewEnd(state->end);
+                trace->setVerticalScroll(0);
+                state->phase = 7;
+            } else if (state->phase == 7) {
+                auto* bar = window->findChild<QQuickItem*>(
+                    QStringLiteral("traceScrollBar"));
+                if (!require(bar && bar->isVisible(),
+                             "manual scrollbar missing"))
+                    return;
+                const QPointF from(bar->width() / 2, 2),
+                    to(from.x(), bar->height() - 2);
+                QMouseEvent press(QEvent::MouseButtonPress, from, from, from,
+                                  Qt::LeftButton, Qt::LeftButton,
+                                  Qt::NoModifier);
+                QMouseEvent move(QEvent::MouseMove, to, to, to, Qt::NoButton,
+                                 Qt::LeftButton, Qt::NoModifier);
+                QMouseEvent release(QEvent::MouseButtonRelease, to, to, to,
+                                    Qt::LeftButton, Qt::NoButton,
+                                    Qt::NoModifier);
+                QCoreApplication::sendEvent(bar, &press);
+                QCoreApplication::sendEvent(bar, &move);
+                QCoreApplication::sendEvent(bar, &release);
+                if (!require(
+                        near(trace->verticalScroll(), trace->scrollMaximum()),
+                        "scrollbar drag cannot reach last lane"))
+                    return;
+                const auto last = samples(trace).back();
+                if (!require(near(last.y + last.height,
+                                  trace->plotTop() + trace->plotHeight()),
+                             "last lane not reachable"))
+                    return;
+                state->manual = samples(trace);
+                state->manualScroll = trace->verticalScroll();
+                store.beginTraceResize();
+                store.setChannelWeight("speed", 3);
+                // Serialize an unrelated setting while the temporary FIT
+                // projection is active; the committed manual mode must stay.
+                store.setChannelColor("gear",
+                                      store.channelColor("gear") == "#7fbbb3"
+                                          ? "#ffd400"
+                                          : "#7fbbb3");
+                if (!require(
+                        !YamlConfig::instance()
+                             .value(QStringLiteral("trace/fit_channels"), true)
+                             .toBool(),
+                        "temporary FIT leaked to preferences"))
+                    return;
+                trace->benchmarkGeometry(1);
+                QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape,
+                                 Qt::NoModifier);
+                QCoreApplication::sendEvent(trace, &escape);
+                if (!require(
+                        !trace->fitChannels() && !store.resizingTraces() &&
+                            near(trace->verticalScroll(), state->manualScroll),
+                        "Cancel lost manual mode/scroll"))
+                    return;
+                const auto restored = samples(trace);
+                for (int i = 0; i < restored.size(); ++i)
+                    if (!require(near(restored[i].y, state->manual[i].y) &&
+                                     near(restored[i].height,
+                                          state->manual[i].height),
+                                 "Cancel changed manual lane geometry"))
+                        return;
+                state->phase = 8;
+            } else if (state->phase == 8) {
+                if (!require(window->grabWindow().save(
+                                 shot + QStringLiteral("_manual.png")),
+                             "manual screenshot"))
+                    return;
+                store.beginTraceResize();
+                store.commitTraceResize();
+                if (!require(trace->fitChannels() &&
+                                 near(trace->verticalScroll(), 0),
+                             "Save did not accept FIT"))
+                    return;
+                if (!require(click(window, "fitTraceChannelsButton") &&
+                                 !trace->fitChannels() &&
+                                 click(window, "fitTraceChannelsButton") &&
+                                 trace->fitChannels(),
+                             "FIT toggle"))
+                    return;
+                store.setChannelLaneHeightPercent("speed", 40);
+                store.setChannelLaneHeightPercent("brake", 20);
+                store.setChannelLaneHeightPercent(state->rawKey, 70);
+                trace->setFitChannels(false);
+                trace->setVerticalScroll(trace->scrollMaximum());
+                state->manualScroll = trace->verticalScroll();
+                // Resize the window, not the anchor-managed TraceView.
+                // Let the compositor and QML layout apply it before checking.
+                window->setHeight(window->height() * 0.8);
+                state->phase = 9;
+            } else if (state->phase == 9) {
+                if (!require(
+                        trace->verticalScroll() <= trace->scrollMaximum() &&
+                            trace->verticalScroll() < state->manualScroll,
+                        "pane resize failed to clamp scroll"))
+                    return;
+                trace->setVerticalScroll(trace->scrollMaximum());
+                store.setChannelLaneHeightPercent(state->rawKey, 5);
+                if (!require(near(trace->scrollMaximum(), 0) &&
+                                 near(trace->verticalScroll(), 0),
+                             "height changes left stale scrollbar"))
+                    return;
+                store.setChannelLaneHeightPercent(state->rawKey, 70);
+                const auto manualCost = trace->benchmarkGeometry(60);
+                qWarning() << "AUTOTEST manual geometry average_ms:"
+                           << manualCost.value("averageMs");
                 timer->stop();
                 qWarning()
-                    << "AUTOTEST trace resize: drag, push neighbours, fit, "
-                       "cursor, draft isolation, cancel, reset, raw save PASS";
+                    << "AUTOTEST trace resize: FIT drag/cancel/reset/save, raw "
+                       "weights, manual wheel/scrollbar, "
+                       "hidden grouping, manual Cancel, mode isolation, FIT "
+                       "toggle and scroll clamp PASS";
                 QCoreApplication::exit(0);
             }
         });

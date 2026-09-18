@@ -172,6 +172,30 @@ private slots:
         QCOMPARE(model.rowCount(), 1);
     }
 
+    void channelModelExposesSharedLaneState() {
+        ChannelListModel model;
+        ChannelRow row;
+        row.key = QStringLiteral("brake");
+        row.title = QStringLiteral("Brake");
+        row.heightPercent = 30.0;
+        row.combineWithPrevious = true;
+        row.canCombine = true;
+        model.refresh({row});
+
+        const QModelIndex index = model.index(0);
+        QVERIFY(index.data(ChannelListModel::CombineWithPreviousRole).toBool());
+        QVERIFY(index.data(ChannelListModel::CanCombineRole).toBool());
+        QCOMPARE(index.data(ChannelListModel::HeightPercentRole).toDouble(),
+                 30.0);
+
+        QSignalSpy reset(&model, &QAbstractItemModel::modelReset);
+        row.combineWithPrevious = false;
+        model.refresh({row});
+        QCOMPARE(reset.size(), 0);
+        QVERIFY(
+            !index.data(ChannelListModel::CombineWithPreviousRole).toBool());
+    }
+
     void setPrimarySelectLapSidebarAgree() {
         LibraryModel library;
         FilmstripSessionListModel filmstrip;

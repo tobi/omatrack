@@ -117,6 +117,7 @@ public:
     std::function<void()> onOverlayChanged;
     std::function<void()> onSpanHoverChanged;
     std::function<void(Qt::CursorShape)> onSetCursor;
+    std::function<void(qreal)> onVerticalScroll;
     std::function<void()> onUnsetCursor;
     void resetSelection() {
         selectionStart_ = -1.0;
