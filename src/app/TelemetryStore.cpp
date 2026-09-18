@@ -2572,11 +2572,12 @@ TelemetryStore::TelemetryStore(QObject* parent)
     // longer contains the focused zone drops the focus, and a new lap
     // selection recomputes its markers.
     connect(this, &TelemetryStore::cornersChanged, this, [this]() {
+        // Structural add/delete/load/commit only. Live drag uses
+        // cornerGeometryChanged and must not rebuild alignment, seek video,
+        // or fan cursorFracChanged out per pixel.
         cornerFocusAnimation_->stop();
         invalidateComparisonAlignment();
         rebuildComparisonAlignment();
-        emit cursorFracChanged();
-        emit videoTimeChanged();
         if (focusedCorner_ < 0) return;
         if (focusedCorner_ >= corners_.size())
             clearCornerFocus();
@@ -6231,6 +6232,7 @@ void TelemetryStore::saveCorners() {
         assignedSlug.isEmpty() ? primarySession_->track() : assignedSlug;
     config.setValue(cornerConfigPath(cornerTrack), zones);
     schedulePreferencesSave();
+    emit cornersChanged();
 }
 
 QString TelemetryStore::cornerName(int index) const {
@@ -7255,8 +7257,8 @@ void TelemetryStore::updateCorner(int index, double start, double end) {
         return;
     corners_[index].start = nextStart;
     corners_[index].end = nextEnd;
-    emit cornersChanged();
-    if (index == focusedCorner_) rebuildCornerMarkers();
+    if (cornersModel_) cornersModel_->updateGeometry(index, nextStart, nextEnd);
+    emit cornerGeometryChanged();
 }
 
 void TelemetryStore::setEditingCorners(bool editing) {

@@ -1071,6 +1071,8 @@ signals:
     void viewChanged();
     void sessionsChanged();
     void cornersChanged();
+    /// Live corner drag geometry. Overlay only; not a full model rebuild.
+    void cornerGeometryChanged();
     void cornerFocusChanged();
     void highlightedCornerMarkerChanged();
     void cornerConsistencyChanged();
