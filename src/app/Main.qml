@@ -173,17 +173,14 @@ ApplicationWindow {
         root.revealVideoControls();
     }
     function showVideo(source, telemetryLinked) {
-        const newRecording = source.toString() !== videoPlayer.source.toString();
+        // Opening a recording docks it above the traces; fullscreen is only
+        // ever the user's choice (F, the Full button).
         root.telemetryVideoActive = telemetryLinked === true;
         root.videoVisible = true;
         root.revealVideoControls();
         if (root.width < 1000)
             root.sidebarVisible = false;
         root.pendingVideoSource = source;
-        // Enter once for a new recording; changing laps or resuming playback
-        // must not undo the user's deliberate Escape back to the workspace.
-        if (newRecording)
-            root.videoSetFullscreen(true);
         Qt.callLater(root.openPendingVideo);
     }
     function syncTelemetryVideo() {

@@ -4,6 +4,8 @@ All notable user-facing changes are documented here.
 
 ## Unreleased
 
+- Opening a video no longer jumps to fullscreen: it opens docked above the
+  traces, and fullscreen is only entered with F or **Full**.
 - Parser pinned to `motorsport-telemetry-rs` 1.3.5 (`cac837f`): stint-aware
   lap roles, the dominant GPS week for AiM clocks (a stale week at power-on
   no longer dates a recording years early), and pit stops carved out of the

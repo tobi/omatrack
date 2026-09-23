@@ -401,10 +401,11 @@ Native lap distance is accepted only when its continuity and total agree with in
 ### Embedded video playback
 
 - Open MP4, MOV, MKV, AVI, M4V, and WebM video inside the main analysis workspace; an MP4 containing an AiM `aimd` track is also a telemetry session.
-- Deliberately opening a new video enters fullscreen once. Escape returns to the
-  workspace; lap changes, playback updates, and refreshes of the same recording
-  must not force fullscreen again. Finder document-open events use the same file
-  path as CLI/dialog/drop opens, queued until the store is available.
+- Opening a video — sidebar click, dialog, drop, CLI or Finder — docks it
+  above the traces. Nothing enters fullscreen on its own; only the user does
+  (F, **Full**), and Escape returns to the workspace. Finder document-open
+  events use the same file path as CLI/dialog/drop opens, queued until the
+  store is available.
 - Render through libmpv's OpenGL Render API in `MpvVideoItem`; never spawn the mpv CLI or embed a foreign native window.
 - Fullscreen is `Window.FullScreen` on the one application window, never a
   second window. On Windows, `WindowsIntegration.cpp` sets the platform

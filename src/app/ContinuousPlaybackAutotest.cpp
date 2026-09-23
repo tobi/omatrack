@@ -89,10 +89,6 @@ bool omatrack::autotest::installContinuousPlayback(
                 store.setReferencePlayback(QStringLiteral("recording"));
                 state->phase = 3;
             } else if (state->phase == 3) {
-                // Opening a video enters fullscreen; the trace workspace
-                // is the docked view.
-                QMetaObject::invokeMethod(window, "videoSetFullscreen",
-                                          Q_ARG(QVariant, false));
                 store.setContinuousPlayback(true);
                 if (!require(store.nextPrimaryLapId() >= 0,
                              "selected lap has no next lap"))
