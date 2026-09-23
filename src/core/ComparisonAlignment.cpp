@@ -29,8 +29,27 @@ struct Anchor {
     double compareTime = 0.0;
 };
 
-std::vector<double> lapPercentage(const omatrack::UnifiedLap& primary,
-                                  const omatrack::UnifiedLap& compare) {
+// Lap distance is only a better base than lap time when it is the logger's
+// own and both laps agree on the total: speed-fused distance drifts by
+// several percent per lap (wheelspin, lock-ups, tyre growth), which is more
+// than the pace difference between two drivers.
+constexpr double kDistanceBaseTotalTolerance = 0.02;
+
+bool distanceBaseUsable(const omatrack::UnifiedLap& primary,
+                        const omatrack::UnifiedLap& compare) {
+    if (primary.distanceSource != omatrack::DistanceSource::Native ||
+        compare.distanceSource != omatrack::DistanceSource::Native ||
+        primary.distance.size() != primary.time.size() ||
+        compare.distance.size() != compare.time.size())
+        return false;
+    const double p = primary.distance.back() - primary.distance.front();
+    const double c = compare.distance.back() - compare.distance.front();
+    if (!(p > 0.0) || !(c > 0.0) || !std::isfinite(p + c)) return false;
+    return std::abs(p - c) / std::max(p, c) <= kDistanceBaseTotalTolerance;
+}
+
+std::vector<double> lapTimePercentage(const omatrack::UnifiedLap& primary,
+                                      const omatrack::UnifiedLap& compare) {
     std::vector<double> times(primary.time.size());
     const double primaryStart = primary.time.front();
     const double primarySpan = primary.time.back() - primaryStart;
@@ -43,6 +62,44 @@ std::vector<double> lapPercentage(const omatrack::UnifiedLap& primary,
         times[i] = compareStart + std::clamp(pct, 0.0, 1.0) * compareSpan;
     }
     return times;
+}
+
+// Compare time at the same share of lap distance, for every primary sample.
+std::vector<double> lapDistancePercentage(const omatrack::UnifiedLap& primary,
+                                          const omatrack::UnifiedLap& compare) {
+    std::vector<double> times(primary.time.size());
+    const double p0 = primary.distance.front();
+    const double pSpan = primary.distance.back() - p0;
+    const double c0 = compare.distance.front();
+    const double cSpan = compare.distance.back() - c0;
+    size_t high = 1;
+    for (size_t i = 0; i < primary.time.size(); ++i) {
+        const double share = std::clamp((primary.distance[i] - p0) / pSpan, 0.0,
+                                        1.0);
+        const double target = c0 + share * cSpan;
+        while (high + 1 < compare.distance.size() &&
+               compare.distance[high] < target)
+            ++high;
+        const size_t low = high - 1;
+        const double span = compare.distance[high] - compare.distance[low];
+        const double local =
+            span > 0.0
+                ? std::clamp((target - compare.distance[low]) / span, 0.0, 1.0)
+                : 0.0;
+        times[i] = compare.time[low] +
+                   local * (compare.time[high] - compare.time[low]);
+        if (i > 0) times[i] = std::max(times[i], times[i - 1]);
+    }
+    return times;
+}
+
+std::vector<double> lapPercentage(const omatrack::UnifiedLap& primary,
+                                  const omatrack::UnifiedLap& compare,
+                                  bool* distanceBase) {
+    const bool distance = distanceBaseUsable(primary, compare);
+    if (distanceBase) *distanceBase = distance;
+    return distance ? lapDistancePercentage(primary, compare)
+                    : lapTimePercentage(primary, compare);
 }
 
 bool gpsArraysAvailable(const omatrack::UnifiedLap& lap) {
@@ -72,8 +129,10 @@ bool gpsCoverageAvailable(const omatrack::UnifiedLap& lap) {
         last = i;
         ++count;
     }
+    // Enough to offer GPS at all; patchy coverage is handled as re-syncs,
+    // and the strategy falls back to the base when nothing verifies.
     return count >= 8 && first < last &&
-           double(last - first) / double(lap.time.size() - 1) >= 0.5;
+           double(last - first) / double(lap.time.size() - 1) >= 0.2;
 }
 
 /// Local travel direction at `index` as a unit (north, east) vector from the
@@ -168,23 +227,122 @@ std::optional<size_t> nearestGpsIndex(const omatrack::UnifiedLap& primary,
     return best;
 }
 
-std::vector<Anchor> continuousGpsAnchors(
-    const omatrack::UnifiedLap& primary, const omatrack::UnifiedLap& compare,
-    const std::vector<double>& baseTimes) {
+// A fix is trusted only if it agrees with the car: the speed implied by the
+// positions ±0.5 s either side must match the vehicle speed. A receiver's own
+// accuracy estimate is not enough — a SmartyCam that lost satellites reports
+// "4 m" while its positions wander by hundreds of metres.
+constexpr double kGpsConsistencyHalfWindowSeconds = 0.5;
+constexpr double kGpsConsistencyMinimumSpeedKmh = 30.0;
+constexpr double kGpsConsistencyRelativeTolerance = 0.08;
+constexpr double kGpsConsistencyAbsoluteToleranceKmh = 6.0;
+
+bool gpsSelfConsistent(const omatrack::UnifiedLap& lap, size_t index) {
+    if (lap.speed.size() != lap.time.size() || index >= lap.time.size())
+        return false;
+    const double speed = lap.speed[index];
+    if (!std::isfinite(speed) || speed < kGpsConsistencyMinimumSpeedKmh)
+        return false;
+    const size_t half = size_t(std::max(
+        1.0, std::round(lap.sampleRate * kGpsConsistencyHalfWindowSeconds)));
+    if (index < half || index + half >= lap.time.size()) return false;
+    const size_t before = index - half;
+    const size_t after = index + half;
+    if (!gpsFixUsable(lap.gpsLat[before], lap.gpsLon[before],
+                      lap.gpsPositionAccuracy[before]) ||
+        !gpsFixUsable(lap.gpsLat[after], lap.gpsLon[after],
+                      lap.gpsPositionAccuracy[after]))
+        return false;
+    const double dt = lap.time[after] - lap.time[before];
+    if (!(dt > 0.0)) return false;
+    const double meanLatitude =
+        0.5 * (lap.gpsLat[before] + lap.gpsLat[after]) * kPi / 180.0;
+    const double north =
+        (lap.gpsLat[after] - lap.gpsLat[before]) * kMetersPerDegree;
+    const double east = (lap.gpsLon[after] - lap.gpsLon[before]) *
+                        kMetersPerDegree * std::cos(meanLatitude);
+    const double derived = std::hypot(north, east) / dt * 3.6;
+    return std::abs(derived - speed) <=
+           std::max(kGpsConsistencyAbsoluteToleranceKmh,
+                    kGpsConsistencyRelativeTolerance * speed);
+}
+
+// At the same place on track two cars rarely differ by more than this:
+// a GPS match that pairs a braking car with an accelerating one is a biased
+// fix, not a slower driver.
+constexpr double kMatchedSpeedRelativeTolerance = 0.20;
+constexpr double kMatchedSpeedAbsoluteToleranceKmh = 15.0;
+
+bool speedsAgree(const omatrack::UnifiedLap& primary, size_t i,
+                 const omatrack::UnifiedLap& compare, size_t j) {
+    const double a = primary.speed[i];
+    const double b = compare.speed[j];
+    return std::isfinite(a) && std::isfinite(b) &&
+           std::abs(a - b) <=
+               std::max(kMatchedSpeedAbsoluteToleranceKmh,
+                        kMatchedSpeedRelativeTolerance * std::max(a, b));
+}
+
+// Mean absolute speed difference between the primary and the compare lap at
+// the mapped compare times. The correct station map minimises it; it is the
+// GPS-free check that a correction improved on the base.
+double mappedSpeedDisagreement(const omatrack::UnifiedLap& primary,
+                               const omatrack::UnifiedLap& compare,
+                               const std::vector<double>& times) {
+    double sum = 0.0;
+    size_t count = 0;
+    size_t high = 1;
+    for (size_t i = 0; i < times.size(); i += 5) {
+        while (high + 1 < compare.time.size() && compare.time[high] < times[i])
+            ++high;
+        const size_t low = high - 1;
+        const double span = compare.time[high] - compare.time[low];
+        const double local =
+            span > 0.0
+                ? std::clamp((times[i] - compare.time[low]) / span, 0.0, 1.0)
+                : 0.0;
+        const double speed =
+            compare.speed[low] + local * (compare.speed[high] - compare.speed[low]);
+        if (!std::isfinite(speed) || !std::isfinite(primary.speed[i])) continue;
+        sum += std::abs(primary.speed[i] - speed);
+        ++count;
+    }
+    return count ? sum / double(count)
+                 : std::numeric_limits<double>::infinity();
+}
+
+struct GpsAnchors {
     std::vector<Anchor> anchors;
-    if (!gpsAvailable(primary, compare)) return anchors;
+    int rejected = 0;
+    bool continuous = false;
+};
+
+GpsAnchors validatedGpsAnchors(const omatrack::UnifiedLap& primary,
+                               const omatrack::UnifiedLap& compare,
+                               const std::vector<double>& baseTimes) {
+    GpsAnchors result;
+    if (!gpsAvailable(primary, compare)) return result;
     const size_t step =
         size_t(std::max(1.0, primary.sampleRate / kGpsAnchorRate));
     for (size_t i = 0; i < primary.time.size(); i += step) {
-        const auto match =
-            nearestGpsIndex(primary, i, compare, baseTimes[i]);
+        const auto match = nearestGpsIndex(primary, i, compare, baseTimes[i]);
         if (!match) continue;
-        const double compareTime = compare.time[*match];
-        if (!anchors.empty() && compareTime <= anchors.back().compareTime)
+        if (!gpsSelfConsistent(primary, i) ||
+            !gpsSelfConsistent(compare, *match) ||
+            !speedsAgree(primary, i, compare, *match)) {
+            ++result.rejected;
             continue;
-        anchors.push_back({i, compareTime});
+        }
+        const double compareTime = compare.time[*match];
+        if (!result.anchors.empty() &&
+            compareTime <= result.anchors.back().compareTime)
+            continue;
+        result.anchors.push_back({i, compareTime});
     }
-
+    auto& anchors = result.anchors;
+    if (anchors.size() < 2) {
+        anchors.clear();
+        return result;
+    }
     uint8_t occupiedBins = 0;
     for (const Anchor& anchor : anchors) {
         const size_t bin =
@@ -194,40 +352,38 @@ std::vector<Anchor> continuousGpsAnchors(
     int occupiedBinCount = 0;
     for (int i = 0; i < 8; ++i)
         occupiedBinCount += (occupiedBins & uint8_t(1U << i)) != 0 ? 1 : 0;
-    const double coverage = anchors.size() >= 2
-                                ? double(anchors.back().primaryIndex -
-                                         anchors.front().primaryIndex) /
-                                      double(primary.time.size() - 1)
-                                : 0.0;
-    if (anchors.size() < 8 || occupiedBinCount < 4 || coverage < 0.5)
-        anchors.clear();
-    return anchors;
+    const double coverage = double(anchors.back().primaryIndex -
+                                   anchors.front().primaryIndex) /
+                            double(primary.time.size() - 1);
+    // Continuous: trusted fixes around the whole lap. Otherwise the anchors
+    // are re-syncs and the base carries the stretches between them.
+    result.continuous =
+        anchors.size() >= 8 && occupiedBinCount >= 4 && coverage >= 0.5;
+    return result;
 }
 
-std::vector<Anchor> preCornerGpsAnchors(
-    const omatrack::UnifiedLap& primary, const omatrack::UnifiedLap& compare,
-    const std::vector<double>& baseTimes,
-    const std::vector<double>& cornerStarts) {
-    std::vector<Anchor> anchors;
-    if (!gpsAvailable(primary, compare)) return anchors;
-    for (double fraction : cornerStarts) {
-        const size_t index = size_t(std::llround(
-            std::clamp(fraction, 0.0, 1.0) * double(primary.time.size() - 1)));
-        const auto match = nearestGpsIndex(primary, index, compare,
-                                           baseTimes[index]);
-        if (!match) continue;
-        const double compareTime = compare.time[*match];
-        if (!anchors.empty() && (index <= anchors.back().primaryIndex ||
-                                 compareTime <= anchors.back().compareTime))
-            continue;
-        anchors.push_back({index, compareTime});
-    }
-    return anchors;
-}
+std::vector<double> frontDamperSeries(const omatrack::UnifiedLap& lap);
 
+// A mapped damper channel is not enough: loggers without the sensors carry a
+// constant (often zero) channel. Require most samples finite and real motion.
 bool frontDamperAvailable(const omatrack::UnifiedLap& lap) {
-    return lap.damperFL.size() == lap.time.size() ||
-           lap.damperFR.size() == lap.time.size();
+    if (lap.damperFL.size() != lap.time.size() &&
+        lap.damperFR.size() != lap.time.size())
+        return false;
+    const std::vector<double> series = frontDamperSeries(lap);
+    size_t finite = 0;
+    double sum = 0.0;
+    double squares = 0.0;
+    for (double value : series) {
+        if (!std::isfinite(value)) continue;
+        ++finite;
+        sum += value;
+        squares += value * value;
+    }
+    if (finite < series.size() * 4 / 5 || finite < 2) return false;
+    const double mean = sum / double(finite);
+    const double variance = squares / double(finite) - mean * mean;
+    return variance > 1e-9 * std::max(1.0, mean * mean);
 }
 
 std::vector<double> frontDamperSeries(const omatrack::UnifiedLap& lap) {
@@ -335,8 +491,10 @@ std::vector<Anchor> preCornerDamperAnchors(
     const std::vector<double>& baseTimes,
     const std::vector<double>& cornerStarts) {
     std::vector<Anchor> anchors;
-    const std::vector<double> primaryDamper = frontDamperSeries(primary);
-    const std::vector<double> compareDamper = frontDamperSeries(compare);
+    const std::vector<double> primaryDamper =
+        frontDamperSeries(primary);
+    const std::vector<double> compareDamper =
+        frontDamperSeries(compare);
     if (primaryDamper.empty() || compareDamper.empty()) return anchors;
     for (double fraction : cornerStarts) {
         const size_t index = size_t(std::llround(
@@ -345,6 +503,13 @@ std::vector<Anchor> preCornerDamperAnchors(
             damperTimeAtCorner(primary, primaryDamper, index, compare,
                                compareDamper, baseTimes[index]);
         if (!compareTime) continue;
+        const size_t match = size_t(
+            std::lower_bound(compare.time.begin(), compare.time.end(),
+                             *compareTime) -
+            compare.time.begin());
+        if (match >= compare.time.size() ||
+            !speedsAgree(primary, index, compare, match))
+            continue;
         if (!anchors.empty() && (index <= anchors.back().primaryIndex ||
                                  *compareTime <= anchors.back().compareTime))
             continue;
@@ -450,6 +615,11 @@ bool gpsAvailable(const omatrack::UnifiedLap& primary,
     return gpsCoverageAvailable(primary) && gpsCoverageAvailable(compare);
 }
 
+bool distanceBaseAvailable(const omatrack::UnifiedLap& primary,
+                           const omatrack::UnifiedLap& compare) {
+    return distanceBaseUsable(primary, compare);
+}
+
 bool damperAvailable(const omatrack::UnifiedLap& primary,
                      const omatrack::UnifiedLap& compare) {
     return frontDamperAvailable(primary) && frontDamperAvailable(compare);
@@ -468,49 +638,56 @@ Result compute(const omatrack::UnifiedLap& primary,
         result.rejectionReason = "compare time is not monotonic";
         return result;
     }
-    result.time = lapPercentage(primary, compare);
+    bool distanceBase = false;
+    result.time = lapPercentage(primary, compare, &distanceBase);
+    result.distanceBase = distanceBase;
+    const std::string base =
+        distanceBase ? "Lap distance %" : "Lap time %";
 
     switch (options.strategy) {
-        case ComparisonAlignmentStrategy::GpsContinuous: {
-            const auto anchors =
-                continuousGpsAnchors(primary, compare, result.time);
-            if (!anchors.empty()) {
-                applyAnchors(result.time, anchors, compare, true);
-                result.gpsAnchors = int(anchors.size());
-                result.basis = "GPS \xc2\xb7 variable speed";
-                break;
+        case ComparisonAlignmentStrategy::Gps: {
+            const GpsAnchors gps =
+                validatedGpsAnchors(primary, compare, result.time);
+            result.gpsRejected = gps.rejected;
+            if (!gps.anchors.empty()) {
+                std::vector<double> corrected = result.time;
+                applyAnchors(corrected, gps.anchors, compare, gps.continuous);
+                // GPS has to earn its place: a map that agrees worse with
+                // both speed traces than the base is biased GPS, not a
+                // better alignment.
+                if (mappedSpeedDisagreement(primary, compare, corrected) <=
+                    mappedSpeedDisagreement(primary, compare, result.time)) {
+                    result.time = std::move(corrected);
+                    result.gpsAnchors = int(gps.anchors.size());
+                    result.basis = gps.continuous
+                                       ? "GPS \xc2\xb7 continuous"
+                                       : "GPS \xc2\xb7 re-sync";
+                    break;
+                }
+                result.gpsRejected += int(gps.anchors.size());
             }
-            result.basis = "Lap percentage";
-            break;
-        }
-        case ComparisonAlignmentStrategy::PreCornerGps: {
-            const auto anchors = preCornerGpsAnchors(
-                primary, compare, result.time, options.cornerStarts);
-            if (!anchors.empty()) {
-                applyAnchors(result.time, anchors, compare, false);
-                result.gpsAnchors = int(anchors.size());
-                result.basis = "GPS \xc2\xb7 pre-corner";
-                break;
-            }
-            result.basis = "Lap percentage";
+            result.basis = base;
             break;
         }
         case ComparisonAlignmentStrategy::PreCornerDampers: {
             const auto anchors = preCornerDamperAnchors(
                 primary, compare, result.time, options.cornerStarts);
+            // Bumps are fixed to the track, so a well-correlated window is
+            // trusted on its own; only anchors pairing clearly different
+            // speeds are dropped (per anchor, inside the search).
             if (!anchors.empty()) {
                 applyAnchors(result.time, anchors, compare, false);
                 result.basis = "Dampers \xc2\xb7 pre-corner";
                 break;
             }
-            result.basis = "Lap percentage";
+            result.basis = base;
             break;
         }
         case ComparisonAlignmentStrategy::ManualDampers:
             result.basis = "Dampers \xc2\xb7 manual";
             break;
         case ComparisonAlignmentStrategy::LapPercentage:
-            result.basis = "Lap percentage";
+            result.basis = base;
             break;
     }
     buildFractions(result, compare);
@@ -597,9 +774,9 @@ std::optional<double> relativeAlongTrackMeters(
 
 std::string confidenceLabel(const std::string& basis, int gpsAnchors) {
     if (basis.empty()) return "NONE";
-    if (basis.rfind("GPS", 0) == 0)
-        return gpsAnchors >= 2 ? "HIGH" : "LOW";
-    if (basis == "Dampers \xc2\xb7 pre-corner")
+    if (basis == "GPS \xc2\xb7 continuous") return gpsAnchors >= 2 ? "HIGH" : "LOW";
+    if (basis == "GPS \xc2\xb7 re-sync" || basis == "Dampers \xc2\xb7 pre-corner" ||
+        basis == "Lap distance %")
         return "MED";
     return "LOW";
 }

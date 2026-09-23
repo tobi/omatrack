@@ -22,6 +22,8 @@ ComparisonAlignmentResult computeComparisonAlignment(
         QVector<double>(core.fraction.begin(), core.fraction.end());
     result.basis = QString::fromStdString(core.basis);
     result.gpsAnchors = core.gpsAnchors;
+    result.gpsRejected = core.gpsRejected;
+    result.distanceBase = core.distanceBase;
     result.rejectionReason = QString::fromStdString(core.rejectionReason);
     return result;
 }

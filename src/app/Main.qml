@@ -2008,9 +2008,10 @@ ApplicationWindow {
         }
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: visible ? 64 : 0
+            Layout.preferredHeight: visible ? 104 : 0
             border.color: Style.borderColor
             color: Style.surfaceColor
+            objectName: "damperAlignmentPane"
             visible: Store.comparing && Store.comparisonSyncStrategy === "manual-dampers" && Store.hasDamperAlignment()
 
             RowLayout {
@@ -2018,14 +2019,43 @@ ApplicationWindow {
                 anchors.margins: 6
                 spacing: 8
 
-                Label {
-                    Layout.preferredWidth: 66
-                    color: Style.mutedTextColor
-                    font.bold: true
-                    font.family: Style.monoFontFamily
-                    font.pixelSize: 8
-                    lineHeight: 0.9
-                    text: "DAMPER\nALIGN"
+                Column {
+                    Layout.alignment: Qt.AlignTop
+                    Layout.preferredWidth: 150
+                    spacing: 3
+
+                    Label {
+                        color: Style.mutedTextColor
+                        font.bold: true
+                        font.family: Style.monoFontFamily
+                        font.pixelSize: 8
+                        text: "DAMPER ALIGN · FRONT"
+                    }
+                    Label {
+                        color: Style.comparisonLapColor
+                        elide: Text.ElideRight
+                        font.family: Style.monoFontFamily
+                        font.pixelSize: 8
+                        text: "ACTIVE  " + root.activeSessionName
+                        width: parent.width
+                    }
+                    Label {
+                        color: Style.referenceLapColor
+                        elide: Text.ElideRight
+                        font.family: Style.monoFontFamily
+                        font.pixelSize: 8
+                        text: "REF     " + root.referenceSessionName
+                        width: parent.width
+                    }
+                    Label {
+                        color: Style.mutedTextColor
+                        font.family: Style.monoFontFamily
+                        font.pixelSize: 8
+                        lineHeight: 1.1
+                        text: "Drag to slide REF · wheel zooms\n‹ › nudge one sample · dbl-click resets"
+                        width: parent.width
+                        wrapMode: Text.Wrap
+                    }
                 }
                 Rectangle {
                     id: damperAlignmentRail
@@ -2034,84 +2064,30 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     border.color: Style.borderColor
                     border.width: 1
-                    color: referenceAlignmentMouse.containsMouse || referenceAlignmentMouse.pressed ? Qt.rgba(224 / 255, 157 / 255, 127 / 255, 0.13) : Style.traceBackgroundColor
+                    clip: true
+                    color: referenceAlignmentMouse.containsMouse || referenceAlignmentMouse.pressed ? Qt.tint(Style.traceBackgroundColor, Qt.rgba(Style.referenceLapColor.r, Style.referenceLapColor.g, Style.referenceLapColor.b, 0.08)) : Style.traceBackgroundColor
                     radius: 3
 
-                    Label {
-                        anchors.left: parent.left
-                        anchors.leftMargin: 6
-                        anchors.top: parent.top
-                        anchors.topMargin: 5
-                        color: Style.comparisonLapColor
-                        elide: Text.ElideRight
-                        font.family: Style.monoFontFamily
-                        font.pixelSize: 8
-                        text: "ACTIVE  " + root.activeSessionName
-                        width: 130
-                    }
-                    Label {
-                        anchors.bottom: parent.bottom
-                        anchors.bottomMargin: 5
-                        anchors.left: parent.left
-                        anchors.leftMargin: 6
-                        color: Style.referenceLapColor
-                        elide: Text.ElideRight
-                        font.family: Style.monoFontFamily
-                        font.pixelSize: 8
-                        text: "REF     " + root.referenceSessionName
-                        width: 130
-                    }
-                    Rectangle {
-                        anchors.bottom: parent.bottom
-                        anchors.left: parent.left
-                        anchors.leftMargin: 138
-                        anchors.top: parent.top
-                        color: Style.borderColor
-                        width: 1
-                    }
                     DamperStripView {
-                        id: referenceDamper
+                        id: damperStrip
 
-                        anchors.bottom: parent.bottom
-                        anchors.left: parent.left
-                        anchors.leftMargin: 138
-                        anchors.right: dragLabel.left
-                        anchors.rightMargin: 4
-                        anchors.top: parent.top
-                        color: Style.referenceLapColor
-                        series: DamperStripView.Compare
-                        shift: Store.referenceAlignment
+                        anchors.fill: parent
+                        anchors.margins: 2
+                        cursorColor: Style.mutedTextColor
+                        objectName: "damperStrip"
+                        primaryColor: Style.comparisonLapColor
+                        referenceColor: Style.referenceLapColor
                         store: Store
-                        strokeOpacity: 0.52
-                    }
-                    DamperStripView {
-                        id: primaryDamper
-
-                        anchors.bottom: parent.bottom
-                        anchors.left: parent.left
-                        anchors.leftMargin: 138
-                        anchors.right: dragLabel.left
-                        anchors.rightMargin: 4
-                        anchors.top: parent.top
-                        color: Style.comparisonLapColor
-                        series: DamperStripView.Primary
-                        store: Store
-                        strokeOpacity: 0.78
-                        z: 1
                     }
                     Label {
-                        id: dragLabel
-
                         anchors.right: parent.right
-                        anchors.rightMargin: 5
-                        anchors.verticalCenter: parent.verticalCenter
-                        color: Style.orangeColor
-                        font.bold: true
+                        anchors.rightMargin: 6
+                        anchors.top: parent.top
+                        anchors.topMargin: 4
+                        color: Style.mutedTextColor
                         font.family: Style.monoFontFamily
                         font.pixelSize: 8
-                        horizontalAlignment: Text.AlignRight
-                        text: "DRAG ↔"
-                        width: 62
+                        text: "±" + (damperStrip.windowSeconds / 2).toFixed(1) + "s"
                     }
                     MouseArea {
                         id: referenceAlignmentMouse
@@ -2123,35 +2099,65 @@ ApplicationWindow {
                         cursorShape: Qt.SizeHorCursor
                         hoverEnabled: true
 
+                        // Dragging the reference right moves it later: the
+                        // primary sample under the pointer now shows the
+                        // reference from one window-share earlier.
                         onDoubleClicked: Store.resetReferenceAlignment()
                         onPositionChanged: mouse => {
                             if (!pressed || width <= 0)
                                 return;
-                            Store.referenceAlignment = startOffset + (mouse.x - pressX) / width;
+                            Store.referenceAlignment = startOffset + (mouse.x - referenceAlignmentMouse.pressX) / width * damperStrip.windowFraction;
                         }
                         onPressed: mouse => {
-                            pressX = mouse.x;
-                            startOffset = Store.referenceAlignment;
+                            referenceAlignmentMouse.pressX = mouse.x;
+                            referenceAlignmentMouse.startOffset = Store.referenceAlignment;
+                        }
+                        onWheel: wheel => {
+                            damperStrip.zoom(wheel.angleDelta.y > 0 ? 0.8 : 1.25);
+                            wheel.accepted = true;
                         }
                     }
                 }
                 Column {
-                    Layout.preferredWidth: 68
+                    Layout.preferredWidth: 84
                     spacing: 2
 
                     Label {
                         color: Math.abs(Store.referenceAlignment) > 0.00001 ? Style.orangeColor : Style.mutedTextColor
                         font.bold: true
                         font.family: Style.monoFontFamily
-                        font.pixelSize: 9
+                        font.pixelSize: 10
                         text: {
                             const alignment = Store.referenceAlignment;
                             const seconds = Store.referenceAlignmentSeconds();
                             return (seconds >= 0 ? "+" : "") + seconds.toFixed(3) + "s";
                         }
                     }
+                    Row {
+                        spacing: 2
+
+                        CompactToolButton {
+                            height: 24
+                            objectName: "damperNudgeEarlier"
+                            text: "‹"
+                            tip: "Nudge reference one sample earlier"
+                            width: 26
+
+                            onClicked: Store.nudgeReferenceAlignment(-1)
+                        }
+                        CompactToolButton {
+                            height: 24
+                            objectName: "damperNudgeLater"
+                            text: "›"
+                            tip: "Nudge reference one sample later"
+                            width: 26
+
+                            onClicked: Store.nudgeReferenceAlignment(1)
+                        }
+                    }
                     ToolButton {
                         enabled: Math.abs(Store.referenceAlignment) > 0.00001
+                        font.pixelSize: Style.smallFontSize
                         text: "Reset"
 
                         onClicked: Store.resetReferenceAlignment()

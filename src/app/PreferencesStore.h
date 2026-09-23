@@ -225,7 +225,7 @@ private:
     bool imageModelManaged_ = false;
     bool imageModelUpdates_ = true;
     QPointF videoHudPosition_{-1.0, -1.0};
-    QString requestedComparisonSyncStrategy_ = QStringLiteral("gps-continuous");
+    QString requestedComparisonSyncStrategy_ = QStringLiteral("gps");
     qint64 cacheLimitBytes_ = 0;
     QVector<SidebarPin> sidebarPins_;
     QHash<QString, QString> driverMappings_;

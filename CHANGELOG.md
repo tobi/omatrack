@@ -19,6 +19,19 @@ All notable user-facing changes are documented here.
 - Reference pacing is selectable in the Sync menu: match position and pace on
   straights (default), pure GPS following with no corner pacing, or recording
   speed with a hard sync only at the lap start and on pause.
+- Reference sync strategies reworked after measuring them on real laps:
+  - Lap percentage now uses lap distance when both laps carry the logger's
+    own distance (Cosworth: ~2–4 m apex error instead of 11–33 m by lap
+    time) and keeps lap time for speed-fused distance (AiM).
+  - GPS is one "verified fixes" strategy: a fix counts only if its positions
+    agree with the car's speed, so a receiver that lost satellites but still
+    claims 4 m accuracy no longer drags the reference hundreds of metres off.
+    Dense fixes sync continuously, patchy ones re-sync, none fall back to
+    lap percentage. Pre-corner GPS is gone.
+  - Damper strategies are offered only when the damper channels move.
+  - The manual damper strip is taller, follows the cursor, zooms with the
+    wheel (±3 s by default), scales each trace to the window, and has
+    one-sample nudge buttons.
 - Fullscreen HUD gap bar: with sub-metre GPS on both cars, a ±8 m bar below
   the speed shows where the reference car is relative to yours.
 

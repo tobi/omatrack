@@ -821,6 +821,9 @@ public:
     const DamperAlignment& damperAlignment() const;
     Q_INVOKABLE double referenceAlignmentSeconds() const;
     Q_INVOKABLE void resetReferenceAlignment();
+    /// Manual damper alignment: move the reference by `samples` primary
+    /// samples (one sample is 20 ms on the 50 Hz lap).
+    Q_INVOKABLE void nudgeReferenceAlignment(int samples);
 
     // ── corners ────────────────────────────────────────────────────
     Q_INVOKABLE void autoGenerateCorners();

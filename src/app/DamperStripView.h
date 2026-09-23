@@ -1,9 +1,10 @@
-// Front-damper trace strip for the manual reference-alignment tool.
+// Front-damper strip for the manual reference-alignment tool.
 //
-// Replaces the QML Canvas that used to draw this in JavaScript: the samples
-// are walked straight out of TelemetryStore's cached DamperAlignment, so a
-// drag of the alignment handle repaints without boxing a thousand doubles into
-// QVariants and re-running a JS loop on the GUI thread.
+// Both laps' front-damper traces in a window centred on the cursor, zoomable
+// from a second to the whole lap, autoscaled to what is in the window. The
+// reference is drawn through the shared primary→reference map (manual offset
+// included), exactly like the traces and synchronized video, so lining up
+// the bumps here is lining up everything.
 
 #pragma once
 
@@ -19,33 +20,30 @@ class DamperStripView : public QQuickItem {
     QML_ELEMENT
     Q_PROPERTY(
         TelemetryStore* store READ store WRITE setStore NOTIFY storeChanged)
-    Q_PROPERTY(Series series READ series WRITE setSeries NOTIFY seriesChanged)
-    Q_PROPERTY(QColor color READ color WRITE setColor NOTIFY colorChanged)
-    Q_PROPERTY(qreal shift READ shift WRITE setShift NOTIFY shiftChanged)
-    Q_PROPERTY(qreal strokeOpacity READ strokeOpacity WRITE setStrokeOpacity
-                   NOTIFY strokeOpacityChanged)
+    Q_PROPERTY(QColor primaryColor MEMBER primaryColor_ NOTIFY styleChanged)
+    Q_PROPERTY(QColor referenceColor MEMBER referenceColor_ NOTIFY styleChanged)
+    Q_PROPERTY(QColor cursorColor MEMBER cursorColor_ NOTIFY styleChanged)
+    /// Visible span in primary-lap seconds, centred on the cursor.
+    Q_PROPERTY(double windowSeconds READ windowSeconds WRITE setWindowSeconds
+                   NOTIFY windowSecondsChanged)
+    /// The same span as a primary-lap fraction (what a drag converts with).
+    Q_PROPERTY(
+        double windowFraction READ windowFraction NOTIFY windowSecondsChanged)
 
 public:
-    enum Series { Primary, Compare };
-    Q_ENUM(Series)
+    static constexpr double kMinimumWindowSeconds = 1.0;
+    static constexpr double kDefaultWindowSeconds = 6.0;
 
     explicit DamperStripView(QQuickItem* parent = nullptr);
 
     TelemetryStore* store() const { return store_; }
     void setStore(TelemetryStore* store);
+    double windowSeconds() const { return windowSeconds_; }
+    void setWindowSeconds(double seconds);
+    double windowFraction() const;
 
-    Series series() const { return series_; }
-    void setSeries(Series series);
-
-    QColor color() const { return color_; }
-    void setColor(const QColor& color);
-
-    /// Reference offset as a lap fraction.
-    qreal shift() const { return shift_; }
-    void setShift(qreal shift);
-
-    qreal strokeOpacity() const { return strokeOpacity_; }
-    void setStrokeOpacity(qreal opacity);
+    /// Multiply the window by `factor` (wheel zoom), clamped to [1 s, lap].
+    Q_INVOKABLE void zoom(double factor);
 
 protected:
     QSGNode* updatePaintNode(QSGNode* oldNode,
@@ -54,17 +52,17 @@ protected:
 
 signals:
     void storeChanged();
-    void seriesChanged();
-    void colorChanged();
-    void shiftChanged();
-    void strokeOpacityChanged();
+    void styleChanged();
+    void windowSecondsChanged();
 
 private:
+    double lapSeconds() const;
+
     TelemetryStore* store_ = nullptr;
-    Series series_ = Primary;
-    QColor color_ = Qt::white;
-    qreal shift_ = 0.0;
-    qreal strokeOpacity_ = 1.0;
+    QColor primaryColor_ = Qt::white;
+    QColor referenceColor_ = QColor(224, 157, 127);
+    QColor cursorColor_ = QColor(255, 255, 255, 120);
+    double windowSeconds_ = kDefaultWindowSeconds;
 
     TraceSceneBuilder builder_;
 };

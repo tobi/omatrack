@@ -14,8 +14,7 @@ struct UnifiedLap;
 }
 
 struct ComparisonAlignmentOptions {
-    ComparisonAlignmentStrategy strategy =
-        ComparisonAlignmentStrategy::GpsContinuous;
+    ComparisonAlignmentStrategy strategy = ComparisonAlignmentStrategy::Gps;
     // Primary-lap sample fractions at the starts of configured corners.
     QVector<double> cornerStarts;
 };
@@ -26,6 +25,8 @@ struct ComparisonAlignmentResult {
     QVector<double> fraction;
     QString basis;
     int gpsAnchors = 0;
+    int gpsRejected = 0;
+    bool distanceBase = false;
     QString rejectionReason;
 };
 

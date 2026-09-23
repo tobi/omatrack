@@ -13,32 +13,38 @@
 namespace {
 constexpr double kPi = 3.14159265358979323846;
 
+constexpr double kMetersPerDegree = 111320.0;
+
+// Positions follow the speed channel along a straight north-east line, so
+// GPS is physically consistent with the car (the verified-GPS strategy
+// rejects fixes that are not).
+void placeOnLine(double meters, double* lat, double* lon) {
+    const double north = meters * 0.8;
+    const double east = meters * 0.6;
+    *lat = 43.0 + north / kMetersPerDegree;
+    *lon = -88.0 + east / (kMetersPerDegree * std::cos(43.0 * kPi / 180.0));
+}
+
 omatrack::UnifiedLap makeLap(int samples, bool gps = false,
                              bool dampers = false) {
     omatrack::UnifiedLap lap;
     lap.sampleRate = 50;
     lap.distanceSource = omatrack::DistanceSource::SpeedFused;
-    lap.time.reserve(samples);
-    lap.speed.reserve(samples);
-    lap.distance.reserve(samples);
-    if (gps) {
-        lap.gpsLat.reserve(samples);
-        lap.gpsLon.reserve(samples);
-        lap.gpsPositionAccuracy.reserve(samples);
-    }
-    if (dampers) {
-        lap.damperFL.reserve(samples);
-        lap.damperFR.reserve(samples);
-    }
+    double meters = 0.0;
     for (int i = 0; i < samples; ++i) {
         const double fraction =
             samples > 1 ? double(i) / double(samples - 1) : 0.0;
+        const double speed = 145.0 + 50.0 * std::sin(6.0 * kPi * fraction);
+        if (i > 0) meters += speed / 3.6 / 50.0;
         lap.time.push_back(i / 50.0);
-        lap.speed.push_back(145.0 + 50.0 * std::sin(6.0 * kPi * fraction));
-        lap.distance.push_back(1000.0 * fraction);
+        lap.speed.push_back(speed);
+        lap.distance.push_back(meters);
         if (gps) {
-            lap.gpsLat.push_back(43.0 + 0.0001 * i);
-            lap.gpsLon.push_back(-88.0 + 0.00008 * i);
+            double lat = 0.0;
+            double lon = 0.0;
+            placeOnLine(meters, &lat, &lon);
+            lap.gpsLat.push_back(lat);
+            lap.gpsLon.push_back(lon);
             lap.gpsPositionAccuracy.push_back(1.0);
         }
         if (dampers) {
@@ -50,6 +56,42 @@ omatrack::UnifiedLap makeLap(int samples, bool gps = false,
         }
     }
     return lap;
+}
+
+// The compare lap drives the primary's line on a warped clock: at its time t
+// it is where the primary was at tau(t) = t + a·sin(pi·t/T). Speeds follow
+// (scaled by tau'), GPS and distance follow the primary's position. The true
+// map sends primary time s to the compare time t with tau(t) = s.
+omatrack::UnifiedLap warpedLap(const omatrack::UnifiedLap& primary,
+                               double amplitude) {
+    omatrack::UnifiedLap lap = primary;
+    const double total = primary.time.back();
+    const auto sampleAt = [&](const std::vector<double>& values, double t) {
+        const double position = std::clamp(t * 50.0, 0.0,
+                                           double(values.size() - 1));
+        const size_t low = std::min(size_t(position), values.size() - 2);
+        return values[low] +
+               (values[low + 1] - values[low]) * (position - double(low));
+    };
+    for (size_t i = 0; i < lap.time.size(); ++i) {
+        const double t = lap.time[i];
+        const double tau = t + amplitude * std::sin(kPi * t / total);
+        const double rate =
+            1.0 + amplitude * kPi / total * std::cos(kPi * t / total);
+        lap.speed[i] = sampleAt(primary.speed, tau) * rate;
+        lap.distance[i] = sampleAt(primary.distance, tau);
+        if (!lap.gpsLat.empty()) placeOnLine(lap.distance[i], &lap.gpsLat[i],
+                                             &lap.gpsLon[i]);
+    }
+    return lap;
+}
+
+double trueCompareTime(double primaryTime, double total, double amplitude) {
+    double t = primaryTime;
+    for (int k = 0; k < 40; ++k)
+        t -= (t + amplitude * std::sin(kPi * t / total) - primaryTime) /
+             (1.0 + amplitude * kPi / total * std::cos(kPi * t / total));
+    return t;
 }
 
 ComparisonAlignmentOptions options(ComparisonAlignmentStrategy strategy,
@@ -97,7 +139,7 @@ private slots:
                  0.3);
     }
 
-    void lapPercentageIgnoresSpeedFusedDistanceDrift() {
+    void lapPercentageUsesTimeOverSpeedFusedDistance() {
         constexpr int kSamples = 1000;
         auto primary = makeLap(kSamples);
         auto compare = primary;
@@ -112,68 +154,105 @@ private slots:
         const auto result = computeComparisonAlignment(
             primary, compare,
             options(ComparisonAlignmentStrategy::LapPercentage));
+        QCOMPARE(result.basis, QStringLiteral("Lap time %"));
         for (int index : {100, 500, 780, 900}) {
             const double expected = double(index) / double(kSamples - 1);
             QVERIFY(std::abs(result.fraction[index] - expected) < 1e-6);
         }
     }
 
-    void gpsContinuousCorrectsVariableTrackProgress() {
-        constexpr int kSamples = 1000;
-        auto primary = makeLap(kSamples, true);
-        auto compare = primary;
-        for (int i = 0; i < kSamples; ++i) {
-            const double q = double(i) / double(kSamples - 1);
-            const double station = q + 0.04 * std::sin(kPi * q);
-            compare.gpsLat[size_t(i)] =
-                43.0 + 0.0001 * station * double(kSamples - 1);
-            compare.gpsLon[size_t(i)] =
-                -88.0 + 0.00008 * station * double(kSamples - 1);
+    void lapPercentageUsesNativeDistanceWhenTotalsAgree() {
+        // A slower first half: lap time % puts the reference in the wrong
+        // place; the logger's own distance does not.
+        auto primary = makeLap(1500);
+        primary.distanceSource = omatrack::DistanceSource::Native;
+        const double amplitude = 1.5;
+        auto compare = warpedLap(primary, amplitude);
+        compare.distanceSource = omatrack::DistanceSource::Native;
+        const auto result = computeComparisonAlignment(
+            primary, compare,
+            options(ComparisonAlignmentStrategy::LapPercentage));
+        QCOMPARE(result.basis, QStringLiteral("Lap distance %"));
+        const double total = primary.time.back();
+        for (int index : {300, 750, 1200}) {
+            const double want =
+                trueCompareTime(primary.time[size_t(index)], total, amplitude);
+            QVERIFY2(std::abs(result.time[index] - want) < 0.03,
+                     qPrintable(QStringLiteral("%1 vs %2")
+                                    .arg(result.time[index])
+                                    .arg(want)));
         }
+        // Totals that disagree by more than 2 % are not the logger's truth.
+        compare.distance.back() *= 1.05;
+        for (auto& d : compare.distance) d *= 1.05;
+        QCOMPARE(computeComparisonAlignment(
+                     primary, compare,
+                     options(ComparisonAlignmentStrategy::LapPercentage))
+                     .basis,
+                 QStringLiteral("Lap time %"));
+    }
+
+    void verifiedGpsCorrectsVariableTrackProgress() {
+        auto primary = makeLap(1500, true);
+        const double amplitude = 1.5;
+        const auto compare = warpedLap(primary, amplitude);
         const auto percentage = computeComparisonAlignment(
             primary, compare,
             options(ComparisonAlignmentStrategy::LapPercentage));
         const auto gps = computeComparisonAlignment(
-            primary, compare,
-            options(ComparisonAlignmentStrategy::GpsContinuous));
-
-        const int nearFinish = 900;
-        const double primaryStation = double(nearFinish) / double(kSamples - 1);
-        auto mappedStation = [&](const ComparisonAlignmentResult& result) {
-            const double q = result.fraction[nearFinish];
-            return q + 0.04 * std::sin(kPi * q);
-        };
-        QVERIFY(std::abs(mappedStation(percentage) - primaryStation) > 0.008);
-        QVERIFY(std::abs(mappedStation(gps) - primaryStation) < 0.003);
-        QCOMPARE(gps.basis, QStringLiteral("GPS · variable speed"));
+            primary, compare, options(ComparisonAlignmentStrategy::Gps));
+        QCOMPARE(gps.basis, QStringLiteral("GPS · continuous"));
         QVERIFY(gps.gpsAnchors >= 8);
         QVERIFY(monotonic(gps.fraction));
         QVERIFY(bounded(gps.fraction, 0.0, 1.0));
+        const double total = primary.time.back();
+        const int middle = 750;
+        const double want =
+            trueCompareTime(primary.time[middle], total, amplitude);
+        QVERIFY(std::abs(percentage.time[middle] - want) > 1.0);
+        QVERIFY2(std::abs(gps.time[middle] - want) < 0.1,
+                 qPrintable(QStringLiteral("%1 vs %2")
+                                .arg(gps.time[middle])
+                                .arg(want)));
     }
 
-    void preCornerGpsPinsTurnIns() {
-        constexpr int kSamples = 900;
-        constexpr int kShift = 14;
-        auto primary = makeLap(kSamples, true);
-        auto compare = primary;
-        for (int i = 0; i < kSamples; ++i) {
-            const int source = i - kShift;
-            compare.gpsLat[size_t(i)] = 43.0 + 0.0001 * source;
-            compare.gpsLon[size_t(i)] = -88.0 + 0.00008 * source;
+    void patchyGpsResyncsWhereItIsGood() {
+        auto primary = makeLap(1500, true);
+        const double amplitude = 1.5;
+        auto compare = warpedLap(primary, amplitude);
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        // Good GPS only in two stretches of each lap.
+        for (auto* lap : {&primary, &compare})
+            for (size_t i = 0; i < lap->time.size(); ++i) {
+                const double f = double(i) / double(lap->time.size() - 1);
+                if ((f > 0.26 && f < 0.37) || (f > 0.63 && f < 0.74)) continue;
+                lap->gpsLat[i] = lap->gpsLon[i] = nan;
+            }
+        const auto gps = computeComparisonAlignment(
+            primary, compare, options(ComparisonAlignmentStrategy::Gps));
+        QCOMPARE(gps.basis, QStringLiteral("GPS · re-sync"));
+        const double total = primary.time.back();
+        for (int index : {470, 1030}) {
+            const double want =
+                trueCompareTime(primary.time[size_t(index)], total, amplitude);
+            QVERIFY(std::abs(gps.time[index] - want) < 0.1);
         }
+    }
 
-        const auto result = computeComparisonAlignment(
-            primary, compare,
-            options(ComparisonAlignmentStrategy::PreCornerGps,
-                    {0.30, 0.55, 0.80}));
-        QCOMPARE(result.basis, QStringLiteral("GPS · pre-corner"));
-        QCOMPARE(result.gpsAnchors, 3);
-        for (double corner : {0.30, 0.55, 0.80}) {
-            const int index = qRound(corner * (kSamples - 1));
-            const double expected =
-                double(index + kShift) / double(kSamples - 1);
-            QVERIFY(std::abs(result.fraction[index] - expected) < 0.004);
-        }
+    void gpsThatDisagreesWithTheCarIsIgnored() {
+        // Positions three seconds behind the car (a receiver that has lost
+        // its fix but still reports a small accuracy figure).
+        auto primary = makeLap(1500, true);
+        auto compare = primary;
+        for (size_t i = 0; i < compare.time.size(); ++i)
+            placeOnLine(compare.distance[i > 150 ? i - 150 : 0],
+                        &compare.gpsLat[i], &compare.gpsLon[i]);
+        const auto gps = computeComparisonAlignment(
+            primary, compare, options(ComparisonAlignmentStrategy::Gps));
+        QCOMPARE(gps.basis, QStringLiteral("Lap time %"));
+        QCOMPARE(gps.gpsAnchors, 0);
+        QVERIFY(gps.gpsRejected > 0);
+        QVERIFY(approx(gps.fraction[700], 700.0 / 1499.0));
     }
 
     void gpsAnchorsRejectTheOtherLegOfAHairpin() {
@@ -189,7 +268,6 @@ private slots:
         constexpr double kLag = 0.5;
         constexpr int kSamples = int((2 * kLegSeconds + kLag) * kRate) + 1;
         constexpr double kSpeed = 20.0;  // m/s
-        constexpr double kMetersPerDegree = 111320.0;
         const double lonScale =
             1.0 / (kMetersPerDegree * std::cos(43.0 * kPi / 180.0));
         auto position = [&](double t, double* lat, double* lon) {
@@ -202,6 +280,7 @@ private slots:
             *lon = -88.0 + east * lonScale;
         };
         auto primary = makeLap(kSamples, true);
+        std::fill(primary.speed.begin(), primary.speed.end(), kSpeed * 3.6);
         auto compare = primary;
         for (int i = 0; i < kSamples; ++i) {
             const double t = double(i) / kRate;
@@ -211,9 +290,8 @@ private slots:
         }
 
         const auto result = computeComparisonAlignment(
-            primary, compare,
-            options(ComparisonAlignmentStrategy::GpsContinuous));
-        QCOMPARE(result.basis, QStringLiteral("GPS · variable speed"));
+            primary, compare, options(ComparisonAlignmentStrategy::Gps));
+        QCOMPARE(result.basis, QStringLiteral("GPS · continuous"));
         for (double t : {3.0, 7.0, 8.0, 9.0, 12.0, 15.0}) {
             const int index = int(t * kRate);
             const double mapped = result.time[index];
@@ -263,13 +341,12 @@ private slots:
         auto primary = makeLap(300);
         auto compare = primary;
         const auto gps = computeComparisonAlignment(
-            primary, compare,
-            options(ComparisonAlignmentStrategy::GpsContinuous));
+            primary, compare, options(ComparisonAlignmentStrategy::Gps));
         const auto dampers = computeComparisonAlignment(
             primary, compare,
             options(ComparisonAlignmentStrategy::PreCornerDampers, {0.5}));
-        QCOMPARE(gps.basis, QStringLiteral("Lap percentage"));
-        QCOMPARE(dampers.basis, QStringLiteral("Lap percentage"));
+        QCOMPARE(gps.basis, QStringLiteral("Lap time %"));
+        QCOMPARE(dampers.basis, QStringLiteral("Lap time %"));
         QCOMPARE(gps.gpsAnchors, 0);
     }
     void relativePositionIsSignedAlongTravel() {
@@ -333,6 +410,16 @@ private slots:
         QVERIFY(!comparisonDamperAlignmentAvailable(complete, missing));
     }
 
+    void deadDamperChannelsAreNotDampers() {
+        // A logger without the sensors still maps a constant channel.
+        auto primary = makeLap(300, false, true);
+        auto dead = primary;
+        std::fill(dead.damperFL.begin(), dead.damperFL.end(), 0.0);
+        std::fill(dead.damperFR.begin(), dead.damperFR.end(), 0.0);
+        QVERIFY(comparisonDamperAlignmentAvailable(primary, primary));
+        QVERIFY(!comparisonDamperAlignmentAvailable(primary, dead));
+    }
+
     void clusteredGpsIsNotSensible() {
         auto primary = makeLap(300, true);
         auto compare = primary;
@@ -353,16 +440,19 @@ private slots:
         QCOMPARE(comparisonAlignmentConfidenceLabel(QString(), 0),
                  QStringLiteral("NONE"));
         QCOMPARE(comparisonAlignmentConfidenceLabel(
-                     QStringLiteral("GPS · variable speed"), 20),
+                     QStringLiteral("GPS · continuous"), 20),
                  QStringLiteral("HIGH"));
         QCOMPARE(comparisonAlignmentConfidenceLabel(
-                     QStringLiteral("GPS · pre-corner"), 3),
-                 QStringLiteral("HIGH"));
+                     QStringLiteral("GPS · re-sync"), 3),
+                 QStringLiteral("MED"));
         QCOMPARE(comparisonAlignmentConfidenceLabel(
                      QStringLiteral("Dampers · pre-corner"), 0),
                  QStringLiteral("MED"));
         QCOMPARE(comparisonAlignmentConfidenceLabel(
-                     QStringLiteral("Lap percentage"), 0),
+                     QStringLiteral("Lap distance %"), 0),
+                 QStringLiteral("MED"));
+        QCOMPARE(comparisonAlignmentConfidenceLabel(
+                     QStringLiteral("Lap time %"), 0),
                  QStringLiteral("LOW"));
     }
 

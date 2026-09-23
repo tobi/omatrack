@@ -317,10 +317,9 @@ void PreferencesStore::loadPreferences() {
         videoHudPosition_ = QPointF(hudX, hudY);
     const QString configuredSyncStrategy =
         config.value(QStringLiteral("video/reference_sync")).toString();
-    if (QStringList{
-            QStringLiteral("gps-continuous"), QStringLiteral("pre-corner-gps"),
-            QStringLiteral("pre-corner-dampers"),
-            QStringLiteral("manual-dampers"), QStringLiteral("lap-percentage")}
+    if (QStringList{QStringLiteral("gps"), QStringLiteral("pre-corner-dampers"),
+                    QStringLiteral("manual-dampers"),
+                    QStringLiteral("lap-percentage")}
             .contains(configuredSyncStrategy))
         requestedComparisonSyncStrategy_ = configuredSyncStrategy;
     // Written by hand, never by the app, so it is parsed the way it would be

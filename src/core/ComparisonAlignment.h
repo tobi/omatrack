@@ -14,10 +14,17 @@ namespace omatrack {
 struct UnifiedLap;
 }
 
+// Every strategy starts from the lap-percentage base: lap *distance* when
+// both laps carry native distance that agrees in total, lap *time*
+// otherwise (speed-fused distance drifts more than two drivers' pace
+// differs). The others then correct that base.
 enum class ComparisonAlignmentStrategy {
-    GpsContinuous,
-    PreCornerGps,
+    // GPS matches wherever both fixes are self-consistent: dense where GPS
+    // is good, sparse re-syncs where it is patchy, the base where it is not.
+    Gps,
+    // Front-damper bump signatures correlated before each corner.
     PreCornerDampers,
+    // The base plus one user offset, set against the damper traces.
     ManualDampers,
     LapPercentage,
 };
@@ -25,8 +32,7 @@ enum class ComparisonAlignmentStrategy {
 namespace omatrack::alignment {
 
 struct Options {
-    ComparisonAlignmentStrategy strategy =
-        ComparisonAlignmentStrategy::GpsContinuous;
+    ComparisonAlignmentStrategy strategy = ComparisonAlignmentStrategy::Gps;
     // Primary-lap sample fractions at the starts of configured corners.
     std::vector<double> cornerStarts;
 };
@@ -41,6 +47,10 @@ struct Result {
     std::string basis;
     // Number of accepted GPS anchors (zero for non-GPS strategies).
     int gpsAnchors = 0;
+    // GPS fixes that were near a match but failed self-consistency.
+    int gpsRejected = 0;
+    // True when the base is lap distance rather than lap time.
+    bool distanceBase = false;
     // Non-empty when monotonicity validation rejected the time axis.
     std::string rejectionReason;
 };
@@ -58,6 +68,10 @@ bool gpsAvailable(const omatrack::UnifiedLap& primary,
                   const omatrack::UnifiedLap& compare);
 bool damperAvailable(const omatrack::UnifiedLap& primary,
                      const omatrack::UnifiedLap& compare);
+// True when the lap-percentage base uses lap distance (both laps carry the
+// logger's own distance and agree on the total).
+bool distanceBaseAvailable(const omatrack::UnifiedLap& primary,
+                           const omatrack::UnifiedLap& compare);
 
 // Signed along-track distance in metres from the primary car to the
 // reference car: positive when the reference is ahead in the primary's

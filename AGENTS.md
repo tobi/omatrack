@@ -396,7 +396,7 @@ Native lap distance is accepted only when its continuity and total agree with in
 - Share one cursor/readout across traces.
 - Left-drag selects a range; middle-drag pans; two-finger horizontal trackpad scroll pans; wheel, shift+wheel, and ctrl+wheel zoom. With manual vertical overflow, unmodified vertical wheel/trackpad motion scrolls the lanes instead; modified wheel still zooms. Double-click resets zoom; on-screen zoom icons back the gestures. Navigate with mouse and keyboard.
 - Keep corner/complex ranges visible without obscuring the data.
-- Manual damper alignment is one explicit reference-sync strategy. Offer it only when both laps carry front-damper data; selecting it reveals the compact damper strip and applies its offset through the same shared map lookup as traces, delta, cursor values, and video.
+- Manual damper alignment is one explicit reference-sync strategy. Offer it only when both laps carry front-damper data that actually moves; selecting it reveals the damper strip: both front-damper traces in a window centred on the cursor (±3 s by default, wheel zooms from 1 s to the whole lap), each autoscaled to the window independently, the reference drawn through the shared map. Drag slides the reference, ‹ › nudge one 20 ms sample, double-click resets. The one offset applies through the same shared map lookup as traces, delta, cursor values, and video.
 
 ### Embedded video playback
 
@@ -442,11 +442,13 @@ Native lap distance is accepted only when its continuity and total agree with in
   anchor. The next lap is prefetched once the cursor passes 70%. Primary/reference
   video consumes the same cached alignment map as traces and delta. A compact
   sync dropdown exposes only strategies supported by both selected laps:
-  continuous GPS variable-speed matching (the default), pre-corner GPS,
-  pre-corner damper matching, manual damper alignment, and lap percentage as
-  the universal fallback. Pre-corner choices appear only when corner zones
-  exist; damper choices require both laps to carry damper data. The selected
-  strategy is persisted under `video.reference_sync` in `omatrack.yml`.
+  verified GPS (`gps`, the default when both laps carry GPS), pre-corner
+  damper matching, manual damper alignment, and lap percentage as the
+  universal fallback (see invariant 5). Pre-corner dampers appear only when
+  corner zones exist; damper choices require both laps to carry damper data
+  that moves. Without GPS the automatic choice is lap percentage over a
+  distance base, dampers over a time base. The selected strategy is
+  persisted under `video.reference_sync` in `omatrack.yml`.
   Reference *pacing* is separate from that map and persisted under
   `video.reference_playback`: `corners` (the default) holds 1× through
   corners and uses the following straight to speed up or slow down so both
@@ -851,7 +853,7 @@ Warnings (`-Wall -Wextra`) come from the `omatrack_warnings` interface target.
 2. The UI never branches on telemetry format. Add a parser or mapping; do not add `.pds`/`.ld` special cases to QML.
 3. Unified channel arrays share the lap’s 50 Hz absolute-time grid. Keep their lengths aligned with `time`; sample through the source clock so late channel starts, dropped samples, and acquisition gaps cannot shift events.
 4. Unified distance starts at zero and is monotonic.
-5. Comparisons use one cached primary→reference map selected from the strategies both laps support. Continuous GPS position matching is the default and corrects non-linear drift in speed-fused lap distance; pre-corner GPS and damper strategies interpolate between turn-in anchors; manual damper alignment applies one user offset; lap percentage is the universal fallback. GPS fixes must be accurate, distributed, monotonic matches near the base lap-percentage estimate whose travel direction agrees with the primary's (within 60°, so the other leg of a hairpin or a jittering fix is never an anchor); never pin GPS correction to zero at start/finish, which creates a lap-long low-Hz ramp. Traces, delta, cursor values, and video must consume the same map and the same manual offset. Independent index/distance/time mappings are incorrect.
+5. Comparisons use one cached primary→reference map selected from the strategies both laps support. Every strategy starts from the lap-percentage base: the same share of lap *distance* when both laps carry native distance whose totals agree within 2%, of lap *time* otherwise — speed-fused distance drifts by several percent per lap, more than two drivers' pace differs (measured: 2–4 m apex error on Cosworth native distance vs 11–33 m by time; on AiM speed-fused distance the order reverses). Corrections then have to earn their place. Verified GPS anchors a fix only if both laps' positions are self-consistent (the speed implied by ±0.5 s of positions matches vehicle speed) and the matched cars' speeds agree; a receiver's own accuracy figure is not trusted (a SmartyCam down to 5 satellites reports "4 m" while wandering by hundreds of metres). Dense verified anchors are "GPS · continuous", sparse ones "GPS · re-sync" with the base between them, and a GPS map that agrees worse with both speed traces than the base is rejected for the base. Pre-corner dampers correlate the front-damper signature before each corner (anchors pairing clearly different speeds are dropped); manual damper alignment applies one user offset to the base. GPS matches must also be monotonic, near the base estimate, and within 60° of the primary's travel direction (so the other leg of a hairpin is never an anchor); never pin GPS correction to zero at start/finish, which creates a lap-long low-Hz ramp. Traces, delta, cursor values, and video must consume the same map and the same manual offset. Independent index/distance/time mappings are incorrect.
 6. The same cached delta feeds both the plotted trace and numeric cursor readout.
 7. Primary means active lap; compare means reference lap. Preserve that semantic and its colors throughout the UI.
 8. Track identity and corner metadata come from Track Atlas when available; local edits are overlays, not upstream truth.

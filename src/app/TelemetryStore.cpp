@@ -5856,8 +5856,7 @@ QString TelemetryStore::effectiveComparisonSyncStrategy() const {
                          comparisonDamperAlignmentAvailable(*primary, *compare);
     const bool corners = !corners_.isEmpty();
     auto available = [&](const QString& strategy) {
-        if (strategy == QStringLiteral("gps-continuous")) return gps;
-        if (strategy == QStringLiteral("pre-corner-gps")) return gps && corners;
+        if (strategy == QStringLiteral("gps")) return gps;
         if (strategy == QStringLiteral("pre-corner-dampers"))
             return dampers && corners;
         if (strategy == QStringLiteral("manual-dampers")) return dampers;
@@ -5865,23 +5864,27 @@ QString TelemetryStore::effectiveComparisonSyncStrategy() const {
     };
     if (available(prefs_->requestedSyncStrategy()))
         return prefs_->requestedSyncStrategy();
-    if (gps) return QStringLiteral("gps-continuous");
-    if (dampers && corners) return QStringLiteral("pre-corner-dampers");
-    if (dampers) return QStringLiteral("manual-dampers");
+    if (gps) return QStringLiteral("gps");
+    // Measured on real laps: with the logger's own distance, lap distance %
+    // is as good as damper matching; dampers earn the default only over a
+    // lap-time base.
+    const bool distanceBase =
+        primary && compare &&
+        omatrack::alignment::distanceBaseAvailable(*primary, *compare);
+    if (dampers && corners && !distanceBase)
+        return QStringLiteral("pre-corner-dampers");
     return QStringLiteral("lap-percentage");
 }
 
 ComparisonAlignmentStrategy TelemetryStore::comparisonAlignmentStrategy(
     const QString& strategy) {
-    if (strategy == QStringLiteral("pre-corner-gps"))
-        return ComparisonAlignmentStrategy::PreCornerGps;
     if (strategy == QStringLiteral("pre-corner-dampers"))
         return ComparisonAlignmentStrategy::PreCornerDampers;
     if (strategy == QStringLiteral("manual-dampers"))
         return ComparisonAlignmentStrategy::ManualDampers;
     if (strategy == QStringLiteral("lap-percentage"))
         return ComparisonAlignmentStrategy::LapPercentage;
-    return ComparisonAlignmentStrategy::GpsContinuous;
+    return ComparisonAlignmentStrategy::Gps;
 }
 
 QVector<SyncStrategyRow> TelemetryStore::buildSyncStrategyRows() const {
@@ -5901,25 +5904,31 @@ QVector<SyncStrategyRow> TelemetryStore::buildSyncStrategyRows() const {
         rows.append(row);
     };
     if (gps)
-        add(QStringLiteral("gps-continuous"),
-            QStringLiteral("GPS · variable speed"),
-            QStringLiteral("GPS adaptive"),
-            QStringLiteral("Continuously follows matched track position"));
-    if (gps && !corners_.isEmpty())
-        add(QStringLiteral("pre-corner-gps"),
-            QStringLiteral("GPS · pre-corner"), QStringLiteral("GPS turn-in"),
-            QStringLiteral("Pins the reference at each turn-in"));
+        add(QStringLiteral("gps"), QStringLiteral("GPS · verified fixes"),
+            QStringLiteral("GPS"),
+            QStringLiteral("Matches track position wherever both GPS traces "
+                           "agree with vehicle speed; re-syncs where GPS is "
+                           "patchy"));
     if (dampers && !corners_.isEmpty())
         add(QStringLiteral("pre-corner-dampers"),
             QStringLiteral("Dampers · pre-corner"),
             QStringLiteral("Damper auto"),
-            QStringLiteral("Matches the damper signature before each corner"));
+            QStringLiteral("Matches the front-damper bump signature before "
+                           "each corner"));
     if (dampers)
         add(QStringLiteral("manual-dampers"),
             QStringLiteral("Dampers · manual"), QStringLiteral("Damper manual"),
-            QStringLiteral("Shows both damper traces for manual alignment"));
-    add(QStringLiteral("lap-percentage"), QStringLiteral("Lap percentage"),
-        QStringLiteral("Lap %"), QStringLiteral("Simple whole-lap fallback"));
+            QStringLiteral("Shows both damper traces around the cursor for "
+                           "manual alignment"));
+    const bool distanceBase =
+        omatrack::alignment::distanceBaseAvailable(*primary, *compare);
+    add(QStringLiteral("lap-percentage"),
+        distanceBase ? QStringLiteral("Lap percentage · distance")
+                     : QStringLiteral("Lap percentage · time"),
+        distanceBase ? QStringLiteral("Lap dist %")
+                     : QStringLiteral("Lap time %"),
+        QStringLiteral("Same share of lap distance when both laps carry the "
+                       "logger's distance, else of lap time"));
     return rows;
 }
 
@@ -5943,9 +5952,8 @@ QString TelemetryStore::comparisonSyncStrategyField(
 
 void TelemetryStore::setComparisonSyncStrategy(const QString& strategy) {
     static const QStringList known{
-        QStringLiteral("gps-continuous"), QStringLiteral("pre-corner-gps"),
-        QStringLiteral("pre-corner-dampers"), QStringLiteral("manual-dampers"),
-        QStringLiteral("lap-percentage")};
+        QStringLiteral("gps"), QStringLiteral("pre-corner-dampers"),
+        QStringLiteral("manual-dampers"), QStringLiteral("lap-percentage")};
     if (!known.contains(strategy) ||
         prefs_->requestedSyncStrategy() == strategy)
         return;
@@ -6131,6 +6139,13 @@ void TelemetryStore::setReferenceAlignment(double fraction) {
 }
 
 void TelemetryStore::resetReferenceAlignment() { setReferenceAlignment(0.0); }
+
+void TelemetryStore::nudgeReferenceAlignment(int samples) {
+    const UnifiedLap* primary = primaryUnified();
+    if (!primary || primary->size() < 2) return;
+    setReferenceAlignment(referenceAlignment_ +
+                          double(samples) / double(primary->size() - 1));
+}
 
 double TelemetryStore::referenceAlignmentSeconds() const {
     const UnifiedLap* primary = primaryUnified();
