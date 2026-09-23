@@ -272,6 +272,53 @@ private slots:
         QCOMPARE(dampers.basis, QStringLiteral("Lap percentage"));
         QCOMPARE(gps.gpsAnchors, 0);
     }
+    void relativePositionIsSignedAlongTravel() {
+        // Due north at 1 m per sample (50 m/s), sub-metre GPS.
+        const auto straight = [](double accuracy) {
+            omatrack::UnifiedLap lap;
+            lap.sampleRate = 50;
+            for (int i = 0; i < 500; ++i) {
+                lap.time.push_back(i / 50.0);
+                lap.gpsLat.push_back(43.0 + i / 111320.0);
+                lap.gpsLon.push_back(-88.0);
+                lap.gpsPositionAccuracy.push_back(accuracy);
+            }
+            return lap;
+        };
+        const auto primary = straight(0.4);
+        const auto compare = straight(0.6);
+        const double at = 200.0 / 499.0;
+        const auto ahead = omatrack::alignment::relativeAlongTrackMeters(
+            primary, at, compare, 205.0 / 499.0);
+        QVERIFY(ahead && approx(*ahead, 5.0, 0.05));
+        const auto behind = omatrack::alignment::relativeAlongTrackMeters(
+            primary, at, compare, 197.5 / 499.0);
+        QVERIFY(behind && approx(*behind, -2.5, 0.05));
+        const auto same = omatrack::alignment::relativeAlongTrackMeters(
+            primary, at, compare, at);
+        QVERIFY(same && approx(*same, 0.0, 1e-6));
+    }
+    void relativePositionNeedsSubMetreGps() {
+        omatrack::UnifiedLap primary;
+        primary.sampleRate = 50;
+        for (int i = 0; i < 100; ++i) {
+            primary.time.push_back(i / 50.0);
+            primary.gpsLat.push_back(43.0 + i / 111320.0);
+            primary.gpsLon.push_back(-88.0);
+            primary.gpsPositionAccuracy.push_back(0.5);
+        }
+        auto coarse = primary;
+        std::fill(coarse.gpsPositionAccuracy.begin(),
+                  coarse.gpsPositionAccuracy.end(), 1.0);
+        QVERIFY(!omatrack::alignment::relativeAlongTrackMeters(primary, 0.5,
+                                                               coarse, 0.5));
+        auto parked = primary;
+        std::fill(parked.gpsLat.begin(), parked.gpsLat.end(), 43.0);
+        QVERIFY(!omatrack::alignment::relativeAlongTrackMeters(parked, 0.5,
+                                                               primary, 0.5));
+        QVERIFY(!omatrack::alignment::relativeAlongTrackMeters(primary, 0.5,
+                                                               primary, 1.5));
+    }
 };
 
 class CapabilityTest : public QObject {

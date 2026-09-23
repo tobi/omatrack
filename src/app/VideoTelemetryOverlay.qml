@@ -13,6 +13,7 @@ Item {
     property real dragOriginY: 0
     property point dragPosition: Qt.point(0, 0)
     property real mediaTime: 0
+    property real referenceMediaTime: NaN
     readonly property real scaleFactor: 0.65
     readonly property real unscaledWidth: Math.min(overlay.parent.width - 16, 1000, Math.max(520, overlay.parent.width * 0.72))
     readonly property bool userPositioned: Store.videoHudPosition.x >= 0 && Store.videoHudPosition.y >= 0
@@ -55,6 +56,7 @@ Item {
         mediaTime: overlay.mediaTime
         monoFontFamily: Style.monoFontFamily
         mutedColor: Style.mutedTextColor
+        referenceMediaTime: overlay.referenceMediaTime
         steeringColor: Style.steeringTelemetryColor
         store: Store
         throttleColor: Style.throttleTelemetryColor

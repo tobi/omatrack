@@ -56,6 +56,18 @@ public:
     void setVideoHudPosition(QPointF point) { videoHudPosition_ = point; }
     bool videoMuted() const { return videoMuted_; }
     void setVideoMuted(bool muted) { videoMuted_ = muted; }
+    /// `video.continuous_playback`: play through lap ends with the playhead
+    /// pinned in the traces instead of pausing for a next-lap countdown.
+    bool continuousPlayback() const { return continuousPlayback_; }
+    void setContinuousPlayback(bool on) { continuousPlayback_ = on; }
+    /// `video.reference_playback`: how the reference recording is paced —
+    /// "corners" (match position, adjust on straights), "gps" (follow the
+    /// shared map continuously) or "recording" (1×, synced at lap start and
+    /// pause only).
+    const QString& referencePlayback() const { return referencePlayback_; }
+    void setReferencePlayback(const QString& mode) {
+        referencePlayback_ = mode;
+    }
     bool imageTelemetryEnabled() const { return imageTelemetryEnabled_; }
     void setImageTelemetryEnabled(bool enabled) {
         imageTelemetryEnabled_ = enabled;
@@ -205,6 +217,8 @@ private:
 
     QStringList recentFiles_;
     bool videoMuted_ = false;
+    bool continuousPlayback_ = false;
+    QString referencePlayback_ = QStringLiteral("corners");
     bool imageTelemetryEnabled_ = false;
     QString imageTelemetryModel_, gaugeDetectorModel_;
     QHash<QString, omatrack::GaugeSetup> gaugeFiles_, gaugeDefaults_;

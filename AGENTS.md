@@ -302,7 +302,7 @@ wins on load. Caches (Track Atlas snapshot) stay outside the file.
   duration and semantic revisions. Never write beside a local source.
 - `{generation}` is `omatrack::converterGeneration()`: the native format
   version and the pinned `motorsport-telemetry-rs` revision
-  (`10-c1ac439d99d9`), derived by the bridge's `build.rs` from its own
+  (`10-cac837feb12f`), derived by the bridge's `build.rs` from its own
   `Cargo.toml`. A normalization is only trusted if the converter that wrote
   it is the one this build links, so advancing the pin regenerates every
   cache instead of serving a file an older decoder produced. Other
@@ -374,9 +374,11 @@ Native lap distance is accepted only when its continuity and total agree with in
   placement uses mpv's reported display aspect ratio and existing letterboxing;
   when space is insufficient (or PiP would overlap), the video viewport reserves
   a compact bottom lane. The filmstrip never resets selection when reparented.
-  Leading Out / trailing In (including pit bookends) occupy fixed 72-logical-pixel
-  cells aligned across both roles. Interior laps remain variable, with a 12 px
-  selectable floor for fully stopped segments. Width is a transient view
+  A pit stop — the stationary interval upstream (`LapKind::Pit`, incomplete)
+  carves out between an in-lap and an out-lap — occupies one fixed
+  36-logical-pixel cell however long the car stood. Every driven interval,
+  including Out and In, is variable, with a 12 px selectable floor for fully
+  stopped segments. The strip carries no tooltips. Width is a transient view
   projection under the current speed-channel mapping: `stoppedDuration()`
   probes the source clock at approximately 4 Hz (at most 4096 bins per lap) on the lap-open
   worker, excluding only finite speeds at or below 1 km/h. Slow pit driving and
@@ -428,9 +430,16 @@ Native lap distance is accepted only when its continuity and total agree with in
   key, priority, deadline) pumped from `QTimer` / `QQuickWindow::afterAnimating`,
   never from `processEvents`. Seek and pause upsert the same keys with
   deadline-now. An explicit cursor
-  jump still seeks both recordings. Reaching the end of the current lap
-  pauses, shows a short next-lap 3-2-1, then selects the next lap in the same
-  session and resumes; the reference lap is not changed. Primary/reference
+  jump still seeks both recordings. By default, reaching the end of the
+  current lap pauses, shows a short next-lap 3-2-1, then selects the next lap
+  in the same session and resumes; the reference lap is not changed.
+  Continuous playback (`video.continuous_playback`, **Per lap / Continuous**
+  toggle or `P`) removes the countdown: the recording plays through the lap
+  end, the next lap is adopted with its cursor taken from the recording's
+  current position (so the adoption never seeks the playing video), and the
+  trace viewport keeps the playhead at 33% of its width, unclamped into the
+  neighbouring laps like corner focus. The fullscreen HUD strip uses the same
+  anchor. The next lap is prefetched once the cursor passes 70%. Primary/reference
   video consumes the same cached alignment map as traces and delta. A compact
   sync dropdown exposes only strategies supported by both selected laps:
   continuous GPS variable-speed matching (the default), pre-corner GPS,
@@ -438,11 +447,22 @@ Native lap distance is accepted only when its continuity and total agree with in
   the universal fallback. Pre-corner choices appear only when corner zones
   exist; damper choices require both laps to carry damper data. The selected
   strategy is persisted under `video.reference_sync` in `omatrack.yml`.
-  The reference hard-seeks to the mapped station on pause and after a primary
-  jump; during play it holds 1× through corners and uses the following
-  straight to speed up or slow down so both recordings arrive together at the
-  next turn-in. Without corners, the continuous map supplies the local
-  variable rate. Player time is always MP4 presentation time;
+  Reference *pacing* is separate from that map and persisted under
+  `video.reference_playback`: `corners` (the default) holds 1× through
+  corners and uses the following straight to speed up or slow down so both
+  recordings arrive together at the next turn-in (without corners, the
+  continuous map supplies the local variable rate); `gps` follows the map's
+  local slope continuously with a short error correction and no corner
+  holds; `recording` plays both at 1× and synchronizes only at a lap
+  start/selection change, after a jump and on pause. Every mode hard-seeks
+  the reference to the mapped station on pause, after a primary jump and
+  when either selected lap changes during play.
+  The fullscreen HUD draws a gap bar below the speed readout: the reference
+  car's signed along-track distance (±8 m, centre = level), from the
+  reference recording's actual frame (or, without reference video, the
+  reference lap at equal elapsed time). It appears only when both GPS fixes
+  report positional accuracy below 1 m
+  (`alignment::relativeAlongTrackMeters`); otherwise nothing is drawn. Player time is always MP4 presentation time;
   convert to and from file-relative telemetry nanoseconds with the signed
   per-video presentation offset persisted by `telemetry-format`. Use the
   presentation-order frame table for frame lookup; never derive a frame from
@@ -1157,7 +1177,8 @@ Add feature flags as needed:
 - `OMATRACK_AUTOTEST_CORNER=1`
 - `OMATRACK_AUTOTEST_CORNER_NAVIGATION=/path/to/copied-multi-lap-file` checks previous/next/close buttons, the H/J shortcut handlers, intermediate animation frames, rapid retargeting, cancellation/restoration, unclamped lap edges and typing protection, then captures the focused overlay.
 - `OMATRACK_AUTOTEST_TRACE_RESIZE=/path/to/copied-recording` checks native divider drags beyond 2× height, borrowing across neighbours, pane fit, unchanged cursor/viewport, draft isolation from preference writes, Cancel, Reset, raw-channel Save and geometry cost. Repeat with the same scratch config and `OMATRACK_AUTOTEST_TRACE_RESIZE_RESTORE=1` to check persisted raw weights and exact manual percentages/mode. The run also checks hidden-middle overlay grouping, wheel and scrollbar reachability, manual Cancel/Save, FIT toggling, preference isolation, and scroll clamping.
-- `OMATRACK_AUTOTEST_SESSION_CHROME=/path/to/copied-recording` with optional `OMATRACK_AUTOTEST_CHROME_REFERENCE=/path/to/second-recording` checks the larger track heading, event controls beneath it and aligned fixed filmstrip bookends. On video it also checks fullscreen role labels and a real HUD drag. Repeat with the same scratch config and `OMATRACK_AUTOTEST_CHROME_RESTORE=1` to verify the HUD position is restored.
+- `OMATRACK_AUTOTEST_SESSION_CHROME=/path/to/copied-recording` with optional `OMATRACK_AUTOTEST_CHROME_REFERENCE=/path/to/second-recording` checks the larger track heading, event controls beneath it, aligned filmstrip edges and fixed pit-stop cells. On video it also checks fullscreen role labels and a real HUD drag. Repeat with the same scratch config and `OMATRACK_AUTOTEST_CHROME_RESTORE=1` to verify the HUD position is restored.
+- `OMATRACK_AUTOTEST_CONTINUOUS=/path/to/copied-video` with optional `OMATRACK_AUTOTEST_CONTINUOUS_REFERENCE=/path/to/second-video` plays across a lap end in continuous mode and fails on a pause, a backwards seek, a wrong next lap, an unanchored playhead, or (with a reference) a reference not at recording speed. Use a fresh `XDG_CONFIG_HOME`: a restored selection from a previous run replaces the requested recording.
 - `OMATRACK_AUTOTEST_HOVER=1`
 - `OMATRACK_AUTOTEST_ZOOM=1`
 - `OMATRACK_AUTOTEST_RENAME=1`

@@ -515,6 +515,8 @@ std::vector<Lap> sourceLapsFromBridge(void* handle) {
                 preservesSourceNumber ? std::optional<int>(id) : std::nullopt};
         if (raw.has_first_video_frame)
             lap.firstVideoFrame = raw.first_video_frame;
+        if (raw.kind <= std::uint8_t(LapKind::Pit))
+            lap.kind = LapKind(raw.kind);
         laps.push_back(std::move(lap));
     }
     return laps;

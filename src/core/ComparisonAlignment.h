@@ -6,6 +6,7 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -57,6 +58,18 @@ bool gpsAvailable(const omatrack::UnifiedLap& primary,
                   const omatrack::UnifiedLap& compare);
 bool damperAvailable(const omatrack::UnifiedLap& primary,
                      const omatrack::UnifiedLap& compare);
+
+// Signed along-track distance in metres from the primary car to the
+// reference car: positive when the reference is ahead in the primary's
+// direction of travel. Both positions are GPS, interpolated at the given
+// lap fractions, and each fix must report a position accuracy strictly
+// below `maxAccuracyMeters` — with worse GPS there is no answer rather
+// than a noisy one. Also empty when the primary has no travel heading
+// (stationary) or the cars are on different parts of the track.
+std::optional<double> relativeAlongTrackMeters(
+    const omatrack::UnifiedLap& primary, double primaryFraction,
+    const omatrack::UnifiedLap& compare, double compareFraction,
+    double maxAccuracyMeters = 1.0);
 
 std::string confidenceLabel(const std::string& basis, int gpsAnchors);
 

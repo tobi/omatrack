@@ -78,7 +78,6 @@ class LapListModel : public IdentityListModel {
     QML_ANONYMOUS
     Q_PROPERTY(int count READ count NOTIFY refreshed)
     Q_PROPERTY(int fixedLapCount READ fixedLapCount NOTIFY refreshed)
-    Q_PROPERTY(bool leadingBookend READ leadingBookend NOTIFY refreshed)
 public:
     enum Role {
         LapIdRole = Qt::UserRole,
@@ -86,15 +85,16 @@ public:
         TimeTextRole,
         TimeMsRole,
         DisplayTimeMsRole,
-        FilmstripEdgeRole,
+        FilmstripFixedRole,
+        FilmstripFixedBeforeRole,
         FilmstripWeightRole,
         FilmstripOffsetRole,
         StartTimeRole,
         IsFastestRole,
         IsCompleteRole,
         IsPitLapRole,
+        IsPitStopRole,
         CountsForBestRole,
-        HoverTextRole,
     };
     Q_ENUM(Role)
 
@@ -107,9 +107,6 @@ public:
     void refresh(const QVector<LapRow>& rows);
     int count() const { return rows_.size(); }
     int fixedLapCount() const { return fixedLapCount_; }
-    bool leadingBookend() const {
-        return !rows_.isEmpty() && rows_.front().filmstripEdge < 0;
-    }
 
 signals:
     void refreshed();

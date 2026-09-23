@@ -729,14 +729,26 @@ void SessionHandle::populateLaps(const std::vector<Lap>& detected) {
         entry.timeMs = lap.timeMs;
         entry.isComplete = lap.complete;
         entry.isPitLap = lap.isPitLap;
+        entry.isPitStop = lap.isPitStop();
         entry.firstVideoFrame = lap.firstVideoFrame;
         const int sequentialNumber = lap.complete ? ++lapNumber : lapNumber;
+        // Incomplete intervals are named by upstream's role when it has one;
+        // position in the recording is the fallback for the C++ detector.
+        const auto fragmentLabel = [&]() {
+            switch (lap.kind) {
+                case omatrack::LapKind::Pit: return QStringLiteral("Pit");
+                case omatrack::LapKind::Out: return QStringLiteral("Out");
+                case omatrack::LapKind::In: return QStringLiteral("In");
+                default: break;
+            }
+            return i == 0                       ? QStringLiteral("Out")
+                   : i + 1 == classified.size() ? QStringLiteral("In")
+                                                : QStringLiteral("Frag");
+        };
         entry.label = lap.complete
                           ? QStringLiteral("L%1").arg(
                                 lap.sourceNumber.value_or(sequentialNumber))
-                      : i == 0                     ? QStringLiteral("Out")
-                      : i + 1 == classified.size() ? QStringLiteral("In")
-                                                   : QStringLiteral("Frag");
+                          : fragmentLabel();
         entry.timeText = QString::fromStdString(formatLapTime(lap.timeMs));
         laps_.append(entry);
     }
@@ -982,6 +994,7 @@ void SessionHandle::applyCachedMetadata(const QJsonObject& metadata) {
         lap.isFastest = object.value(QStringLiteral("fastest")).toBool();
         lap.isComplete = object.value(QStringLiteral("complete")).toBool(true);
         lap.isPitLap = object.value(QStringLiteral("pit")).toBool();
+        lap.isPitStop = object.value(QStringLiteral("pitStop")).toBool();
         if (object.contains(QStringLiteral("firstVideoFrame"))) {
             const double frame =
                 object.value(QStringLiteral("firstVideoFrame")).toDouble(-1);
@@ -1005,6 +1018,7 @@ QJsonObject SessionHandle::metadataForCache() const {
             {QStringLiteral("fastest"), lap.isFastest},
             {QStringLiteral("complete"), lap.isComplete},
             {QStringLiteral("pit"), lap.isPitLap},
+            {QStringLiteral("pitStop"), lap.isPitStop},
         };
         if (lap.firstVideoFrame)
             object.insert(QStringLiteral("firstVideoFrame"),
@@ -5369,6 +5383,15 @@ void TelemetryStore::setPrimary(SessionHandle* session, int lapId) {
     loadCornersForPrimary();
     if (sessionChanged) resetPrimarySessionOverlays();
     overlays_->resampleOverlays();
+    if (cursorFollowsVideoOnAdopt_) {
+        // Continuous playback: the recording is already inside this lap.
+        // Take the cursor from it so videoTimeChanged below finds nothing
+        // to seek.
+        cursorFollowsVideoOnAdopt_ = false;
+        if (const auto fraction =
+                fractionForPrimaryVideoTime(lastPrimaryMediaTime_))
+            cursorFrac_ = *fraction;
+    }
     emit cornersChanged();
     emit videoTimeChanged();
     emit cursorFracChanged();
@@ -5480,6 +5503,9 @@ void TelemetryStore::prefetchLap(const QString& sessionKey, int lapId) {
 }
 
 void TelemetryStore::selectLap(const QString& sessionKey, int lapId) {
+    // A deliberate selection keeps the cursor's lap fraction; only a
+    // continuous-playback advance takes it from the recording.
+    cursorFollowsVideoOnAdopt_ = false;
     SessionHandle* session = findSession(sessionKey);
     if (!session) {
         resumeSidebarMetadataQueue();
@@ -5626,46 +5652,7 @@ int TelemetryStore::bestLapIdForSession(const QString& sessionKey) const {
     return s->laps().first().lapId;
 }
 
-namespace {
-QString formatLapDeltaMs(double deltaMs) {
-    const double seconds = deltaMs / 1000.0;
-    const QString sign =
-        seconds >= 0.0 ? QStringLiteral("+") : QStringLiteral("−");
-    return sign + QString::number(std::fabs(seconds), 'f', 3);
-}
-
-QString lapHoverText(const QVector<LapEntry>& laps, const LapEntry& target,
-                     int selectedLapId) {
-    QStringList parts;
-    parts.append(target.timeText);
-    const LapEntry* best = nullptr;
-    const LapEntry* selected = nullptr;
-    for (const LapEntry& lap : laps) {
-        if (lap.countsForBest() && (!best || lap.timeMs < best->timeMs))
-            best = &lap;
-        if (lap.lapId == selectedLapId) selected = &lap;
-    }
-    if (best && best->lapId != target.lapId)
-        parts.append(QStringLiteral("vs best %1")
-                         .arg(formatLapDeltaMs(target.timeMs - best->timeMs)));
-    if (selected && selected->lapId != target.lapId &&
-        (!best || selected->lapId != best->lapId))
-        parts.append(
-            QStringLiteral("vs sel %1")
-                .arg(formatLapDeltaMs(target.timeMs - selected->timeMs)));
-    for (const LapEntry& lap : laps) {
-        if (!lap.countsForBest() || lap.lapId == target.lapId) continue;
-        if (best && lap.lapId == best->lapId) continue;
-        if (selected && lap.lapId == selected->lapId) continue;
-        parts.append(QStringLiteral("%1 %2").arg(
-            lap.label, formatLapDeltaMs(target.timeMs - lap.timeMs)));
-    }
-    return parts.join(QStringLiteral("  "));
-}
-}  // namespace
-
-QVector<LapRow> TelemetryStore::buildLapRows(SessionHandle* session,
-                                             int selectedId) const {
+QVector<LapRow> TelemetryStore::buildLapRows(SessionHandle* session) const {
     QVector<LapRow> rows;
     if (!session) return rows;
     for (const LapEntry& l : session->laps()) {
@@ -5679,8 +5666,8 @@ QVector<LapRow> TelemetryStore::buildLapRows(SessionHandle* session,
         row.isFastest = l.isFastest;
         row.isComplete = l.isComplete;
         row.isPitLap = l.isPitLap;
+        row.isPitStop = l.isPitStop;
         row.countsForBest = l.countsForBest();
-        row.hoverText = lapHoverText(session->laps(), l, selectedId);
         rows.append(row);
     }
     return rows;
@@ -5688,16 +5675,12 @@ QVector<LapRow> TelemetryStore::buildLapRows(SessionHandle* session,
 
 QVector<LapRow> TelemetryStore::lapRowsForSession(
     const QString& sessionKey) const {
-    auto* session = findSession(sessionKey);
-    const int selectedId = session == primarySession_   ? primaryLap_
-                           : session == compareSession_ ? compareLap_
-                                                        : -1;
-    return buildLapRows(session, selectedId);
+    return buildLapRows(findSession(sessionKey));
 }
 
 void TelemetryStore::refreshLapModels() {
-    primaryLapsModel_->refresh(buildLapRows(primarySession_, primaryLap_));
-    compareLapsModel_->refresh(buildLapRows(compareSession_, compareLap_));
+    primaryLapsModel_->refresh(buildLapRows(primarySession_));
+    compareLapsModel_->refresh(buildLapRows(compareSession_));
 }
 
 void TelemetryStore::refreshFilmstripModel() {
@@ -6043,41 +6026,93 @@ void TelemetryStore::seekCursorSeconds(double seconds) {
     setCursorFrac(cursorFrac_ + seconds / lap->time.back());
 }
 
-void TelemetryStore::setCursorFromVideoTime(double mediaTime) {
+std::optional<double> TelemetryStore::fractionForPrimaryVideoTime(
+    double mediaTime) const {
     if (!std::isfinite(mediaTime) || !primarySession_ ||
         !primarySession_->isVideo() || primaryLap_ < 0)
-        return;
+        return std::nullopt;
     const UnifiedLap* unified = primaryUnified();
-    if (!unified || unified->time.size() < 2) return;
+    if (!unified || unified->time.size() < 2) return std::nullopt;
     for (const LapEntry& lap : primarySession_->laps()) {
         if (lap.lapId != primaryLap_) continue;
         const auto absoluteTime =
             primarySession_->videoTelemetryTime(mediaTime);
-        if (!absoluteTime) return;
+        if (!absoluteTime) return std::nullopt;
         const double relativeTime = *absoluteTime - lap.startTime;
-        double fraction = 0.0;
-        const bool wasAtEnd = cursorFrac_ >= 0.999;
-        if (relativeTime >= unified->time.back()) {
-            fraction = 1.0;
-        } else if (relativeTime > unified->time.front()) {
-            const auto upper = std::lower_bound(
-                unified->time.begin(), unified->time.end(), relativeTime);
-            const size_t high = size_t(upper - unified->time.begin());
-            const size_t low = high - 1;
-            const double span = unified->time[high] - unified->time[low];
-            const double local =
-                span > 0.0 ? (relativeTime - unified->time[low]) / span : 0.0;
-            fraction = (double(low) + local) / double(unified->time.size() - 1);
-        }
-        if (qFuzzyCompare(fraction, cursorFrac_)) {
-            if (fraction >= 0.999 && !wasAtEnd) emit primaryLapPlaybackEnded();
-            return;
-        }
-        cursorFrac_ = fraction;
-        emit cursorFracChanged();
-        if (fraction >= 0.999 && !wasAtEnd) emit primaryLapPlaybackEnded();
-        return;
+        if (relativeTime >= unified->time.back()) return 1.0;
+        if (relativeTime <= unified->time.front()) return 0.0;
+        const auto upper = std::lower_bound(unified->time.begin(),
+                                            unified->time.end(), relativeTime);
+        const size_t high = size_t(upper - unified->time.begin());
+        const size_t low = high - 1;
+        const double span = unified->time[high] - unified->time[low];
+        const double local =
+            span > 0.0 ? (relativeTime - unified->time[low]) / span : 0.0;
+        return (double(low) + local) / double(unified->time.size() - 1);
     }
+    return std::nullopt;
+}
+
+void TelemetryStore::setCursorFromVideoTime(double mediaTime) {
+    if (std::isfinite(mediaTime)) lastPrimaryMediaTime_ = mediaTime;
+    const auto fraction = fractionForPrimaryVideoTime(mediaTime);
+    if (!fraction) return;
+    const bool wasAtEnd = cursorFrac_ >= 0.999;
+    if (!qFuzzyCompare(*fraction, cursorFrac_)) {
+        cursorFrac_ = *fraction;
+        emit cursorFracChanged();
+    }
+    if (*fraction >= 0.999 && !wasAtEnd) emit primaryLapPlaybackEnded();
+}
+
+void TelemetryStore::advancePrimaryLapWithVideo(int lapId) {
+    if (!primarySession_ || lapId < 0 || lapId == primaryLap_) return;
+    cursorFollowsVideoOnAdopt_ = true;
+    requestLapLoad(primarySession_, lapId, false);
+}
+
+void TelemetryStore::followPlayhead(double anchor) {
+    if (focusedCorner_ >= 0 || editingCorners_ || resizingTraces_) return;
+    cornerFocusAnimation_->stop();
+    const double span = viewSpan();
+    // Deliberately unclamped, like corner focus: across start/finish the
+    // viewport runs into the neighbouring lap instead of pinning the lap.
+    const double start = cursorFrac_ - qBound(0.0, anchor, 1.0) * span;
+    if (primaryLap_ != followedPrimaryLap_) {
+        followedPrimaryLap_ = primaryLap_;
+        prefetchNeighbourLaps();
+    }
+    if (qFuzzyCompare(viewStart_ + 1.0, start + 1.0) &&
+        qFuzzyCompare(viewEnd_ + 1.0, start + span + 1.0))
+        return;
+    viewStart_ = start;
+    viewEnd_ = start + span;
+    emit viewChanged();
+}
+
+bool TelemetryStore::continuousPlayback() const {
+    return prefs_->continuousPlayback();
+}
+
+void TelemetryStore::setContinuousPlayback(bool on) {
+    if (prefs_->continuousPlayback() == on) return;
+    prefs_->setContinuousPlayback(on);
+    schedulePreferencesSave();
+    emit continuousPlaybackChanged();
+}
+
+QString TelemetryStore::referencePlayback() const {
+    return prefs_->referencePlayback();
+}
+
+void TelemetryStore::setReferencePlayback(const QString& mode) {
+    if (mode != QStringLiteral("corners") && mode != QStringLiteral("gps") &&
+        mode != QStringLiteral("recording"))
+        return;
+    if (prefs_->referencePlayback() == mode) return;
+    prefs_->setReferencePlayback(mode);
+    schedulePreferencesSave();
+    emit referencePlaybackChanged();
 }
 
 void TelemetryStore::jumpToFraction(double frac) { setCursorFrac(frac); }
@@ -8608,6 +8643,34 @@ double TelemetryStore::compareVideoTimeAtFraction(double fraction) const {
     return 0.0;
 }
 
+double TelemetryStore::compareFractionForVideoTime(double mediaTime) const {
+    if (!std::isfinite(mediaTime) || !compareSession_ ||
+        !compareSession_->isVideo() || compareLap_ < 0)
+        return -1.0;
+    const UnifiedLap* compare = compareUnified();
+    if (!compare || compare->time.size() < 2) return -1.0;
+    for (const LapEntry& lap : compareSession_->laps()) {
+        if (lap.lapId != compareLap_) continue;
+        const auto absolute = compareSession_->videoTelemetryTime(mediaTime);
+        if (!absolute) return -1.0;
+        const double relative = *absolute - lap.startTime;
+        if (relative < compare->time.front() || relative > compare->time.back())
+            return -1.0;
+        const auto upper = std::lower_bound(compare->time.begin(),
+                                            compare->time.end(), relative);
+        const size_t high =
+            std::max<size_t>(1, std::min(size_t(upper - compare->time.begin()),
+                                         compare->time.size() - 1));
+        const size_t low = high - 1;
+        const double span = compare->time[high] - compare->time[low];
+        const double local =
+            span > 0.0 ? (relative - compare->time[low]) / span : 0.0;
+        return (double(low) + std::clamp(local, 0.0, 1.0)) /
+               double(compare->time.size() - 1);
+    }
+    return -1.0;
+}
+
 double TelemetryStore::nextCornerStartFraction() const {
     constexpr double kEps = 1e-4;
     for (const CornerZone& corner : corners_) {
@@ -8627,6 +8690,16 @@ bool TelemetryStore::cursorInCorner() const {
 
 double TelemetryStore::referencePlaybackRate(double refMediaTime) const {
     if (!std::isfinite(refMediaTime)) return 1.0;
+    const QString& mode = prefs_->referencePlayback();
+    if (mode == QStringLiteral("recording")) return 1.0;
+    if (mode == QStringLiteral("gps")) {
+        // Pure map following: the local slope of the shared alignment plus a
+        // short-horizon correction of the remaining error. No corner holds.
+        constexpr double kCorrectionSeconds = 0.5;
+        const double error = compareVideoTime() - refMediaTime;
+        return std::clamp(comparisonVideoRate() + error / kCorrectionSeconds,
+                          0.5, 2.0);
+    }
     if (cursorInCorner()) return 1.0;
 
     constexpr double kLockSeconds = 0.25;

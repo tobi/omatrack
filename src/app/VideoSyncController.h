@@ -24,6 +24,8 @@
 #include <QString>
 #include <QTimer>
 
+#include <limits>
+
 class MpvVideoItem;
 class QQuickWindow;
 class TelemetryStore;
@@ -58,6 +60,10 @@ class VideoSyncController : public QObject {
                    lapAdvanceCountChanged)
     Q_PROPERTY(double sampledMediaTime READ sampledMediaTime NOTIFY
                    sampledMediaTimeChanged)
+    /// Reference player position sampled with the primary cursor; NaN when
+    /// no reference recording is playing alongside.
+    Q_PROPERTY(double sampledReferenceMediaTime READ sampledReferenceMediaTime
+                   NOTIFY sampledReferenceMediaTimeChanged)
 
 public:
     explicit VideoSyncController(QObject* parent = nullptr);
@@ -75,6 +81,12 @@ public:
     int lapAdvanceCount() const { return lapAdvanceCount_; }
     QString lapAdvanceNextLabel() const { return lapAdvanceNextLabel_; }
     double sampledMediaTime() const { return sampledMediaTime_; }
+    double sampledReferenceMediaTime() const {
+        return sampledReferenceMediaTime_;
+    }
+    /// Continuous playback keeps the playhead at this share of the trace
+    /// viewport (and of the fullscreen HUD strip).
+    static constexpr double kContinuousPlayheadAnchor = 0.33;
 
     void setPrimaryPlayer(MpvVideoItem* player);
     void setReferencePlayer(MpvVideoItem* player);
@@ -102,6 +114,7 @@ signals:
     void referenceSyncStateChanged();
     void lapAdvanceCountChanged();
     void sampledMediaTimeChanged();
+    void sampledReferenceMediaTimeChanged();
 
 private slots:
     void onPrimaryLoadedChanged();
@@ -115,6 +128,7 @@ private slots:
     void onStoreLapLoadingChanged();
     void onStorePrimaryLapPlaybackEnded();
     void onStoreSelectionChanged();
+    void onStoreContinuousPlaybackChanged();
     void onContinuousSyncTick();
     void onPausedAlignmentTick();
     void onLapAdvanceTick();
@@ -137,6 +151,8 @@ private:
     void startLapAdvance();
     void tickLapAdvance();
     void finishLapAdvance();
+    void advanceLapContinuously();
+    void followContinuousPlayback();
     void tryResumeLapAdvance();
     void setReferenceSyncState(const QString& state);
     void setLapAdvanceCount(int count);
@@ -161,6 +177,9 @@ private:
     double referenceSyncLastTarget_ = -1;
     int referenceSyncPauseAttempts_ = 0;
     double sampledMediaTime_ = 0.0;
+    double sampledReferenceMediaTime_ =
+        std::numeric_limits<double>::quiet_NaN();
+    int prefetchedNextLap_ = -1;
     double lastPrimaryMediaTime_ = 0.0;
 
     int lapAdvanceCount_ = 0;
@@ -186,4 +205,5 @@ private:
     QMetaObject::Connection storeLapLoadingConn_;
     QMetaObject::Connection storePlaybackEndedConn_;
     QMetaObject::Connection storeSelectionConn_;
+    QMetaObject::Connection storeContinuousConn_;
 };

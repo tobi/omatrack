@@ -29,6 +29,11 @@ class VideoTelemetryHud : public QQuickItem {
         QString monoFontFamily MEMBER monoFontFamily_ NOTIFY paletteChanged)
     Q_PROPERTY(double mediaTime READ mediaTime WRITE setMediaTime NOTIFY
                    mediaTimeChanged)
+    /// Reference recording position; NaN without a reference video, in
+    /// which case the gap bar compares against the reference lap at the
+    /// same elapsed lap time.
+    Q_PROPERTY(double referenceMediaTime READ referenceMediaTime WRITE
+                   setReferenceMediaTime NOTIFY mediaTimeChanged)
 
 public:
     explicit VideoTelemetryHud(QQuickItem* parent = nullptr);
@@ -37,6 +42,8 @@ public:
     void setStore(TelemetryStore* store);
     double mediaTime() const { return mediaTime_; }
     void setMediaTime(double mediaTime);
+    double referenceMediaTime() const { return referenceMediaTime_; }
+    void setReferenceMediaTime(double mediaTime);
 
 protected:
     QSGNode* updatePaintNode(QSGNode* oldNode,
@@ -51,6 +58,7 @@ signals:
 private:
     TelemetryStore* store_ = nullptr;
     double mediaTime_ = std::numeric_limits<double>::quiet_NaN();
+    double referenceMediaTime_ = std::numeric_limits<double>::quiet_NaN();
     QColor throttleColor_ = QColor(QStringLiteral("#a7c080"));
     QColor compareColor_ = QColor(QStringLiteral("#e09d7f"));
     QColor foregroundColor_ = Qt::white;

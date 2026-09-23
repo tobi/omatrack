@@ -61,30 +61,33 @@ class LapRow {
     Q_PROPERTY(QString timeText MEMBER timeText)
     Q_PROPERTY(int timeMs MEMBER timeMs)
     Q_PROPERTY(double displayTimeMs MEMBER displayTimeMs)
-    Q_PROPERTY(int filmstripEdge MEMBER filmstripEdge)
+    Q_PROPERTY(bool filmstripFixed MEMBER filmstripFixed)
+    Q_PROPERTY(int filmstripFixedBefore MEMBER filmstripFixedBefore)
     Q_PROPERTY(double filmstripWeight MEMBER filmstripWeight)
     Q_PROPERTY(double filmstripOffset MEMBER filmstripOffset)
     Q_PROPERTY(double startTime MEMBER startTime)
     Q_PROPERTY(bool isFastest MEMBER isFastest)
     Q_PROPERTY(bool isComplete MEMBER isComplete)
     Q_PROPERTY(bool isPitLap MEMBER isPitLap)
+    Q_PROPERTY(bool isPitStop MEMBER isPitStop)
     Q_PROPERTY(bool countsForBest MEMBER countsForBest)
-    Q_PROPERTY(QString hoverText MEMBER hoverText)
 public:
     int lapId = 0;
     QString label;
     QString timeText;
     int timeMs = 0;
     double displayTimeMs = -1.0;
-    int filmstripEdge = 0;  // -1 = leading bookend, +1 = trailing bookend
+    // Pit stops take a fixed cell; every driven interval is proportional.
+    bool filmstripFixed = false;
+    int filmstripFixedBefore = 0;  // fixed cells left of this one
     double filmstripWeight = 0.0;
     double filmstripOffset = 0.0;
     double startTime = 0.0;
     bool isFastest = false;
     bool isComplete = false;
     bool isPitLap = false;
+    bool isPitStop = false;
     bool countsForBest = false;
-    QString hoverText;
 };
 
 // ── channel row ─────────────────────────────────────────────────────

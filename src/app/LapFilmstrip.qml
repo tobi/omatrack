@@ -5,9 +5,10 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// Proportional lap filmstrip: one row per active/reference session. Laps fill
-// the lane by driving-time weight, with aligned fixed-width Out/In bookends.
-// Mid-stint pit/fragment cells stay variable; stopped time never earns space.
+// Proportional lap filmstrip: one row per active/reference session. Every
+// driven interval (out, in, flying, fragment) fills the lane by driving-time
+// weight; a pit stop is one fixed cell however long the car stood. Stopped
+// time never earns space. No tooltips: the cells are the readout.
 // Left click selects the current lap
 // for that session without moving the playhead or viewport; clicking the
 // selected lap again (or double-clicking any lap) jumps to the lap start.
@@ -132,11 +133,10 @@ Rectangle {
 
                                     readonly property bool confidenceLap: !sessionStrip.reference && Store.traceConfidenceMode && Store.traceConfidenceIncludesLap(sessionStrip.sessionKey, proportionalLap.lapId)
                                     required property bool countsForBest
-                                    required property real displayTimeMs
-                                    required property int filmstripEdge
+                                    required property bool filmstripFixed
+                                    required property int filmstripFixedBefore
                                     required property real filmstripOffset
                                     required property real filmstripWeight
-                                    required property string hoverText
                                     required property int index
                                     required property bool isComplete
                                     required property bool isFastest
@@ -147,12 +147,7 @@ Rectangle {
                                     // through the comparison alignment for REF.
                                     property double playheadFrac: sessionStrip.reference ? Store.compareFractionForPrimaryFraction(Store.cursorFrac) : Store.cursorFrac
                                     property bool selectedLap: sessionStrip.reference ? sessionStrip.sessionKey === Store.compareSessionKey && proportionalLap.lapId === Store.compareLapIndex : sessionStrip.sessionKey === Store.primarySessionKey && proportionalLap.lapId === Store.primaryLapIndex
-                                    required property int timeMs
                                     required property string timeText
-
-                                    ToolTip.delay: 350
-                                    ToolTip.text: proportionalLap.hoverText + (proportionalLap.displayTimeMs + 1000 < proportionalLap.timeMs ? "\nBar width excludes stationary time; lap time is unchanged." : "")
-                                    ToolTip.visible: proportionalLapMouse.containsMouse
 
                                     // Bound to the Row, not `parent`:
                                     // a delegate evaluates its
@@ -165,8 +160,8 @@ Rectangle {
                                     height: proportionalLapRow.height - 8
                                     objectName: (sessionStrip.reference ? "referenceFilmstripLap-" : "activeFilmstripLap-") + proportionalLap.lapId
                                     radius: 3
-                                    width: FilmstripLayout.cellWidth(proportionalLapLane.width, sessionStrip.laps.count, sessionStrip.laps.fixedLapCount, proportionalLap.filmstripEdge, proportionalLap.filmstripWeight)
-                                    x: FilmstripLayout.cellX(proportionalLapLane.width, sessionStrip.laps.count, sessionStrip.laps.fixedLapCount, sessionStrip.laps.leadingBookend, proportionalLap.index, proportionalLap.filmstripEdge, proportionalLap.filmstripOffset)
+                                    width: FilmstripLayout.cellWidth(proportionalLapLane.width, sessionStrip.laps.count, sessionStrip.laps.fixedLapCount, proportionalLap.filmstripFixed, proportionalLap.filmstripWeight)
+                                    x: FilmstripLayout.cellX(proportionalLapLane.width, sessionStrip.laps.count, sessionStrip.laps.fixedLapCount, proportionalLap.index, proportionalLap.filmstripFixedBefore, proportionalLap.filmstripOffset)
 
                                     Rectangle {
                                         anchors.bottom: parent.bottom
@@ -186,7 +181,7 @@ Rectangle {
                                         font.bold: proportionalLap.selectedLap || proportionalLap.confidenceLap
                                         font.family: Style.monoFontFamily
                                         font.pixelSize: 9
-                                        text: proportionalLap.filmstripEdge !== 0 || !proportionalLap.isComplete ? proportionalLap.label : proportionalLap.timeText
+                                        text: !proportionalLap.isComplete ? proportionalLap.label : proportionalLap.timeText
                                         verticalAlignment: Text.AlignVCenter
                                     }
                                     Rectangle {

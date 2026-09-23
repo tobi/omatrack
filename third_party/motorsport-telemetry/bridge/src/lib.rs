@@ -10,7 +10,7 @@
 //! - Errors are reported via `omatrack_last_error` (thread-local) and non-zero/handle
 //!   return codes; no panics cross the FFI boundary.
 
-use motorsport_telemetry_core::{read_source_metadata, TelemetrySource};
+use motorsport_telemetry_core::{read_source_metadata, LapKind, TelemetrySource};
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::fs::File;
@@ -102,6 +102,20 @@ pub struct OmatrackSourceLap {
     pub first_video_frame: u64,
     pub complete: u8,
     pub has_first_video_frame: u8,
+    /// Upstream `LapKind`: 0 unknown, 1 flying, 2 out, 3 in, 4 out-in,
+    /// 5 pit (a carved stop, or a lap holding an uncarved stop).
+    pub kind: u8,
+}
+
+fn lap_kind_code(kind: LapKind) -> u8 {
+    match kind {
+        LapKind::Unknown => 0,
+        LapKind::Flying => 1,
+        LapKind::Out => 2,
+        LapKind::In => 3,
+        LapKind::OutIn => 4,
+        LapKind::Pit => 5,
+    }
 }
 
 /// One video file linked to the open telemetry recording.
@@ -427,6 +441,7 @@ fn build_handle(src: Box<dyn TelemetrySource>) -> Box<BridgeFile> {
             first_video_frame: lap.first_video_frame.unwrap_or(0),
             complete: u8::from(lap.complete),
             has_first_video_frame: u8::from(lap.first_video_frame.is_some()),
+            kind: lap_kind_code(lap.kind),
         })
         .collect();
     let sidecar = if telemetry_format::is_jsonl_path(std::path::Path::new(src.path())) {
@@ -2121,6 +2136,9 @@ mod tests {
                     duration_ns: 90_000_000_000,
                     complete: true,
                     first_video_frame: Some(60),
+                    stint: 1,
+                    stint_lap: 7,
+                    kind: LapKind::Flying,
                 },
                 LapMetadata {
                     number: 8,
@@ -2129,6 +2147,9 @@ mod tests {
                     duration_ns: 9_000_000_000,
                     complete: false,
                     first_video_frame: None,
+                    stint: 1,
+                    stint_lap: 8,
+                    kind: LapKind::In,
                 },
             ]),
         }))) as *mut c_void
@@ -2246,15 +2267,19 @@ mod tests {
             first_video_frame: 0,
             complete: 0,
             has_first_video_frame: 0,
+            kind: 0,
         };
         assert_eq!(unsafe { omatrack_source_lap(handle, 0, &mut lap) }, 1);
-        assert_eq!(lap.number, 7);
+        // `read_source_metadata` renumbers laps to the virtual session lap
+        // (1-based, monotonic across stints); the raw counter is `stint_lap`.
+        assert_eq!(lap.number, 1);
         assert_eq!(lap.start_ns, 1_000_000_000);
         assert_eq!(lap.end_ns, 91_000_000_000);
         assert_eq!(lap.duration_ns, 90_000_000_000);
         assert_eq!(lap.complete, 1);
         assert_eq!(lap.first_video_frame, 60);
         assert_eq!(lap.has_first_video_frame, 1);
+        assert_eq!(lap.kind, 1);
         assert_eq!(unsafe { omatrack_source_lap(handle, 2, &mut lap) }, 0);
         assert_eq!(
             unsafe { omatrack_source_lap(handle, 0, std::ptr::null_mut()) },
@@ -2302,6 +2327,7 @@ mod tests {
             first_video_frame: 0,
             complete: 0,
             has_first_video_frame: 0,
+            kind: 0,
         };
         assert_eq!(unsafe { omatrack_source_lap(handle, 1, &mut middle) }, 1);
         assert_eq!(middle.number, 2);

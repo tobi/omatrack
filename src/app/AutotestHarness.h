@@ -13,6 +13,9 @@ bool installCornerNavigation(QQmlApplicationEngine& engine,
                              TelemetryStore& store);
 // Session header, fixed filmstrip bookends, and persistent fullscreen HUD.
 bool installSessionChrome(QQmlApplicationEngine& engine, TelemetryStore& store);
+// Play-through lap ends with the playhead anchored in the traces.
+bool installContinuousPlayback(QQmlApplicationEngine& engine,
+                               TelemetryStore& store);
 // Trace-height draft, drag, cancellation and persistence checks.
 bool installTraceResize(QQmlApplicationEngine& engine, TelemetryStore& store);
 // Native frame-paced zoom, stroke/fill settings and screenshots.

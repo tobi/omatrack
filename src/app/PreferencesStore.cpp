@@ -269,6 +269,17 @@ void PreferencesStore::loadPreferences() {
         config.save();
     }
     videoMuted_ = config.value(QStringLiteral("video/muted"), false).toBool();
+    continuousPlayback_ =
+        config.value(QStringLiteral("video/continuous_playback"), false)
+            .toBool();
+    const QString configuredReferencePlayback =
+        config.value(QStringLiteral("video/reference_playback")).toString();
+    referencePlayback_ =
+        QStringList{QStringLiteral("corners"), QStringLiteral("gps"),
+                    QStringLiteral("recording")}
+                .contains(configuredReferencePlayback)
+            ? configuredReferencePlayback
+            : QStringLiteral("corners");
     fitTraceChannels_ =
         config.value(QStringLiteral("trace/fit_channels"), true).toBool();
     imageTelemetryEnabled_ =
@@ -554,6 +565,10 @@ void PreferencesStore::scheduleSave() {
         locationRows.isEmpty() ? QVariant() : QVariant(locationRows));
     config.setValue(QStringLiteral("recent_files"), recentFiles_);
     config.setValue(QStringLiteral("video/muted"), videoMuted_);
+    config.setValue(QStringLiteral("video/continuous_playback"),
+                    continuousPlayback_);
+    config.setValue(QStringLiteral("video/reference_playback"),
+                    referencePlayback_);
     config.setValue(QStringLiteral("trace/fit_channels"), fitTraceChannels_);
     config.setValue(QStringLiteral("video/image_telemetry"),
                     imageTelemetryEnabled_);

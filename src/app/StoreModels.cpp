@@ -127,15 +127,16 @@ QVariant LapListModel::data(const QModelIndex& index, int role) const {
         case TimeTextRole: return row.timeText;
         case TimeMsRole: return row.timeMs;
         case DisplayTimeMsRole: return row.displayTimeMs;
-        case FilmstripEdgeRole: return row.filmstripEdge;
+        case FilmstripFixedRole: return row.filmstripFixed;
+        case FilmstripFixedBeforeRole: return row.filmstripFixedBefore;
         case FilmstripWeightRole: return row.filmstripWeight;
         case FilmstripOffsetRole: return row.filmstripOffset;
         case StartTimeRole: return row.startTime;
         case IsFastestRole: return row.isFastest;
         case IsCompleteRole: return row.isComplete;
         case IsPitLapRole: return row.isPitLap;
+        case IsPitStopRole: return row.isPitStop;
         case CountsForBestRole: return row.countsForBest;
-        case HoverTextRole: return row.hoverText;
     }
     return {};
 }
@@ -147,15 +148,16 @@ QHash<int, QByteArray> LapListModel::roleNames() const {
         {TimeTextRole, "timeText"},
         {TimeMsRole, "timeMs"},
         {DisplayTimeMsRole, "displayTimeMs"},
-        {FilmstripEdgeRole, "filmstripEdge"},
+        {FilmstripFixedRole, "filmstripFixed"},
+        {FilmstripFixedBeforeRole, "filmstripFixedBefore"},
         {FilmstripWeightRole, "filmstripWeight"},
         {FilmstripOffsetRole, "filmstripOffset"},
         {StartTimeRole, "startTime"},
         {IsFastestRole, "isFastest"},
         {IsCompleteRole, "isComplete"},
         {IsPitLapRole, "isPitLap"},
+        {IsPitStopRole, "isPitStop"},
         {CountsForBestRole, "countsForBest"},
-        {HoverTextRole, "hoverText"},
     };
 }
 
@@ -163,18 +165,14 @@ void LapListModel::refresh(const QVector<LapRow>& rows) {
     QVector<LapRow> presented = rows;
     fixedLapCount_ = 0;
     double total = 0.0;
-    for (qsizetype i = 0; i < presented.size(); ++i) {
-        auto& row = presented[i];
-        row.filmstripEdge = 0;
-        if (!row.isComplete || row.isPitLap) {
-            if (i == 0)
-                row.filmstripEdge = -1;
-            else if (i + 1 == presented.size())
-                row.filmstripEdge = 1;
-        }
+    for (auto& row : presented) {
+        // Only a pit stop is fixed: however long the car stood, the stop is
+        // one glanceable cell. In/out laps are driving and keep their share.
+        row.filmstripFixed = row.isPitStop;
+        row.filmstripFixedBefore = fixedLapCount_;
         if (!std::isfinite(row.displayTimeMs) || row.displayTimeMs < 0)
             row.displayTimeMs = std::max(0, row.timeMs);
-        if (row.filmstripEdge)
+        if (row.filmstripFixed)
             ++fixedLapCount_;
         else
             total += row.displayTimeMs;
@@ -183,8 +181,8 @@ void LapListModel::refresh(const QVector<LapRow>& rows) {
     for (auto& row : presented) {
         row.filmstripOffset = total > 0 ? before / total : 0.0;
         row.filmstripWeight =
-            !row.filmstripEdge && total > 0 ? row.displayTimeMs / total : 0.0;
-        if (!row.filmstripEdge) before += row.displayTimeMs;
+            !row.filmstripFixed && total > 0 ? row.displayTimeMs / total : 0.0;
+        if (!row.filmstripFixed) before += row.displayTimeMs;
     }
     replaceByIdentity(
         rows_, presented,
@@ -193,13 +191,14 @@ void LapListModel::refresh(const QVector<LapRow>& rows) {
             return a.lapId == b.lapId && a.label == b.label &&
                    a.timeText == b.timeText && a.timeMs == b.timeMs &&
                    a.displayTimeMs == b.displayTimeMs &&
-                   a.filmstripEdge == b.filmstripEdge &&
+                   a.filmstripFixed == b.filmstripFixed &&
+                   a.filmstripFixedBefore == b.filmstripFixedBefore &&
                    a.filmstripWeight == b.filmstripWeight &&
                    a.filmstripOffset == b.filmstripOffset &&
                    a.startTime == b.startTime && a.isFastest == b.isFastest &&
                    a.isComplete == b.isComplete && a.isPitLap == b.isPitLap &&
-                   a.countsForBest == b.countsForBest &&
-                   a.hoverText == b.hoverText;
+                   a.isPitStop == b.isPitStop &&
+                   a.countsForBest == b.countsForBest;
         });
     emit refreshed();
 }

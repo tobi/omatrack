@@ -1,6 +1,9 @@
 #include "VideoTelemetryHud.h"
 
 #include "TelemetryStore.h"
+#include "VideoSyncController.h"
+#include "core/ComparisonAlignment.h"
+#include "core/MonotonicSeries.h"
 #include "core/TelemetryEngine.h"
 
 #include <QFont>
@@ -90,6 +93,8 @@ void VideoTelemetryHud::setStore(TelemetryStore* store) {
         });
         connect(store_, &TelemetryStore::overlayStyleChanged, this,
                 [this]() { update(); });
+        connect(store_, &TelemetryStore::continuousPlaybackChanged, this,
+                [this]() { update(); });
     }
     snapshotDirty_ = true;
     update();
@@ -99,6 +104,16 @@ void VideoTelemetryHud::setStore(TelemetryStore* store) {
 void VideoTelemetryHud::setMediaTime(double mediaTime) {
     if (qFuzzyCompare(mediaTime_ + 1.0, mediaTime + 1.0)) return;
     mediaTime_ = mediaTime;
+    emit mediaTimeChanged();
+    update();
+}
+
+void VideoTelemetryHud::setReferenceMediaTime(double mediaTime) {
+    const bool bothNan =
+        std::isnan(mediaTime) && std::isnan(referenceMediaTime_);
+    if (bothNan || qFuzzyCompare(referenceMediaTime_ + 1.0, mediaTime + 1.0))
+        return;
+    referenceMediaTime_ = mediaTime;
     emit mediaTimeChanged();
     update();
 }
@@ -184,7 +199,12 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
         // fraction around the current station so both cars answer "what
         // was the pedal here?" and a slower sector cannot stretch one
         // trace past the other.
-        constexpr double currentMarkerFraction = 0.86;
+        // Continuous playback looks ahead: the playhead sits a third in,
+        // like the trace workspace, instead of near the right edge.
+        const double currentMarkerFraction =
+            store_->continuousPlayback()
+                ? VideoSyncController::kContinuousPlayheadAnchor
+                : 0.86;
         constexpr double kWindowFrac = 0.10;
 
         const auto finiteMax = [](const std::vector<double>& values) {
@@ -458,6 +478,81 @@ QSGNode* VideoTelemetryHud::updatePaintNode(QSGNode* oldNode,
             builder_.text(
                 QString::number(qRound(primarySpeed)), speedFont, speedColor,
                 R(QRectF(dialCx - 40.0, 126.0, 80.0, 28.0)), Qt::AlignCenter);
+        }
+
+        // Gap bar below the wheel: where the reference car is relative to
+        // this one, ±8 m along the direction of travel, centre = level. Only
+        // with sub-metre GPS on both sides; otherwise nothing is drawn.
+        if (compare && haveLap) {
+            double gapFraction = -1.0;
+            if (std::isfinite(referenceMediaTime_)) {
+                gapFraction =
+                    store_->compareFractionForVideoTime(referenceMediaTime_);
+            } else if (!compare->time.empty() && !primary->time.empty()) {
+                // No reference video: the reference lap at the same elapsed
+                // lap time, a ghost car.
+                const double elapsed =
+                    omatrack::interpolateFraction(primary->time, lapCursor) -
+                    primary->time.front() + compare->time.front();
+                if (elapsed <= compare->time.back()) {
+                    const auto upper = std::lower_bound(
+                        compare->time.begin(), compare->time.end(), elapsed);
+                    const size_t high = std::max<size_t>(
+                        1, std::min(size_t(upper - compare->time.begin()),
+                                    compare->time.size() - 1));
+                    const double span =
+                        compare->time[high] - compare->time[high - 1];
+                    const double local =
+                        span > 0 ? (elapsed - compare->time[high - 1]) / span
+                                 : 0.0;
+                    gapFraction =
+                        (double(high - 1) + std::clamp(local, 0.0, 1.0)) /
+                        double(compare->time.size() - 1);
+                }
+            }
+            const auto gap =
+                gapFraction >= 0.0
+                    ? omatrack::alignment::relativeAlongTrackMeters(
+                          *primary, lapCursor, *compare, gapFraction)
+                    : std::nullopt;
+            if (gap) {
+                constexpr double kRangeMeters = 8.0;
+                const QRectF track(826.0, 184.0, 152.0, 10.0);
+                builder_.rect(R(track.adjusted(-72.0, -4.0, 4.0, 4.0)),
+                              backgroundColor_);
+                builder_.rect(R(track), QColor(35, 35, 35, 245));
+                const double centre = track.center().x();
+                const double half = track.width() * 0.5;
+                const double clamped =
+                    std::clamp(*gap / kRangeMeters, -1.0, 1.0);
+                const double markerX = centre + clamped * half;
+                const QColor gapColor =
+                    *gap > 0.0 ? brakeColor_ : throttleColor_;
+                builder_.rect(
+                    R(QRectF(std::min(centre, markerX), track.top(),
+                             std::abs(markerX - centre), track.height())),
+                    withAlpha(refColor, 110));
+                builder_.vLine(centre * s, (track.top() - 2.0) * s,
+                               (track.bottom() + 2.0) * s, 1.5 * s,
+                               foregroundColor_);
+                builder_.rect(R(QRectF(markerX - 2.0, track.top() - 2.0, 4.0,
+                                       track.height() + 4.0)),
+                              refColor);
+                QFont gapFont(monoFontFamily_);
+                gapFont.setBold(true);
+                gapFont.setPixelSize(int(std::lround(12.0 * s)));
+                const QString sign = *gap > 0.05    ? QStringLiteral("+")
+                                     : *gap < -0.05 ? QStringLiteral("−")
+                                                    : QString();
+                builder_.text(
+                    sign + QString::number(std::abs(*gap), 'f', 1) +
+                        QStringLiteral(" m"),
+                    gapFont,
+                    std::abs(*gap) < 0.05 ? foregroundColor_ : gapColor,
+                    R(QRectF(track.left() - 70.0, track.top() - 4.0, 64.0,
+                             track.height() + 8.0)),
+                    Qt::AlignRight | Qt::AlignVCenter);
+            }
         }
     }
 

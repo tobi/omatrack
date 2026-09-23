@@ -845,6 +845,34 @@ ApplicationWindow {
                 onObjectAdded: (index, object) => referenceSyncMenu.insertItem(index, object)
                 onObjectRemoved: (index, object) => referenceSyncMenu.removeItem(object)
             }
+            // Pacing of the reference recording, independent of the map
+            // above that traces and delta share.
+            MenuSeparator {
+            }
+            MenuItem {
+                checkable: true
+                checked: Store.referencePlayback === "corners"
+                objectName: "referencePlaybackCorners"
+                text: "Match position · pace on straights"
+
+                onTriggered: Store.referencePlayback = "corners"
+            }
+            MenuItem {
+                checkable: true
+                checked: Store.referencePlayback === "gps"
+                objectName: "referencePlaybackGps"
+                text: "Pure GPS · follow position, no corner pacing"
+
+                onTriggered: Store.referencePlayback = "gps"
+            }
+            MenuItem {
+                checkable: true
+                checked: Store.referencePlayback === "recording"
+                objectName: "referencePlaybackRecording"
+                text: "Recording speed · sync at lap start and pause"
+
+                onTriggered: Store.referencePlayback = "recording"
+            }
         }
         ToolButton {
             Accessible.name: videoPlayer.muted ? "Enable audio (M)" : "Mute audio (M)"
@@ -1046,11 +1074,11 @@ ApplicationWindow {
                     }
                     ToolButton {
                         Accessible.name: root.comparisonSyncValue("detail", "Reference synchronization")
-                        Layout.preferredWidth: 130
+                        Layout.preferredWidth: 160
                         font.capitalization: Font.MixedCase
                         font.pixelSize: Style.smallFontSize
                         objectName: "referenceSyncButton"
-                        text: "Sync  " + root.comparisonSyncValue("shortLabel", "Lap %") + " ▾"
+                        text: "Sync  " + root.comparisonSyncValue("shortLabel", "Lap %") + (Store.referencePlayback === "recording" ? " · 1×" : Store.referencePlayback === "gps" ? " · pure" : "") + " ▾"
                         visible: root.dualVideo
 
                         onClicked: {
@@ -1058,6 +1086,22 @@ ApplicationWindow {
                             referenceSyncMenu.x = Math.max(0, Math.min(point.x, videoPane.width - referenceSyncMenu.implicitWidth));
                             referenceSyncMenu.y = Math.max(0, point.y - referenceSyncMenu.implicitHeight);
                             referenceSyncMenu.open();
+                            root.revealVideoControls();
+                        }
+                    }
+                    ToolButton {
+                        Accessible.name: Store.continuousPlayback ? "Continuous playback: plays through lap ends (P)" : "Lap playback: pauses at each lap end (P)"
+                        Layout.preferredWidth: 78
+                        checkable: true
+                        checked: Store.continuousPlayback
+                        font.capitalization: Font.MixedCase
+                        font.pixelSize: Style.smallFontSize
+                        objectName: "continuousPlaybackButton"
+                        text: Store.continuousPlayback ? "Continuous" : "Per lap"
+                        visible: root.telemetryVideoActive
+
+                        onClicked: {
+                            Store.continuousPlayback = !Store.continuousPlayback;
                             root.revealVideoControls();
                         }
                     }
@@ -1163,6 +1207,7 @@ ApplicationWindow {
 
             bottomInset: fullscreenFilmstripSlot.visible ? fullscreenFilmstripSlot.height + videoControls.height + 16 : 0
             mediaTime: videoSync.sampledMediaTime
+            referenceMediaTime: videoSync.sampledReferenceMediaTime
             visible: root.videoFullscreen && root.videoOverlayVisible && root.telemetryVideoActive && videoPlayer.loaded
         }
         VideoDeltaBar {
@@ -1636,6 +1681,13 @@ ApplicationWindow {
                         sequence: "S"
 
                         onActivated: videoSync.toggleSlowMotion()
+                    }
+                    Shortcut {
+                        enabled: videoPane.visible && videoPlayer.loaded && root.telemetryVideoActive
+                        objectName: "continuousPlaybackShortcut"
+                        sequence: "P"
+
+                        onActivated: Store.continuousPlayback = !Store.continuousPlayback
                     }
                     // Docked home of videoStage; the stage itself is at
                     // window scope so it can move fullscreen without

@@ -10,6 +10,8 @@
 #include <QtMath>
 
 #include <chrono>
+#include <cmath>
+#include <limits>
 
 namespace {
 
@@ -153,6 +155,9 @@ void VideoSyncController::connectStore() {
     storeSelectionConn_ =
         QObject::connect(store_, &TelemetryStore::selectionChanged, this,
                          &VideoSyncController::onStoreSelectionChanged);
+    storeContinuousConn_ = QObject::connect(
+        store_, &TelemetryStore::continuousPlaybackChanged, this,
+        &VideoSyncController::onStoreContinuousPlaybackChanged);
 }
 
 void VideoSyncController::disconnectStore() {
@@ -161,6 +166,7 @@ void VideoSyncController::disconnectStore() {
     if (storeLapLoadingConn_) QObject::disconnect(storeLapLoadingConn_);
     if (storePlaybackEndedConn_) QObject::disconnect(storePlaybackEndedConn_);
     if (storeSelectionConn_) QObject::disconnect(storeSelectionConn_);
+    if (storeContinuousConn_) QObject::disconnect(storeContinuousConn_);
 }
 
 void VideoSyncController::updateDualVideo() {
@@ -232,12 +238,25 @@ void VideoSyncController::syncReferenceVideo(bool force) {
 
     if (primaryPlayer_) referenceSyncLastPrimary_ = primaryPlayer_->position();
     referenceSyncLastTarget_ = target;
+    if (store_->referencePlayback() == QStringLiteral("recording")) {
+        // Recording speed: both sides run on their own clocks. The error is
+        // shown, never corrected until the next lap start, jump or pause.
+        referenceSyncBaseRate_ = primaryClockRate();
+        if (!qFuzzyCompare(referencePlayer_->playbackRate(),
+                           referenceSyncBaseRate_))
+            referencePlayer_->setPlaybackRate(referenceSyncBaseRate_);
+        setReferenceSyncState(QStringLiteral("1×"));
+        return;
+    }
     const double rate =
         store_->referencePlaybackRate(referencePlayer_->position()) *
         primaryClockRate();
     referenceSyncBaseRate_ = rate;
     referencePlayer_->setPlaybackRate(rate);
-    if (store_->cursorInCorner())
+    if (store_->referencePlayback() == QStringLiteral("gps"))
+        setReferenceSyncState(qAbs(error) < 0.08 ? QStringLiteral("LOCKED")
+                                                 : QStringLiteral("GPS"));
+    else if (store_->cursorInCorner())
         setReferenceSyncState(qAbs(error) < 0.08 ? QStringLiteral("CORNER")
                                                  : QStringLiteral("HOLD"));
     else
@@ -425,6 +444,31 @@ void VideoSyncController::finishLapAdvance() {
     tryResumeLapAdvance();
 }
 
+void VideoSyncController::advanceLapContinuously() {
+    if (!store_) return;
+    const int nextId = store_->nextPrimaryLapId();
+    // Past the last lap the recording simply keeps playing; the cursor
+    // stays at the lap end.
+    if (nextId < 0) return;
+    store_->advancePrimaryLapWithVideo(nextId);
+}
+
+void VideoSyncController::followContinuousPlayback() {
+    if (!store_ || !store_->continuousPlayback() || !primaryPlayer_ ||
+        primaryPlayer_->paused() || primaryPlayer_->seeking())
+        return;
+    store_->followPlayhead(kContinuousPlayheadAnchor);
+    // Load the next lap before the crossing so the hand-over is a pointer
+    // swap, not a parse while the recording runs past the end.
+    if (store_->cursorFrac() > 0.7) {
+        const int nextId = store_->nextPrimaryLapId();
+        if (nextId >= 0 && nextId != prefetchedNextLap_) {
+            prefetchedNextLap_ = nextId;
+            store_->prefetchLap(store_->primarySessionKey(), nextId);
+        }
+    }
+}
+
 void VideoSyncController::tryResumeLapAdvance() {
     if (!lapAdvanceResume_) return;
     if (!store_ || store_->lapLoading()) return;
@@ -524,12 +568,36 @@ void VideoSyncController::onStoreComparisonSyncStrategyChanged() {
 void VideoSyncController::onStoreLapLoadingChanged() { tryResumeLapAdvance(); }
 
 void VideoSyncController::onStorePrimaryLapPlaybackEnded() {
+    if (store_ && store_->continuousPlayback()) {
+        if (primaryPlayer_ && !primaryPlayer_->paused())
+            advanceLapContinuously();
+        return;
+    }
     startLapAdvance();
 }
 
 void VideoSyncController::onStoreSelectionChanged() {
     if (lapAdvanceCount_ > 0) cancelLapAdvance();
     updateDualVideo();
+    // A new primary/reference lap while playing starts a new comparison:
+    // hard-sync the reference at its lap start (every playback mode).
+    if (dualVideo() && primaryPlayer_ && primaryPlayer_->loaded() &&
+        !primaryPlayer_->paused())
+        syncReferenceVideo(true);
+}
+
+void VideoSyncController::onStoreContinuousPlaybackChanged() {
+    if (store_ && store_->continuousPlayback() && lapAdvanceCount_ > 0) {
+        // The countdown is the thing continuous playback removes: go on now.
+        const int nextId = lapAdvanceNextId_;
+        cancelLapAdvance();
+        if (nextId >= 0 && primaryPlayer_ && primaryPlayer_->loaded()) {
+            store_->jumpToFraction(0.0);
+            store_->selectLap(store_->primarySessionKey(), nextId);
+            lapAdvanceResume_ = true;
+            tryResumeLapAdvance();
+        }
+    }
 }
 
 void VideoSyncController::onContinuousSyncTick() { syncReferenceVideo(false); }
@@ -567,7 +635,19 @@ void VideoSyncController::applySampledCursor() {
         sampledMediaTime_ = t;
         emit sampledMediaTimeChanged();
     }
-    if (telemetryVideoActive_ && store_) store_->setCursorFromVideoTime(t);
+    const double reference =
+        dualVideo() && referencePlayer_ && referencePlayer_->loaded()
+            ? referencePlayer_->position()
+            : std::numeric_limits<double>::quiet_NaN();
+    if (!(std::isnan(reference) && std::isnan(sampledReferenceMediaTime_)) &&
+        !qFuzzyCompare(sampledReferenceMediaTime_ + 1.0, reference + 1.0)) {
+        sampledReferenceMediaTime_ = reference;
+        emit sampledReferenceMediaTimeChanged();
+    }
+    if (telemetryVideoActive_ && store_) {
+        store_->setCursorFromVideoTime(t);
+        followContinuousPlayback();
+    }
 }
 
 void VideoSyncController::enqueueTelemetry(bool immediate) {

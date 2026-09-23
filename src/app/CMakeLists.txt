@@ -161,6 +161,7 @@ if(OMATRACK_ENABLE_AUTOTEST_HARNESS)
     CornerNavigationAutotest.cpp
     TraceResizeAutotest.cpp
     SessionChromeAutotest.cpp
+    ContinuousPlaybackAutotest.cpp
     UsbCopyAutotest.cpp
     PluginAutotest.cpp
     GaugeDiscoveryAutotest.h GaugeDiscoveryAutotest.cpp

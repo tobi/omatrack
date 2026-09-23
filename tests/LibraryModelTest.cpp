@@ -39,9 +39,9 @@ private slots:
                  QString("1"));
         QCOMPARE(resets.size(), 0);
     }
-    void filmstripOnlyFixesBookendsAndKeepsPitLapsVariable() {
+    void filmstripFixesOnlyPitStopsAndKeepsInOutLapsVariable() {
         LapListModel model;
-        QVector<LapRow> rows(5);
+        QVector<LapRow> rows(6);
         for (int i = 0; i < rows.size(); ++i) {
             rows[i].lapId = i;
             rows[i].isComplete = true;
@@ -49,34 +49,39 @@ private slots:
             rows[i].timeMs = 100000;
             rows[i].displayTimeMs = 100000;
         }
-        rows[0].isComplete = rows[4].isComplete = false;
-        rows[0].countsForBest = rows[4].countsForBest = false;
-        rows[2].isPitLap = true;
-        rows[2].countsForBest = false;
-        rows[2].timeMs = 900000;        // real elapsed label must survive
-        rows[2].displayTimeMs = 50000;  // most of it was parked
+        // Out, L, In, Pit (carved stop), Out, In.
+        for (int i : {0, 2, 3, 4, 5}) {
+            rows[i].isComplete = false;
+            rows[i].countsForBest = false;
+        }
+        rows[3].isPitStop = true;
+        rows[3].timeMs = 900000;  // however long it stood
+        rows[3].displayTimeMs = 0;
+        rows[1].isPitLap = true;  // a slow complete lap is still driving
+        rows[1].displayTimeMs = 50000;
         model.refresh(rows);
-        QCOMPARE(model.fixedLapCount(), 2);
-        QVERIFY(model.leadingBookend());
-        QCOMPARE(
-            model.data(model.index(0), LapListModel::FilmstripEdgeRole).toInt(),
-            -1);
-        QCOMPARE(
-            model.data(model.index(4), LapListModel::FilmstripEdgeRole).toInt(),
-            1);
-        QCOMPARE(
-            model.data(model.index(2), LapListModel::FilmstripEdgeRole).toInt(),
-            0);
-        QCOMPARE(model.data(model.index(2), LapListModel::FilmstripWeightRole)
-                     .toDouble(),
-                 0.2);
-        QCOMPARE(model.data(model.index(2), LapListModel::TimeMsRole).toInt(),
+        QCOMPARE(model.fixedLapCount(), 1);
+        const auto fixed = [&](int row) {
+            return model.data(model.index(row), LapListModel::FilmstripFixedRole)
+                .toBool();
+        };
+        const auto weight = [&](int row) {
+            return model
+                .data(model.index(row), LapListModel::FilmstripWeightRole)
+                .toDouble();
+        };
+        QVERIFY(!fixed(0) && !fixed(1) && !fixed(2) && fixed(3) && !fixed(4) &&
+                !fixed(5));
+        QCOMPARE(weight(0), 100000.0 / 450000.0);
+        QCOMPARE(weight(1), 50000.0 / 450000.0);
+        QCOMPARE(weight(3), 0.0);
+        QCOMPARE(model
+                     .data(model.index(4),
+                           LapListModel::FilmstripFixedBeforeRole)
+                     .toInt(),
+                 1);
+        QCOMPARE(model.data(model.index(3), LapListModel::TimeMsRole).toInt(),
                  900000);
-        rows[2].displayTimeMs = 0;
-        model.refresh(rows);
-        QCOMPARE(model.data(model.index(2), LapListModel::FilmstripWeightRole)
-                     .toDouble(),
-                 0.0);
     }
     void refreshDoesNotReset() {
         LibraryModel model;

@@ -2,6 +2,26 @@
 
 All notable user-facing changes are documented here.
 
+## Unreleased
+
+- Parser pinned to `motorsport-telemetry-rs` 1.3.5 (`cac837f`): stint-aware
+  lap roles, the dominant GPS week for AiM clocks (a stale week at power-on
+  no longer dates a recording years early), and pit stops carved out of the
+  lap that held them. The converter generation advances, so remote
+  `.telemetry` caches regenerate.
+- Pit stops are their own filmstrip cell, one fixed size however long the
+  car stood; in- and out-laps are now sized by driving time like every other
+  lap. The filmstrip no longer shows tooltips.
+- Continuous playback (**Per lap / Continuous**, `P`): the video plays
+  through lap ends without the 3-2-1 countdown, and the playhead stays at a
+  third of the trace workspace (and of the fullscreen HUD strip) while the
+  traces scroll past it into the next lap.
+- Reference pacing is selectable in the Sync menu: match position and pace on
+  straights (default), pure GPS following with no corner pacing, or recording
+  speed with a hard sync only at the lap start and on pause.
+- Fullscreen HUD gap bar: with sub-metre GPS on both cars, a ±8 m bar below
+  the speed shows where the reference car is relative to yours.
+
 ## 1.8.6 — 2026-09-18
 
 - Customize trace layouts with exact channel-height percentages, manual

@@ -45,6 +45,18 @@ struct RawChannel {
 
 // ── lap ─────────────────────────────────────────────────────────────
 
+/// Upstream `motorsport-telemetry-rs` lap role (`LapKind`), forwarded as-is.
+/// `Pit` on an incomplete interval is the stationary time upstream carved
+/// out of the lap that held a pit stop: not a lap, just the stop.
+enum class LapKind : std::uint8_t {
+    Unknown = 0,
+    Flying = 1,
+    Out = 2,
+    In = 3,
+    OutIn = 4,
+    Pit = 5,
+};
+
 struct Lap {
     Lap() = default;
     Lap(int lapId, double start, double end, double milliseconds,
@@ -70,6 +82,10 @@ struct Lap {
     std::optional<int> sourceNumber;
     /// Presentation-order frame at the lap start from source metadata.
     std::optional<std::uint64_t> firstVideoFrame;
+    /// Upstream role; Unknown for laps the C++ fallback detector produced.
+    LapKind kind = LapKind::Unknown;
+    /// The carved stationary interval of a pit stop, not a driven lap.
+    bool isPitStop() const { return kind == LapKind::Pit && !complete; }
 };
 
 // ── GPS coordinate units ────────────────────────────────────────────

@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <vector>
 
 namespace omatrack::alignment {
@@ -538,6 +539,60 @@ double invertFraction(const std::vector<double>& map,
                       double compareFraction) {
     if (!alignmentMapUsable(map)) return std::clamp(compareFraction, 0.0, 1.0);
     return omatrack::invertFraction(map, compareFraction);
+}
+
+namespace {
+struct GpsPoint {
+    double latitude = 0.0;
+    double longitude = 0.0;
+};
+
+// Linear interpolation between the two samples around `fraction`, each of
+// which must be a usable fix at better than `maxAccuracy`.
+std::optional<GpsPoint> preciseGpsAt(const omatrack::UnifiedLap& lap,
+                                     double fraction, double maxAccuracy) {
+    if (!gpsArraysAvailable(lap) || lap.time.size() < 2 ||
+        !std::isfinite(fraction) || fraction < 0.0 || fraction > 1.0)
+        return std::nullopt;
+    const double position = fraction * double(lap.time.size() - 1);
+    const size_t low = std::min(size_t(position), lap.time.size() - 2);
+    const size_t high = low + 1;
+    for (size_t i : {low, high}) {
+        const double accuracy = lap.gpsPositionAccuracy[i];
+        if (!gpsFixUsable(lap.gpsLat[i], lap.gpsLon[i], accuracy) ||
+            !(accuracy < maxAccuracy))
+            return std::nullopt;
+    }
+    const double local = std::clamp(position - double(low), 0.0, 1.0);
+    return GpsPoint{
+        lap.gpsLat[low] + (lap.gpsLat[high] - lap.gpsLat[low]) * local,
+        lap.gpsLon[low] + (lap.gpsLon[high] - lap.gpsLon[low]) * local};
+}
+}  // namespace
+
+std::optional<double> relativeAlongTrackMeters(
+    const omatrack::UnifiedLap& primary, double primaryFraction,
+    const omatrack::UnifiedLap& compare, double compareFraction,
+    double maxAccuracyMeters) {
+    // A reference beyond this lateral offset is not beside the primary on
+    // the same stretch of track (a parallel straight, the pit lane).
+    constexpr double kMaximumLateralMeters = 25.0;
+    const auto from = preciseGpsAt(primary, primaryFraction, maxAccuracyMeters);
+    const auto to = preciseGpsAt(compare, compareFraction, maxAccuracyMeters);
+    if (!from || !to) return std::nullopt;
+    const size_t index = size_t(std::llround(
+        std::clamp(primaryFraction, 0.0, 1.0) * double(primary.time.size() - 1)));
+    const auto heading = travelHeading(primary, index);
+    if (!heading) return std::nullopt;
+    const double meanLatitude =
+        0.5 * (from->latitude + to->latitude) * kPi / 180.0;
+    const double north = (to->latitude - from->latitude) * kMetersPerDegree;
+    const double east = (to->longitude - from->longitude) * kMetersPerDegree *
+                        std::cos(meanLatitude);
+    const double along = north * heading->north + east * heading->east;
+    const double lateral = east * heading->north - north * heading->east;
+    if (std::abs(lateral) > kMaximumLateralMeters) return std::nullopt;
+    return along;
 }
 
 std::string confidenceLabel(const std::string& basis, int gpsAnchors) {

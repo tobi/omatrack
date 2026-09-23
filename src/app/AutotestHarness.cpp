@@ -104,6 +104,7 @@ bool omatrack::autotest::install(QQmlApplicationEngine& engine,
         startupVideoPath.isEmpty() || autotestBrakeSync || autotestDualVideo);
     const QString shotPath = QString::fromUtf8(autotestShot);
     if (installSessionChrome(engine, store)) return true;
+    if (installContinuousPlayback(engine, store)) return true;
     if (installTraceResize(engine, store)) return true;
     if (installCornerNavigation(engine, store)) return true;
     if (installTraceRendering(engine, store)) return true;

@@ -1,5 +1,6 @@
 // Header, filmstrip bookends and persistent fullscreen HUD placement.
 #include "AutotestHarness.h"
+#include "FilmstripLayout.h"
 #include "TelemetryStore.h"
 #include "MpvVideoItem.h"
 
@@ -165,13 +166,19 @@ bool omatrack::autotest::installSessionChrome(QQmlApplicationEngine& engine,
                         content, prefix + QString::number(laps.front().lapId));
                     auto* last = visualItem(
                         content, prefix + QString::number(laps.back().lapId));
-                    if (!require(first && last, "bookend cells")) return;
-                    if (!laps.front().countsForBest() &&
-                        !require(near(first->width(), 72), "out width"))
-                        return;
-                    if (!laps.back().countsForBest() &&
-                        !require(near(last->width(), 72), "in width"))
-                        return;
+                    if (!require(first && last, "edge cells")) return;
+                    // A pit stop is one fixed cell; everything driven
+                    // (including out/in laps) is proportional.
+                    for (const auto& lap : laps) {
+                        if (!lap.isPitStop) continue;
+                        auto* cell = visualItem(
+                            content, prefix + QString::number(lap.lapId));
+                        if (!require(
+                                cell && near(cell->width(),
+                                             omatrack::kFilmstripPitStopCell),
+                                "pit stop width"))
+                            return;
+                    }
                     const QPointF left = first->mapToScene({});
                     const QPointF right =
                         last->mapToScene(QPointF(last->width(), 0));
@@ -189,7 +196,7 @@ bool omatrack::autotest::installSessionChrome(QQmlApplicationEngine& engine,
                              "desktop screenshot"))
                     return;
                 qWarning() << "AUTOTEST session chrome: header and aligned "
-                              "fixed bookends PASS";
+                              "filmstrip edges PASS";
                 if (!state->video) {
                     timer->stop();
                     QCoreApplication::exit(0);

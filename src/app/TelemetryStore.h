@@ -148,6 +148,9 @@ struct LapEntry {
     bool isComplete = true;
     /// Complete crossing-to-crossing lap whose time is a pit in/out outlier.
     bool isPitLap = false;
+    /// Stationary pit-stop interval upstream carved out between an in-lap
+    /// and an out-lap. Never a lap; the filmstrip gives it a fixed cell.
+    bool isPitStop = false;
     /// Presentation-order frame at this lap's first telemetry sample.
     std::optional<std::uint64_t> firstVideoFrame;
     /// Representative timed racing lap: eligible for best-lap statistics.
@@ -489,6 +492,10 @@ class TelemetryStore : public QObject {
     Q_PROPERTY(QAbstractItemModel* library READ libraryModel CONSTANT)
     Q_PROPERTY(bool videoMuted READ videoMuted WRITE setVideoMuted NOTIFY
                    videoMutedChanged)
+    Q_PROPERTY(bool continuousPlayback READ continuousPlayback WRITE
+                   setContinuousPlayback NOTIFY continuousPlaybackChanged)
+    Q_PROPERTY(QString referencePlayback READ referencePlayback WRITE
+                   setReferencePlayback NOTIFY referencePlaybackChanged)
     Q_PROPERTY(
         bool imageTelemetryEnabled READ imageTelemetryEnabled WRITE
             setImageTelemetryEnabled NOTIFY imageTelemetrySettingsChanged FINAL)
@@ -1007,6 +1014,23 @@ public:
     /// corner it is 1. `refMediaTime` is the reference player's current
     /// position in seconds.
     Q_INVOKABLE double referencePlaybackRate(double refMediaTime) const;
+    /// Compare-lap fraction the reference recording shows at `mediaTime`
+    /// (its own presentation time), or -1 when it is outside the lap or the
+    /// clock is unavailable. Used where the actual reference frame matters
+    /// more than the alignment map (recording-speed playback, gap bar).
+    double compareFractionForVideoTime(double mediaTime) const;
+    /// Continuous playback: keep the playhead at `anchor` of the trace
+    /// viewport while the recording plays, running past the lap ends into
+    /// the neighbouring laps. Width (zoom) is unchanged.
+    void followPlayhead(double anchor);
+    /// Continuous playback crossing a lap end: select `lapId` of the primary
+    /// session with the cursor taken from the recording's current position,
+    /// so the adoption never seeks the playing video.
+    void advancePrimaryLapWithVideo(int lapId);
+    bool continuousPlayback() const;
+    void setContinuousPlayback(bool on);
+    QString referencePlayback() const;
+    void setReferencePlayback(const QString& mode);
     QString videoDownloadStatus() const { return videoDownloadStatus_; }
     QString comparisonAlignmentBasis() const;
     QString comparisonAlignmentConfidence() const;
@@ -1088,6 +1112,8 @@ signals:
     void trackAtlasChanged();
     void videoTimeChanged();
     void videoMutedChanged();
+    void continuousPlaybackChanged();
+    void referencePlaybackChanged();
     void imageTelemetrySettingsChanged();
     void videoDownloadChanged();
     void videoMetadataChanged(const QString& videoPath);
@@ -1208,8 +1234,7 @@ private:
     void refreshDriverMappingsModel();
     void refreshSyncStrategyModel();
     void refreshLibraryModel();
-    QVector<LapRow> buildLapRows(SessionHandle* session,
-                                 int selectedLapId) const;
+    QVector<LapRow> buildLapRows(SessionHandle* session) const;
     QVector<ChannelRow> buildChannelRows() const;
     QVector<CornerRow> buildCornerRows() const;
     QVector<DriverMappingRow> buildDriverMappingRows() const;
@@ -1306,6 +1331,12 @@ private:
     QVector<CornerZone> cornerEditBaseline_;
     bool ready_ = false;
     std::optional<bool> videoMutedOverride_;
+    // Last primary media time the video clock reported, and whether the next
+    // primary adoption should take its cursor from it (continuous playback).
+    double lastPrimaryMediaTime_ = std::numeric_limits<double>::quiet_NaN();
+    bool cursorFollowsVideoOnAdopt_ = false;
+    int followedPrimaryLap_ = -1;
+    std::optional<double> fractionForPrimaryVideoTime(double mediaTime) const;
     bool loading_ = false;
     bool rescanPending_ = false;
     bool primaryLapLoading_ = false;
