@@ -15,6 +15,9 @@ Item {
     readonly property string bestTime: row.bestLapText
     required property string carClass
     required property int childCount
+    /// Right-aligned summary for group rows: file count, or why the
+    /// location cannot be read.
+    readonly property string countText: !row.available ? "Folder not found" : row.role === "pins" ? row.childCount + " pinned" : row.role === "recent" ? row.childCount + " recent" : row.childCount > 0 ? row.childCount + (row.childCount === 1 ? " file" : " files") : ""
     readonly property string detailText: (row.startTimeText || "—") + " · " + row.lapCount + (row.lapCount === 1 ? " lap" : " laps") + " · " + (row.driveTimeText || "—")
     readonly property string driveTime: row.driveTimeText
     required property string driveTimeText
@@ -61,7 +64,7 @@ Item {
             Store.requestSidebarMetadata(row.path, row.metadataInViewport);
     }
 
-    height: row.sectionRow ? 40 : row.role === "file" ? 38 : row.role === "day" ? 22 : 28
+    height: row.role === "file" ? 36 : row.sectionRow ? 28 : row.role === "day" ? 20 : 24
     width: ListView.view.width
 
     Component.onCompleted: row.requestVisibleMetadata()
@@ -74,13 +77,13 @@ Item {
     }
     RowLayout {
         anchors.fill: parent
-        anchors.leftMargin: 5 + row.indent * 10
-        anchors.rightMargin: 6
+        anchors.leftMargin: 6 + row.indent * 10
+        anchors.rightMargin: 8
         spacing: 5
         z: 1
 
         Label {
-            Layout.preferredWidth: 11
+            Layout.preferredWidth: 10
             color: Style.dimTextColor
             font.family: Style.monoFontFamily
             font.pixelSize: 8
@@ -104,7 +107,6 @@ Item {
             }
         }
         ColumnLayout {
-            Layout.fillHeight: true
             Layout.fillWidth: true
             spacing: 0
 
@@ -130,40 +132,28 @@ Item {
                     onReferenceActivated: row.setReferenceRequested(row.key)
                 }
             }
-            Label {
-                Layout.fillWidth: true
-                color: !row.available ? Style.redColor : row.activeFile ? Style.comparisonLapColor : row.referenceFile ? Style.referenceLapColor : row.role === "day" ? Style.dimTextColor : Style.foregroundColor
-                elide: Text.ElideRight
-                font.bold: row.sectionRow || row.role === "day" || row.activeFile
-                font.family: row.role === "day" ? Style.monoFontFamily : Style.uiFontFamily
-                font.letterSpacing: row.role === "day" ? 0.6 : 0
-                font.pixelSize: row.sectionRow ? 10 : row.role === "day" ? 8 : 9
-                text: row.name
-                visible: row.role !== "file"
-            }
             RowLayout {
                 Layout.fillWidth: true
-                spacing: 4
-                visible: row.role === "pins" || row.role === "recent" || row.role === "source"
+                spacing: 6
+                visible: row.role !== "file"
 
                 Label {
                     Layout.fillWidth: true
                     Layout.minimumWidth: 0
-                    color: !row.available ? Style.redColor : Style.mutedTextColor
+                    color: !row.available ? Style.redColor : row.role === "day" ? Style.dimTextColor : Style.foregroundColor
                     elide: Text.ElideRight
+                    font.bold: row.sectionRow
+                    font.family: row.role === "day" ? Style.monoFontFamily : Style.uiFontFamily
+                    font.letterSpacing: row.role === "day" ? 0.6 : 0
+                    font.pixelSize: row.role === "day" ? 8 : 10
+                    text: row.name
+                }
+                Label {
+                    color: !row.available ? Style.redColor : Style.dimTextColor
                     font.family: Style.monoFontFamily
                     font.pixelSize: 8
-                    text: row.role === "pins" ? row.childCount + (row.childCount === 1 ? " pinned item" : " pinned items") : row.role === "recent" ? row.childCount + (row.childCount === 1 ? " recent item" : " recent items") : row.role === "source" ? (!row.available ? "Folder not found" : row.childCount + (row.childCount === 1 ? " file" : " files")) : ""
-                }
-                RoleActionRow {
-                    dotSize: 9
-                    primarySelected: row.activeFile
-                    primaryVisible: row.hasSession
-                    referenceSelected: row.referenceFile
-                    referenceVisible: row.hasSession
-
-                    onPrimaryActivated: row.setActiveRequested(row.key)
-                    onReferenceActivated: row.setReferenceRequested(row.key)
+                    text: row.countText
+                    visible: row.expandableRow && row.countText !== ""
                 }
             }
         }
