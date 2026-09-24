@@ -258,8 +258,12 @@ wins on load. Caches (Track Atlas snapshot) stay outside the file.
   rules, with a Sync all button. Both directions share the plan/execute
   engine (`UsbCopyPlan`, create-only temp+rename publish); a scan commit
   refreshes plans but never wipes a Copy/Sync status report. The sidebar
-  also owns the event section (toggle, track picker, session, date) above
-  the file tree.
+  itself is one row — search field, **Filters** toggle, Rescan — above the
+  tree; the facet panel (track, year and driver pills) sits under the
+  search field, opens on demand and stays open while a facet is applied.
+  Event mode is configured from the header (toggle and gear → Preferences →
+  Event), not from the sidebar. Group rows (Pinned, Recent, sources,
+  folders) are one line with a recording count on the right.
   A newly discovered mount opens the overlay with a read-only *plan*
   (`UsbCopy.h`: per file source → jailed destination, size, New / Existing /
   Invalid) computed on a worker; nothing is written before the button. The

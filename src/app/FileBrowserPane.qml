@@ -8,6 +8,16 @@ import QtQuick.Layouts
 Pane {
     id: browser
 
+    readonly property bool facetsActive: filterModel.selectedDrivers.length > 0 || filterModel.selectedYears.length > 0 || filterModel.selectedTrack !== ""
+    readonly property bool facetsAvailable: Store.library.driverPills.length > 0 || Store.library.yearPills.length > 0 || Store.library.trackPills.length > 0
+    readonly property bool facetsVisible: browser.facetsAvailable && (browser.filtersOpen || browser.facetsActive)
+
+    /// Facet filters (drivers, years, track) live in a panel under the
+    /// search field. The panel is opened with the Filters button and stays
+    /// open on its own while any facet is applied, so an active filter is
+    /// never invisible.
+    property bool filtersOpen: false
+
     signal driverRenameRequested(string mappingKey, string driver)
     signal fileActivated(string path, string key, bool hasSession)
     signal fileIsolated(string key)
@@ -208,194 +218,214 @@ Pane {
         MenuSeparator {
         }
         MenuItem {
-            text: "Edit folder TRACK.yml…"
+            text: "Edit folder metadata (TRACK.yml)…"
 
             onTriggered: browser.folderMetadataRequested(folderContextMenu.ctxPath)
-        }
-        MenuItem {
-            enabled: false
-            text: "Inherited by videos and subfolders"
         }
     }
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
 
+        // ── Search, filters, rescan ─────────────────────────────────
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: 34
             color: Style.surfaceColor
 
-            Rectangle {
-                anchors.bottom: parent.bottom
-                anchors.left: parent.left
-                anchors.right: parent.right
-                color: Style.borderColor
-                height: 1
-            }
             RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: 8
-                anchors.rightMargin: 4
-                spacing: 6
+                anchors.rightMargin: 6
+                spacing: 4
 
-                Label {
-                    color: Style.accentColor
-                    font.bold: true
-                    font.family: Style.monoFontFamily
-                    font.letterSpacing: 0.8
-                    font.pixelSize: 9
-                    text: "FILES"
-                }
                 CompactTextField {
                     id: fileFilter
 
                     Layout.fillWidth: true
                     Layout.minimumWidth: 0
-                    Layout.preferredHeight: 26
                     color: Style.foregroundColor
-                    placeholderText: "Filter…"
+                    placeholderText: "Search library…"
                     placeholderTextColor: Style.dimTextColor
+                    rightPadding: clearSearch.visible ? clearSearch.width + 2 : 6
 
                     Keys.onEscapePressed: {
                         fileFilter.clear();
                         filterModel.filterText = "";
                     }
                     onTextEdited: filterTimer.restart()
-                }
-                ToolButton {
-                    Accessible.name: "Clear file filter"
-                    Layout.preferredHeight: 28
-                    Layout.preferredWidth: 28
-                    font.pixelSize: 11
-                    text: "×"
-                    visible: fileFilter.text !== ""
 
-                    onClicked: {
-                        fileFilter.clear();
-                        filterModel.filterText = "";
+                    CompactToolButton {
+                        id: clearSearch
+
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        font.pixelSize: 11
+                        height: Style.smallControlHeight
+                        text: "×"
+                        tip: "Clear search"
+                        visible: fileFilter.text !== ""
+                        width: Style.smallControlHeight
+
+                        onClicked: {
+                            fileFilter.clear();
+                            filterModel.filterText = "";
+                        }
                     }
+                }
+                CompactToolButton {
+                    id: filtersButton
+
+                    Layout.preferredHeight: Style.controlHeight
+                    checkable: true
+                    checked: browser.facetsVisible
+                    enabled: browser.facetsAvailable
+                    font.pixelSize: 10
+                    objectName: "sidebarFiltersToggle"
+                    text: browser.facetsActive ? "Filters •" : "Filters"
+                    tip: browser.facetsVisible ? "Hide library filters" : "Show library filters"
+
+                    onClicked: browser.filtersOpen = !browser.facetsVisible
                 }
                 BusyIndicator {
                     Layout.preferredHeight: 22
-                    Layout.preferredWidth: 28
+                    Layout.preferredWidth: 26
                     running: Store.loading
                     visible: running
                 }
-                ToolButton {
-                    Accessible.name: "Rescan file sources"
-                    Layout.preferredHeight: 28
-                    Layout.preferredWidth: 28
+                CompactToolButton {
+                    Layout.preferredHeight: Style.controlHeight
+                    Layout.preferredWidth: 26
                     enabled: !Store.loading
                     font.pixelSize: 13
                     text: "↻"
+                    tip: "Rescan file sources"
                     visible: !Store.loading
 
                     onClicked: Store.scan()
                 }
             }
         }
+        // ── Facet filters (drivers · years · track) ─────────────────
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: eventSection.implicitHeight + 12
             color: Style.surfaceColor
+            implicitHeight: browser.facetsVisible ? filterColumn.implicitHeight + 10 : 0
+            visible: browser.facetsVisible
 
             ColumnLayout {
-                id: eventSection
+                id: filterColumn
 
                 anchors.left: parent.left
                 anchors.leftMargin: 8
                 anchors.right: parent.right
-                anchors.rightMargin: 4
+                anchors.rightMargin: 8
                 anchors.top: parent.top
-                anchors.topMargin: 6
+                anchors.topMargin: 2
                 spacing: 4
 
                 RowLayout {
                     Layout.fillWidth: true
-                    spacing: 6
+                    spacing: 4
+                    visible: Store.library.trackPills.length > 0
 
-                    Label {
-                        color: Style.accentColor
-                        font.bold: true
-                        font.family: Style.monoFontFamily
-                        font.letterSpacing: 0.8
-                        font.pixelSize: 9
-                        text: "EVENT"
-                    }
-                    Item {
+                    ComboBox {
+                        id: trackFilter
+
                         Layout.fillWidth: true
-                    }
-                    Switch {
-                        checked: Store.eventMode
+                        Layout.preferredHeight: Style.controlHeight
+                        currentIndex: filterModel.selectedTrack === "" ? 0 : Store.library.trackPills.indexOf(filterModel.selectedTrack) + 1
+                        font.family: Style.uiFontFamily
+                        font.pixelSize: Style.smallFontSize
+                        implicitHeight: Style.controlHeight
+                        model: ["All tracks"].concat(Store.library.trackPills)
 
-                        onToggled: Store.eventMode = checked
+                        onActivated: index => {
+                            filterModel.selectedTrack = index <= 0 ? "" : Store.library.trackPills[index - 1];
+                        }
+                    }
+                    CompactToolButton {
+                        Layout.preferredHeight: Style.controlHeight
+                        Layout.preferredWidth: 24
+                        font.pixelSize: 11
+                        text: "×"
+                        tip: filterModel.eventFilterActive ? "Clear filters and leave event mode" : "Clear filters"
+                        visible: filterModel.anyFilterActive
+
+                        onClicked: browser.clearFilters()
                     }
                 }
-                ComboBox {
-                    id: eventTrackPick
-
+                Flow {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 26
-                    currentIndex: Math.max(0, eventTrackPick.model.indexOf(Store.eventTrack))
-                    model: [""].concat(Store.library.trackPills)
+                    spacing: 4
+                    visible: Store.library.yearPills.length > 0 || Store.library.driverPills.length > 0
 
-                    onActivated: index => Store.eventTrack = index <= 0 ? "" : eventTrackPick.model[index]
-                }
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 6
+                    Repeater {
+                        model: Store.library.yearPills
 
-                    CompactTextField {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 26
-                        placeholderText: "Session (CT4)"
-                        text: Store.eventSession
+                        FilterPill {
+                            required property string modelData
 
-                        onEditingFinished: Store.eventSession = text.trim()
+                            label: modelData
+                            selected: filterModel.selectedYears.indexOf(modelData) >= 0
+
+                            onActivated: browser.toggleYear(modelData)
+                        }
                     }
-                    CompactTextField {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 26
-                        placeholderText: "YYYY-MM-DD"
-                        text: Store.eventDate
+                    Repeater {
+                        model: Store.library.driverPills
 
-                        onEditingFinished: Store.eventDate = text.trim()
+                        FilterPill {
+                            required property string modelData
+
+                            label: modelData
+                            selected: filterModel.selectedDrivers.indexOf(modelData) >= 0
+
+                            onActivated: browser.toggleDriver(modelData)
+                        }
                     }
                 }
             }
         }
+        // ── Removable volume actions ────────────────────────────────
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 28
+            Layout.preferredHeight: 30
             color: Style.surfaceColor
             visible: Store.usbPresent || Store.manualUsbSource !== ""
 
             RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: 8
-                anchors.rightMargin: 4
-                spacing: 6
+                anchors.rightMargin: 8
+                spacing: 4
 
                 Label {
                     Layout.fillWidth: true
                     color: Style.accentColor
                     elide: Text.ElideRight
                     font.family: Style.monoFontFamily
-                    font.pixelSize: 10
+                    font.pixelSize: Style.smallFontSize
                     text: Store.usbLabel
                 }
                 CompactButton {
+                    implicitHeight: Style.smallControlHeight + 2
                     text: "Sync…"
 
                     onClicked: Store.showUsbSync()
                 }
                 CompactButton {
+                    implicitHeight: Style.smallControlHeight + 2
                     text: "Copy…"
 
                     onClicked: Store.showUsbCopy()
                 }
             }
+        }
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 1
+            color: Style.borderColor
         }
         Item {
             Layout.fillHeight: true
@@ -472,110 +502,6 @@ Pane {
                 }
             }
         }
-        Rectangle {
-            Layout.fillWidth: true
-            color: Style.surfaceColor
-            implicitHeight: filterColumn.implicitHeight + 10
-            visible: Store.library.driverPills.length > 0 || Store.library.yearPills.length > 0 || Store.library.trackPills.length > 0
-
-            Rectangle {
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                color: Style.borderColor
-                height: 1
-            }
-            ColumnLayout {
-                id: filterColumn
-
-                anchors.left: parent.left
-                anchors.leftMargin: 8
-                anchors.right: parent.right
-                anchors.rightMargin: 8
-                anchors.top: parent.top
-                anchors.topMargin: 6
-                spacing: 4
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 6
-
-                    Label {
-                        color: Style.accentColor
-                        font.bold: true
-                        font.family: Style.monoFontFamily
-                        font.letterSpacing: 0.8
-                        font.pixelSize: 9
-                        text: "FILTERS"
-                    }
-                    Item {
-                        Layout.fillWidth: true
-                    }
-                    ToolButton {
-                        Accessible.name: filterModel.eventFilterActive ? "Clear filters and leave event mode" : "Clear filters"
-                        Layout.preferredHeight: 20
-                        Layout.preferredWidth: 20
-                        font.pixelSize: 11
-                        text: "×"
-                        visible: filterModel.anyFilterActive
-
-                        onClicked: browser.clearFilters()
-                    }
-                }
-                Flow {
-                    Layout.fillWidth: true
-                    spacing: 4
-                    visible: Store.library.driverPills.length > 0
-
-                    Repeater {
-                        model: Store.library.driverPills
-
-                        FilterPill {
-                            required property string modelData
-
-                            label: modelData
-                            selected: filterModel.selectedDrivers.indexOf(modelData) >= 0
-
-                            onActivated: browser.toggleDriver(modelData)
-                        }
-                    }
-                }
-                Flow {
-                    Layout.fillWidth: true
-                    spacing: 4
-                    visible: Store.library.yearPills.length > 0
-
-                    Repeater {
-                        model: Store.library.yearPills
-
-                        FilterPill {
-                            required property string modelData
-
-                            label: modelData
-                            selected: filterModel.selectedYears.indexOf(modelData) >= 0
-
-                            onActivated: browser.toggleYear(modelData)
-                        }
-                    }
-                }
-                ComboBox {
-                    id: trackFilter
-
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: Style.controlHeight
-                    currentIndex: filterModel.selectedTrack === "" ? 0 : Store.library.trackPills.indexOf(filterModel.selectedTrack) + 1
-                    font.family: Style.uiFontFamily
-                    font.pixelSize: Style.smallFontSize
-                    implicitHeight: Style.controlHeight
-                    model: ["All tracks"].concat(Store.library.trackPills)
-                    visible: Store.library.trackPills.length > 0
-
-                    onActivated: index => {
-                        filterModel.selectedTrack = index <= 0 ? "" : Store.library.trackPills[index - 1];
-                    }
-                }
-            }
-        }
         // A recording is tens of gigabytes, so the one being fetched for
         // offline use says so for as long as it takes, and can be called off.
         Rectangle {
@@ -594,7 +520,7 @@ Pane {
             RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: 8
-                anchors.rightMargin: 4
+                anchors.rightMargin: 8
                 spacing: 6
 
                 Label {

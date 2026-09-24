@@ -104,6 +104,16 @@ QVariant LibraryModel::data(const QModelIndex& index, int role) const {
     return {};
 }
 
+namespace {
+int countFiles(const LibraryModel::Node& node) {
+    if (node.kind == QLatin1String("file")) return 1;
+    int total = 0;
+    for (const LibraryModel::Node& child : node.children)
+        total += countFiles(child);
+    return total;
+}
+}  // namespace
+
 LibraryModel::Node LibraryModel::fromVariantMap(const QVariantMap& vm) {
     Node node;
     node.kind = vm.value(QStringLiteral("role")).toString();
@@ -133,14 +143,16 @@ LibraryModel::Node LibraryModel::fromVariantMap(const QVariantMap& vm) {
     node.children.reserve(children.size());
     for (const QVariant& child : children)
         node.children.append(fromVariantMap(child.toMap()));
-    // childCount: for source/folder/pins/recent, the file count from the
-    // scan; for day nodes, the number of file children; for files, 0.
+    // childCount: for source/pins/recent, the file count from the scan; for
+    // folders, the recordings anywhere below (so a folder and a source row
+    // read the same way); for day nodes, the number of file children; for
+    // files, 0.
     if (node.kind == QLatin1String("source") ||
         node.kind == QLatin1String("pins") ||
         node.kind == QLatin1String("recent"))
         node.childCount = vm.value(QStringLiteral("fileCount")).toInt();
     else if (node.kind == QLatin1String("folder"))
-        node.childCount = static_cast<int>(node.children.size());
+        node.childCount = countFiles(node);
     else if (node.kind == QLatin1String("day"))
         node.childCount = static_cast<int>(node.children.size());
     else
