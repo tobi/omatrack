@@ -5,7 +5,6 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-links = "mpv"
 build = "build.rs"
 
 [dependencies]
@@ -13,6 +12,7 @@ gpui-kit.workspace = true
 image.workspace = true
 async-channel.workspace = true
 libc.workspace = true
+libmpv2-sys.workspace = true
 log.workspace = true
 smallvec.workspace = true
 
@@ -21,6 +21,7 @@ pkg-config.workspace = true
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
 
 [lints]
 workspace = true
