@@ -1,0 +1,26 @@
+[package]
+name = "mpv-player"
+description = "Reusable libmpv (client + software render API) bindings and a GPUI video surface."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+links = "mpv"
+build = "build.rs"
+
+[dependencies]
+gpui-kit.workspace = true
+image.workspace = true
+async-channel.workspace = true
+libc.workspace = true
+log.workspace = true
+smallvec.workspace = true
+
+[build-dependencies]
+pkg-config.workspace = true
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,36 @@
+[package]
+name = "omatrack-app"
+description = "Omatrack 2.0: the GPUI telemetry workstation."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "omatrack2"
+path = "src/main.rs"
+
+[dependencies]
+omatrack-core.workspace = true
+omatrack-cli.workspace = true
+omatrack-library.workspace = true
+omatrack-trace.workspace = true
+omatrack-ui.workspace = true
+mpv-player.workspace = true
+gpui-kit.workspace = true
+gpui-omarchy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+async-channel.workspace = true
+smallvec.workspace = true
+image.workspace = true
+log.workspace = true
+env_logger.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

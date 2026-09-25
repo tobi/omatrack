@@ -1,0 +1,20 @@
+[package]
+name = "omatrack-ui"
+description = "First-party Omatrack components in the Omarchy idiom: palette, data grid, header/status bars, lap strip, track map."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+omatrack-core.workspace = true
+gpui-kit.workspace = true
+gpui-omarchy.workspace = true
+smallvec.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

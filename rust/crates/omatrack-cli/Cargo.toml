@@ -1,0 +1,21 @@
+[package]
+name = "omatrack-cli"
+description = "Headless omatrack commands: parse | unify | corners | compare."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "omatrack_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "omatrack-cli"
+path = "src/main.rs"
+
+[dependencies]
+omatrack-core.workspace = true
+
+[lints]
+workspace = true

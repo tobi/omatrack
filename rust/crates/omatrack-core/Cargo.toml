@@ -1,0 +1,26 @@
+[package]
+name = "omatrack-core"
+description = "Omatrack analysis core: recordings, normalization, laps, alignment, corners. No GPUI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[dependencies]
+aim-telemetry.workspace = true
+cosworth-telemetry.workspace = true
+motec-telemetry.workspace = true
+racelogic-telemetry.workspace = true
+motorsport-telemetry-core.workspace = true
+telemetry-format.workspace = true
+motorsport-track-atlas.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+blake3.workspace = true
+thiserror.workspace = true
+libc.workspace = true
+log.workspace = true
+
+[lints]
+workspace = true

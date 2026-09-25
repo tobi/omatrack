@@ -1,0 +1,67 @@
+# Omatrack 2.0: the Rust/GPUI port. Lives beside the Qt tree (src/, cli/,
+# third_party/) until parity; that tree stays the reference oracle.
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+version = "2.0.0-dev"
+license = "MIT"
+rust-version = "1.90"
+repository = "https://github.com/tobi/omatrack"
+
+[workspace.dependencies]
+# The gpui stack is yanked in the index; see scripts/seed-cargo-lock.sh.
+gpui-kit = { version = "=0.6.6", default-features = false, features = ["assets"] }
+gpui-omarchy = "=0.1.3"
+
+# Vendor parsers, pinned to the same upstream revision the Qt bridge links.
+# omatrack-core/build.rs derives the converter generation from the rev below.
+aim-telemetry = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "cac837feb12fe112bd85a159e2d6d49543647313" }
+cosworth-telemetry = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "cac837feb12fe112bd85a159e2d6d49543647313" }
+motec-telemetry = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "cac837feb12fe112bd85a159e2d6d49543647313" }
+racelogic-telemetry = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "cac837feb12fe112bd85a159e2d6d49543647313" }
+motorsport-telemetry-core = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "cac837feb12fe112bd85a159e2d6d49543647313" }
+telemetry-format = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "cac837feb12fe112bd85a159e2d6d49543647313" }
+motorsport-track-atlas = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "cac837feb12fe112bd85a159e2d6d49543647313" }
+
+# Parity requirement: unify float_roundtrip into the upstream MTJ reader
+# exactly as the Qt bridge does, so both sides parse identical f64 values.
+serde_json = { version = "=1.0.151", features = ["float_roundtrip"] }
+blake3 = "=1.5.5"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+thiserror = "2"
+image = { version = "0.25", default-features = false }
+async-channel = "2"
+smallvec = "1"
+walkdir = "2"
+libc = "0.2"
+pkg-config = "0.3"
+log = "0.4"
+env_logger = "0.11"
+anyhow = "1"
+
+omatrack-core = { path = "crates/omatrack-core" }
+omatrack-cli = { path = "crates/omatrack-cli" }
+omatrack-library = { path = "crates/omatrack-library" }
+omatrack-trace = { path = "crates/omatrack-trace" }
+omatrack-ui = { path = "crates/omatrack-ui" }
+mpv-player = { path = "crates/mpv-player" }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+# Faithful numeric ports keep the C++ index loops and argument lists so the
+# operation order (and therefore the printed floats) stays identical.
+needless_range_loop = "allow"
+too_many_arguments = "allow"
+type_complexity = "allow"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+debug = "line-tables-only"

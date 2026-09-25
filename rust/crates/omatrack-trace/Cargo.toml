@@ -1,0 +1,20 @@
+[package]
+name = "omatrack-trace"
+description = "Trace math (decimation, scales, lane layout, meshes) and the GPUI trace elements."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+omatrack-core.workspace = true
+gpui-kit.workspace = true
+gpui-omarchy.workspace = true
+smallvec.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true
