@@ -10,6 +10,10 @@
 # ordinary registry dependency, and let a plain `cargo build` add only what
 # is new (the motorsport-telemetry-rs git crates and our workspace members).
 #
+# That crate is used only as a source of a known-good lockfile; the workspace
+# does not depend on it, and the final `cargo build` prunes its entry. The
+# committed Cargo.lock is the real seed: this script is recovery only.
+#
 # Run once, from anywhere. Never run a blanket `cargo update` afterwards;
 # CI builds with --locked.
 set -euo pipefail

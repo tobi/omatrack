@@ -1,5 +1,16 @@
 # Omatrack agent guide
 
+> **GPUI port (`rust/`, Omatrack 2.0).** Work under `rust/` follows
+> `rust/AGENTS.md`. Before writing or reviewing any GPUI / `gpui-kit` code
+> there, read the vendored skills in `.agents/skills/`:
+> `gpui-kit/SKILL.md` (and the reference files it routes to:
+> `references/coding-guides.md`, `conventions.md`, `recipes.md`, `usage.md`,
+> and `references/gpui/*.md` for each mechanism touched) and, for any
+> visible surface, `gpui-kit-design-guides/SKILL.md` with
+> `references/design-guides.md`. They are normative, not background reading.
+> The Qt-specific sections below (QML, Qt Quick items, CMake) do not apply
+> to the GPUI port; the product contract and analytical rules do.
+
 ## Mission
 
 Omatrack is a native racing-telemetry workstation. Its primary target is Linux under Omarchy, built with Qt 6, Qt Quick, and Material controls. It should turn heterogeneous logger files into a coherent, driver-facing model of sessions, laps, channels, tracks, corners, and corner complexes.

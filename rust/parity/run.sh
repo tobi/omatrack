@@ -2,9 +2,13 @@
 # Byte parity of the Rust headless CLI against the C++ oracle.
 #
 # Runs every case through both binaries (same argv[0], same cwd layout) into
-# rust/parity/out/{cpp,rust}/ and compares stdout, stderr, exported CSVs and
-# exit codes with `diff -r`. Any difference fails. Outputs contain GPS
-# positions and stay in the gitignored out/ directory.
+# $out/{cpp,rust}/ and compares stdout, stderr, exported CSVs and exit codes
+# with `diff -r`. Any difference fails. Outputs contain GPS positions.
+#
+# $out is $PARITY_OUT when set, else `parity-out/` inside a private
+# CARGO_TARGET_DIR, else the gitignored rust/parity/out/. Runners with their
+# own CARGO_TARGET_DIR therefore never share (and wipe) each other's outputs,
+# and runs that do share a directory are serialized by a lock on it.
 #
 # Prerequisites: parity/build-oracle.sh (the oracle and the .telemetry
 # writer). Fixtures: $OMATRACK_FIXTURES (default ~/Documents/Telemetry/26T07_PLM),
@@ -15,19 +19,36 @@
 # the port prints usage and exits 2 — the documented deviation).
 set -euo pipefail
 rust_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-out="$rust_dir/parity/out"
+# Cargo resolves a relative CARGO_TARGET_DIR against its working directory,
+# which is $rust_dir below; resolve it the same way here.
+target_dir="${CARGO_TARGET_DIR:-$rust_dir/target}"
+[[ $target_dir == /* ]] || target_dir="$rust_dir/$target_dir"
+if [[ -n ${PARITY_OUT:-} ]]; then
+    out="$PARITY_OUT"
+elif [[ -n ${CARGO_TARGET_DIR:-} ]]; then
+    out="$target_dir/parity-out"
+else
+    out="$rust_dir/parity/out"
+fi
+[[ $out == /* ]] || out="$PWD/$out"
 oracle="$rust_dir/target/oracle/omatrack-cli"
 writer="$rust_dir/target/oracle/write-telemetry"
 fixtures="${OMATRACK_FIXTURES:-$HOME/Documents/Telemetry/26T07_PLM}"
 
 [[ -x "$oracle" && -x "$writer" ]] || { echo "run parity/build-oracle.sh first" >&2; exit 2; }
-(cd "$rust_dir" && cargo build --quiet --release --locked -p omatrack-cli)
-port="$rust_dir/target/release/omatrack-cli"
+(cd "$rust_dir" && CARGO_TARGET_DIR="$target_dir" cargo build --quiet --release --locked -p omatrack-cli)
+# A private CARGO_TARGET_DIR builds (and runs) its own CLI; the oracle stays
+# under rust/target/oracle either way.
+port="$target_dir/release/omatrack-cli"
 
 mapfile -t mp4s < <(find "$fixtures" -type f -iname '*.mp4' | sort)
 ((${#mp4s[@]} >= 2)) || { echo "need at least two MP4 fixtures under $fixtures" >&2; exit 2; }
 
 mkdir -p "$out/telemetry"
+# One run per output directory at a time: a second run waits instead of
+# deleting the first one's outputs mid-comparison.
+exec 9>"$out/.lock"
+flock 9
 rm -rf "$out/cpp" "$out/rust"
 mkdir -p "$out/cpp" "$out/rust"
 

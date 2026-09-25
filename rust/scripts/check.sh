@@ -3,6 +3,8 @@
 #   1. rustfmt        2. clippy -D warnings        3. unit/integration tests
 #   4. real-file tests (`real_*`, #[ignore]) against copied AiM MP4s
 #   5. byte parity against the C++ oracle CLI, when it has been built
+# An exported CARGO_TARGET_DIR is honoured throughout (parity/run.sh runs the
+# CLI from it); the oracle always lives in rust/target/oracle.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 

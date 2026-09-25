@@ -29,6 +29,7 @@ authority for generic Qt 6 practice. Route work to them:
 | CMake targets, QML modules, resources | `qt-cmake-project` |
 | Auditing Qt C++ | `qt-cpp-review` |
 | Writing / running Qt Quick tests | `qt-qml-test`, `qt-qml-test-run` |
+| Anything in the GPUI port (`rust/`, `gpui_kit::*`) | `gpui-kit`, then `gpui-kit-design-guides` for visible surfaces (see `rust/AGENTS.md`) |
 
 Qt's own documentation MCP is wired in `.mcp.json` (`qt-docs`, tools
 `qt_documentation_search` / `qt_documentation_read`). Prefer it over web search

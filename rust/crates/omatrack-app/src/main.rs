@@ -1,44 +1,15 @@
-use gpui_kit::{
-    AppContext, Context, IntoElement, ParentElement, Render, Styled, Window, WindowOptions,
-};
-use gpui_omarchy::{ActiveTheme, ButtonVariant, button, focus_scope, panel};
-
-struct Hello {
-    clicks: usize,
-}
-
-impl Render for Hello {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        focus_scope("hello")
-            .size_full()
-            .bg(cx.omarchy().background)
-            .child(
-                panel("Welcome to Omarchy", cx).child(
-                    button(
-                        "hello",
-                        format!("Clicked {} times", self.clicks),
-                        ButtonVariant::Primary,
-                        cx,
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.clicks += 1;
-                        cx.notify();
-                    })),
-                ),
-            )
-    }
-}
+//! `omatrack2`: the Omatrack 2.0 workstation.
+//!
+//! A headless command (`parse`, `unify`, `corners`, `compare`) as the first
+//! argument runs exactly as `omatrack-cli` would and exits before any window
+//! system is touched; anything else starts the GPUI application.
 
 fn main() {
-    // Icons are read through the asset source, so register the bundle.
-    gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
-        .run(|cx| {
-            gpui_omarchy::init(cx);
-            cx.open_window(WindowOptions::default(), |_, cx| {
-                cx.new(|_| Hello { clicks: 0 })
-            })
-            .expect("open window");
-            cx.activate(true);
-        });
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if let Some(command) = args.get(1)
+        && omatrack_cli::is_command(command)
+    {
+        std::process::exit(omatrack_cli::run(&args[1..], &args[0]));
+    }
+    omatrack_app::run();
 }

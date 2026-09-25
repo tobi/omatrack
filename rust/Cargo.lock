@@ -2494,19 +2494,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpui-omarchy"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e0cebe18129f1d98eede90b13f4766f7cec5486458833523696629b6acbf9f2"
-dependencies = [
- "async-channel",
- "chrono",
- "gpui-kit",
- "notify",
- "toml 0.8.23",
-]
-
-[[package]]
 name = "gpui-pre"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3860,6 +3847,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
+name = "libmpv2-sys"
+version = "4.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edb32cabe7176b7d270b0dca6ff418b75187ae8d3854423e3d06fbff376841e4"
+
+[[package]]
 name = "libredox"
 version = "0.1.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4237,9 +4230,11 @@ dependencies = [
  "gpui-kit",
  "image",
  "libc",
+ "libmpv2-sys",
  "log",
  "pkg-config",
  "smallvec",
+ "tempfile",
 ]
 
 [[package]]
@@ -4899,7 +4894,6 @@ dependencies = [
  "async-channel",
  "env_logger",
  "gpui-kit",
- "gpui-omarchy",
  "image",
  "log",
  "mpv-player",
@@ -4912,6 +4906,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "smallvec",
+ "tempfile",
 ]
 
 [[package]]
@@ -4937,6 +4932,7 @@ dependencies = [
  "serde",
  "serde_json",
  "telemetry-format",
+ "tempfile",
  "thiserror 2.0.20",
 ]
 
@@ -4945,11 +4941,13 @@ name = "omatrack-library"
 version = "2.0.0-dev"
 dependencies = [
  "blake3",
+ "jiff",
  "log",
  "omatrack-core",
  "serde",
  "serde_json",
  "serde_yaml",
+ "tempfile",
  "thiserror 2.0.20",
  "walkdir",
 ]
@@ -4959,7 +4957,6 @@ name = "omatrack-trace"
 version = "2.0.0-dev"
 dependencies = [
  "gpui-kit",
- "gpui-omarchy",
  "log",
  "omatrack-core",
  "smallvec",
@@ -4969,11 +4966,15 @@ dependencies = [
 name = "omatrack-ui"
 version = "2.0.0-dev"
 dependencies = [
+ "async-channel",
  "gpui-kit",
- "gpui-omarchy",
  "log",
+ "notify",
  "omatrack-core",
+ "serde",
  "smallvec",
+ "tempfile",
+ "toml 0.8.23",
 ]
 
 [[package]]
