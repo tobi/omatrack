@@ -3,23 +3,32 @@
 //! One normalized analytical truth for every telemetry format: recordings
 //! are opened through the pinned `motorsport-telemetry-rs` parser crates,
 //! mapped onto standard channels, split into classified laps and unified
-//! into the canonical 50 Hz [`UnifiedLap`].
+//! into the canonical 50 Hz [`UnifiedLap`]. Alignment, delta and corner
+//! analysis build on that one model so traces, readouts and video agree.
 //!
 //! No GPUI, no I/O beyond opening the recording: the CLI, the tests and the
 //! app all run exactly this code.
 
+pub mod alignment;
+pub mod atlas_spatial;
 pub mod cfmt;
+pub mod comparison;
+pub mod corners;
 pub mod laps;
 pub mod mapping;
 pub mod meta;
 pub mod monotonic;
 pub mod num;
+pub mod overlay;
+pub mod playback;
 pub mod recording;
 pub mod report;
 mod stopped;
+pub mod track;
 pub mod unify;
 pub mod video_clock;
 
+pub use comparison::Comparison;
 pub use laps::{Lap, LapKind, classify_laps, fastest_lap_index, format_lap_time};
 pub use mapping::{ChannelMapping, ChannelOverrides};
 pub use recording::{OpenError, RawChannel, Recording};
