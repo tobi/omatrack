@@ -1,0 +1,574 @@
+//! The data a trace stack draws: an immutable, `Arc`-shared snapshot built
+//! off the UI thread by the session owner.
+//!
+//! A scene holds sampled arrays on the primary lap's 50 Hz grid (lap
+//! fraction `i / (n - 1)`), plus the reference arrays on the reference lap's
+//! own grid. The reference is drawn through the shared [`FractionMap`]
+//! evaluated per device column: every lane, the cursor readouts, the delta
+//! and the video use the same map. A scene's generation is allocated by the
+//! scene itself, fresh for every construction and every `with_*` change, so
+//! geometry caches can key on it (never on colours) without a caller able to
+//! reuse one for different data.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use gpui_kit::{Hsla, SharedString};
+
+use crate::layout::{LaneSizing, lane_height_boost};
+use crate::scale::value_at_fraction;
+
+/// Primary lap fraction → reference lap fraction.
+pub trait FractionMap: Send + Sync {
+    fn reference_fraction(&self, primary: f64) -> f64;
+}
+
+impl FractionMap for omatrack_core::Comparison {
+    fn reference_fraction(&self, primary: f64) -> f64 {
+        self.compare_fraction_for_primary_fraction(primary)
+    }
+}
+
+/// How a lane draws its channel.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum LaneKind {
+    #[default]
+    Line,
+    /// Line plus a gradient fill fading to a transparent baseline.
+    Area,
+    /// Held values (gear): horizontal then vertical.
+    Step,
+    /// Cumulative Δt with a gain/loss diverging fill and a zero line.
+    Delta,
+}
+
+/// Vertical value range of a lane.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct YRange {
+    pub min: f64,
+    pub max: f64,
+}
+
+impl Default for YRange {
+    fn default() -> Self {
+        Self { min: 0.0, max: 1.0 }
+    }
+}
+
+impl YRange {
+    pub fn new(min: f64, max: f64) -> Self {
+        if min.is_finite() && max.is_finite() && max > min {
+            Self { min, max }
+        } else {
+            Self::default()
+        }
+    }
+
+    pub fn span(&self) -> f64 {
+        (self.max - self.min).max(1e-12)
+    }
+
+    /// Auto range over finite samples of both laps: symmetric about zero, or
+    /// padded by 6% (port of `TraceLaneLayout::rangeFor`).
+    pub fn auto(primary: &[f64], reference: Option<&[f64]>, symmetric: bool) -> Self {
+        let mut min = f64::INFINITY;
+        let mut max = f64::NEG_INFINITY;
+        for value in primary.iter().chain(reference.unwrap_or(&[]).iter()) {
+            if value.is_finite() {
+                min = min.min(*value);
+                max = max.max(*value);
+            }
+        }
+        if !(max > min) {
+            if min.is_finite() && !symmetric {
+                return Self::new(min - 0.5, min + 0.5);
+            }
+            min = 0.0;
+            max = 1.0;
+        }
+        if symmetric {
+            let magnitude = min.abs().max(max.abs());
+            if magnitude < 1e-6 {
+                return Self::new(-1.0, 1.0);
+            }
+            return Self::new(-magnitude, magnitude);
+        }
+        let padding = (max - min) * 0.06;
+        Self::new(min - padding, max + padding)
+    }
+}
+
+/// One channel of the stack.
+#[derive(Clone)]
+#[non_exhaustive]
+pub struct LaneSeries {
+    /// Stable channel key (`speed`, `raw:Oil Temp`, `delta`, …).
+    pub key: SharedString,
+    pub title: SharedString,
+    pub unit: SharedString,
+    pub kind: LaneKind,
+    /// Primary lap samples on its 50 Hz grid.
+    pub primary: Arc<[f64]>,
+    /// Reference lap samples on the reference grid, drawn through the map.
+    pub reference: Option<Arc<[f64]>>,
+    pub y_range: YRange,
+    /// Neighbouring primary laps, drawn faintly when the viewport runs past
+    /// the lap (focused corner near start/finish).
+    pub previous: Option<Arc<[f64]>>,
+    pub next: Option<Arc<[f64]>>,
+}
+
+impl LaneSeries {
+    pub fn new(
+        key: impl Into<SharedString>,
+        title: impl Into<SharedString>,
+        kind: LaneKind,
+        primary: Arc<[f64]>,
+    ) -> Self {
+        let y_range = YRange::auto(&primary, None, kind == LaneKind::Delta);
+        Self {
+            key: key.into(),
+            title: title.into(),
+            unit: SharedString::default(),
+            kind,
+            primary,
+            reference: None,
+            y_range,
+            previous: None,
+            next: None,
+        }
+    }
+
+    pub fn with_unit(mut self, unit: impl Into<SharedString>) -> Self {
+        self.unit = unit.into();
+        self
+    }
+
+    /// Set the reference and re-derive an auto range over both laps.
+    pub fn with_reference(mut self, reference: Option<Arc<[f64]>>) -> Self {
+        self.y_range = YRange::auto(
+            &self.primary,
+            reference.as_deref(),
+            self.kind == LaneKind::Delta,
+        );
+        self.reference = reference;
+        self
+    }
+
+    pub fn with_y_range(mut self, range: YRange) -> Self {
+        self.y_range = range;
+        self
+    }
+
+    pub fn with_neighbours(
+        mut self,
+        previous: Option<Arc<[f64]>>,
+        next: Option<Arc<[f64]>>,
+    ) -> Self {
+        self.previous = previous;
+        self.next = next;
+        self
+    }
+
+    /// Values at a primary lap fraction: primary, reference through `map`,
+    /// and their difference. Held (step) values use the sample in force.
+    pub fn readout(&self, fraction: f64, map: Option<&dyn FractionMap>) -> Readout {
+        let sample = |values: &[f64], at: f64| -> f64 {
+            if self.kind == LaneKind::Step {
+                if values.is_empty() {
+                    return f64::NAN;
+                }
+                let last = values.len() - 1;
+                let index = (at.clamp(0.0, 1.0) * last as f64 + 1e-9).floor() as usize;
+                values[index.min(last)]
+            } else {
+                value_at_fraction(values, at)
+            }
+        };
+        if !(0.0..=1.0).contains(&fraction) {
+            return Readout::default();
+        }
+        let primary = sample(&self.primary, fraction);
+        let reference = match (&self.reference, self.kind) {
+            (Some(values), kind) if kind != LaneKind::Delta => {
+                let at = map.map_or(fraction, |m| m.reference_fraction(fraction));
+                sample(values, at)
+            }
+            _ => f64::NAN,
+        };
+        Readout {
+            primary,
+            reference,
+            delta: primary - reference,
+        }
+    }
+}
+
+/// Values of one channel at the cursor. NaN when unavailable.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct Readout {
+    pub primary: f64,
+    pub reference: f64,
+    pub delta: f64,
+}
+
+impl Default for Readout {
+    fn default() -> Self {
+        Self {
+            primary: f64::NAN,
+            reference: f64::NAN,
+            delta: f64::NAN,
+        }
+    }
+}
+
+/// A corner zone on the primary lap.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct CornerBand {
+    /// Stable corner id (the corner number of the track layout).
+    pub id: u32,
+    /// Short label, e.g. "T5".
+    pub label: SharedString,
+    pub start: f64,
+    pub end: f64,
+}
+
+impl CornerBand {
+    pub fn new(id: u32, label: impl Into<SharedString>, start: f64, end: f64) -> Self {
+        Self {
+            id,
+            label: label.into(),
+            start,
+            end,
+        }
+    }
+}
+
+/// A named group of corners (a complex), drawn as a bracket.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct ComplexBand {
+    pub name: SharedString,
+    pub start: f64,
+    pub end: f64,
+}
+
+impl ComplexBand {
+    pub fn new(name: impl Into<SharedString>, start: f64, end: f64) -> Self {
+        Self {
+            name: name.into(),
+            start,
+            end,
+        }
+    }
+}
+
+/// Source of scene generations; 0 is left to the empty default scene.
+static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+fn next_generation() -> u64 {
+    NEXT_GENERATION.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Everything a trace stack draws for one primary/reference pair.
+///
+/// Immutable once built: construct it with [`TraceScene::new`] and the
+/// `with_*` builders, share it as an `Arc`, and build a new scene for new
+/// data (a lap swap, a new reference, a manual offset's new map). Each
+/// builder step allocates a new [`TraceScene::generation`].
+#[derive(Clone, Default)]
+#[non_exhaustive]
+pub struct TraceScene {
+    generation: u64,
+    pub(crate) lanes: Vec<LaneSeries>,
+    pub(crate) map: Option<Arc<dyn FractionMap>>,
+    /// Primary lap distance (m) and time (s), for the axis.
+    pub(crate) distance_m: Arc<[f64]>,
+    pub(crate) time_s: Arc<[f64]>,
+    pub(crate) corners: Vec<CornerBand>,
+    pub(crate) complexes: Vec<ComplexBand>,
+    /// Labels of the neighbouring laps shown past the lap edges ("L8").
+    pub(crate) previous_label: Option<SharedString>,
+    pub(crate) next_label: Option<SharedString>,
+}
+
+impl TraceScene {
+    /// A scene on the primary lap's distance (m) and time (s) arrays.
+    pub fn new(distance_m: Arc<[f64]>, time_s: Arc<[f64]>) -> Self {
+        Self {
+            generation: next_generation(),
+            distance_m,
+            time_s,
+            ..Self::default()
+        }
+    }
+    pub fn with_lanes(mut self, lanes: Vec<LaneSeries>) -> Self {
+        self.lanes = lanes;
+        self.generation = next_generation();
+        self
+    }
+    pub fn with_map(mut self, map: Option<Arc<dyn FractionMap>>) -> Self {
+        self.map = map;
+        self.generation = next_generation();
+        self
+    }
+    pub fn with_corners(mut self, corners: Vec<CornerBand>, complexes: Vec<ComplexBand>) -> Self {
+        self.corners = corners;
+        self.complexes = complexes;
+        self.generation = next_generation();
+        self
+    }
+    pub fn with_neighbour_labels(
+        mut self,
+        previous: Option<SharedString>,
+        next: Option<SharedString>,
+    ) -> Self {
+        self.previous_label = previous;
+        self.next_label = next;
+        self.generation = next_generation();
+        self
+    }
+
+    /// Identity of this scene's contents: unique per construction and
+    /// builder step, shared only by clones. Geometry caches key on it.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn lanes(&self) -> &[LaneSeries] {
+        &self.lanes
+    }
+
+    /// The primary → reference fraction map, if a reference is shown.
+    pub fn map(&self) -> Option<&dyn FractionMap> {
+        self.map.as_deref()
+    }
+
+    /// Primary lap distance (m) on the lap's sample grid.
+    pub fn distance_m(&self) -> &Arc<[f64]> {
+        &self.distance_m
+    }
+
+    /// Primary lap time (s) on the lap's sample grid.
+    pub fn time_s(&self) -> &Arc<[f64]> {
+        &self.time_s
+    }
+
+    pub fn corners(&self) -> &[CornerBand] {
+        &self.corners
+    }
+
+    pub fn complexes(&self) -> &[ComplexBand] {
+        &self.complexes
+    }
+
+    pub fn previous_label(&self) -> Option<&SharedString> {
+        self.previous_label.as_ref()
+    }
+
+    pub fn next_label(&self) -> Option<&SharedString> {
+        self.next_label.as_ref()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.lanes.iter().all(|lane| lane.primary.len() < 2)
+    }
+
+    pub fn lane(&self, key: &str) -> Option<&LaneSeries> {
+        self.lanes.iter().find(|lane| lane.key.as_ref() == key)
+    }
+
+    /// Reference fraction for a primary fraction (identity without a map).
+    pub fn reference_fraction(&self, primary: f64) -> f64 {
+        self.map
+            .as_ref()
+            .map_or(primary, |map| map.reference_fraction(primary))
+    }
+
+    /// Lap distance (m, from the lap start) at a primary fraction.
+    pub fn distance_at(&self, fraction: f64) -> f64 {
+        match self.distance_m.first() {
+            Some(origin) => value_at_fraction(&self.distance_m, fraction) - origin,
+            None => f64::NAN,
+        }
+    }
+
+    /// Lap time (s, from the lap start) at a primary fraction.
+    pub fn time_at(&self, fraction: f64) -> f64 {
+        match self.time_s.first() {
+            Some(origin) => value_at_fraction(&self.time_s, fraction) - origin,
+            None => f64::NAN,
+        }
+    }
+}
+
+/// Per-channel appearance and sizing (`channels.<key>.*` in omatrack.yml).
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct LaneStyle {
+    /// Primary-lap colour override (user data).
+    pub color: Option<Hsla>,
+    /// Reference-lap colour override (user data).
+    pub reference_color: Option<Hsla>,
+    /// Stroke width in logical pixels (0.5–4).
+    pub stroke_width: f32,
+    /// Peak fill alpha (0–1); `None` uses the lane kind's default.
+    pub fill_opacity: Option<f32>,
+    pub sizing: LaneSizing,
+}
+
+impl Default for LaneStyle {
+    fn default() -> Self {
+        Self {
+            color: None,
+            reference_color: None,
+            stroke_width: 1.25,
+            fill_opacity: None,
+            sizing: LaneSizing::default(),
+        }
+    }
+}
+
+impl LaneStyle {
+    /// Omatrack defaults for a channel: speed takes half the area, pedals a
+    /// shared 30% lane (brake overlays throttle), gear 5%.
+    pub fn default_for(key: &str) -> Self {
+        let percent = match key {
+            "speed" => 50.0,
+            "throttle" | "brake" => 30.0,
+            "gear" => 5.0,
+            "delta" => 15.0,
+            _ => 20.0,
+        };
+        // FIT multiplies the weight by the height share itself.
+        let weight = lane_height_boost(key);
+        Self {
+            sizing: LaneSizing::default()
+                .with_height_percent(percent)
+                .with_weight(weight)
+                .combine_with_previous(key == "brake"),
+            ..Self::default()
+        }
+    }
+
+    pub fn with_color(mut self, color: Option<Hsla>) -> Self {
+        self.color = color;
+        self
+    }
+    pub fn with_reference_color(mut self, color: Option<Hsla>) -> Self {
+        self.reference_color = color;
+        self
+    }
+    pub fn with_stroke_width(mut self, width: f32) -> Self {
+        self.stroke_width = width.clamp(0.5, 4.0);
+        self
+    }
+    pub fn with_fill_opacity(mut self, opacity: Option<f32>) -> Self {
+        self.fill_opacity = opacity.map(|o| o.clamp(0.0, 1.0));
+        self
+    }
+    pub fn with_sizing(mut self, sizing: LaneSizing) -> Self {
+        self.sizing = sizing;
+        self
+    }
+
+    /// Peak fill alpha for a lane kind.
+    pub fn fill_for(&self, kind: LaneKind, key: &str) -> f32 {
+        self.fill_opacity.unwrap_or(match kind {
+            LaneKind::Delta => 0.2,
+            LaneKind::Area => 0.28,
+            _ if matches!(key, "throttle" | "brake" | "clutch") => 0.28,
+            _ => 0.0,
+        })
+    }
+}
+
+/// Styles by channel key; missing keys use [`LaneStyle::default_for`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LaneStyles {
+    styles: HashMap<SharedString, LaneStyle>,
+}
+
+impl LaneStyles {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with(mut self, key: impl Into<SharedString>, style: LaneStyle) -> Self {
+        self.styles.insert(key.into(), style);
+        self
+    }
+    pub fn set(&mut self, key: impl Into<SharedString>, style: LaneStyle) {
+        self.styles.insert(key.into(), style);
+    }
+    pub fn get(&self, key: &str) -> LaneStyle {
+        self.styles
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| LaneStyle::default_for(key))
+    }
+    pub fn get_mut(&mut self, key: &str) -> &mut LaneStyle {
+        self.styles
+            .entry(SharedString::from(key.to_string()))
+            .or_insert_with(|| LaneStyle::default_for(key))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Shift(f64);
+    impl FractionMap for Shift {
+        fn reference_fraction(&self, primary: f64) -> f64 {
+            (primary + self.0).clamp(0.0, 1.0)
+        }
+    }
+
+    #[test]
+    fn readout_goes_through_the_map() {
+        let primary: Arc<[f64]> = (0..=100).map(|i| i as f64).collect();
+        let reference: Arc<[f64]> = (0..=100).map(|i| i as f64 * 2.0).collect();
+        let lane = LaneSeries::new("speed", "Speed", LaneKind::Line, primary)
+            .with_reference(Some(reference));
+        let r = lane.readout(0.5, Some(&Shift(0.1)));
+        assert!((r.primary - 50.0).abs() < 1e-9);
+        assert!((r.reference - 120.0).abs() < 1e-9);
+        assert!((r.delta + 70.0).abs() < 1e-9);
+        assert!(lane.readout(1.5, None).primary.is_nan());
+    }
+
+    #[test]
+    fn step_readout_holds_the_value() {
+        let gear: Arc<[f64]> = Arc::from(vec![1.0, 2.0, 3.0]);
+        let lane = LaneSeries::new("gear", "Gear", LaneKind::Step, gear);
+        assert_eq!(lane.readout(0.49, None).primary, 1.0);
+        assert_eq!(lane.readout(0.5, None).primary, 2.0);
+        assert_eq!(lane.readout(1.0, None).primary, 3.0);
+    }
+
+    #[test]
+    fn auto_ranges() {
+        let r = YRange::auto(&[0.0, 10.0, f64::NAN], None, false);
+        assert!((r.min + 0.6).abs() < 1e-9 && (r.max - 10.6).abs() < 1e-9);
+        let s = YRange::auto(&[-2.0, 1.0], None, true);
+        assert_eq!((s.min, s.max), (-2.0, 2.0));
+        let flat = YRange::auto(&[3.0, 3.0], None, false);
+        assert!(flat.max > flat.min);
+    }
+
+    #[test]
+    fn default_styles() {
+        let styles = LaneStyles::new();
+        assert!(styles.get("brake").sizing.combine_with_previous);
+        assert_eq!(styles.get("speed").sizing.height_percent, 50.0);
+        assert_eq!(
+            styles.get("throttle").fill_for(LaneKind::Line, "throttle"),
+            0.28
+        );
+        assert_eq!(styles.get("speed").fill_for(LaneKind::Line, "speed"), 0.0);
+    }
+}
