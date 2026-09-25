@@ -22,5 +22,8 @@ thiserror.workspace = true
 libc.workspace = true
 log.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true
