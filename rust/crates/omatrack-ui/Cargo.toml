@@ -1,6 +1,6 @@
 [package]
 name = "omatrack-ui"
-description = "First-party Omatrack components in the Omarchy idiom: palette, data grid, header/status bars, lap strip, track map."
+description = "Omatrack UI on gpui-kit components: Omarchy theme bridge and first-party domain components (role chips, readouts, lap strip, video HUD)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,12 +9,16 @@ rust-version.workspace = true
 [dependencies]
 omatrack-core.workspace = true
 gpui-kit.workspace = true
-gpui-omarchy.workspace = true
 smallvec.workspace = true
 log.workspace = true
+notify.workspace = true
+toml.workspace = true
+async-channel.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
 
 [lints]
 workspace = true
