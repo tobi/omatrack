@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui_kit::{Hsla, SharedString};
 
-use crate::layout::{LaneSizing, lane_height_boost};
+use crate::layout::{LaneSizing, default_height_percent, lane_height_boost};
 use crate::scale::value_at_fraction;
 
 /// Primary lap fraction → reference lap fraction.
@@ -70,8 +70,10 @@ impl YRange {
         (self.max - self.min).max(1e-12)
     }
 
-    /// Auto range over finite samples of both laps: symmetric about zero, or
-    /// padded by 6% (port of `TraceLaneLayout::rangeFor`).
+    /// Auto range over finite samples of both laps: padded by 6% (port of
+    /// `TraceLaneLayout::rangeFor`), or symmetric about zero with 8% headroom
+    /// rounded up to a readable bound ([`nice_ceiling`]), so a Δ lane's
+    /// scale reads as "±0.5 s" rather than "±0.4371 s".
     pub fn auto(primary: &[f64], reference: Option<&[f64]>, symmetric: bool) -> Self {
         let mut min = f64::INFINITY;
         let mut max = f64::NEG_INFINITY;
@@ -93,11 +95,40 @@ impl YRange {
             if magnitude < 1e-6 {
                 return Self::new(-1.0, 1.0);
             }
-            return Self::new(-magnitude, magnitude);
+            let bound = nice_ceiling(magnitude * SYMMETRIC_HEADROOM);
+            return Self::new(-bound, bound);
         }
         let padding = (max - min) * 0.06;
         Self::new(min - padding, max + padding)
     }
+}
+
+/// Default peak fill opacities (the fill fades to nothing at the baseline).
+/// Pedal and area fills stay light so the reference outline reads through
+/// them; the Δ gain/loss fill is the lane's message and is stronger.
+pub const PEDAL_FILL: f32 = 0.16;
+pub const AREA_FILL: f32 = 0.16;
+pub const DELTA_FILL: f32 = 0.42;
+
+/// Headroom of a symmetric range above its largest magnitude.
+const SYMMETRIC_HEADROOM: f64 = 1.08;
+
+/// The smallest 1, 1.5, 2, 2.5, 3, 4, 5, 6 or 8 × 10^k at or above `value`
+/// (positive, finite): readable, and never wastes more than a third of the
+/// lane.
+pub fn nice_ceiling(value: f64) -> f64 {
+    if !value.is_finite() || value <= 0.0 {
+        return 1.0;
+    }
+    let decade = 10f64.powf(value.log10().floor());
+    for step in [1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0] {
+        let bound = step * decade;
+        // Tolerate the rounding of `powf` at exact steps.
+        if bound >= value * (1.0 - 1e-12) {
+            return bound;
+        }
+    }
+    10.0 * decade
 }
 
 /// One channel of the stack.
@@ -434,16 +465,10 @@ impl Default for LaneStyle {
 }
 
 impl LaneStyle {
-    /// Omatrack defaults for a channel: speed takes half the area, pedals a
-    /// shared 30% lane (brake overlays throttle), gear 5%.
+    /// Omatrack defaults for a channel: [`default_height_percent`] shares,
+    /// brake overlays throttle.
     pub fn default_for(key: &str) -> Self {
-        let percent = match key {
-            "speed" => 50.0,
-            "throttle" | "brake" => 30.0,
-            "gear" => 5.0,
-            "delta" => 15.0,
-            _ => 20.0,
-        };
+        let percent = default_height_percent(key);
         // FIT multiplies the weight by the height share itself.
         let weight = lane_height_boost(key);
         Self {
@@ -479,9 +504,9 @@ impl LaneStyle {
     /// Peak fill alpha for a lane kind.
     pub fn fill_for(&self, kind: LaneKind, key: &str) -> f32 {
         self.fill_opacity.unwrap_or(match kind {
-            LaneKind::Delta => 0.2,
-            LaneKind::Area => 0.28,
-            _ if matches!(key, "throttle" | "brake" | "clutch") => 0.28,
+            LaneKind::Delta => DELTA_FILL,
+            LaneKind::Area => AREA_FILL,
+            _ if matches!(key, "throttle" | "brake" | "clutch") => PEDAL_FILL,
             _ => 0.0,
         })
     }
@@ -555,19 +580,41 @@ mod tests {
         let r = YRange::auto(&[0.0, 10.0, f64::NAN], None, false);
         assert!((r.min + 0.6).abs() < 1e-9 && (r.max - 10.6).abs() < 1e-9);
         let s = YRange::auto(&[-2.0, 1.0], None, true);
-        assert_eq!((s.min, s.max), (-2.0, 2.0));
+        assert_eq!((s.min, s.max), (-2.5, 2.5));
+        let small = YRange::auto(&[-0.12, 0.431], None, true);
+        assert!((small.max - 0.5).abs() < 1e-12 && (small.min + 0.5).abs() < 1e-12);
         let flat = YRange::auto(&[3.0, 3.0], None, false);
         assert!(flat.max > flat.min);
+    }
+
+    #[test]
+    fn nice_ceilings() {
+        for (value, bound) in [
+            (0.9, 1.0),
+            (1.0, 1.0),
+            (1.3, 1.5),
+            (2.2, 2.5),
+            (2.64, 3.0),
+            (4.5, 5.0),
+        ] {
+            assert!((nice_ceiling(value) - bound).abs() < 1e-12, "{value}");
+        }
+        assert!((nice_ceiling(0.037) - 0.04).abs() < 1e-12);
+        assert!((nice_ceiling(8.5) - 10.0).abs() < 1e-12);
+        assert_eq!(nice_ceiling(f64::NAN), 1.0);
     }
 
     #[test]
     fn default_styles() {
         let styles = LaneStyles::new();
         assert!(styles.get("brake").sizing.combine_with_previous);
-        assert_eq!(styles.get("speed").sizing.height_percent, 50.0);
+        assert_eq!(
+            styles.get("speed").sizing.height_percent,
+            default_height_percent("speed")
+        );
         assert_eq!(
             styles.get("throttle").fill_for(LaneKind::Line, "throttle"),
-            0.28
+            PEDAL_FILL
         );
         assert_eq!(styles.get("speed").fill_for(LaneKind::Line, "speed"), 0.0);
     }

@@ -36,6 +36,8 @@ pub struct TracePalette {
     pub grid: Hsla,
     /// Lane separators and the axis line.
     pub grid_strong: Hsla,
+    /// The Δ lane's zero line (level with the reference lap).
+    pub zero: Hsla,
     /// Axis and chrome labels.
     pub label: Hsla,
     /// The shared cursor.
@@ -71,12 +73,13 @@ impl TracePalette {
             loss: opaque(theme.danger),
             grid,
             grid_strong: opaque(theme.border),
+            zero: opaque(theme.muted_foreground.opacity(0.55)),
             label: theme.muted_foreground,
             cursor: theme.foreground,
-            hover: theme.muted_foreground.opacity(0.6),
+            hover: theme.muted_foreground.opacity(0.9),
             selection: theme.primary.opacity(0.14),
             corner_band: theme.foreground.opacity(0.035),
-            corner_edge: theme.muted_foreground.opacity(0.35),
+            corner_edge: theme.muted_foreground.opacity(0.2),
             mask: background.opacity(0.62),
             dim: background.opacity(0.6),
             delta_line: opaque(theme.foreground.opacity(0.85)),

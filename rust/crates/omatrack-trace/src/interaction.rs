@@ -753,7 +753,7 @@ mod tests {
         assert_eq!(
             effects.as_slice(),
             &[Effect::ResizeLanes {
-                heights: vec![300.0, 20.0, 20.0, 60.0]
+                heights: vec![268.0, 44.0, 44.0, 44.0]
             }]
         );
         // Wheel is inert while resizing.

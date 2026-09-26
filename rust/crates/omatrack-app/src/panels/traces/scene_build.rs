@@ -38,9 +38,6 @@ const DEFAULT_VISIBLE: &[&str] = &["speed", "throttle", "brake", "gear", "steeri
 /// Never a lane: the x-axis itself, and raw GPS coordinates.
 const NOT_A_LANE: &[&str] = &["distance", "gps_lat", "gps_lon"];
 
-/// Height share of the Δ lane, percent, unless configured.
-const DELTA_HEIGHT_PERCENT: f64 = 15.0;
-
 /// An RPM channel of any provider (`rpm`, `raw:RPM`, `raw:Engine RPM`).
 fn is_rpm(key: &str) -> bool {
     key.to_ascii_lowercase().contains("rpm")
@@ -259,22 +256,19 @@ fn unify_neighbours(primary: &LoadedLap) -> Neighbours {
 ///
 /// Visibility: an explicit `channels.<key>.visible` wins. Otherwise Δ,
 /// the leading channels and RPM show, everything else is opt in. Δ also
-/// defaults to a 15% share (`height_percent`) and a pinned lane.
+/// defaults to a pinned lane. Heights and fills come from the library's
+/// channel defaults (the same numbers the Channels panel shows).
 pub fn lane_style(config: &Config, key: &str, pinned: Option<bool>) -> LaneStyle {
     let style: ChannelStyle = config.channel_style(key);
     let configured = config.channels.get(key);
     let visible = configured
         .and_then(|channel| channel.visible)
         .unwrap_or_else(|| key == DELTA_KEY || DEFAULT_VISIBLE.contains(&key) || is_rpm(key));
-    let height_percent = match (key, configured.and_then(|c| c.height_percent)) {
-        (DELTA_KEY, None) => DELTA_HEIGHT_PERCENT,
-        _ => style.height_percent,
-    };
     let pinned = pinned.unwrap_or(key == DELTA_KEY);
     let sizing = LaneSizing::default()
         .visible(visible)
         .with_weight(style.weight * lane_height_boost(key))
-        .with_height_percent(height_percent)
+        .with_height_percent(style.height_percent)
         .combine_with_previous(style.combine_with_previous)
         .pinned(pinned);
     LaneStyle::default()
@@ -403,7 +397,11 @@ mod tests {
         let config = Config::default();
         let delta = lane_style(&config, DELTA_KEY, None);
         assert!(delta.sizing.visible && delta.sizing.pinned);
-        assert_eq!(delta.sizing.height_percent, DELTA_HEIGHT_PERCENT);
+        // A first-class lane: as tall as steering, above the minimum share.
+        assert_eq!(
+            delta.sizing.height_percent,
+            omatrack_trace::layout::default_height_percent(DELTA_KEY)
+        );
         assert!(!lane_style(&config, DELTA_KEY, Some(false)).sizing.pinned);
         let hidden = Config::from_yaml_str("channels:\n  delta:\n    visible: false\n").unwrap();
         assert!(!is_lane_visible(&hidden, DELTA_KEY));

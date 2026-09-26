@@ -1,9 +1,11 @@
 //! Lane sizing and lane layout: a port of `TraceLaneSizing.h` and the
 //! geometry half of `TraceLaneLayout.cpp`, plus pinned lanes.
 //!
-//! FIT distributes positive finite weights over the available height with a
-//! readable minimum; manual mode uses exact percentages of the trace area and
-//! scrolls when they exceed it. Consecutive visible sample channels flagged
+//! FIT distributes positive finite weights over the available height above a
+//! readable minimum. When the minimums alone exceed the pane, every lane keeps
+//! the minimum and the scroll region overflows: a lane is never crushed below
+//! readable. Manual mode uses exact percentages of the trace area and scrolls
+//! when they exceed it. Consecutive visible sample channels flagged
 //! `combine_with_previous` share the previous lane (independent vertical
 //! scales). Hidden channels and overlay-group boundaries break that
 //! adjacency. Pinned lanes sit in a region above the scroll region and never
@@ -11,8 +13,26 @@
 
 use smallvec::SmallVec;
 
-/// Readable lane minimum in logical pixels (reduced when the pane is too small).
-pub const MIN_LANE_HEIGHT: f64 = 20.0;
+/// Readable lane minimum in logical pixels: the lane chrome (title and two
+/// readout lines) over a plot tall enough to read a shape. FIT never
+/// allocates less; lanes that do not fit scroll instead.
+pub const MIN_LANE_HEIGHT: f64 = 44.0;
+
+/// Default height share of a channel's lane, percent of the trace area,
+/// unless `channels.<key>.height_percent` is configured. In FIT these are the
+/// relative weights: speed leads, the pedals and Δ are first-class lanes, a
+/// held channel such as gear needs less.
+pub fn default_height_percent(key: &str) -> f64 {
+    match key {
+        "speed" => 34.0,
+        "throttle" | "brake" => 24.0,
+        "delta" => 20.0,
+        "steering" => 16.0,
+        "gear" => 9.0,
+        _ if key.to_ascii_lowercase().contains("rpm") => 14.0,
+        _ => 12.0,
+    }
+}
 
 /// A positive finite weight, or 1.
 pub fn valid_lane_weight(value: f64) -> f64 {
@@ -28,8 +48,9 @@ pub fn lane_height_boost(key: &str) -> f64 {
     if key == "speed" { 1.35 } else { 1.0 }
 }
 
-/// Proportional allocation with a readable minimum, reduced only when the
-/// pane cannot fit that minimum for every lane. Weights are normalized before
+/// Proportional allocation above the readable minimum. When the pane cannot
+/// fit the minimum for every lane, every lane gets the minimum and the sum
+/// exceeds `available` (the caller scrolls). Weights are normalized before
 /// summing so hand-edited, very large finite weights cannot overflow.
 pub fn fit_lane_heights(mut weights: Vec<f64>, available: f64) -> Vec<f64> {
     let mut heights = vec![0.0; weights.len()];
@@ -41,7 +62,11 @@ pub fn fit_lane_heights(mut weights: Vec<f64>, available: f64) -> Vec<f64> {
         *weight = valid_lane_weight(*weight);
         largest = largest.max(*weight);
     }
-    let floor = MIN_LANE_HEIGHT.min(available / weights.len() as f64);
+    let floor = MIN_LANE_HEIGHT;
+    if floor * weights.len() as f64 >= available {
+        heights.fill(floor);
+        return heights;
+    }
     let mut remaining = available;
     let mut total = 0.0;
     for i in 0..weights.len() {
@@ -361,6 +386,15 @@ pub fn layout_lanes(
         }
         layout.scroll_viewport = (available - layout.pinned_height).max(0.0);
         layout.scroll_content = y - layout.pinned_height;
+        // Lanes at their readable minimum that still do not fit scroll
+        // under the pinned region, exactly like manual mode.
+        let scroll = if scroll.is_finite() { scroll } else { 0.0 };
+        if layout.overflows() {
+            layout.scroll = scroll.clamp(0.0, layout.max_scroll());
+        }
+        for slot in layout.slots.iter_mut().filter(|slot| !slot.pinned) {
+            slot.y -= layout.scroll;
+        }
         return layout;
     }
 
@@ -426,14 +460,14 @@ mod tests {
     fn no_fixed_multiplier_cap() {
         assert_eq!(
             fit_lane_heights(vec![10000.0, 1.0, 1.0, 1.0], 600.0),
-            vec![540.0, 20.0, 20.0, 20.0]
+            vec![468.0, 44.0, 44.0, 44.0]
         );
     }
 
     #[test]
-    fn minimum_fits_small_panes() {
+    fn small_panes_keep_the_minimum_and_overflow() {
         for height in fit_lane_heights(vec![1.0, 100.0, 0.001], 30.0) {
-            assert!((height - 10.0).abs() < 1e-8);
+            assert!((height - MIN_LANE_HEIGHT).abs() < 1e-8);
         }
     }
 
@@ -441,7 +475,7 @@ mod tests {
     fn large_finite_weights_do_not_overflow() {
         assert_eq!(
             fit_lane_heights(vec![1e300, 1e300, 1.0], 420.0),
-            vec![200.0, 200.0, 20.0]
+            vec![188.0, 188.0, 44.0]
         );
     }
 
@@ -458,21 +492,21 @@ mod tests {
     #[test]
     fn divider_borrows_across_neighbours() {
         let original = [100.0, 100.0, 100.0, 100.0];
-        let heights = resize_lane_boundary(&original, 0, 200.0);
-        assert_eq!(heights, vec![300.0, 20.0, 20.0, 60.0]);
+        let heights = resize_lane_boundary(&original, 0, 100.0);
+        assert_eq!(heights, vec![200.0, 44.0, 56.0, 100.0]);
         assert_eq!(heights.iter().sum::<f64>(), 400.0);
         assert_eq!(original[0], 100.0);
         assert_eq!(
             resize_lane_boundary(&original, 0, 10000.0),
-            vec![340.0, 20.0, 20.0, 20.0]
+            vec![268.0, 44.0, 44.0, 44.0]
         );
     }
 
     #[test]
     fn last_lane_can_take_space_from_above() {
         assert_eq!(
-            resize_lane_boundary(&[100.0, 100.0, 100.0, 100.0], 2, -200.0),
-            vec![60.0, 20.0, 20.0, 300.0]
+            resize_lane_boundary(&[100.0, 100.0, 100.0, 100.0], 2, -100.0),
+            vec![100.0, 56.0, 44.0, 200.0]
         );
     }
 
@@ -583,5 +617,33 @@ mod tests {
         assert_eq!(fit.slots[0].root, 2);
         assert!((fit.slots.iter().map(|s| s.height).sum::<f64>() - 500.0).abs() < 1e-9);
         assert_eq!(fit.scroll, 0.0);
+    }
+
+    #[test]
+    fn fit_overflows_into_a_scroll_instead_of_crushing_lanes() {
+        let mut channels = vec![channel().pinned(true)];
+        channels.extend((0..6).map(|_| channel()));
+        // 7 lanes need 308 px at the minimum; the pane has 200.
+        let layout = layout_lanes(&channels, LayoutMode::default(), 200.0, 1_000.0);
+        assert!(layout.slots.iter().all(|s| s.height >= MIN_LANE_HEIGHT));
+        assert!(layout.overflows());
+        assert_eq!(layout.pinned_height, MIN_LANE_HEIGHT);
+        assert!((layout.max_scroll() - 108.0).abs() < 1e-9);
+        assert!((layout.scroll - 108.0).abs() < 1e-9);
+        // The pinned lane stays put; the scroll lanes move under it.
+        assert_eq!(layout.slots[0].y, 0.0);
+        assert!((layout.slots[1].y - (MIN_LANE_HEIGHT - 108.0)).abs() < 1e-9);
+        // A fitting pane never scrolls, whatever was requested.
+        let fits = layout_lanes(&channels, LayoutMode::default(), 700.0, 50.0);
+        assert!(!fits.overflows());
+        assert_eq!(fits.scroll, 0.0);
+    }
+
+    #[test]
+    fn default_heights_lead_with_speed_and_keep_gear_readable() {
+        assert!(default_height_percent("speed") > default_height_percent("throttle"));
+        assert!(default_height_percent("gear") < default_height_percent("steering"));
+        assert_eq!(default_height_percent("raw:Engine RPM"), 14.0);
+        assert_eq!(default_height_percent("damper_fl"), 12.0);
     }
 }

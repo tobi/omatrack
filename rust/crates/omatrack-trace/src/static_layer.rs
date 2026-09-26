@@ -317,19 +317,20 @@ impl Element for StaticLayerElement {
                         let gy = (y + 1.0 + (h - 2.0) * quarter as f32 / 4.0).round();
                         hline(window, gy, 0.0, width, palette.grid.opacity(0.45));
                     }
-                    // Zero line where the range crosses zero.
+                    // Zero line where the range crosses zero: solid for Δ
+                    // (it is the lane's reference: "level with the
+                    // reference lap"), dashed for other channels.
                     let range = root.y_range;
                     if range.min < 0.0 && range.max > 0.0 {
                         let zy = (y + 1.0 + (h - 2.0) * (range.max / range.span()) as f32).round();
-                        let color = if root.kind == LaneKind::Delta {
-                            palette.grid_strong
+                        if root.kind == LaneKind::Delta {
+                            hline(window, zy, 0.0, width, palette.zero);
                         } else {
-                            palette.grid
-                        };
-                        let mut x = 0.0;
-                        while x < width {
-                            hline(window, zy, x, (x + 4.0).min(width), color);
-                            x += 8.0;
+                            let mut x = 0.0;
+                            while x < width {
+                                hline(window, zy, x, (x + 4.0).min(width), palette.grid);
+                                x += 8.0;
+                            }
                         }
                     }
                     for (position, index) in slot.channels().enumerate() {
