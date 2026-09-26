@@ -89,10 +89,10 @@ crates stay GPUI-free.
 | [omatrack-core](rust/crates/omatrack-core) (no GPUI) | **[done]**, byte parity | Recording open via pinned `motorsport-telemetry-rs` (no C ABI), mapping, laps, 50 Hz `UnifiedLap`, alignment, delta, embedded Track Atlas, corners, playback rules, video clock, `ChannelProvider`, `session` (`load_lap`, `Analysis`) | UI, config, executors |
 | [omatrack-cli](rust/crates/omatrack-cli) (no GPUI) | **[done]** | `parse \| unify \| corners \| compare`, the headless command surface | A second analysis |
 | [omatrack-library](rust/crates/omatrack-library) (no GPUI) | **[done]** | Paths, `omatrack.yml`, `TRACK.yml`, metadata precedence, `Location`, index cache, catalog, recents | Analysis, rendering |
-| [omatrack-trace](rust/crates/omatrack-trace) | **[done]** decimate, scales, layout, mesh, lanes, overlay, `TraceStack`, `trace_bench`, corner ruler, track map, damper strip | Trace math and trace/map/damper elements | Session state, parsing |
+| [omatrack-trace](rust/crates/omatrack-trace) | **[done]** decimate, scales, layout, mesh, lanes, overlay, `TraceStack`, `trace_bench`, corner ruler, track map (slope and heat modes), damper strip | Trace math and trace/map/damper elements | Session state, parsing |
 | [mpv-player](rust/crates/mpv-player) | **[done]** | libmpv 2.5 player + `VideoView` (section 9) | Any Omatrack type |
 | [omatrack-ui](rust/crates/omatrack-ui) | **[done]** theme + bundled Inter / Geist Mono, type scale (`TypeScale`, tabular figures), `RoleChip`, `Readout`, `Swatch`, `LapStrip`, `VideoHud`, `DeltaText` | Omarchy loader, domain components on tokens | What the kit provides |
-| [omatrack-app](rust/crates/omatrack-app) (bin `omatrack2`) | **[done]** shell, state, workspace, panels, actions, keymap, `sync` (video), `preferences`, `dialogs` (metadata, `TRACK.yml`); **[plan]** e2e | Entities, workspace, panels, palette, video sync | Analysis, format branches |
+| [omatrack-app](rust/crates/omatrack-app) (bin `omatrack2`) | **[done]** shell, state, workspace, panels (incl. Where the time goes), actions, keymap, `sync` (video), `preferences`, `dialogs` (metadata, `TRACK.yml`); **[plan]** e2e | Entities, workspace, panels, palette, video sync | Analysis, format branches |
 
 Waves: 1 foundations **[done]**; 2 app backbone + domain components **[done]**;
 3 panels (traces, video sync, corners/laps/inspector/channels/map,
@@ -240,6 +240,10 @@ bug.
 A station-aligned cumulative time delta starting at zero, computed once in
 `comparison` from the selected map. The same cached array feeds the delta lane
 and every numeric delta (cursor, range, corner Δt, HUD). Nothing recomputes it.
+Two views derive from that array in `comparison`/`session`, never in a view:
+the loss rate (Δ per metre over ±`LOSS_RATE_HALF_WINDOW_M`, the heat map's
+input) and `Analysis::time_split` (corners = Δ summed over the union of corner
+zones, straights = the rest; they sum to the final delta).
 
 ### 6.6 Corner analysis via analyzers
 
@@ -351,6 +355,15 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   section list + `GroupBox` cards, replacing the dock area and status bar
   while open; the dock stays alive behind it). Never rebuild what the kit
   has.
+- **Right dock default** (layout v5): one tab group led by **Time lost**
+  (`panels::time_goes`, "Where the time goes": heat map, corners by Δt
+  largest first with loss bar, s and entry-speed Δ, the corners/straights
+  split, and a card for the selected corner with its speeds, entry/exit Δt
+  and the `CornerCheck` notes as sentences, plus "Open … in detail" =
+  `FocusCorner` + the Corners tab); Corners, Laps, Channels, Map and
+  Inspector are tabs behind it. The selected corner is the focused one, else
+  the one under the cursor, else the largest loss. Without GPS the map is
+  omitted and the table stands alone.
 - **First-party components** only where the kit has none: trace lanes
   (in the idiom of gpui-component chart/plot: scales, axis, grid, crossline),
   `LapStrip`, `CornerRuler`, `TrackMap`, delta lane, `DamperStrip`, `VideoHud`,
@@ -494,6 +507,11 @@ dependency.
   Legend and inspector values always carry the lap role colour. success /
   danger mean only Δ, never a pedal. With no Omarchy palette the built-in
   dark theme's primary is `blue-400` (its own primary is white).
+- Heat ramp (`TracePalette::heat`, "less — more"): a quiet tone
+  (`muted_foreground` at 28%) blended to `danger` in `HEAT_LEVELS` steps,
+  losing stations spread from their 25% to their 95% quantile; gains stay
+  quiet (the ramp says where time goes; gains read in the delta lane). The
+  Time lost loss bars use the same ramp.
 - Consumers `observe_global::<Theme>`; a theme change repaints, never rebuilds
   geometry.
 
@@ -509,7 +527,7 @@ palette items. See [action.md](.agents/skills/gpui-kit/references/gpui/action.md
 | Keys | Action |
 |---|---|
 | ctrl-k / ctrl-, / ctrl-o / ctrl-q | Palette / Preferences / Open folder / Quit |
-| ctrl-b / ctrl-j | Toggle library / right dock ([Corners, Laps, Channels] over [Map, Inspector]) |
+| ctrl-b / ctrl-j | Toggle library / right dock ([Time lost, Corners, Laps, Channels, Map, Inspector] tabs) |
 | ctrl-1 … ctrl-6 | Focus Library / Traces / Video / Corners / Laps / Map |
 | space; left / right | Play/pause; ±2 s |
 | m / s / p | Mute / 0.25x / continuous playback |
