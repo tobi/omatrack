@@ -11,7 +11,8 @@
 //!
 //! Key names follow the existing Omatrack document (`recent_files`,
 //! `driver_mappings`, `selection`, `video/*`, `trace/*`, `tracks.<key>`),
-//! plus the new `trace.x_axis` and `workspace.layout`.
+//! plus the new `trace.x_axis`, `trace.view_mode`, `trace.color_mode` and
+//! `workspace.layout`.
 
 use crate::fsutil::{scalar_text, write_atomic};
 use omatrack_core::alignment::Strategy;
@@ -438,6 +439,10 @@ pub enum TraceViewMode {
     Consistency,
     /// Brake onsets, lifts, shifts and corner notes as ticks on the lanes.
     Events,
+}
+
+impl TraceViewMode {
+    pub const ALL: [Self; 4] = [Self::Lap, Self::Corners, Self::Consistency, Self::Events];
 }
 
 /// `trace`: trace workspace settings.

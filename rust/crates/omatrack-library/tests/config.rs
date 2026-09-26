@@ -5,7 +5,8 @@ use omatrack_core::alignment::Strategy;
 use omatrack_core::corners::{CornerZone, ZoneSource};
 use omatrack_core::playback::ReferencePlayback;
 use omatrack_library::config::{
-    ChannelStyle, Config, ConfigError, ConfigFile, LocationConfig, TraceViewMode, XAxis, track_key,
+    ChannelStyle, Config, ConfigError, ConfigFile, LocationConfig, TraceColorMode, TraceViewMode,
+    XAxis, track_key,
 };
 use omatrack_library::recent::{MAX_RECENT_FILES, prune_recent, push_recent};
 use serde_yaml::Value;
@@ -40,6 +41,7 @@ trace:
   fit_channels: false
   x_axis: time
   view_mode: consistency
+  color_mode: channel
   lane_gap: 3
 video:
   muted: true
@@ -109,6 +111,7 @@ fn typed_keys_parse_leniently() {
     assert_eq!(config.trace.x_axis(), XAxis::Time);
     assert_eq!(config.trace.view_mode(), TraceViewMode::Consistency);
     assert_eq!(Config::default().trace.view_mode(), TraceViewMode::Lap);
+    assert_eq!(config.trace.color_mode(), TraceColorMode::Channel);
     assert!(config.video.is_muted());
     assert!(config.video.is_continuous_playback());
     assert_eq!(config.video.reference_sync(), Some(Strategy::ManualDampers));
@@ -286,4 +289,16 @@ fn recent_files_are_capped_deduplicated_and_most_recent_first() {
     assert!(prune_recent(&mut list));
     assert_eq!(list, [kept]);
     assert!(!prune_recent(&mut list));
+}
+
+#[test]
+fn trace_modes_default_and_fall_back_on_unknown_values() {
+    let config = Config::from_yaml_str("trace: {view_mode: sideways, color_mode: 7}\n").unwrap();
+    assert_eq!(config.trace.view_mode(), TraceViewMode::Lap);
+    assert_eq!(config.trace.color_mode(), TraceColorMode::Lap);
+    let mut config = Config::default();
+    config.trace.view_mode = Some(TraceViewMode::Events);
+    let text = config.to_yaml_string().unwrap();
+    assert!(text.contains("view_mode: events"), "{text}");
+    assert!(!text.contains("color_mode"), "unset keys stay out: {text}");
 }
