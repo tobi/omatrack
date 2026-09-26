@@ -598,6 +598,10 @@ struct MapGeometry {
     labels: Vec<Bounds<Pixels>>,
 }
 
+/// Space between a corner dot and its label, logical pixels: enough to
+/// clear the lap's stroke as well as the dot.
+const LABEL_CLEARANCE: f32 = 5.0;
+
 /// Where a label of `size` goes beside a dot at `centre` with `radius`:
 /// first away from the drawing along `outward` (the unit direction from the
 /// map's centre to the dot, so labels sit outside the lap rather than on
@@ -612,7 +616,8 @@ fn place_label(
     placed: &[Bounds<Pixels>],
     outward: (f32, f32),
 ) -> Option<Bounds<Pixels>> {
-    let gap = radius + px(3.);
+    // Clear of the dot and of the lap's stroke around it.
+    let gap = radius + px(LABEL_CLEARANCE);
     let (w, h) = (size.width, size.height);
     let top = centre.y - h * 0.5;
     let (dx, dy) = outward;
@@ -1320,6 +1325,16 @@ impl MapOverlay {
         let mut geometry = self.geometry.borrow_mut();
         let placed = &mut geometry.labels;
         placed.clear();
+        // Every dot is taken space: a label never covers another corner.
+        for corner in corners() {
+            let (_, _, radius) = style(self.focused == Some(corner.id));
+            let r = px(radius + 1.0);
+            let centre = at(corner.position);
+            placed.push(Bounds::new(
+                point(centre.x - r, centre.y - r),
+                size(r * 2.0, r * 2.0),
+            ));
+        }
         let focused_first = corners()
             .filter(|c| self.focused == Some(c.id))
             .chain(corners().filter(|c| self.focused != Some(c.id)));
