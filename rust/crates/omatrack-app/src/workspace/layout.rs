@@ -13,7 +13,9 @@ pub const DOCK_AREA_ID: &str = "omatrack.workspace";
 ///
 /// 3: the map got its own pane on the right instead of a tab behind the
 /// inspector.
-pub const LAYOUT_VERSION: usize = 3;
+/// 4: the inspector is a tab beside the map (the trace gutter already reads
+/// the cursor), so the right dock holds two surfaces, not three.
+pub const LAYOUT_VERSION: usize = 4;
 
 /// Library dock width, in rems (300 px at the default 16 px base).
 pub(crate) const LEFT_DOCK_REMS: f32 = 18.75;
@@ -21,11 +23,9 @@ pub(crate) const LEFT_DOCK_REMS: f32 = 18.75;
 pub(crate) const RIGHT_DOCK_REMS: f32 = 23.75;
 /// Video pane height above the traces, in rems (the traces take the rest).
 pub(crate) const VIDEO_REMS: f32 = 22.5;
-/// Map pane height in the right dock, in rems (220 px at the default base).
-pub(crate) const MAP_REMS: f32 = 13.75;
-/// Inspector pane height in the right dock, in rems (240 px at the default
-/// base); the tables above take the rest.
-pub(crate) const INSPECTOR_REMS: f32 = 15.0;
+/// Map | Inspector pane height in the right dock, in rems (400 px at the
+/// default base); the tables above take the rest.
+pub(crate) const MAP_REMS: f32 = 25.0;
 
 /// Narrowest window, in rems (1440 px at the default base), whose default
 /// layout opens the Library dock too: below it the traces would get less
@@ -68,8 +68,9 @@ pub(crate) fn default_placement(kind: PanelKind) -> DockPlacement {
 }
 
 /// Library on the left; video over traces in the center;
-/// [Corners | Laps | Channels] over Map over Inspector on the right, so the
-/// map and the cursor readouts are both visible without switching tabs.
+/// [Corners | Laps | Channels] over [Map | Inspector] on the right: two
+/// surfaces, each tall enough not to clip (the trace gutter carries the
+/// cursor readouts, so the inspector can sit behind the map).
 pub(crate) fn apply_default(
     area: &Entity<DockArea>,
     panels: &WorkspacePanels,
@@ -98,10 +99,9 @@ pub(crate) fn apply_default(
             ),
             None,
         )
-        .child(tabs(&[PanelKind::Map], cx), Some(rem * MAP_REMS))
         .child(
-            tabs(&[PanelKind::Inspector], cx),
-            Some(rem * INSPECTOR_REMS),
+            tabs(&[PanelKind::Map, PanelKind::Inspector], cx),
+            Some(rem * MAP_REMS),
         );
     area.update(cx, |area, cx| {
         area.set_version(Some(LAYOUT_VERSION), cx);

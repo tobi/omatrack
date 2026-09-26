@@ -36,17 +36,17 @@ fn the_default_dock_holds_every_panel(cx: &mut TestAppContext) {
     cx.update_window(test.window.into(), |_, window, cx| {
         window.render_frame(cx);
         // Active tabs are on screen: video over traces, library left,
-        // corners and inspector right.
+        // corners over map right (the inspector is the map's second tab).
         let video = window.find("video-panel");
         let traces = window.find("traces-panel");
         assert!(video.bounds().bottom() <= traces.bounds().top());
         assert!(traces.bounds().size.height > video.bounds().size.height);
         let library = window.find("library-panel");
         let corners = window.find("corners-panel");
-        let inspector = window.find("inspector-panel");
+        let map = window.find("map-panel");
         assert!(library.bounds().right() <= video.bounds().left());
         assert!(corners.bounds().left() >= traces.bounds().right());
-        assert!(corners.bounds().bottom() <= inspector.bounds().top());
+        assert!(corners.bounds().bottom() <= map.bounds().top());
     })
     .unwrap();
 }
@@ -151,8 +151,8 @@ fn a_corrupt_layout_falls_back_to_the_default(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_layout_from_another_version_is_replaced(cx: &mut TestAppContext) {
     // Version 2 hid the map behind the inspector; its saved layouts reset
-    // to the stacked default and say so.
-    assert_eq!(omatrack_app::LAYOUT_VERSION, 3);
+    // to the default and say so.
+    assert_eq!(omatrack_app::LAYOUT_VERSION, 4);
     let sandbox = common::Sandbox::new();
     sandbox.write_config(
         "workspace:\n  layout:\n    version: 2\n    center: {panel_name: StackPanel, children: [], info: {stack: {sizes: [], axis: 0}}}\n",
@@ -172,7 +172,6 @@ fn a_layout_from_another_version_is_replaced(cx: &mut TestAppContext) {
             "the reset is announced"
         );
         assert!(window.find("map-panel").visible());
-        assert!(window.find("inspector-panel").visible());
     })
     .unwrap();
 }

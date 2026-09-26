@@ -43,16 +43,16 @@ fn main_window_shows_title_dock_and_status_with_the_built_in_theme(cx: &mut Test
         assert!(library.visible());
         assert!(library.bounds().right() <= window.find("traces-panel").bounds().left());
 
-        // The right dock stacks the tables, the map and the inspector: the
-        // map is on screen by default, not a tab behind the inspector.
+        // The right dock holds two surfaces: the tables over the map, with
+        // the inspector a tab behind the map (the trace gutter reads the
+        // cursor), so neither clips.
         let corners = window.find("corners-panel");
         let map = window.find("map-panel");
-        let inspector = window.find("inspector-panel");
-        assert!(corners.visible() && map.visible() && inspector.visible());
+        assert!(corners.visible() && map.visible());
+        assert!(window.try_find("inspector-panel").is_none());
         assert!(map.bounds().top() >= corners.bounds().bottom());
-        assert!(inspector.bounds().top() >= map.bounds().bottom());
-        assert!(map.bounds().size.height > px(100.));
-        assert!(corners.bounds().size.height > map.bounds().size.height);
+        assert!(map.bounds().size.height > px(200.));
+        assert!(corners.bounds().size.height > px(200.));
     })
     .unwrap();
 

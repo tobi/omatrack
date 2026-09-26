@@ -574,6 +574,8 @@ fn channel_switches_and_style_controls_write_preferences(cx: &mut TestAppContext
 #[gpui_kit::test]
 async fn a_cursor_move_updates_the_inspector_but_not_the_corners_table(cx: &mut TestAppContext) {
     let scene = analysed(cx).await;
+    // The inspector is a tab beside the map.
+    show_panel(&scene.test, PanelKind::Inspector, cx);
     let (corners, inspector) = scene.test.workspace.read_with(cx, |w, _| {
         (w.panels().corners.clone(), w.panels().inspector.clone())
     });
@@ -784,6 +786,7 @@ async fn the_first_analysis_puts_the_cursor_at_lap_start_for_every_readout(
     cx: &mut TestAppContext,
 ) {
     let scene = analysed(cx).await;
+    show_panel(&scene.test, PanelKind::Inspector, cx);
     let cursor = scene.test.app.cursor.clone();
     assert_eq!(
         cx.update(|cx| cursor.read(cx).fraction()),
