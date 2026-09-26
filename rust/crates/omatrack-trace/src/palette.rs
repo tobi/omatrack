@@ -1,24 +1,29 @@
-//! Trace colours, resolved from the gpui-component `Theme` tokens.
+//! Trace colours, resolved from the gpui-component `Theme` tokens, in one of
+//! two [`ColorMode`]s.
 //!
-//! Roles, not palette positions: the primary lap is `primary` (the Omarchy
-//! accent under omatrack's theme bridge), the reference lap is `warning`,
-//! Δ gain is `success` and Δ loss is `danger`. Grids come from `border`,
-//! labels from `muted_foreground`. Translucent tokens are pre-mixed against
-//! `background` so strokes stay opaque: GPUI composites path triangles with
-//! premultiplied blending, and an opaque stroke cannot double-blend at a
-//! folded join.
+//! **Lap colours** ([`ColorMode::Lap`], the default): roles, not palette
+//! positions. The primary lap is `primary` (the Omarchy accent under
+//! omatrack's theme bridge), the reference lap is `warning`, in every lane.
+//! A channel that shares a lane with another (brake under throttle) stays in
+//! the role colours too, one step quieter, so colour always answers "which
+//! lap" (never a gain/loss colour: a red brake would read as Δ loss).
 //!
-//! A channel that shares a lane with another (brake under throttle) stays
-//! in the role colours too, one step quieter: the primary lap in a deeper
-//! shade of the primary hue, the reference in a quieter reference. Colour
-//! therefore always answers "which lap"; which channel is told by the
-//! lane's legend and the line's shade, never by a third hue that means
-//! neither lap (and never by a gain/loss colour: a red brake would read as
-//! Δ loss). [`TracePalette::channel_hue`] (the chart tokens) is kept for
-//! user-coloured overlays. `channels.<key>.color` and `reference_color`
-//! overrides (user data, carried by [`LaneStyle`]) win over both.
+//! **Channel colours** ([`ColorMode::Channel`]): each channel in its own hue
+//! from the theme's named palette (speed `blue`, throttle `green`, brake
+//! `red`, steering `yellow`, gear the foreground, anything else a chart
+//! hue). The primary lap is the solid line and the fill; the reference is the
+//! same hue, quieter ([`CHANNEL_REFERENCE_ALPHA`] over the background), so
+//! the laps stay tellable apart by weight rather than hue.
 //!
-//! Geometry caches never key on colour: a theme change only repaints.
+//! In both modes Δ gain is `success` and Δ loss is `danger`, and only Δ.
+//! Grids come from `border`, labels from `muted_foreground`. Translucent
+//! tokens are pre-mixed against `background` so strokes stay opaque: GPUI
+//! composites path triangles with premultiplied blending, and an opaque
+//! stroke cannot double-blend at a folded join. `channels.<key>.color` and
+//! `reference_color` overrides (user data, carried by [`LaneStyle`]) win over
+//! both modes.
+//!
+//! Geometry caches never key on colour: a theme or mode change only repaints.
 
 use gpui_kit::Hsla;
 use gpui_kit::component::Theme;
@@ -31,17 +36,49 @@ const SHARED_REFERENCE_ALPHA: f32 = 0.6;
 /// Strength of a shared-lane channel's primary line against the lane root's
 /// (full) primary colour.
 const SHARED_PRIMARY_ALPHA: f32 = 0.6;
-/// Loss-role opacity at the quiet end of the heat ramp.
+/// Strength of the reference lap's line against its channel hue in
+/// [`ColorMode::Channel`]: the same hue, clearly the quieter of the two.
+pub const CHANNEL_REFERENCE_ALPHA: f32 = 0.5;
 /// Opacity of the gain/loss colours on an approximate (LOW confidence)
 /// Δ: still a reading, not a verdict.
 pub(crate) const APPROXIMATE_DELTA_EMPHASIS: f32 = 0.6;
 
+/// Loss-role opacity at the quiet end of the heat ramp.
 const HEAT_RAMP_FLOOR: f32 = 0.22;
+
+/// What trace colour says: which lap, or which channel.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ColorMode {
+    /// Primary and reference lap roles in every lane.
+    #[default]
+    Lap,
+    /// Each channel in its own hue; the reference quieter.
+    Channel,
+}
+
+impl ColorMode {
+    /// The other mode.
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Lap => Self::Channel,
+            Self::Channel => Self::Lap,
+        }
+    }
+
+    /// "Lap colours" / "Channel colours".
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Lap => "Lap colours",
+            Self::Channel => "Channel colours",
+        }
+    }
+}
 
 /// Resolved colours of one trace frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct TracePalette {
+    pub mode: ColorMode,
     pub background: Hsla,
     pub foreground: Hsla,
     pub primary: Hsla,
@@ -73,14 +110,22 @@ pub struct TracePalette {
     /// The quiet end of the heat ramp ([`Self::heat`]).
     pub heat_quiet: Hsla,
     pub chart: [Hsla; 5],
+    /// Channel hues of [`ColorMode::Channel`], from the theme's named
+    /// palette: speed, throttle, brake, steering.
+    pub blue: Hsla,
+    pub green: Hsla,
+    pub red: Hsla,
+    pub yellow: Hsla,
 }
 
 impl TracePalette {
+    /// Lap colours from `theme`; see [`Self::with_mode`].
     pub fn from_theme(theme: &Theme) -> Self {
         let background = theme.background;
         let opaque = |color: Hsla| background.blend(color);
         let grid = opaque(theme.border.opacity(0.55));
         Self {
+            mode: ColorMode::Lap,
             background,
             foreground: theme.foreground,
             primary: opaque(theme.primary),
@@ -110,10 +155,19 @@ impl TracePalette {
                 opaque(theme.chart_4),
                 opaque(theme.chart_5),
             ],
+            blue: opaque(theme.blue),
+            green: opaque(theme.green),
+            red: opaque(theme.red),
+            yellow: opaque(theme.yellow),
         }
     }
 
-    /// Default hue of a channel key.
+    /// The same colours in `mode`.
+    pub fn with_mode(mut self, mode: ColorMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
     /// The loss ramp at `t` in `[0, 1]`: a dim tint of the loss role over
     /// the quiet muted tone at 0 (low loss still reads as the ramp, not as
     /// grey), the loss role (`danger`) at 1, opaque in between.
@@ -125,11 +179,16 @@ impl TracePalette {
         )
     }
 
+    /// A channel's own hue ([`ColorMode::Channel`]): speed blue, the
+    /// throttles green, brake red, steering yellow, gear the foreground;
+    /// any other channel a chart hue chosen by its key.
     pub fn channel_hue(&self, key: &str) -> Hsla {
         match key {
-            "speed" | "throttle" | "driver_throttle" => self.chart[1],
-            "brake" => self.chart[3],
-            "steering" => self.chart[4],
+            "speed" => self.blue,
+            "throttle" | "driver_throttle" => self.green,
+            "brake" => self.red,
+            "steering" => self.yellow,
+            "gear" => self.background.blend(self.foreground.opacity(0.85)),
             _ => {
                 let hash = key
                     .bytes()
@@ -140,21 +199,27 @@ impl TracePalette {
     }
 
     /// Primary and reference stroke colours of a channel. `root` is whether
-    /// the channel owns its lane (see the module docs); the key is kept for
-    /// callers that colour by channel.
-    pub fn channel_colors(&self, _key: &str, root: bool, style: &LaneStyle) -> (Hsla, Hsla) {
-        let (primary, reference) = if root {
-            (self.primary, self.reference)
-        } else {
+    /// the channel owns its lane (see the module docs).
+    pub fn channel_colors(&self, key: &str, root: bool, style: &LaneStyle) -> (Hsla, Hsla) {
+        let (primary, reference) = match self.mode {
+            ColorMode::Lap if root => (self.primary, self.reference),
             // Both laps keep their role hue, a step quieter than the lane
             // root's so the two lines of one lap remain tellable apart. Never
             // a hue mix: it interpolates hue (blue and amber made green).
-            (
+            ColorMode::Lap => (
                 self.background
                     .blend(self.primary.opacity(SHARED_PRIMARY_ALPHA)),
                 self.background
                     .blend(self.reference.opacity(SHARED_REFERENCE_ALPHA)),
-            )
+            ),
+            // The hue names the channel, so a shared lane needs no shade.
+            ColorMode::Channel => {
+                let hue = self.channel_hue(key);
+                (
+                    hue,
+                    self.background.blend(hue.opacity(CHANNEL_REFERENCE_ALPHA)),
+                )
+            }
         };
         (
             style
@@ -167,6 +232,22 @@ impl TracePalette {
                 .unwrap_or(reference),
         )
     }
+
+    /// Colour of the reference lap's value in a lane legend: its role in lap
+    /// colours; in channel colours the hue is the channel's, so the value
+    /// reads plainly beside its muted lap label.
+    pub fn reference_value(&self, key: &str, root: bool, style: &LaneStyle) -> Hsla {
+        match self.mode {
+            ColorMode::Lap => {
+                if root {
+                    self.channel_colors(key, root, style).1
+                } else {
+                    self.reference
+                }
+            }
+            ColorMode::Channel => self.foreground,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -178,6 +259,7 @@ mod tests {
     fn roles_follow_theme_tokens(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
         let palette = cx.update(|cx| TracePalette::from_theme(Theme::global(cx)));
+        assert_eq!(palette.mode, ColorMode::Lap);
         assert_eq!(palette.primary.a, 1.0);
         assert_eq!(palette.reference.a, 1.0);
         assert_ne!(palette.primary, palette.reference);
@@ -211,5 +293,41 @@ mod tests {
             palette.channel_colors("speed", true, &custom).0,
             custom_color
         );
+    }
+
+    #[gpui_kit::test]
+    fn channel_colours_give_each_channel_its_own_hue(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let theme = cx.update(|cx| Theme::global(cx).clone());
+        let palette = TracePalette::from_theme(&theme).with_mode(ColorMode::Channel);
+        let style = LaneStyle::default();
+        let speed = palette.channel_colors("speed", true, &style);
+        let throttle = palette.channel_colors("throttle", true, &style);
+        let brake = palette.channel_colors("brake", true, &style);
+        let steering = palette.channel_colors("steering", true, &style);
+        // The theme's named hues, opaque.
+        assert_eq!(speed.0, theme.background.blend(theme.blue));
+        assert_eq!(throttle.0, theme.background.blend(theme.green));
+        assert_eq!(brake.0, theme.background.blend(theme.red));
+        assert_eq!(steering.0, theme.background.blend(theme.yellow));
+        for (primary, reference) in [speed, throttle, brake, steering] {
+            assert_eq!(primary.a, 1.0);
+            // The reference is the same hue, quieter: never the reference
+            // role, never the primary's own colour.
+            assert_ne!(reference, primary);
+            assert_ne!(reference, palette.reference);
+            assert!((reference.h - primary.h).abs() < 0.02 || primary.s < 0.05);
+        }
+        // A shared lane's channel keeps its own hue at full strength.
+        assert_eq!(palette.channel_colors("brake", false, &style), brake);
+        // The mode changes colour only; overrides still win.
+        let custom_color = gpui_kit::hsla(0.5, 0.5, 0.5, 1.0);
+        let custom = LaneStyle::default().with_color(Some(custom_color));
+        assert_eq!(
+            palette.channel_colors("speed", true, &custom).0,
+            custom_color
+        );
+        assert_eq!(ColorMode::Lap.toggled(), ColorMode::Channel);
+        assert_eq!(ColorMode::Channel.toggled(), ColorMode::Lap);
     }
 }

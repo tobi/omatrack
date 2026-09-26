@@ -126,6 +126,8 @@ fn visible_indices(len: usize, viewport: Viewport) -> Option<(usize, usize)> {
 pub const PEDAL_FILL: f32 = 0.16;
 pub const AREA_FILL: f32 = 0.16;
 pub const DELTA_FILL: f32 = 0.42;
+/// The speed lane's gradient area under the primary line.
+pub const SPEED_FILL: f32 = 0.2;
 
 /// Headroom of a symmetric range above its largest magnitude.
 const SYMMETRIC_HEADROOM: f64 = 1.08;
@@ -353,6 +355,10 @@ pub struct CornerBand {
     pub label: SharedString,
     pub start: f64,
     pub end: f64,
+    /// Time lost (+) or gained through the zone, seconds, from the
+    /// analysis's corner row (the one cached delta). `None` without a
+    /// reference or when the map does not place time loss on the lap.
+    pub delta: Option<f64>,
 }
 
 impl CornerBand {
@@ -362,6 +368,35 @@ impl CornerBand {
             label: label.into(),
             start,
             end,
+            delta: None,
+        }
+    }
+
+    /// The zone's Δt (see [`Self::delta`]); non-finite values mean none.
+    pub fn with_delta(mut self, delta: Option<f64>) -> Self {
+        self.delta = delta.filter(|d| d.is_finite());
+        self
+    }
+}
+
+/// The slowest point of a corner on the speed lane: where the primary lap's
+/// speed bottoms out, its minimum and the reference's minimum through the
+/// same zone (km/h, from the analysis's corner rows).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct Apex {
+    /// Primary lap fraction of the minimum.
+    pub fraction: f64,
+    pub speed: f64,
+    pub reference_speed: Option<f64>,
+}
+
+impl Apex {
+    pub fn new(fraction: f64, speed: f64, reference_speed: Option<f64>) -> Self {
+        Self {
+            fraction,
+            speed,
+            reference_speed: reference_speed.filter(|s| s.is_finite()),
         }
     }
 }
@@ -418,6 +453,11 @@ pub struct TraceScene {
     /// The alignment is only a share of lap time: the Δ lane is a ramp of
     /// the lap-time difference, stated as such in its legend.
     pub(crate) time_share_delta: bool,
+    /// Lap labels of the two roles ("L10", "L8"), for the lane legends.
+    pub(crate) primary_label: Option<SharedString>,
+    pub(crate) reference_label: Option<SharedString>,
+    /// Corner apexes, called out on the speed lane.
+    pub(crate) apexes: Vec<Apex>,
 }
 
 impl TraceScene {
@@ -477,6 +517,37 @@ impl TraceScene {
 
     pub fn time_share_delta(&self) -> bool {
         self.time_share_delta
+    }
+
+    /// Lap labels of the primary and the reference ("L10", "L8").
+    pub fn with_lap_labels(
+        mut self,
+        primary: Option<SharedString>,
+        reference: Option<SharedString>,
+    ) -> Self {
+        self.primary_label = primary;
+        self.reference_label = reference;
+        self.generation = next_generation();
+        self
+    }
+
+    pub fn primary_label(&self) -> Option<&SharedString> {
+        self.primary_label.as_ref()
+    }
+
+    pub fn reference_label(&self) -> Option<&SharedString> {
+        self.reference_label.as_ref()
+    }
+
+    /// Corner apexes for the speed lane's callouts.
+    pub fn with_apexes(mut self, apexes: Vec<Apex>) -> Self {
+        self.apexes = apexes;
+        self.generation = next_generation();
+        self
+    }
+
+    pub fn apexes(&self) -> &[Apex] {
+        &self.apexes
     }
 
     /// Identity of this scene's contents: unique per construction and
@@ -620,6 +691,7 @@ impl LaneStyle {
         self.fill_opacity.unwrap_or(match kind {
             LaneKind::Delta => DELTA_FILL,
             LaneKind::Area => AREA_FILL,
+            _ if key == "speed" => SPEED_FILL,
             _ if matches!(key, "throttle" | "brake" | "clutch") => PEDAL_FILL,
             _ => 0.0,
         })
@@ -758,6 +830,10 @@ mod tests {
             styles.get("throttle").fill_for(LaneKind::Line, "throttle"),
             PEDAL_FILL
         );
-        assert_eq!(styles.get("speed").fill_for(LaneKind::Line, "speed"), 0.0);
+        assert_eq!(
+            styles.get("speed").fill_for(LaneKind::Line, "speed"),
+            SPEED_FILL
+        );
+        assert_eq!(styles.get("rpm").fill_for(LaneKind::Line, "rpm"), 0.0);
     }
 }

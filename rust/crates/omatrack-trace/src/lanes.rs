@@ -25,8 +25,8 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use gpui_kit::{
-    Background, Bounds, Hsla, Path, PathVertex, Pixels, Point, Window, linear_color_stop,
-    linear_gradient, point, px,
+    Background, Bounds, ContentMask, Hsla, Path, PathVertex, Pixels, Point, Window,
+    linear_color_stop, linear_gradient, point, px,
 };
 
 use crate::decimate::{DecimateParams, PathPoint, PlotRect, decimate};
@@ -288,6 +288,11 @@ pub struct ChannelColors {
     /// Peak alpha of the fill gradient.
     pub fill_alpha: f32,
     pub neighbour: Hsla,
+    /// The primary stroke's colour below the baseline, when it differs
+    /// from above it (the Δ line: loss above zero, gain below). The one
+    /// stroke is painted twice under complementary content masks, so the
+    /// sign split costs no geometry.
+    pub primary_below: Option<Hsla>,
 }
 
 impl ChannelColors {
@@ -301,6 +306,7 @@ impl ChannelColors {
             fill_below: primary,
             fill_alpha: 0.0,
             neighbour: reference,
+            primary_below: None,
         }
     }
 }
@@ -314,6 +320,8 @@ pub struct ChannelGeometry {
     reference: PathBuffer,
     primary: PathBuffer,
     neighbours: PathBuffer,
+    /// The baseline's y inside the lane (zero, or the range's floor).
+    baseline: f32,
 }
 
 impl ChannelGeometry {
@@ -358,6 +366,7 @@ impl ChannelGeometry {
         }
         let series = input.series;
         let rect = input.rect();
+        self.baseline = input.baseline() as f32;
         if series.primary.len() < 2 || rect.width < 2.0 {
             return;
         }
@@ -490,7 +499,34 @@ impl ChannelGeometry {
             );
         }
         self.reference.paint(origin, colors.reference, window);
-        self.primary.paint(origin, colors.primary, window);
+        match colors.primary_below {
+            Some(below) => {
+                // Split at the baseline: the current mask intersects, so
+                // each half stays inside its lane.
+                let split = origin.y + px(self.baseline);
+                let far = px(1e5);
+                let above = Bounds::from_corners(
+                    point(origin.x - far, split - far),
+                    point(origin.x + far, split),
+                );
+                let under = Bounds::from_corners(
+                    point(origin.x - far, split),
+                    point(origin.x + far, split + far),
+                );
+                window.with_content_mask(Some(ContentMask { bounds: above }), |window| {
+                    self.primary.paint(origin, colors.primary, window)
+                });
+                window.with_content_mask(Some(ContentMask { bounds: under }), |window| {
+                    self.primary.paint(origin, below, window)
+                });
+            }
+            None => self.primary.paint(origin, colors.primary, window),
+        }
+    }
+
+    /// The baseline's y inside the lane (logical pixels from its top).
+    pub fn baseline(&self) -> f32 {
+        self.baseline
     }
 
     /// The five paths, for benchmarks: (fill above, fill below, reference,

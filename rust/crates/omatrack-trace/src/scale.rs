@@ -256,9 +256,15 @@ fn group_thousands(value: i64) -> String {
     out
 }
 
-/// "850 m", "1,250 m", "12.5 m" (decimals only when the step needs them).
+/// "0", "850 m", "1 km", "1.5 km", "12.5 m": the start reads a bare zero,
+/// kilometres once the step is half of one (decimals only where needed).
 pub fn format_distance(metres: f64, step: f64) -> String {
-    if step >= 1.0 {
+    if metres.abs() < step.abs() * 1e-6 {
+        "0".to_string()
+    } else if step >= 500.0 {
+        let text = format!("{:.1}", metres / 1000.0);
+        format!("{} km", text.strip_suffix(".0").unwrap_or(&text))
+    } else if step >= 1.0 {
         format!("{} m", group_thousands(metres.round() as i64))
     } else {
         let decimals = (-step.log10().floor()) as usize;
@@ -414,6 +420,9 @@ mod tests {
     #[test]
     fn labels() {
         assert_eq!(format_distance(1250.0, 250.0), "1,250 m");
+        assert_eq!(format_distance(0.0, 500.0), "0");
+        assert_eq!(format_distance(1000.0, 500.0), "1 km");
+        assert_eq!(format_distance(1500.0, 500.0), "1.5 km");
         assert_eq!(format_distance(850.0, 50.0), "850 m");
         assert_eq!(format_distance(12.5, 0.5), "12.5 m");
         assert_eq!(format_time(42.0, 5.0), "0:42");

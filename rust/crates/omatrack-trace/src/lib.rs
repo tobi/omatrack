@@ -116,12 +116,13 @@ pub mod track_map;
 
 pub use corner_ruler::{CornerRuler, CornerRulerEvent};
 pub use damper_strip::{DamperStrip, DamperStripData, DamperStripEvent};
+pub use palette::ColorMode;
 pub use scale::{Viewport, XAxis};
 pub use scene::{
-    ComplexBand, CornerBand, FractionMap, LaneKind, LaneSeries, LaneStyle, LaneStyles, Readout,
-    TraceScene, YRange,
+    Apex, ComplexBand, CornerBand, FractionMap, LaneKind, LaneSeries, LaneStyle, LaneStyles,
+    Readout, TraceScene, YRange,
 };
-pub use stack::{CHROME_REMS, TraceEvent, TraceStack};
+pub use stack::{CHROME_REMS, GUTTER_REMS, LEGEND_REMS, TraceEvent, TraceStack};
 pub use state::{CursorState, Selection, ViewportState};
 pub use static_layer::{StaticStats, TraceStaticView};
 pub use telemetry_hud::{TelemetryHud, TelemetryHudBuffers, TelemetryHudColors, TelemetryHudData};
