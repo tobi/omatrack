@@ -224,6 +224,9 @@ pub struct TrackMapData {
     map: Option<Arc<dyn FractionMap>>,
     corners: Vec<MapCorner>,
     heat: Option<Arc<[f64]>>,
+    /// The laps are placed on the centerline by distance share, their own
+    /// GPS being too broken to draw ([`TrackMapData::with_outline_placement`]).
+    on_outline: bool,
 }
 
 fn next_generation() -> u64 {
@@ -242,6 +245,15 @@ impl TrackMapData {
         self.centerline = centerline.into_iter().collect();
         self.generation = next_generation();
         self
+    }
+    /// The laps were placed on the centerline by distance share (their GPS
+    /// has too many dropouts to draw): the panels say so (principle 9).
+    pub fn with_outline_placement(mut self, on_outline: bool) -> Self {
+        self.on_outline = on_outline;
+        self
+    }
+    pub fn is_on_outline(&self) -> bool {
+        self.on_outline
     }
     pub fn with_primary(mut self, track: Option<GpsTrack>) -> Self {
         self.primary = track.filter(|t| !t.is_empty());
