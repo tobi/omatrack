@@ -317,24 +317,26 @@ so a pin bump regenerates every cache.
   countdown; the next lap is adopted at the current position without seeking;
   the playhead holds at 33% of the viewport, unclamped; prefetch past 70%.
 - HUD gap bar (±8 m along-track) only when both GPS fixes report < 1 m
-  accuracy. `video.muted`, `video.hud_position` (normalized, written at drag
-  end, shared by the docked card and the stage band) persist. Opening a video
-  docks it; nothing enters fullscreen by itself.
+  accuracy. `video.muted`, `video.hud_position` (the stage band's place,
+  normalized, written at drag end) persist. Opening a video docks it; nothing
+  enters fullscreen by itself.
 - **Fullscreen stage** (F or the toolbar button): the video panel renders
   over the whole window on black in place of the title bar, filmstrip row,
   docks and status bar. The dock layout is never touched (no dock zoom); the
-  window enters fullscreen best effort. Pictures are aspect-fit and
-  vertically centred per layout (1–5, Qt geometry, PiP 30% width, 16 px
-  margin) above a reserved lane (Qt `reservedHeight`) holding the same
-  `Filmstrip` entity. Floating controls hide after `CONTROLS_HIDE_AFTER`
+  window enters fullscreen best effort. `stage::plan` lays one centred
+  column: the same `Filmstrip` entity above, the delta lane touching the
+  pictures, the pictures (aspect-fit; layouts 1–5, an inset beside the large
+  picture, clear of its burned-in dashboard), the band just below them. Floating controls hide after `CONTROLS_HIDE_AFTER`
   (2 s) idle unless hovered and return on pointer motion or any keystroke.
   Escape leaves it and restores focus. Stage-only overlays: the telemetry
-  band (`omatrack_trace::TelemetryHud`, 1000:210, 10% lap window with the
-  playhead at 86% / 33% continuous, throttle and brake with the reference
-  through the shared map, pedals, steering dial with P/R notches, gear and
-  speed with their deltas, gap bar gated as above, draggable, HUD toggle) and
-  the delta bar (P/R driver and lap labels, centred Δ, `≈` under LOW
-  confidence). Docked, only the slim HUD card shows.
+  band (`omatrack_trace::TelemetryHud`, 1000:210, 10% lap window clamped to
+  the lap, playhead at 86% / 33% continuous, throttle and brake sub-lanes in
+  the lap roles with the reference through the shared map, pedals, steering
+  dial with P/R notches, gear and speed with their deltas, gap bar gated as
+  above, draggable, HUD toggle) and the delta lane (P/R labels over their own
+  pictures, centred Δ as the largest figure, gain/loss coloured, muted with
+  `≈` under LOW confidence). Docked, the Δ, speed difference and gap ride
+  inline in the video bar, never over the pictures.
 
 ## 7. UI architecture rules (GPUI)
 
@@ -488,9 +490,10 @@ dependency.
   `muted_foreground`; extra channels `chart_1..5`;
   `channels.<key>.color`/`reference_color` override. A channel sharing a
   lane (brake under throttle) draws its primary in its chart hue and its
-  reference in the reference role (a quieter `warning`, never a hue mix).
-  Legend and inspector values always carry the lap role colour; the chart
-  hue only names the channel.
+  reference in the reference role, both quieter (60% over the background).
+  Legend and inspector values always carry the lap role colour. success /
+  danger mean only Δ, never a pedal. With no Omarchy palette the built-in
+  dark theme's primary is `blue-400` (its own primary is white).
 - Consumers `observe_global::<Theme>`; a theme change repaints, never rebuilds
   geometry.
 
@@ -506,7 +509,7 @@ palette items. See [action.md](.agents/skills/gpui-kit/references/gpui/action.md
 | Keys | Action |
 |---|---|
 | ctrl-k / ctrl-, / ctrl-o / ctrl-q | Palette / Preferences / Open folder / Quit |
-| ctrl-b / ctrl-j | Toggle library / inspector dock |
+| ctrl-b / ctrl-j | Toggle library / right dock ([Corners, Laps, Channels] over [Map, Inspector]) |
 | ctrl-1 … ctrl-6 | Focus Library / Traces / Video / Corners / Laps / Map |
 | space; left / right | Play/pause; ±2 s |
 | m / s / p | Mute / 0.25x / continuous playback |
