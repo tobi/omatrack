@@ -316,6 +316,46 @@ fn pair_analysis_shares_one_comparison() {
 }
 
 #[test]
+fn the_time_split_sums_to_the_final_delta_and_the_loss_rate_is_finite() {
+    let (analysis, _) = pair(StrategyRequest::Auto, 0.0);
+    let split = analysis.time_split().expect("a delta splits");
+    let last = *analysis.delta().last().unwrap();
+    assert_eq!(split.total, last);
+    assert!((split.corners + split.straights - split.total).abs() < 1e-12);
+    // The synthetic corners do not overlap: the corner share is their sum.
+    let rows: f64 = analysis.rows().iter().map(|row| row.dt).sum();
+    assert!((split.corners - rows).abs() < 1e-9, "{split:?} vs {rows}");
+
+    let rate = analysis.loss_rate();
+    assert_eq!(rate.len(), analysis.primary().unified().len());
+    assert!(rate.iter().all(|r| r.is_finite()));
+    // Integrated over distance, the loss rate recovers the delta.
+    let distance = &analysis.primary().unified().distance;
+    let integral: f64 = distance
+        .windows(2)
+        .zip(rate.windows(2))
+        .map(|(d, r)| (d[1] - d[0]) * (r[0] + r[1]) * 0.5)
+        .sum();
+    assert!(
+        (integral - last).abs() < 0.05_f64.max(last.abs() * 0.1),
+        "{integral} vs {last}"
+    );
+
+    // A single lap has neither.
+    let (single, _) = {
+        let recording = recording();
+        let lap = load_lap(recording, 2, &LoadOptions::default(), &not_cancelled()).unwrap();
+        let cancel = not_cancelled();
+        (
+            Analysis::build(&lap, None, StrategyRequest::Auto, 0.0, None, &cancel).unwrap(),
+            cancel,
+        )
+    };
+    assert!(single.time_split().is_none());
+    assert!(single.loss_rate().is_empty());
+}
+
+#[test]
 fn swapping_twice_restores_the_analysis() {
     let (analysis, cancel) = pair(StrategyRequest::Prefer(Strategy::ManualDampers), 0.001);
     let comparison = analysis.comparison().unwrap();

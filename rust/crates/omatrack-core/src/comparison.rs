@@ -63,6 +63,43 @@ pub fn effective_strategy(
     Strategy::LapPercentage
 }
 
+/// Half-width (metres of primary lap distance) of the window the loss rate
+/// is measured over: wide enough to smooth GPS and 50 Hz jitter out of the
+/// delta's slope, narrow enough to keep a braking zone apart from its apex.
+pub const LOSS_RATE_HALF_WINDOW_M: f64 = 8.0;
+
+/// Time lost per metre (s/m, + the primary is slower) at every primary
+/// sample: the slope of the cumulative `delta` over `distance`, measured
+/// across `±half_window` metres (clipped at the lap ends). A window spanning
+/// no distance (standing still) reads 0; the result is always finite and as
+/// long as `delta`, or empty when the arrays disagree.
+pub fn loss_rate(delta: &[f64], distance: &[f64], half_window: f64) -> Vec<f64> {
+    let n = delta.len();
+    if n < 2 || distance.len() != n {
+        return Vec::new();
+    }
+    let (mut low, mut high) = (0usize, 0usize);
+    (0..n)
+        .map(|i| {
+            let here = distance[i];
+            while low < i && distance[low] < here - half_window {
+                low += 1;
+            }
+            high = high.max(i);
+            while high + 1 < n && distance[high + 1] <= here + half_window {
+                high += 1;
+            }
+            let span = distance[high] - distance[low];
+            let rate = (delta[high] - delta[low]) / span;
+            if span > 1e-6 && rate.is_finite() {
+                rate
+            } else {
+                0.0
+            }
+        })
+        .collect()
+}
+
 /// One aligned lap pair.
 #[derive(Debug, Clone)]
 pub struct Comparison {
@@ -73,6 +110,7 @@ pub struct Comparison {
     manual_offset: f64,
     alignment: AlignmentResult,
     delta: Vec<f64>,
+    loss_rate: Vec<f64>,
 }
 
 impl Comparison {
@@ -109,6 +147,7 @@ impl Comparison {
             },
             alignment,
             delta: Vec::new(),
+            loss_rate: Vec::new(),
         };
         comparison.rebuild_delta();
         comparison
@@ -173,6 +212,7 @@ impl Comparison {
 
     fn rebuild_delta(&mut self) {
         self.delta.clear();
+        self.loss_rate.clear();
         let primary = &self.primary;
         let reference = &self.reference;
         if primary.len() < 3 || reference.len() < 3 {
@@ -194,6 +234,7 @@ impl Comparison {
             }
             delta[i] = raw - base;
         }
+        self.loss_rate = loss_rate(&delta, &primary.distance, LOSS_RATE_HALF_WINDOW_M);
         self.delta = delta;
     }
 
@@ -201,6 +242,13 @@ impl Comparison {
     /// Positive: the primary is slower. Empty when alignment failed.
     pub fn delta(&self) -> &[f64] {
         &self.delta
+    }
+
+    /// Time lost per metre (s/m) on the primary grid: the delta's slope over
+    /// ±[`LOSS_RATE_HALF_WINDOW_M`] of lap distance ([`loss_rate`]). Finite
+    /// everywhere; empty when the delta is.
+    pub fn loss_rate(&self) -> &[f64] {
+        &self.loss_rate
     }
 
     /// Delta at a primary fraction (NaN without a delta).
@@ -262,5 +310,39 @@ impl Comparison {
             corner_starts,
             -self.manual_offset,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loss_rate_is_the_delta_slope_over_distance() {
+        // 1 m per sample; the primary loses 0.01 s/m over metres 40..60.
+        let distance: Vec<f64> = (0..100).map(f64::from).collect();
+        let delta: Vec<f64> = distance
+            .iter()
+            .map(|d| (d.clamp(40.0, 60.0) - 40.0) * 0.01)
+            .collect();
+        let rate = loss_rate(&delta, &distance, 4.0);
+        assert_eq!(rate.len(), 100);
+        assert!(rate.iter().all(|r| r.is_finite()));
+        assert!((rate[50] - 0.01).abs() < 1e-12, "{}", rate[50]);
+        assert_eq!(rate[10], 0.0);
+        assert_eq!(rate[90], 0.0);
+        // The window smooths the step at 40 m over ±4 m.
+        assert!(rate[40] > 0.0 && rate[40] < 0.01);
+    }
+
+    #[test]
+    fn loss_rate_reads_zero_standing_still_and_empty_on_mismatch() {
+        let distance = [0.0, 0.0, 0.0, 0.0];
+        let delta = [0.0, 0.1, 0.2, 0.3];
+        assert_eq!(loss_rate(&delta, &distance, 5.0), vec![0.0; 4]);
+        assert!(loss_rate(&delta, &distance[..3], 5.0).is_empty());
+        let nan = [0.0, f64::NAN, 0.2, 0.3];
+        let moving = [0.0, 1.0, 2.0, 3.0];
+        assert!(loss_rate(&nan, &moving, 1.0).iter().all(|r| r.is_finite()));
     }
 }

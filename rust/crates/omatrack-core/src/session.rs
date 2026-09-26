@@ -777,6 +777,53 @@ pub struct ComplexRow {
     pub members: Vec<usize>,
 }
 
+/// Where the lap's time went: the final delta split into the part lost
+/// inside corner zones and the part lost between them (seconds, + the
+/// primary is slower). `corners + straights == total` by construction.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct TimeSplit {
+    /// Δt accumulated inside the union of the corner zones (overlapping
+    /// zones count once).
+    pub corners: f64,
+    /// Δt accumulated outside every corner zone.
+    pub straights: f64,
+    /// The final delta (the lap-time difference through the shared map).
+    pub total: f64,
+}
+
+/// Split the cumulative `delta` (primary grid) at `zones` (fractions).
+/// `None` without a delta.
+fn time_split(delta: &[f64], zones: &[CornerZone]) -> Option<TimeSplit> {
+    let total = *delta.last()?;
+    if delta.len() < 2 || !total.is_finite() {
+        return None;
+    }
+    let mut spans: Vec<(f64, f64)> = zones
+        .iter()
+        .map(|zone| (clamp(zone.start, 0.0, 1.0), clamp(zone.end, 0.0, 1.0)))
+        .filter(|(start, end)| end > start)
+        .collect();
+    spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut merged: Vec<(f64, f64)> = Vec::with_capacity(spans.len());
+    for (start, end) in spans {
+        match merged.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
+    let corners: f64 = merged
+        .iter()
+        .map(|(start, end)| interpolate_fraction(delta, *end) - interpolate_fraction(delta, *start))
+        .filter(|dt| dt.is_finite())
+        .sum();
+    Some(TimeSplit {
+        corners,
+        straights: total - corners,
+        total,
+    })
+}
+
 /// The primary lap, the optional reference lap, the one comparison map
 /// between them, and everything derived from it: corner zones and rows,
 /// complexes. Cheap to clone.
@@ -793,6 +840,7 @@ pub struct Analysis {
     complexes: Arc<[ComplexZone]>,
     rows: Arc<[CornerRow]>,
     complex_rows: Arc<[ComplexRow]>,
+    time_split: Option<TimeSplit>,
 }
 
 fn sorted_zones(mut zones: Vec<CornerZone>) -> Vec<CornerZone> {
@@ -1207,6 +1255,9 @@ impl Analysis {
             rows.push(inputs.row(zone));
         }
         let complex_rows = complex_rows(&complexes, &rows, &inputs);
+        let time_split = comparison
+            .as_deref()
+            .and_then(|comparison| time_split(comparison.delta(), &corners));
         Ok(Self {
             primary,
             reference,
@@ -1219,6 +1270,7 @@ impl Analysis {
             complexes: Arc::from(complexes),
             rows: Arc::from(rows),
             complex_rows: Arc::from(complex_rows),
+            time_split,
         })
     }
 
@@ -1358,6 +1410,19 @@ impl Analysis {
     }
     pub fn complex_rows(&self) -> &[ComplexRow] {
         &self.complex_rows
+    }
+    /// Time lost (s/m) at every primary sample, from the one delta
+    /// ([`Comparison::loss_rate`]); empty without a delta.
+    pub fn loss_rate(&self) -> &[f64] {
+        self.comparison
+            .as_ref()
+            .map(|c| c.loss_rate())
+            .unwrap_or(&[])
+    }
+    /// The final delta split into corners and straights; `None` without a
+    /// delta.
+    pub fn time_split(&self) -> Option<TimeSplit> {
+        self.time_split
     }
     /// The row for a corner id.
     pub fn row(&self, corner_id: &str) -> Option<&CornerRow> {
