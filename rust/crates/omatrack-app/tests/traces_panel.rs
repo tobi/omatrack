@@ -18,7 +18,7 @@ use gpui_kit::{
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta,
     TestAppContext, Window, point, px,
 };
-use omatrack_app::actions::{ResizeLanes, Role, SelectLap, ZoomReset};
+use omatrack_app::actions::{ResizeLanes, Role, SelectLap, ToggleTraceColorMode, ZoomReset};
 use omatrack_app::panels::TraceMode;
 use omatrack_app::panels::traces::{DELTA_KEY, ToggleLane, TracesPanel};
 use omatrack_trace::{TraceStack, Viewport};
@@ -844,9 +844,7 @@ async fn real_run4_against_run1_fills_the_lanes(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-async fn a_time_share_pair_keeps_a_readable_delta_lane_with_the_key_on_top(
-    cx: &mut TestAppContext,
-) {
+async fn a_time_share_pair_keeps_a_readable_delta_lane_in_the_trace_card(cx: &mut TestAppContext) {
     // The synthetic pair carries no GPS: the map is a share of lap time.
     let f = synthetic_pair(cx).await;
     let time_share = cx.update(|cx| f.traces.read(cx).scene().time_share_delta());
@@ -867,13 +865,48 @@ async fn a_time_share_pair_keeps_a_readable_delta_lane_with_the_key_on_top(
             delta.size.height.as_f32() >= floor - 1.0,
             "the Δ lane keeps 1.5 lanes: {delta:?}"
         );
-        // The P / R / Δ column key heads the lanes, in the ruler row.
+        // One bordered card holds the ruler row above the lanes.
+        let card = window.find("trace-card").bounds();
         let ruler = window.find("trace-ruler-row").bounds();
-        let key = window.find("readout-key").bounds();
-        assert!(ruler.contains(&key.origin), "{key:?} in {ruler:?}");
-        assert!(key.bottom() <= delta.top() + px(1.));
+        assert!(card.contains(&ruler.origin) && card.contains(&delta.origin));
+        assert!(ruler.bottom() <= delta.top() + px(1.));
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+async fn the_colour_mode_toggles_persist_and_repaint_the_lanes(cx: &mut TestAppContext) {
+    use omatrack_library::config::TraceColorMode;
+    use omatrack_trace::ColorMode;
+
+    let f = synthetic_pair(cx).await;
+    let stack = f.stack(cx);
+    assert_eq!(cx.update(|cx| stack.read(cx).color_mode()), ColorMode::Lap);
+    let before = cx.update(|cx| stack.read(cx).static_stats(cx));
+    cx.update_window(f.window, |_, window, cx| {
+        window.dispatch_action(Box::new(ToggleTraceColorMode), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert_eq!(f.config(cx).trace.color_mode, Some(TraceColorMode::Channel));
+    assert_eq!(
+        cx.update(|cx| stack.read(cx).color_mode()),
+        ColorMode::Channel
+    );
+    let after = cx.update(|cx| stack.read(cx).static_stats(cx));
+    assert_eq!(
+        after.geometry_builds, before.geometry_builds,
+        "a colour change repaints, never rebuilds geometry"
+    );
+    cx.update_window(f.window, |_, window, cx| {
+        window.dispatch_action(Box::new(ToggleTraceColorMode), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(f.config(cx).trace.color_mode, Some(TraceColorMode::Lap));
+    assert_eq!(cx.update(|cx| stack.read(cx).color_mode()), ColorMode::Lap);
 }
 
 #[gpui_kit::test]

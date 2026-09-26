@@ -16,13 +16,14 @@ use std::sync::Arc;
 
 use gpui_kit::SharedString;
 use omatrack_core::overlay::{OverlayChannel, OverlayGroup, STANDARD_CHANNELS, standard_values};
-use omatrack_core::session::{Analysis, LapStripKind, LoadedLap};
+use omatrack_core::session::{Analysis, LapStripKind, LoadedLap, MarkerKind};
 use omatrack_core::{Lap, UnifiedLap};
 use omatrack_library::Config;
-use omatrack_library::config::ChannelStyle;
+use omatrack_library::config::{ChannelStyle, TraceColorMode};
 use omatrack_trace::layout::{LaneSizing, lane_height_boost};
 use omatrack_trace::{
-    ComplexBand, CornerBand, FractionMap, LaneKind, LaneSeries, LaneStyle, LaneStyles, TraceScene,
+    Apex, ColorMode, ComplexBand, CornerBand, FractionMap, LaneKind, LaneSeries, LaneStyle,
+    LaneStyles, TraceScene,
 };
 
 /// Key of the cumulative gap lane (the time delta to the reference).
@@ -143,12 +144,19 @@ pub fn build(analysis: Arc<Analysis>, neighbours: Option<Arc<Neighbours>>) -> Bu
             zone: zone.id.clone().into(),
         })
         .collect();
+    // A corner's Δt is said only where the map places time loss (on a
+    // lap-time map it would be a share of lap time, not the corner's).
+    let placed = analysis.time_loss_placed();
     let bands = analysis
         .corners()
         .iter()
         .zip(&corners)
-        .map(|(zone, link)| CornerBand::new(link.band, zone.name.clone(), zone.start, zone.end))
+        .map(|(zone, link)| {
+            let dt = analysis.row(&zone.id).map(|row| row.dt).filter(|_| placed);
+            CornerBand::new(link.band, zone.name.clone(), zone.start, zone.end).with_delta(dt)
+        })
         .collect();
+    let apexes = apexes(&analysis);
     let complexes = analysis
         .complexes()
         .iter()
@@ -169,6 +177,8 @@ pub fn build(analysis: Arc<Analysis>, neighbours: Option<Arc<Neighbours>>) -> Bu
         neighbours.previous.as_ref().map(|lap| lap.label.clone()),
         neighbours.next.as_ref().map(|lap| lap.label.clone()),
     )
+    .with_lap_labels(Some(lap_label(primary)), reference.map(lap_label))
+    .with_apexes(apexes)
     .with_approximate_delta(crate::workspace::status::analysis_approximate(&analysis))
     .with_time_share_delta(crate::workspace::status::analysis_time_share(&analysis));
     BuiltScene {
@@ -176,6 +186,46 @@ pub fn build(analysis: Arc<Analysis>, neighbours: Option<Arc<Neighbours>>) -> Bu
         scene: Arc::new(scene),
         corners,
         neighbours: Some(neighbours),
+    }
+}
+
+/// The lap's short label as its lap strip names it (`L6`).
+fn lap_label(lap: &LoadedLap) -> SharedString {
+    lap.strip()
+        .iter()
+        .find(|cell| cell.lap_id == lap.lap_id())
+        .map(|cell| SharedString::from(cell.label.clone()))
+        .unwrap_or_else(|| format!("L{}", lap.lap_id()).into())
+}
+
+/// Each corner's slowest point for the speed lane's callouts: where the
+/// primary's apex marker sits, its apex speed and the reference's, from
+/// the analysis's corner rows.
+fn apexes(analysis: &Analysis) -> Vec<Apex> {
+    analysis
+        .rows()
+        .iter()
+        .filter_map(|row| {
+            let marker = row
+                .markers
+                .iter()
+                .find(|marker| marker.kind == MarkerKind::Apex)?;
+            (marker.fraction.is_finite() && row.speeds.apex.is_finite()).then(|| {
+                Apex::new(
+                    marker.fraction,
+                    row.speeds.apex,
+                    row.reference_speeds.map(|speeds| speeds.apex),
+                )
+            })
+        })
+        .collect()
+}
+
+/// `trace.color_mode` as the trace crate's colour mode.
+pub(crate) fn color_mode(config: &Config) -> ColorMode {
+    match config.trace.color_mode() {
+        TraceColorMode::Lap => ColorMode::Lap,
+        TraceColorMode::Channel => ColorMode::Channel,
     }
 }
 

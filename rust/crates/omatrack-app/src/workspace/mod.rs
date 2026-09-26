@@ -793,6 +793,17 @@ impl Workspace {
                 });
             });
         }))
+        .on_action(cx.listener(|this, _: &ToggleTraceColorMode, _, cx| {
+            use omatrack_library::config::TraceColorMode;
+            this.app.preferences.update(cx, |preferences, cx| {
+                preferences.update(cx, |config| {
+                    config.trace.color_mode = Some(match config.trace.color_mode() {
+                        TraceColorMode::Lap => TraceColorMode::Channel,
+                        TraceColorMode::Channel => TraceColorMode::Lap,
+                    });
+                });
+            });
+        }))
         .on_action(cx.listener(|this, _: &ResizeLanes, window, cx| {
             this.set_trace_mode(TraceMode::ResizingLanes, window, cx)
         }))

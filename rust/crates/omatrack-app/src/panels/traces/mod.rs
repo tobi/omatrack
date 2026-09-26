@@ -28,7 +28,7 @@
 //! only moves the shared cursor.
 
 mod edit;
-mod scene_build;
+pub(crate) mod scene_build;
 mod stats;
 mod toolbar;
 
@@ -331,6 +331,7 @@ impl TracesPanel {
             self.resize.as_ref().map(ResizeDraft::weights),
         );
         let fit = config.trace.is_fitting_channels();
+        let color_mode = scene_build::color_mode(config);
         let lanes: Vec<(SharedString, SharedString, bool)> = self
             .scene
             .lanes()
@@ -347,6 +348,7 @@ impl TracesPanel {
             stack.update(cx, |stack, cx| {
                 stack.set_lane_styles(styles, cx);
                 stack.set_fit(fit, cx);
+                stack.set_color_mode(color_mode, cx);
             });
         }
         self.register_lane_commands(&lanes, cx);
@@ -787,9 +789,19 @@ impl TracesPanel {
             return analysis_body("traces-summary", &self.app, cx, |_| SharedString::default());
         }
         let stack = self.stack.clone();
-        v_flex()
+        let theme = cx.theme();
+        let (border, radius) = (theme.border, theme.radius_lg);
+        // The lanes sit in one bordered card: ruler row, damper strip,
+        // lanes and the distance axis.
+        let card = v_flex()
+            .id("trace-card")
+            .test_support()
             .size_full()
             .min_h_0()
+            .border_1()
+            .border_color(border)
+            .rounded(radius)
+            .overflow_hidden()
             .child(self.render_ruler_row(cx))
             .when(self.show_damper, |el| el.child(self.damper.clone()))
             .child(
@@ -800,7 +812,12 @@ impl TracesPanel {
                     .min_h_0()
                     .children(stack)
                     .children(self.render_range_stats(cx)),
-            )
+            );
+        div()
+            .size_full()
+            .min_h_0()
+            .p_2()
+            .child(card)
             .into_any_element()
     }
 }

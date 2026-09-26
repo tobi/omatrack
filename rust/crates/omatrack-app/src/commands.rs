@@ -175,6 +175,13 @@ pub(crate) fn init(cx: &mut App) {
             Commands,
             ToggleFit,
         ),
+        CommandSpec::new(
+            "trace-colors",
+            "Toggle lap and channel colours",
+            Commands,
+            ToggleTraceColorMode,
+        )
+        .keywords(["traces", "colour", "color", "hue"]),
         CommandSpec::new("resize-lanes", "Resize lanes…", Commands, ResizeLanes),
         CommandSpec::new("edit-corners", "Edit corners…", Commands, ToggleCornerEdit),
         CommandSpec::new("play", "Play or pause", Commands, TogglePlay).keywords(["video"]),

@@ -58,6 +58,7 @@ gpui_kit::actions!(
         NextLap,
         ToggleXAxis,
         ToggleFit,
+        ToggleTraceColorMode,
         ResizeLanes,
         SaveEdit,
         CancelEdit,
