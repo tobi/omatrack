@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(lap.reference_value("speed", true, &style), lap.reference);
         // Channel colours: the primary's in the channel hue, the
         // reference's plainly in the foreground (its lap label says whose).
-        let channel = lap.clone().with_mode(ColorMode::Channel);
+        let channel = lap.with_mode(ColorMode::Channel);
         assert_eq!(
             channel.channel_colors("brake", true, &style).0,
             channel.channel_hue("brake")

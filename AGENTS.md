@@ -347,22 +347,31 @@ so a pin bump regenerates every cache.
 ### 6.10 Session consistency and driving events
 
 - **Consistency** (`consistency::{SessionLaps::for_consistency,
-  build_consistency, Consistency}`): every `counts_for_best` lap of the
-  primary's recording (`spread_lap_ids`, fastest first; the parsed recording
+  build_consistency, Consistency}`): the `counts_for_best` laps of the
+  primary's recording within `SPREAD_MAX_GAP` (105%) of its best
+  (`spread_lap_ids`, fastest first, so one slow lap never sets the band;
+  the parsed recording
   and the primary lap are reused), resampled onto the primary's 50 Hz grid
   by **share of lap distance** (gear at the nearest sample, never blended),
   per `SPREAD_CHANNELS` channel: each other lap's `Arc<[f64]>` and the
   per-station min/max over those laps and the primary. Laps without distance
   are left out; fewer than `MIN_SPREAD_LAPS` (2) other laps is no spread
-  and the view says so.
+  and the view says so. `Consistency::is_approximate` holds when any of
+  those laps (or the primary) has speed-fused rather than native distance:
+  the band is then placed by share of an estimated distance and the view
+  says `approximate`.
 - **Events** (`events::{detect, analysis_events}`): brake onsets (brake
   crosses `BRAKE_ONSET_BAR` after at least `BRAKE_REARM_SECONDS` below it),
   lift-offs (throttle from above `LIFT_FROM_THROTTLE` to below
   `LIFT_TO_THROTTLE`), up/down shifts with the new gear (held
-  `GEAR_HOLD_SECONDS`, neutral ignored), for both laps (the reference's
-  through the shared map), plus every `CornerNote` at its zone start as
-  `T5: <sentence>`. Thresholds are named constants; nothing here changes
-  CLI output.
+  `GEAR_HOLD_SECONDS`, neutral ignored; same-direction shifts within
+  `SHIFT_SEQUENCE_SECONDS` are one event at the first shift carrying the
+  final gear), for both laps (the reference's through the shared map). A
+  primary brake onset pairs with the nearest reference onset within
+  `BRAKE_PAIR_METRES` (`brake_offset`, + = the primary brakes later).
+  Each corner with notes is one event at its zone start,
+  `T5: <sentences>`; the "matched" note is not an event. Thresholds are
+  named constants; nothing here changes CLI output.
 
 ## 7. UI architecture rules (GPUI)
 
@@ -435,15 +444,19 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   fullscreen. The **trace toolbar** heads the traces
   (`panels::traces::toolbar`): `[zoom out | zoom in | fit]`, the view mode
   `Lap | Corners | Consistency | Events` (`trace.view_mode`), `☰ Channels`
-  (lane visibility checks, `channels.<key>.visible`), the colour-mode
-  toggle (`trace.color_mode`), and right-aligned a `…` lane-tools menu
+  (lane visibility checks, `channels.<key>.visible`), the colour mode as
+  two segments `Lap colours | Channel colours` (`trace.color_mode`), and
+  right-aligned a `…` lane-tools menu
   (FIT, Resize lanes, Edit corners). Each control has one home and
-  dispatches the action of its key. A range selection's statistics float
-  at the top right of the lanes.
+  dispatches the action of its key. A segmented control's selected
+  segment is a clear neutral fill (`panels::selected_segment`), never a
+  role colour. A range selection's statistics float at the top right of
+  the lanes.
 - **Trace view modes** (`workspace::view_mode`): **Lap** is the whole-lap
   view. **Corners** frames the focused corner, else the first, with its
   approach and exit (`Viewport::frame_corner`) through the 140 ms focus
-  motion and neighbour-lap masks; `h`/`j` step, fit fits the corner, a new
+  motion and neighbour-lap masks, the cursor at the corner's apex (else
+  its start); `h`/`j` step, fit fits the corner, a new
   analysis keeps the same corner (by zone id); leaving it (another mode or
   Escape) restores the viewport and cursor from before the mode.
   **Consistency** and **Events** keep the lap framing: Consistency draws
@@ -452,14 +465,24 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   show in Lap and Corners only; event marks only in Events. The segmented
   control, `alt-1`..`alt-4` and the palette all set `TraceView::set_mode`,
   the one source of the mode.
-- **Corner ruler**: labels only, centred over their zones on two staggered
-  rows by corner index (T1 T3 T5 above, T2 T4 below), in the short form
-  (`T10A`, as on the map and in the tables) at every width, never
-  overlapping. The focused corner,
-  else the one under the cursor, is a filled chip. Complexes that group two
-  or more corners are a quiet bracket line above the rows. Zones shade every
-  lane as quiet columns (`muted` at low alpha, in the overlay); edges show
-  only as grips while editing.
+- **Corner ruler**: labels centred over their zones, on one row where
+  every label fits there, else on two staggered rows by corner index (T1
+  T3 T5 above, T2 T4 below), in the short form (`T10A`, as on the map and
+  in the tables) at every width, never overlapping, with a thin rule under
+  each zone along the ruler's foot. The focused corner, else the one
+  under the cursor, is a filled chip (and a foreground rule). Complexes
+  that group two or more corners are a quiet bracket line above the rows.
+  The ruler row's caption is `Corners` (the source in its tooltip; said
+  aloud only when not the atlas: `edited`, `from braking`, `GPS off the
+  map`), and in Consistency what the band is (`Session · 4 laps within
+  5% · approximate`). Zones shade every lane as quiet columns
+  (`CORNER_BAND_ALPHA` of `muted`) in the static layer, beneath the
+  traces; while editing the overlay draws the draft with grips.
+- **Apex callouts** (Lap, Corners): only where the primary's apex is an
+  interior minimum (`CornerMetrics::apex_is_local`: `APEX_EDGE_MARGIN_M`
+  from both zone edges, `APEX_MIN_DROP_KMH` below the entry); a ringed
+  dot, the label clear of both laps across its width and inside the plot,
+  or left out.
 - **Left dock: [Laps | Library]** (layout v7). The **Laps sidebar**
   (`panels::laps`, `PanelKind::Laps`) is the default left surface: the
   primary's event (its track and day in the `LibrarySnapshot`, plus the
@@ -511,9 +534,13 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   on. Drawn behind each lane: a low-alpha min–max band
   (`SPREAD_BAND_ALPHA`) and one thin quiet line per lap
   (`SPREAD_LINE_WIDTH`, decimated at `SPREAD_LINE_COLUMNS_PER_PX`), static
-  layer, cached per scene like the lane. Events draw ticks with a flag on
-  their lane (brake onset on Brake, lift on Throttle, shifts on Gear, notes
-  on the gap lane; the reference quieter) and label on hover in the overlay.
+  layer, cached per scene like the lane; the reference line steps back
+  (`CONSISTENCY_REFERENCE_EMPHASIS`) so the primary leads. Events draw
+  short ticks on their lane (brake onset on Brake, lift on Throttle,
+  shifts on Gear, notes on the gap lane), the primary's at the top with a
+  small tag (brake point vs the reference's, `+12 m`; a shift's gear,
+  `↓3`), the reference's at the bottom, quieter; full labels on hover in
+  the overlay.
   Too few laps shows a notice over the lanes, never an empty view.
 - **Overlays through `Root`**; escape closes the topmost, restoring focus.
 - **Preferences** writes go through the Preferences entity: debounced, atomic,
@@ -547,16 +574,24 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   title and two rows fit `MIN_LANE_HEIGHT`. Nothing clips
   (headless-tested).
 - **Value gutter**: round ticks right-aligned beside dotted gridlines
-  (`static_layer::value_ticks`): integer steps on step lanes (gear 2/4/6),
-  signed on Δ (`+1.0 +0.5 0`, a solid zero line = the reference), L/R at
+  (`static_layer::value_ticks`): whole steps on step lanes, as dense as
+  `STEP_TICK_SPACING` allows (gear 2/4/6; a step lane is at least
+  `STEP_LANE_MIN_HEIGHT`, 64 px), signed on Δ (`+1.0 +0.5 0`, a solid zero
+  line = the reference; a zoomed Δ keeps at least two ticks), L/R at
   steering's ends, fewer ticks as a lane shrinks.
 - **Colour modes** (`trace.color_mode: lap | channel`, palette
   `Toggle lap and channel colours` = `omatrack::ToggleTraceColorMode`):
   lap colours (default) draw every lap in its role; channel colours name
-  the channel (speed `blue`, throttle `green`, brake `red`, steering
+  the channel (speed `blue`, or `cyan` when the theme's blue is the
+  primary's hue; throttle `green`, brake `red`, steering
   `yellow`, gear foreground, others `chart_1..5`), the reference in the
-  same hue at 50%, legend values in foreground. A mode change repaints
-  the static layer once and never rebuilds geometry (headless-tested).
+  same hue at `CHANNEL_REFERENCE_ALPHA` (40%). In every mode the reference
+  strokes at `REFERENCE_STROKE_SCALE` (0.75x) of the primary's width.
+  Legend values: in lap colours each lap's value in its role colour; in
+  channel colours the primary's in the channel hue, the reference's in
+  the foreground beside its muted lap label; Δ always gain/loss. A mode
+  change repaints the static layer once and never rebuilds geometry
+  (headless-tested).
 
 ## 8. Trace rendering performance contract
 
@@ -663,11 +698,12 @@ dependency.
   channel sharing a lane (brake overlaid on throttle) keeps both laps' role
   hues, quieter (60% over the background); channel colours (section 7)
   use `blue`/`green`/`red`/`yellow` by channel.
-  Legend and inspector values always carry the lap role colour. success /
+  Legend and inspector values carry the lap role colour in lap colours
+  (channel colours: section 7, "Colour modes"). success /
   danger mean only Δ, never a pedal. With no Omarchy palette the built-in
   dark theme's primary is `blue-400` (its own primary is white).
-- Colour mode (`trace.color_mode`, the trace toolbar's `Channel colours`
-  toggle and the palette): `lap` (default) draws lanes in the lap roles as
+- Colour mode (`trace.color_mode`, the trace toolbar's
+  `Lap colours | Channel colours` segments and the palette): `lap` (default) draws lanes in the lap roles as
   above; `channel` draws each channel in its own hue (section 7). Either
   way it is a repaint over the same geometry, never a rebuild.
 - Heat ramp (`TracePalette::heat`, "less — more"): a quiet tone
