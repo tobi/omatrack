@@ -39,6 +39,11 @@ pub fn session_meta_from_filename(stem: &str) -> SessionMeta {
 /// Unix-epoch nanoseconds at file t = 0 from a GPS week / iTOW sample taken
 /// at `file_time_sec`. -1 when the fix is unusable.
 pub fn utc_start_ns_from_gps(week: f64, itow_ms: f64, file_time_sec: f64) -> i64 {
+    const GPS_EPOCH_UNIX_SEC: i64 = 315_964_800;
+    const LEAP_SECONDS: i64 = 18;
+    const NS_PER_SEC: i64 = 1_000_000_000;
+    const NS_PER_WEEK: i64 = 604_800 * NS_PER_SEC;
+
     if !week.is_finite()
         || !itow_ms.is_finite()
         || !file_time_sec.is_finite()
@@ -58,10 +63,6 @@ pub fn utc_start_ns_from_gps(week: f64, itow_ms: f64, file_time_sec: f64) -> i64
     if itow < 0 || file_ns < 0 {
         return -1;
     }
-    const GPS_EPOCH_UNIX_SEC: i64 = 315_964_800;
-    const LEAP_SECONDS: i64 = 18;
-    const NS_PER_SEC: i64 = 1_000_000_000;
-    const NS_PER_WEEK: i64 = 604_800 * NS_PER_SEC;
     let gps_ns = week_count
         .wrapping_mul(NS_PER_WEEK)
         .wrapping_add(itow.wrapping_mul(1_000_000));

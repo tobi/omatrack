@@ -514,7 +514,7 @@ Semantics carry over from [docs/TRACE_RENDERING.md](docs/TRACE_RENDERING.md).
   `Vec` growth, sample-array clones, `format!` of unchanged labels or `Arc`
   rebuilds per frame. Scene data is `Arc<[f64]>`. Geometry caches never key on
   colour. Off-screen lanes are skipped.
-- **Bench:** `cargo run --release -p omatrack-trace --example trace_bench`
+- **Bench:** `cargo run --release --locked -p omatrack-trace --example trace_bench`
   (8 lanes x 2 laps, 1x–10,000x sweep, 2560 device px, dpr 2): geometry avg
   ≤ 4 ms, worst ≤ 8.33 ms, hover < 0.1 ms. Report before/after for renderer
   changes. The worst-frame target is not yet met on every run; wave 4 hardens
@@ -527,7 +527,8 @@ dependency.
 
 - FFI from `libmpv2-sys =4.0.1` (mpv 2.5 bindings incl. the SW render API);
   `build.rs` probes libmpv ≥ 2.5. Only `ffi` and `render` carry
-  `#[allow(unsafe_code)]`. Never spawn the mpv CLI or embed a foreign window.
+  `#[expect(unsafe_code, reason = "...")]`. Never spawn the mpv CLI or embed
+  a foreign window.
 - `Player`: load, play/pause, exact and relative seek, speed, mute, volume,
   `apply(FollowAction)`, `state()`, `clock()`, `events()`, `frame_source()`.
 - An event thread mirrors properties; `time-pos` feeds only the lock-free
@@ -637,10 +638,11 @@ shown only while the panel has focus).
 Gates, from `rust/`; a failing gate is a failure:
 
 ```sh
-scripts/check.sh    # fmt --check, clippy -D warnings, test --workspace --locked,
+scripts/lint.sh     # strict Clippy for all targets/features; policy: rust/CLIPPY.md
+scripts/check.sh    # fmt --check, scripts/lint.sh, test --workspace --locked,
                     # real_* tests (OMATRACK_FIXTURES), parity if the baseline exists
 parity/run.sh       # against the frozen baseline: 89 cases, 0 diffs
-cargo run --release -p omatrack-trace --example trace_bench
+cargo run --release --locked -p omatrack-trace --example trace_bench
 cargo build --release --locked -p omatrack-app
 scripts/screenshot.sh [-o out.png] [-k keys]   # headless visual check (cage + grim)
 ```

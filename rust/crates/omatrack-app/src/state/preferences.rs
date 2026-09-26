@@ -40,9 +40,9 @@ impl Preferences {
     /// Read `omatrack.yml` below `paths`. A missing file is the default
     /// configuration. Reads the (small) document synchronously: call it at
     /// startup, before the first window.
-    pub fn open(paths: Paths, cx: &mut Context<Self>) -> Self {
+    pub fn open(paths: Paths, cx: &mut Context<'_, Self>) -> Self {
         let file = ConfigFile::open(paths.config_file());
-        let last_error = file.load_error().map(|error| error.to_string());
+        let last_error = file.load_error().map(ToString::to_string);
         cx.on_app_quit(|this: &mut Self, _| {
             this.flush_now();
             async {}
@@ -78,7 +78,7 @@ impl Preferences {
 
     /// Apply `edit` to the configuration and schedule a save. Observers are
     /// notified only when the document actually changed.
-    pub fn update(&mut self, cx: &mut Context<Self>, edit: impl FnOnce(&mut Config)) {
+    pub fn update(&mut self, cx: &mut Context<'_, Self>, edit: impl FnOnce(&mut Config)) {
         let before = self.file.config().clone();
         edit(self.file.config_mut());
         if *self.file.config() == before {
@@ -91,7 +91,7 @@ impl Preferences {
         cx.notify();
     }
 
-    fn schedule_save(&mut self, cx: &mut Context<Self>) {
+    fn schedule_save(&mut self, cx: &mut Context<'_, Self>) {
         if !self.file.is_writable() {
             return;
         }
@@ -110,6 +110,7 @@ impl Preferences {
                 return;
             };
             let result = cx.background_spawn(async move { config.save(&path) }).await;
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no deferred result; this weak entity/window handle may already be gone.")]
             let _ = this.update(cx, |this, cx| match result {
                 Ok(()) => {
                     if this.revision == revision {
@@ -127,7 +128,7 @@ impl Preferences {
     }
 
     /// Write a pending edit now, on the calling thread (quit, tests).
-    pub fn flush(&mut self, cx: &mut Context<Self>) {
+    pub fn flush(&mut self, cx: &mut Context<'_, Self>) {
         if let Some(message) = self.flush_now() {
             cx.emit(PreferencesEvent::SaveFailed(message));
         }

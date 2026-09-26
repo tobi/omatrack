@@ -68,7 +68,7 @@ impl Rect {
     }
 
     #[cfg(test)]
-    fn overlaps(&self, other: &Rect) -> bool {
+    fn overlaps(&self, other: &Self) -> bool {
         self.x < other.right()
             && other.x < self.right()
             && self.y < other.bottom()
@@ -133,6 +133,14 @@ fn sane_aspect(aspect: f32) -> f32 {
 
 /// Lay out `layout` on a `width` x `height` stage with `lanes`.
 /// `aspect(role)` is each video's width / height.
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+)]
+#[expect(
+    clippy::many_single_char_names,
+    reason = "Use conventional x/y/w/h coordinate names in this geometry calculation."
+)]
 pub fn plan(
     layout: ComposeLayout,
     width: f32,
@@ -371,6 +379,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn single_pictures_shrink_so_the_column_fits() {
         let plan = plan(ComposeLayout::PrimaryOnly, 1920., 1080., |_| WIDE, LANES);
         stacked(&plan, 1080.);
@@ -395,6 +407,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn insets_sit_beside_the_large_picture_never_over_it() {
         for layout in [
             ComposeLayout::PrimaryWithReferenceInset,

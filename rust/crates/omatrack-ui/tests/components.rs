@@ -1,5 +1,7 @@
 //! UI integration tests for the domain components in a headless window.
 
+#![cfg(test)]
+
 use gpui_kit::component::{Root, Selectable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::test::{TestSupportExt as _, TestWindowExt as _};
@@ -12,7 +14,7 @@ struct Comparison {
 }
 
 impl Render for Comparison {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let this = cx.entity().downgrade();
         div()
             .size_full()

@@ -30,7 +30,7 @@ impl TriangleSink for Vec<[[f32; 2]; 3]> {
         self.push([a, b, c]);
     }
     fn reserve(&mut self, count: usize) {
-        Vec::reserve(self, count);
+        Self::reserve(self, count);
     }
 }
 
@@ -45,6 +45,10 @@ impl TriangleSink for TriangleCounter {
 }
 
 #[inline]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+)]
 fn pt(x: f64, y: f64) -> [f32; 2] {
     [x as f32, y as f32]
 }
@@ -132,10 +136,11 @@ fn stroke_run(run: &[PathPoint], half: f64, sink: &mut impl TriangleSink) {
     }
 }
 
-/// Fill the area between each pen-down run of `points` and the horizontal
-/// line `baseline` with non-overlapping trapezoids. Parts above the
-/// baseline (smaller y) go to `above`, parts below to `below`. `points` must
-/// be non-decreasing in x within each run (decimator output is).
+/// Fill the area between each pen-down run of `points` and the horizontal line
+/// `baseline` with non-overlapping trapezoids.
+///
+/// Parts above the baseline (smaller y) go to `above`, parts below to `below`. `points`
+/// must be non-decreasing in x within each run (decimator output is).
 pub fn fill_to_baseline(
     points: &[PathPoint],
     baseline: f64,
@@ -184,6 +189,10 @@ fn trapezoid(
 }
 
 #[inline]
+#[expect(
+    clippy::float_cmp,
+    reason = "Exact geometry equality identifies a zero-height segment; epsilon comparisons would discard thin detail."
+)]
 fn emit_trapezoid(a: PathPoint, b: PathPoint, baseline: f64, sink: &mut impl TriangleSink) {
     let top_a = pt(a.x, a.y);
     let top_b = pt(b.x, b.y);
@@ -204,16 +213,17 @@ mod tests {
 
     fn area(t: &[[f32; 2]; 3]) -> f64 {
         let [a, b, c] = *t;
-        ((b[0] - a[0]) as f64 * (c[1] - a[1]) as f64 - (c[0] - a[0]) as f64 * (b[1] - a[1]) as f64)
-            .abs()
+        (f64::from(b[0] - a[0]) * f64::from(c[1] - a[1])
+            - f64::from(c[0] - a[0]) * f64::from(b[1] - a[1]))
+        .abs()
             * 0.5
     }
 
     /// Point-in-triangle by barycentric signs, strictly inside.
     fn inside(t: &[[f32; 2]; 3], p: (f64, f64)) -> bool {
         let s = |a: [f32; 2], b: [f32; 2]| {
-            (b[0] as f64 - a[0] as f64) * (p.1 - a[1] as f64)
-                - (b[1] as f64 - a[1] as f64) * (p.0 - a[0] as f64)
+            (f64::from(b[0]) - f64::from(a[0])) * (p.1 - f64::from(a[1]))
+                - (f64::from(b[1]) - f64::from(a[1])) * (p.0 - f64::from(a[0]))
         };
         let d1 = s(t[0], t[1]);
         let d2 = s(t[1], t[2]);
@@ -222,6 +232,10 @@ mod tests {
         (d1 > eps && d2 > eps && d3 > eps) || (d1 < -eps && d2 < -eps && d3 < -eps)
     }
 
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+    )]
     fn zigzag(n: usize) -> Vec<PathPoint> {
         (0..n)
             .map(|i| {
@@ -234,6 +248,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::while_float,
+        reason = "The bounded pixel/sample sweep uses a fixed positive step, not floating-point equality as a stop condition."
+    )]
     fn fill_triangles_never_overlap() {
         let points = zigzag(40);
         let mut above: Vec<[[f32; 2]; 3]> = Vec::new();
@@ -284,8 +302,8 @@ mod tests {
         // No triangle bridges the gap between x = 12 and x = 15.
         for t in &triangles {
             let xs: Vec<f32> = t.iter().map(|p| p[0]).collect();
-            let min = xs.iter().cloned().fold(f32::INFINITY, f32::min);
-            let max = xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let min = xs.iter().copied().fold(f32::INFINITY, f32::min);
+            let max = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max);
             assert!(!(min < 13.0 && max > 14.0), "bridged gap: {t:?}");
         }
         // Isolated single points (a run of one) draw nothing and do not panic.
@@ -319,7 +337,9 @@ mod tests {
             for v in t {
                 let near = points
                     .iter()
-                    .map(|p| ((v[0] as f64 - p.x).powi(2) + (v[1] as f64 - p.y).powi(2)).sqrt())
+                    .map(|p| {
+                        ((f64::from(v[0]) - p.x).powi(2) + (f64::from(v[1]) - p.y).powi(2)).sqrt()
+                    })
                     .fold(f64::INFINITY, f64::min);
                 assert!(near <= 2.0 + 1e-4, "{v:?} is {near} away");
             }
@@ -329,7 +349,7 @@ mod tests {
     #[test]
     fn more_than_65535_vertices_are_kept() {
         let points: Vec<PathPoint> = (0..40_000)
-            .map(|i| PathPoint::new(i as f64 * 0.1, 10.0 + ((i * 37) % 11) as f64))
+            .map(|i| PathPoint::new(f64::from(i) * 0.1, 10.0 + f64::from((i * 37) % 11)))
             .collect();
         let mut triangles: Vec<[[f32; 2]; 3]> = Vec::new();
         stroke(&points, 1.0, &mut triangles);

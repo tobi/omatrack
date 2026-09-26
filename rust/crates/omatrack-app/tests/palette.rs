@@ -1,5 +1,7 @@
 //! UI integration tests for the command palette.
 
+#![cfg(test)]
+
 mod common;
 
 use gpui_kit::AppContext as _;
@@ -14,7 +16,7 @@ fn ctrl_k_opens_typing_filters_and_enter_runs_the_command(cx: &mut TestAppContex
     let sandbox = common::Sandbox::new();
     let test = common::start(cx, sandbox.options());
     cx.update_window(test.window.into(), |_, window, cx| {
-        window.press("ctrl-k", cx)
+        window.press("ctrl-k", cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -86,7 +88,7 @@ fn a_focus_command_keeps_the_focus_it_moved(cx: &mut TestAppContext) {
     let sandbox = common::Sandbox::new();
     let test = common::start(cx, sandbox.options());
     cx.update_window(test.window.into(), |_, window, cx| {
-        window.press("ctrl-k", cx)
+        window.press("ctrl-k", cx);
     })
     .unwrap();
     cx.run_until_parked();

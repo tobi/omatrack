@@ -1,6 +1,8 @@
 //! Session consistency: lap selection, confidence bands and corner brake
 //! spread, mirroring `requestTraceConfidence` / `requestCornerConsistency`.
 
+#![cfg(test)]
+
 use omatrack_core::consistency::{
     self, CONFIDENCE_CHANNELS, ConfidenceBand, corner_consistency, corner_consistency_lap_ids,
     trace_confidence,
@@ -20,10 +22,10 @@ fn unified(brake_fraction: f64, scale: f64) -> UnifiedLap {
     let mut lap = UnifiedLap::default();
     let mut distance = 0.0;
     for i in 0..count {
-        let f = i as f64 / (count - 1) as f64;
+        let f = f64::from(i) / f64::from(count - 1);
         let braking = f >= brake_fraction && f < brake_fraction + 0.1;
         let speed = if braking { 120.0 } else { 200.0 };
-        lap.time.push(i as f64 / 50.0);
+        lap.time.push(f64::from(i) / 50.0);
         lap.speed.push(speed);
         lap.throttle
             .push(if braking { 0.0 } else { scale.min(1.0) });
@@ -35,7 +37,7 @@ fn unified(brake_fraction: f64, scale: f64) -> UnifiedLap {
         lap.distance.push(distance);
         lap.g_force_long.push(0.0);
         lap.g_force_lat.push(0.0);
-        lap.damper_fl.push((i as f64 * 0.3).sin());
+        lap.damper_fl.push((f64::from(i) * 0.3).sin());
         distance += speed / 3.6 / 50.0;
     }
     lap
@@ -132,6 +134,10 @@ fn confidence_honours_cancel() {
 }
 
 #[test]
+#[expect(
+    clippy::manual_midpoint,
+    reason = "Keep the test oracle's bounded floating-point operation order explicit."
+)]
 fn corner_brake_spread_reduces_like_the_store() {
     let laps = [
         unified(0.40, 1.0),

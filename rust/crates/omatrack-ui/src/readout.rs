@@ -109,6 +109,7 @@ impl Readout {
     }
 
     /// The unit suffix, drawn muted after the value (`km/h`, `s`, `%`).
+    #[must_use]
     pub fn unit(mut self, unit: impl Into<SharedString>) -> Self {
         self.unit = Some(unit.into());
         self
@@ -130,9 +131,10 @@ impl RenderOnce for Readout {
     }
 }
 
-/// A signed delta in tabular digits, colored by trend: gain uses the
-/// theme's `success`, loss its `danger`, even stays muted. The explicit sign
-/// carries the same meaning for readers who cannot rely on color.
+/// A signed delta in tabular digits, colored by trend: gain uses the theme's `success`,
+/// loss its `danger`, even stays muted.
+///
+/// The explicit sign carries the same meaning for readers who cannot rely on color.
 #[derive(IntoElement)]
 pub struct DeltaText {
     value: Option<f64>,
@@ -158,6 +160,7 @@ impl DeltaText {
 
     /// Muted, without the gain/loss colour (the caller marks it approximate
     /// itself, e.g. with a `Δ≈` label).
+    #[must_use]
     pub fn muted(mut self, muted: bool) -> Self {
         self.muted = muted;
         self
@@ -165,21 +168,25 @@ impl DeltaText {
 
     /// An estimate, not a measurement (a LOW-confidence alignment): prefixed
     /// with `≈` and muted, since gain/loss colour would overstate it.
+    #[must_use]
     pub fn approximate(mut self, approximate: bool) -> Self {
         self.approximate = approximate;
         self
     }
 
+    #[must_use]
     pub fn decimals(mut self, decimals: usize) -> Self {
         self.decimals = decimals;
         self
     }
 
+    #[must_use]
     pub fn sense(mut self, sense: DeltaSense) -> Self {
         self.sense = sense;
         self
     }
 
+    #[must_use]
     pub fn unit(mut self, unit: impl Into<SharedString>) -> Self {
         self.unit = Some(unit.into());
         self

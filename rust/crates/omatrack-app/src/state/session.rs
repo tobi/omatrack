@@ -110,7 +110,7 @@ impl RoleSlot {
 }
 
 /// What changed in the [`Session`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionEvent {
     PrimaryChanged,
     ReferenceChanged,
@@ -136,9 +136,11 @@ impl Pending {
     }
 }
 
-/// The session entity. Every parse, unify and analysis runs on the
-/// background executor with one slot per role plus one for the analysis;
-/// a newer request cancels the older one and stale results are dropped.
+/// The session entity.
+///
+/// Every parse, unify and analysis runs on the background executor with one slot per
+/// role plus one for the analysis; a newer request cancels the older one and stale
+/// results are dropped.
 pub struct Session {
     library: Entity<Library>,
     preferences: Entity<Preferences>,
@@ -168,7 +170,7 @@ impl Session {
         library: Entity<Library>,
         preferences: Entity<Preferences>,
         jobs: Entity<Jobs>,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) -> Self {
         let strategy = preferences
             .read(cx)
@@ -233,18 +235,18 @@ impl Session {
         self.manual_offset
     }
 
-    pub fn set_primary(&mut self, session: SharedString, lap: i32, cx: &mut Context<Self>) {
+    pub fn set_primary(&mut self, session: SharedString, lap: i32, cx: &mut Context<'_, Self>) {
         self.set_lap(Role::Primary, LapRef::new(session, lap), cx);
     }
 
-    pub fn set_reference(&mut self, session: SharedString, lap: i32, cx: &mut Context<Self>) {
+    pub fn set_reference(&mut self, session: SharedString, lap: i32, cx: &mut Context<'_, Self>) {
         self.set_lap(Role::Reference, LapRef::new(session, lap), cx);
     }
 
     /// Load `lap_ref` into `role`. Selecting the lap a role already holds
     /// does nothing; a pending load for the role is cancelled and the
     /// pair-specific manual offset is cleared. Cursor and viewport stay.
-    pub fn set_lap(&mut self, role: Role, lap_ref: LapRef, cx: &mut Context<Self>) {
+    pub fn set_lap(&mut self, role: Role, lap_ref: LapRef, cx: &mut Context<'_, Self>) {
         if self.slot(role).is_some_and(|slot| {
             slot.lap_ref == lap_ref && !matches!(slot.state, RoleState::Failed(_))
         }) {
@@ -270,7 +272,7 @@ impl Session {
                 track: SharedString::default(),
                 session_name: None,
                 day: SharedString::default(),
-                path: Default::default(),
+                path: std::path::PathBuf::default(),
             };
             self.put_slot(
                 role,
@@ -281,7 +283,7 @@ impl Session {
                     state: RoleState::Failed(message.clone()),
                 },
             );
-            self.emit_changed(role, cx);
+            Self::emit_changed(role, cx);
             cx.emit(SessionEvent::LoadFailed { role, message });
             cx.notify();
             return;
@@ -291,7 +293,7 @@ impl Session {
         let metadata = &source.node.metadata;
         let track_key = metadata
             .track_slug()
-            .or(metadata.track_name())
+            .or_else(|| metadata.track_name())
             .map(|key| SharedString::from(key.to_string()));
         // The recording this role held, if it was parsed: a load of another
         // lap of it reuses the parsed file instead of reading it again.
@@ -308,7 +310,7 @@ impl Session {
                 state: RoleState::Loading,
             },
         );
-        self.emit_changed(role, cx);
+        Self::emit_changed(role, cx);
         cx.notify();
 
         // Two roles on one recording, or two laps of it in turn, share the
@@ -342,7 +344,8 @@ impl Session {
         let task = cx.spawn(async move |this, cx| {
             let result = load.await;
             jobs.update(cx, |jobs, cx| jobs.finish(job, cx));
-            let _ = this.update(cx, |this, cx| this.finish_load(role, requested, result, cx));
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no deferred result; this weak entity/window handle may already be gone.")]
+            let _ = this.update(cx, |this, cx| this.finish_load(role, &requested, result, cx));
         });
         self.put_load(
             role,
@@ -356,11 +359,14 @@ impl Session {
     fn finish_load(
         &mut self,
         role: Role,
-        requested: LapRef,
+        requested: &LapRef,
         result: Result<LoadedLap, String>,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) {
-        if self.slot(role).is_none_or(|slot| slot.lap_ref != requested) {
+        if self
+            .slot(role)
+            .is_none_or(|slot| &slot.lap_ref != requested)
+        {
             return;
         }
         self.take_load(role);
@@ -378,7 +384,7 @@ impl Session {
                 if role == Role::Primary {
                     self.corner_override = self.stored_corner_override(cx);
                 }
-                self.emit_changed(role, cx);
+                Self::emit_changed(role, cx);
                 self.rebuild_analysis(cx);
             }
             Err(message) if message == CANCELLED => {}
@@ -388,7 +394,7 @@ impl Session {
                 if role == Role::Primary {
                     self.drop_analysis(cx);
                 }
-                self.emit_changed(role, cx);
+                Self::emit_changed(role, cx);
                 cx.emit(SessionEvent::LoadFailed { role, message });
                 // A failed reference still leaves the primary to analyse.
                 if role == Role::Reference {
@@ -400,7 +406,7 @@ impl Session {
     }
 
     /// Drop the reference lap and compare nothing.
-    pub fn clear_reference(&mut self, cx: &mut Context<Self>) {
+    pub fn clear_reference(&mut self, cx: &mut Context<'_, Self>) {
         if let Some(pending) = self.reference_load.take() {
             pending.cancel();
         }
@@ -416,7 +422,7 @@ impl Session {
     /// pending (or failed) loads are cancelled and restarted in their new
     /// roles. The manual offset inverts. Cursor and viewport are not
     /// touched: the playhead never moves on a swap.
-    pub fn swap(&mut self, cx: &mut Context<Self>) {
+    pub fn swap(&mut self, cx: &mut Context<'_, Self>) {
         let (Some(primary), Some(reference)) = (self.primary.clone(), self.reference.clone())
         else {
             return;
@@ -449,7 +455,7 @@ impl Session {
                 if role == Role::Primary {
                     self.corner_override = self.stored_corner_override(cx);
                 }
-                self.emit_changed(role, cx);
+                Self::emit_changed(role, cx);
             }
             for (role, slot) in unloaded {
                 self.set_lap(role, slot.lap_ref, cx);
@@ -478,41 +484,40 @@ impl Session {
     }
 
     /// Select the neighbouring lap of the primary recording (`offset` -1/+1).
-    pub fn step_lap(&mut self, offset: isize, cx: &mut Context<Self>) {
+    pub fn step_lap(&mut self, offset: isize, cx: &mut Context<'_, Self>) {
         let Some(slot) = self.primary.as_ref() else {
             return;
         };
         let session = slot.lap_ref.session.clone();
-        let next = match slot.loaded() {
-            Some(lap) => lap.neighbour_lap(offset).map(|lap| lap.id),
-            None => {
-                let library = self.library.read(cx);
-                library.snapshot().session(&session).and_then(|node| {
-                    let ix = node
-                        .laps
-                        .iter()
-                        .position(|l| l.lap_id == slot.lap_ref.lap)?;
-                    node.laps
-                        .get(ix.checked_add_signed(offset)?)
-                        .map(|l| l.lap_id)
-                })
-            }
+        let next = if let Some(lap) = slot.loaded() {
+            lap.neighbour_lap(offset).map(|lap| lap.id)
+        } else {
+            let library = self.library.read(cx);
+            library.snapshot().session(&session).and_then(|node| {
+                let ix = node
+                    .laps
+                    .iter()
+                    .position(|l| l.lap_id == slot.lap_ref.lap)?;
+                node.laps
+                    .get(ix.checked_add_signed(offset)?)
+                    .map(|l| l.lap_id)
+            })
         };
         if let Some(lap) = next {
             self.set_lap(Role::Primary, LapRef::new(session, lap), cx);
         }
     }
 
-    pub fn prev_lap(&mut self, cx: &mut Context<Self>) {
+    pub fn prev_lap(&mut self, cx: &mut Context<'_, Self>) {
         self.step_lap(-1, cx);
     }
 
-    pub fn next_lap(&mut self, cx: &mut Context<Self>) {
+    pub fn next_lap(&mut self, cx: &mut Context<'_, Self>) {
         self.step_lap(1, cx);
     }
 
     /// Ask for an alignment strategy (persisted as `video.reference_sync`).
-    pub fn set_strategy(&mut self, strategy: StrategyRequest, cx: &mut Context<Self>) {
+    pub fn set_strategy(&mut self, strategy: StrategyRequest, cx: &mut Context<'_, Self>) {
         if strategy == self.strategy {
             return;
         }
@@ -530,7 +535,11 @@ impl Session {
 
     /// The manual damper offset (primary lap fraction); applies only to
     /// manual damper alignment.
-    pub fn set_manual_offset(&mut self, offset: f64, cx: &mut Context<Self>) {
+    #[expect(
+        clippy::float_cmp,
+        reason = "Exact equality detects unchanged state or the full-view sentinel; epsilon would hide small changes."
+    )]
+    pub fn set_manual_offset(&mut self, offset: f64, cx: &mut Context<'_, Self>) {
         if !offset.is_finite() || offset == self.manual_offset {
             return;
         }
@@ -549,9 +558,8 @@ impl Session {
                 self.offset_base = Some(base);
             }
             // Another strategy is in effect: the offset has no effect.
-            Some(_) => {}
             None if self.analysis_load.is_some() => self.rebuild_analysis(cx),
-            None => {}
+            Some(_) | None => {}
         }
         cx.notify();
     }
@@ -561,7 +569,11 @@ impl Session {
     /// keyed by [`RoleSlot::track_key`]. Does nothing when the primary's
     /// track is unknown: zones of one unnamed track must never apply to
     /// every other unnamed one.
-    pub fn set_corner_override(&mut self, zones: Option<Vec<CornerZone>>, cx: &mut Context<Self>) {
+    pub fn set_corner_override(
+        &mut self,
+        zones: Option<Vec<CornerZone>>,
+        cx: &mut Context<'_, Self>,
+    ) {
         let Some(track) = self
             .primary
             .as_ref()
@@ -570,17 +582,18 @@ impl Session {
         else {
             return;
         };
-        self.corner_override = zones.clone();
+        self.corner_override = zones;
+        let stored_zones = self.corner_override.as_deref();
         self.preferences.update(cx, |preferences, cx| {
             preferences.update(cx, |config| {
-                config.set_track_corners(&track, zones.as_deref())
+                config.set_track_corners(&track, stored_zones);
             });
         });
         self.rebuild_analysis(cx);
         cx.notify();
     }
 
-    fn stored_corner_override(&self, cx: &Context<Self>) -> Option<Vec<CornerZone>> {
+    fn stored_corner_override(&self, cx: &Context<'_, Self>) -> Option<Vec<CornerZone>> {
         let track = self.primary.as_ref()?.track_key.as_ref()?;
         self.preferences.read(cx).config().track_corners(track)
     }
@@ -620,7 +633,7 @@ impl Session {
         }
     }
 
-    fn drop_analysis(&mut self, cx: &mut Context<Self>) {
+    fn drop_analysis(&mut self, cx: &mut Context<'_, Self>) {
         self.cancel_analysis();
         if self.analysis.take().is_some() {
             cx.emit(SessionEvent::AnalysisReady);
@@ -628,7 +641,7 @@ impl Session {
     }
 
     /// Rebuild the analysis from the loaded roles once no role is loading.
-    fn rebuild_analysis(&mut self, cx: &mut Context<Self>) {
+    fn rebuild_analysis(&mut self, cx: &mut Context<'_, Self>) {
         let Some(primary) = self.primary.as_ref().and_then(RoleSlot::loaded).cloned() else {
             self.drop_analysis(cx);
             return;
@@ -658,7 +671,7 @@ impl Session {
 
     fn run_analysis(
         &mut self,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
         build: impl FnOnce(&AtomicBool) -> Result<Analysis, omatrack_core::SessionError>
         + Send
         + 'static,
@@ -676,6 +689,7 @@ impl Session {
         let task = cx.spawn(async move |this, cx| {
             let result = work.await;
             jobs.update(cx, |jobs, cx| jobs.finish(job, cx));
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no deferred result; this weak entity/window handle may already be gone.")]
             let _ = this.update(cx, |this, cx| {
                 if this.analysis_generation != generation {
                     return;
@@ -737,7 +751,7 @@ impl Session {
         }
     }
 
-    fn emit_changed(&self, role: Role, cx: &mut Context<Self>) {
+    fn emit_changed(role: Role, cx: &mut Context<'_, Self>) {
         cx.emit(match role {
             Role::Primary => SessionEvent::PrimaryChanged,
             Role::Reference => SessionEvent::ReferenceChanged,
@@ -745,7 +759,7 @@ impl Session {
     }
 
     /// Remember the loaded pair in `selection` (recording path + lap id).
-    fn persist_selection(&self, cx: &mut Context<Self>) {
+    fn persist_selection(&self, cx: &mut Context<'_, Self>) {
         let key = |slot: &Option<RoleSlot>| {
             slot.as_ref()
                 .filter(|slot| slot.loaded().is_some())
@@ -763,27 +777,24 @@ impl Session {
                     config.selection.primary_key = Some(path);
                     config.selection.primary_lap = Some(lap);
                 }
-                match reference {
-                    Some((path, lap)) => {
-                        config.selection.compare_key = Some(path);
-                        config.selection.compare_lap = Some(lap);
-                    }
-                    None => {
-                        config.selection.compare_key = None;
-                        config.selection.compare_lap = None;
-                    }
+                if let Some((path, lap)) = reference {
+                    config.selection.compare_key = Some(path);
+                    config.selection.compare_lap = Some(lap);
+                } else {
+                    config.selection.compare_key = None;
+                    config.selection.compare_lap = None;
                 }
             });
         });
     }
 
     /// After the first scan: reselect the pair the last session ended with.
-    fn restore_selection(&mut self, cx: &mut Context<Self>) {
+    fn restore_selection(&mut self, cx: &mut Context<'_, Self>) {
         if !std::mem::take(&mut self.restore_pending) || self.primary.is_some() {
             return;
         }
         let selection = self.preferences.read(cx).config().selection.clone();
-        let find = |key: &str, lap: i32, cx: &Context<Self>| {
+        let find = |key: &str, lap: i32, cx: &Context<'_, Self>| {
             let library = self.library.read(cx);
             library
                 .snapshot()
@@ -830,8 +841,7 @@ fn lap_info(source: &RecordingSource, lap: i32) -> LapInfo {
     let row = node.lap(lap);
     LapInfo {
         label: row
-            .map(|row| row.label.clone())
-            .unwrap_or_else(|| format!("L{lap}"))
+            .map_or_else(|| format!("L{lap}"), |row| row.label.clone())
             .into(),
         time: row
             .map(|row| format_lap_time(row.time_ms))

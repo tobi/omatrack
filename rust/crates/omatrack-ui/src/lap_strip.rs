@@ -32,7 +32,7 @@ use std::sync::Arc;
 
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::button::{Button, ButtonRounded, ButtonVariants as _};
-use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _, StyledExt as _};
+use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AvailableSpace, Bounds, ClickEvent, Element, ElementId, GlobalElementId,
@@ -75,8 +75,13 @@ pub struct StripCells {
 /// Split `width` among `count` cells of which `fixed` are pit stops. Fixed
 /// cells keep their size before any pixel goes to gaps; dense sessions
 /// tighten spacing rather than shrinking pit-stop cells.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+)]
 pub fn strip_cells(width: f32, count: usize, fixed: usize) -> StripCells {
-    let width = width as f64;
+    let width = f64::from(width);
     if !width.is_finite() || width <= 0.0 || count == 0 {
         return StripCells::default();
     }
@@ -85,20 +90,20 @@ pub fn strip_cells(width: f32, count: usize, fixed: usize) -> StripCells {
     let (count_f, fixed_f) = (count as f64, fixed as f64);
     let selectable = (width / count_f).min(1.0);
     let fixed_width = if fixed > 0 {
-        ((width - variable * selectable) / fixed_f).clamp(0.0, PIT_STOP_CELL as f64)
+        ((width - variable * selectable) / fixed_f).clamp(0.0, f64::from(PIT_STOP_CELL))
     } else {
         0.0
     };
     let gap = if count > 1 {
         ((width - fixed_f * fixed_width - variable * selectable) / (count_f - 1.0))
-            .clamp(0.0, MAX_GAP as f64)
+            .clamp(0.0, f64::from(MAX_GAP))
     } else {
         0.0
     };
     let usable = (width - gap * (count_f - 1.0)).max(0.0);
     let remaining = (usable - fixed_f * fixed_width).max(0.0);
     let minimum = if variable > 0.0 {
-        (remaining / variable).min(MIN_CELL as f64)
+        (remaining / variable).min(f64::from(MIN_CELL))
     } else {
         0.0
     };
@@ -121,6 +126,11 @@ pub struct CellSpan {
 /// Place every item of a strip `width` logical pixels wide: pit stops at
 /// their fixed width, driven intervals at the floor plus their share of
 /// driven time (equal shares when no time is known).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+)]
 pub fn lap_strip_layout(width: f32, items: &[LapStripItem]) -> Vec<CellSpan> {
     let fixed = items.iter().filter(|item| item.pit_stop).count();
     let cells = strip_cells(width, items.len(), fixed);
@@ -192,16 +202,19 @@ impl LapStripItem {
         }
     }
 
+    #[must_use]
     pub fn time(mut self, time: impl Into<SharedString>) -> Self {
         self.time = Some(time.into());
         self
     }
 
+    #[must_use]
     pub fn pit_stop(mut self, pit_stop: bool) -> Self {
         self.pit_stop = pit_stop;
         self
     }
 
+    #[must_use]
     pub fn best(mut self, best: bool) -> Self {
         self.best = best;
         self
@@ -254,6 +267,10 @@ impl LapStripItem {
 
     /// [`Self::text_for_width`] starting at form `density` (0 label and
     /// time, 1 time, 2 label): the strip's shared density.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
     fn text_at(&self, density: usize, width: f32, char_width: f32) -> Option<SharedString> {
         let fits = |text: &str| text.chars().count() as f32 * char_width + CELL_TEXT_INSET <= width;
         self.forms()
@@ -268,7 +285,11 @@ impl LapStripItem {
 /// time, 1 time, 2 label) in which every timed cell's text fits its width,
 /// so neighbouring laps never read in two styles (`L2 1:25.084` beside
 /// `1:20.451`).
-pub fn strip_density(items: &[LapStripItem], widths: &[f32], char_width: f32) -> usize {
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+)]
+pub(crate) fn strip_density(items: &[LapStripItem], widths: &[f32], char_width: f32) -> usize {
     (0..2)
         .find(|&density| {
             items.iter().zip(widths).all(|(item, &width)| {
@@ -360,24 +381,28 @@ impl LapStrip {
 
     /// The role a plain click (or Enter / Space) asks for: the role this
     /// strip's recording plays. Primary by default.
+    #[must_use]
     pub fn role(mut self, role: LapRole) -> Self {
         self.role = role;
         self
     }
 
     /// The primary lap of this session, if it is one of these laps.
+    #[must_use]
     pub fn primary(mut self, lap_id: Option<i32>) -> Self {
         self.primary = lap_id;
         self
     }
 
     /// The reference lap of this session, if it is one of these laps.
+    #[must_use]
     pub fn reference(mut self, lap_id: Option<i32>) -> Self {
         self.reference = lap_id;
         self
     }
 
     /// Playhead inside the primary cell, lap fraction.
+    #[must_use]
     pub fn primary_playhead(mut self, fraction: Option<f64>) -> Self {
         self.primary_playhead = fraction.filter(|f| f.is_finite());
         self
@@ -385,6 +410,7 @@ impl LapStrip {
 
     /// Playhead inside the reference cell (reference lap fraction, through
     /// the shared map).
+    #[must_use]
     pub fn reference_playhead(mut self, fraction: Option<f64>) -> Self {
         self.reference_playhead = fraction.filter(|f| f.is_finite());
         self
@@ -395,6 +421,7 @@ impl LapStrip {
     /// click; the owner updates its model and renders the strip again (a
     /// request for the lap a role already holds is the owner's to
     /// interpret, e.g. as "back to the lap start").
+    #[must_use]
     pub fn on_select(
         mut self,
         handler: impl Fn(&LapSelect, &mut Window, &mut App) + 'static,
@@ -493,7 +520,7 @@ impl Element for StripCellsElement {
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        _: &mut (),
+        (): &mut (),
         window: &mut Window,
         cx: &mut App,
     ) -> Vec<AnyElement> {
@@ -528,7 +555,7 @@ impl Element for StripCellsElement {
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         _: Bounds<Pixels>,
-        _: &mut (),
+        (): &mut (),
         cells: &mut Vec<AnyElement>,
         window: &mut Window,
         cx: &mut App,
@@ -540,6 +567,15 @@ impl Element for StripCellsElement {
 }
 
 impl StripCellsElement {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "Lap ids retain their bits in stable element ids; the bounded duration share projects to f32 layout."
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
     fn cell(
         &self,
         item: &LapStripItem,
@@ -609,7 +645,7 @@ impl StripCellsElement {
             .accessibility_label(SharedString::from(spoken))
             .w(px(width))
             .h(px(height))
-            .when(width < 28.0, |b| b.px_0())
+            .when(width < 28.0, gpui_kit::Styled::px_0)
             .when_some(item.text_at(density, width, char_width), |b, text| {
                 b.child(
                     div()
@@ -619,7 +655,10 @@ impl StripCellsElement {
                         .text_label()
                         .numeric()
                         .text_color(text_color)
-                        .when(is_primary || is_reference, |d| d.font_semibold())
+                        .when(
+                            is_primary || is_reference,
+                            gpui_kit::base::StyledExt::font_semibold,
+                        )
                         .child(text),
                 )
             })
@@ -722,17 +761,21 @@ mod tests {
         assert_eq!(strip_density(&items, &[120.0, 30.0, 20.0], 7.0), 2);
     }
 
-    fn right(span: &CellSpan) -> f32 {
+    fn right(span: CellSpan) -> f32 {
         span.x + span.width
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn pit_stops_take_one_fixed_cell() {
         let items = [lap(0, 100.0), pit(1), lap(2, 90.0), lap(3, 88.0)];
         let spans = lap_strip_layout(800.0, &items);
         assert_eq!(spans[1].width, PIT_STOP_CELL);
         // Full gaps at this width.
-        assert!((spans[1].x - right(&spans[0]) - MAX_GAP).abs() < 1e-3);
+        assert!((spans[1].x - right(spans[0]) - MAX_GAP).abs() < 1e-3);
     }
 
     #[test]
@@ -758,17 +801,21 @@ mod tests {
         for width in [80.0, 240.0, 1234.5] {
             let spans = lap_strip_layout(width, &items);
             assert!(
-                (right(spans.last().unwrap()) - width).abs() < 1e-2,
+                (right(*spans.last().unwrap()) - width).abs() < 1e-2,
                 "{width}"
             );
             for pair in spans.windows(2) {
-                assert!(pair[1].x >= right(&pair[0]) - 1e-3, "{width}: {pair:?}");
+                assert!(pair[1].x >= right(pair[0]) - 1e-3, "{width}: {pair:?}");
             }
             assert!(spans.iter().all(|s| s.width >= 0.0));
         }
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn dense_strips_shrink_floors_then_gaps_then_pit_cells() {
         // 20 laps + 2 pit stops.
         let mut items: Vec<LapStripItem> = (0..20).map(|i| lap(i, 90.0)).collect();
@@ -779,7 +826,7 @@ mod tests {
         assert_eq!((cells.fixed, cells.spacing), (PIT_STOP_CELL, MAX_GAP));
         assert!((cells.minimum - 8.25).abs() < 1e-4, "{cells:?}");
         let spans = lap_strip_layout(300.0, &items);
-        assert!((right(spans.last().unwrap()) - 300.0).abs() < 1e-2);
+        assert!((right(*spans.last().unwrap()) - 300.0).abs() < 1e-2);
         // 100 px: pit cells still whole, gaps tighten.
         let cells = strip_cells(100.0, 22, 2);
         assert_eq!(cells.fixed, PIT_STOP_CELL);

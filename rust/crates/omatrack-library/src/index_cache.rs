@@ -71,6 +71,9 @@ impl FileIdentity {
     }
 
     /// The identity of the file at `path` now.
+    ///
+    /// # Errors
+    /// Returns the filesystem error if the source metadata cannot be read.
     pub fn of(path: &Path) -> io::Result<Self> {
         std::fs::metadata(path).map(|metadata| Self::from_metadata(&metadata))
     }
@@ -136,6 +139,10 @@ impl IndexCache {
 
     /// Remove every other generation's directory. Returns how many were
     /// removed.
+    ///
+    /// # Errors
+    /// Returns an error if the cache root cannot be listed. A missing root is empty;
+    /// individual removal failures are logged.
     pub fn prune_other_generations(&self) -> io::Result<usize> {
         let entries = match std::fs::read_dir(&self.root) {
             Ok(entries) => entries,
@@ -173,6 +180,9 @@ impl IndexCache {
     }
 
     /// Store a successful summary atomically.
+    ///
+    /// # Errors
+    /// Returns an error if serialization or the atomic cache-file write fails.
     pub fn store(&self, identity: &FileIdentity, summary: &RecordingSummary) -> io::Result<()> {
         let document = CacheDocument {
             version: DOCUMENT_VERSION,
@@ -186,6 +196,10 @@ impl IndexCache {
 
     /// The summary of a discovered file: from the cache, else an index open
     /// through its location (stored on success; a failure is not cached).
+    ///
+    /// # Errors
+    /// Returns `OpenError` if the location cannot open the recording. Cache-write
+    /// failures are logged without discarding a successful summary.
     pub fn summarize(
         &self,
         location: &dyn Location,

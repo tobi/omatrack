@@ -74,6 +74,12 @@ impl RangeStats {
 
 /// Minimum and maximum of the finite samples between two lap fractions,
 /// both ends included.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Clamped lap fractions map to indices in resident sample buffers; interpolation intentionally uses f64."
+)]
 fn span_of(values: &[f64], start: f64, end: f64) -> Option<(f64, f64)> {
     if values.len() < 2 || !(start.is_finite() && end.is_finite()) {
         return None;
@@ -102,9 +108,9 @@ mod tests {
 
     fn scene() -> TraceScene {
         let n = 101;
-        let ramp: Arc<[f64]> = (0..n).map(|i| i as f64).collect();
-        let delta: Arc<[f64]> = (0..n).map(|i| i as f64 * 0.01).collect();
-        let reference: Arc<[f64]> = (0..n).map(|i| 200.0 - i as f64).collect();
+        let ramp: Arc<[f64]> = (0..n).map(f64::from).collect();
+        let delta: Arc<[f64]> = (0..n).map(|i| f64::from(i) * 0.01).collect();
+        let reference: Arc<[f64]> = (0..n).map(|i| 200.0 - f64::from(i)).collect();
         TraceScene::new(ramp.clone(), ramp.clone()).with_lanes(vec![
             LaneSeries::new("delta", "Δt", LaneKind::Delta, delta),
             LaneSeries::new("speed", "Speed", LaneKind::Line, ramp).with_reference(Some(reference)),
@@ -127,7 +133,7 @@ mod tests {
     #[test]
     fn without_a_reference_only_the_primary_speaks() {
         let n = 11;
-        let ramp: Arc<[f64]> = (0..n).map(|i| i as f64 * 10.0).collect();
+        let ramp: Arc<[f64]> = (0..n).map(|i| f64::from(i) * 10.0).collect();
         let scene = TraceScene::new(ramp.clone(), ramp.clone()).with_lanes(vec![LaneSeries::new(
             "speed",
             "Speed",

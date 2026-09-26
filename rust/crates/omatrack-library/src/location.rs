@@ -1,7 +1,8 @@
-//! The source abstraction for opening files: a [`Location`] discovers
-//! recordings and opens them. [`FolderLocation`] (a local folder scanned
-//! recursively) is the only implementation; the trait is the seam another
-//! source would plug into.
+//! The source abstraction for opening files: a [`Location`] discovers recordings and
+//! opens them.
+//!
+//! [`FolderLocation`] (a local folder scanned recursively) is the only implementation;
+//! the trait is the seam another source would plug into.
 
 use crate::index_cache::FileIdentity;
 use omatrack_core::recording::{OpenError, Recording};
@@ -62,7 +63,7 @@ pub enum OpenMode {
 /// What kind of file a discovered recording is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FileKind {
-    /// The telemetry lives inside the onboard video (AiM MP4).
+    /// The telemetry lives inside the onboard video (`AiM` MP4).
     Video,
     /// A telemetry-only file (`.pds`, `.ld`, `.vbo`, `.telemetry`, MTJ).
     Telemetry,
@@ -110,8 +111,15 @@ pub trait Location: Send + Sync {
     fn name(&self) -> &str;
     /// Report every supported recording through `sink`, checking `cancel`
     /// between entries. Never writes anything.
+    ///
+    /// # Errors
+    /// Returns an I/O error when this location cannot enumerate its recordings.
     fn scan(&self, cancel: &Cancel, sink: &mut dyn FnMut(DiscoveredFile)) -> io::Result<()>;
     /// Open a discovered recording.
+    ///
+    /// # Errors
+    /// Returns `OpenError` if the source cannot be read or decoded in the requested
+    /// mode.
     fn open(&self, file: &DiscoveredFile, mode: OpenMode) -> Result<Recording, OpenError>;
     /// The onboard video to play for this recording, when the location
     /// knows it without opening the recording.

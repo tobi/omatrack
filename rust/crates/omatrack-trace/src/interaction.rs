@@ -30,6 +30,10 @@ pub enum PointerButton {
 /// Modifier state of a wheel event.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "These are independent flags in a snapshot/input record, not mutually exclusive lifecycle states."
+)]
 pub struct KeyModifiers {
     pub shift: bool,
     pub control: bool,
@@ -38,6 +42,10 @@ pub struct KeyModifiers {
 }
 
 impl KeyModifiers {
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "Mirror the four independent GPUI modifier flags at the input boundary."
+    )]
     pub fn new(shift: bool, control: bool, alt: bool, platform: bool) -> Self {
         Self {
             shift,
@@ -99,6 +107,10 @@ impl CornerSpan {
 /// and set the fields that apply.
 #[derive(Clone, Copy, Debug, Default)]
 #[non_exhaustive]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "These are independent flags in a snapshot/input record, not mutually exclusive lifecycle states."
+)]
 pub struct InteractionContext<'a> {
     pub viewport: Viewport,
     /// Plot left edge and width (the data area, excluding lane chrome).
@@ -205,13 +217,14 @@ pub struct CornerHit {
 /// Grab distance of the focused corner's edges, logical pixels.
 pub const FOCUSED_CORNER_EDGE_TOLERANCE: f64 = 8.0;
 
-/// The corner edge or body under logical `x`, preferring the focused
-/// corner's grips (within [`FOCUSED_CORNER_EDGE_TOLERANCE`]), then any
+/// The corner edge or body under logical `x`.
+///
+/// Prefer the focused corner's grips within [`FOCUSED_CORNER_EDGE_TOLERANCE`], then any
 /// corner edge within [`CORNER_EDGE_TOLERANCE`] or body, in zone order.
 ///
 /// The trace stack's corner editing and the corner ruler share this test so
 /// a grip grabs at the same distance everywhere.
-pub fn hit_corner(x: f64, ctx: &InteractionContext) -> Option<CornerHit> {
+pub fn hit_corner(x: f64, ctx: &InteractionContext<'_>) -> Option<CornerHit> {
     let fraction = ctx.fraction_for_x(x);
     let test = |index: usize, tolerance: f64| -> Option<CornerHit> {
         let corner = ctx.corners.get(index)?;
@@ -298,10 +311,9 @@ impl Interaction {
     pub fn cursor(&self) -> GestureCursor {
         match self.gesture {
             Gesture::Idle if self.hovered_divider.is_some() => GestureCursor::ResizeRow,
-            Gesture::Idle => GestureCursor::Crosshair,
-            Gesture::Selecting { .. } => GestureCursor::Crosshair,
-            Gesture::Panning { .. } => GestureCursor::Grabbing,
-            Gesture::DraggingCorner {
+            Gesture::Idle | Gesture::Selecting { .. } => GestureCursor::Crosshair,
+            Gesture::Panning { .. }
+            | Gesture::DraggingCorner {
                 drag: CornerPart::Body,
                 ..
             } => GestureCursor::Grabbing,
@@ -317,12 +329,12 @@ impl Interaction {
     }
 
     /// Corner edge or body under `x` (see [`hit_corner`]).
-    fn corner_at(&self, x: f64, ctx: &InteractionContext) -> Option<(usize, CornerPart, f64)> {
+    fn corner_at(x: f64, ctx: &InteractionContext<'_>) -> Option<(usize, CornerPart, f64)> {
         hit_corner(x, ctx).map(|hit| (hit.index, hit.part, hit.grab))
     }
 
     /// Lane divider under `y` in resize mode (the last lane has none).
-    pub fn divider_at(&self, y: f64, ctx: &InteractionContext) -> Option<usize> {
+    pub fn divider_at(&self, y: f64, ctx: &InteractionContext<'_>) -> Option<usize> {
         if !ctx.resizing || ctx.lane_bottoms.len() < 2 {
             return None;
         }
@@ -347,7 +359,7 @@ impl Interaction {
         y: f64,
         button: PointerButton,
         click_count: usize,
-        ctx: &InteractionContext,
+        ctx: &InteractionContext<'_>,
     ) -> Effects {
         let mut effects = Effects::new();
         if !ctx.has_data {
@@ -380,7 +392,7 @@ impl Interaction {
             }
             PointerButton::Left => {
                 if ctx.editing_corners
-                    && let Some((index, drag, grab)) = self.corner_at(x, ctx)
+                    && let Some((index, drag, grab)) = Self::corner_at(x, ctx)
                 {
                     self.gesture = Gesture::DraggingCorner { index, drag, grab };
                     return effects;
@@ -396,7 +408,7 @@ impl Interaction {
         effects
     }
 
-    pub fn pointer_move(&mut self, x: f64, y: f64, ctx: &InteractionContext) -> Effects {
+    pub fn pointer_move(&mut self, x: f64, y: f64, ctx: &InteractionContext<'_>) -> Effects {
         let mut effects = Effects::new();
         if !ctx.has_data {
             return effects;
@@ -465,7 +477,7 @@ impl Interaction {
         &mut self,
         x: f64,
         _button: PointerButton,
-        ctx: &InteractionContext,
+        ctx: &InteractionContext<'_>,
     ) -> Effects {
         let mut effects = Effects::new();
         let gesture = std::mem::take(&mut self.gesture);
@@ -498,7 +510,7 @@ impl Interaction {
         x: f64,
         delta: WheelDelta,
         modifiers: KeyModifiers,
-        ctx: &InteractionContext,
+        ctx: &InteractionContext<'_>,
     ) -> Effects {
         let mut effects = Effects::new();
         if !ctx.has_data || ctx.resizing {

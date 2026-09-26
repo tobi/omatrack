@@ -22,16 +22,16 @@ pub const MIN_LANE_HEIGHT: f64 = 44.0;
 /// and its curve is the lap's verdict, so it reads at 1.5 lanes.
 pub const GAP_LANE_MIN_HEIGHT: f64 = 1.5 * MIN_LANE_HEIGHT;
 
-/// Default height share of a channel's lane, percent of the trace area,
-/// unless `channels.<key>.height_percent` is configured. In FIT these are the
-/// relative weights: speed leads, the pedals and Δ are first-class lanes, a
-/// held channel such as gear needs less.
+/// Default height share of a channel's lane, percent of the trace area, unless
+/// `channels.<key>.height_percent` is configured.
+///
+/// In FIT these are the relative weights: speed leads, the pedals and Δ are first-class
+/// lanes, a held channel such as gear needs less.
 pub fn default_height_percent(key: &str) -> f64 {
     match key {
         "speed" => 34.0,
-        "throttle" | "brake" => 16.0,
+        "throttle" | "brake" | "steering" => 16.0,
         "delta" => 20.0,
-        "steering" => 16.0,
         "gear" => 12.0,
         _ if key.to_ascii_lowercase().contains("rpm") => 14.0,
         _ => 12.0,
@@ -52,9 +52,10 @@ pub fn lane_height_boost(key: &str) -> f64 {
     if key == "speed" { 1.35 } else { 1.0 }
 }
 
-/// Proportional allocation above the readable minimum. When the pane cannot
-/// fit the minimum for every lane, every lane gets the minimum and the sum
-/// exceeds `available` (the caller scrolls). Weights are normalized before
+/// Proportional allocation above the readable minimum.
+///
+/// When the pane cannot fit the minimum for every lane, every lane gets the minimum and
+/// the sum exceeds `available` (the caller scrolls). Weights are normalized before
 /// summing so hand-edited, very large finite weights cannot overflow.
 pub fn fit_lane_heights(weights: Vec<f64>, available: f64) -> Vec<f64> {
     let floors = vec![MIN_LANE_HEIGHT; weights.len()];
@@ -73,7 +74,7 @@ pub fn fit_lane_heights_with_floors(
         return heights;
     }
     let mut largest: f64 = 1.0;
-    for weight in weights.iter_mut() {
+    for weight in &mut weights {
         *weight = valid_lane_weight(*weight);
         largest = largest.max(*weight);
     }
@@ -145,8 +146,8 @@ pub fn resize_lane_boundary(original: &[f64], upper: usize, delta: f64) -> Vec<f
     }
     let mut needed = delta.abs();
     let receiver = if delta >= 0.0 { upper } else { upper + 1 };
+    let mut i = upper + 1;
     if delta >= 0.0 {
-        let mut i = upper + 1;
         while i < heights.len() && needed > 0.0 {
             let moved = needed.min(heights[i] - floor);
             heights[i] -= moved;
@@ -155,7 +156,6 @@ pub fn resize_lane_boundary(original: &[f64], upper: usize, delta: f64) -> Vec<f
             i += 1;
         }
     } else {
-        let mut i = upper + 1;
         while i > 0 && needed > 0.0 {
             i -= 1;
             let moved = needed.min(heights[i] - floor);
@@ -202,26 +202,32 @@ impl Default for LaneSizing {
 }
 
 impl LaneSizing {
+    #[must_use]
     pub fn with_weight(mut self, weight: f64) -> Self {
         self.weight = weight;
         self
     }
+    #[must_use]
     pub fn with_height_percent(mut self, percent: f64) -> Self {
         self.height_percent = percent;
         self
     }
+    #[must_use]
     pub fn visible(mut self, visible: bool) -> Self {
         self.visible = visible;
         self
     }
+    #[must_use]
     pub fn combine_with_previous(mut self, combine: bool) -> Self {
         self.combine_with_previous = combine;
         self
     }
+    #[must_use]
     pub fn pinned(mut self, pinned: bool) -> Self {
         self.pinned = pinned;
         self
     }
+    #[must_use]
     pub fn with_group(mut self, group: Option<u64>) -> Self {
         self.group = group;
         self
@@ -322,11 +328,12 @@ impl LayoutMode {
             resizing: false,
         }
     }
+    #[must_use]
     pub fn resizing(mut self, resizing: bool) -> Self {
         self.resizing = resizing;
         self
     }
-    fn uses_weights(&self) -> bool {
+    fn uses_weights(self) -> bool {
         self.fit || self.resizing
     }
 }
@@ -522,6 +529,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn divider_borrows_across_neighbours() {
         let original = [100.0, 100.0, 100.0, 100.0];
         let heights = resize_lane_boundary(&original, 0, 100.0);
@@ -619,6 +630,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn manual_mode_scrolls_and_clamps() {
         let channels = [
             channel().with_height_percent(50.0),
@@ -642,6 +657,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn pinned_lanes_sit_above_the_scroll_region() {
         let channels = [
             channel().with_height_percent(40.0),
@@ -670,6 +689,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn fit_overflows_into_a_scroll_instead_of_crushing_lanes() {
         let mut channels = vec![channel().pinned(true)];
         channels.extend((0..6).map(|_| channel()));
@@ -690,6 +713,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn default_heights_lead_with_speed_and_keep_gear_readable() {
         assert!(default_height_percent("speed") > default_height_percent("throttle"));
         assert!(default_height_percent("gear") < default_height_percent("steering"));

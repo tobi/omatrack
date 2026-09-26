@@ -66,27 +66,32 @@ impl StateOptions {
         }
     }
 
+    #[must_use]
     pub fn paths(mut self, paths: Paths) -> Self {
         self.paths = paths;
         self
     }
 
+    #[must_use]
     pub fn default_library(mut self, directory: Option<PathBuf>) -> Self {
         self.default_library = directory;
         self
     }
 
+    #[must_use]
     pub fn video(mut self, enabled: bool) -> Self {
         self.video = enabled;
         self
     }
 
     /// mpv `ao` (for example `null` in tests).
+    #[must_use]
     pub fn audio_output(mut self, output: Option<String>) -> Self {
         self.audio_output = output;
         self
     }
 
+    #[must_use]
     pub fn scan_on_start(mut self, scan: bool) -> Self {
         self.scan_on_start = scan;
         self
@@ -113,13 +118,13 @@ impl AppState {
     /// Build every entity and install the global. With
     /// `scan_on_start` the first library scan starts at once.
     pub fn install(options: StateOptions, cx: &mut App) -> Self {
-        let preferences = cx.new(|cx| Preferences::open(options.paths.clone(), cx));
+        let preferences = cx.new(|cx| Preferences::open(options.paths, cx));
         let jobs = cx.new(Jobs::new);
         let library = cx.new(|cx| {
             Library::new(
                 preferences.clone(),
                 jobs.clone(),
-                options.default_library.clone(),
+                options.default_library,
                 cx,
             )
         });
@@ -130,7 +135,7 @@ impl AppState {
                 preferences.clone(),
                 &session,
                 options.video,
-                options.audio_output.clone(),
+                options.audio_output,
                 cx,
             )
         });
@@ -148,7 +153,7 @@ impl AppState {
         // callback runs before the global exists and the video would never
         // drive the cursor.
         video.update(cx, |video, cx| {
-            video.connect(cursor.clone(), viewport.clone(), cx)
+            video.connect(cursor.clone(), viewport.clone(), cx);
         });
         let state = Self {
             preferences,
@@ -161,7 +166,7 @@ impl AppState {
         };
         cx.set_global(state.clone());
         if options.scan_on_start {
-            state.library.update(cx, |library, cx| library.rescan(cx));
+            state.library.update(cx, Library::rescan);
         }
         state
     }

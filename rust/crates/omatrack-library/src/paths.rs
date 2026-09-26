@@ -10,9 +10,9 @@ const APP_DIR: &str = "omatrack";
 /// nothing touches the real home directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {
-    config_dir: PathBuf,
-    cache_dir: PathBuf,
-    state_dir: PathBuf,
+    config: PathBuf,
+    cache: PathBuf,
+    state: PathBuf,
 }
 
 /// An XDG base directory variable: only an absolute path counts.
@@ -61,30 +61,30 @@ impl Paths {
         state_home: impl Into<PathBuf>,
     ) -> Self {
         Self {
-            config_dir: config_home.into().join(APP_DIR),
-            cache_dir: cache_home.into().join(APP_DIR),
-            state_dir: state_home.into().join(APP_DIR),
+            config: config_home.into().join(APP_DIR),
+            cache: cache_home.into().join(APP_DIR),
+            state: state_home.into().join(APP_DIR),
         }
     }
 
     pub fn config_dir(&self) -> &Path {
-        &self.config_dir
+        &self.config
     }
     pub fn cache_dir(&self) -> &Path {
-        &self.cache_dir
+        &self.cache
     }
     pub fn state_dir(&self) -> &Path {
-        &self.state_dir
+        &self.state
     }
 
     /// `omatrack.yml`, the single configuration document.
     pub fn config_file(&self) -> PathBuf {
-        self.config_dir.join("omatrack.yml")
+        self.config.join("omatrack.yml")
     }
 
     /// Root of the library index cache; one subdirectory per converter
     /// generation lives below it.
     pub fn index_cache_root(&self) -> PathBuf {
-        self.cache_dir.join("index").join("rs1")
+        self.cache.join("index").join("rs1")
     }
 }

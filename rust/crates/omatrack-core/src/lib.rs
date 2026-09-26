@@ -38,9 +38,10 @@ pub use session::{Analysis, LoadOptions, LoadedLap, SessionError, load_lap};
 pub use unify::{DistanceSource, UnifiedLap};
 pub use video_clock::{VideoClock, VideoFileReference};
 
-/// Identity of the converter whose normalization this build trusts:
-/// `{native format version}-{pinned upstream rev, 12 hex}`. Caches of
-/// normalized telemetry are keyed by it, so advancing the parser pin
+/// Identity of the converter whose normalization this build trusts: `{native format
+/// version}-{pinned upstream rev, 12 hex}`.
+///
+/// Caches of normalized telemetry are keyed by it, so advancing the parser pin
 /// regenerates them.
 pub fn converter_generation() -> &'static str {
     static GENERATION: std::sync::OnceLock<String> = std::sync::OnceLock::new();

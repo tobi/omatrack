@@ -45,12 +45,12 @@ pub(crate) struct Shared {
     /// Target of an exact seek mpv has not finished yet; relative skips start
     /// from here so two quick presses do not land on the same frame.
     pub pending_seek: Mutex<Option<f64>>,
-    /// Set once mpv acknowledged the pending seek (MPV_EVENT_SEEK); the next
-    /// PLAYBACK_RESTART then clears it. A restart belonging to an older seek
+    /// Set once mpv acknowledged the pending seek (`MPV_EVENT_SEEK`); the next
+    /// `PLAYBACK_RESTART` then clears it. A restart belonging to an older seek
     /// must not clear a newer target.
     pub pending_seek_acknowledged: AtomicBool,
     /// A seek requested before the file finished loading, applied on
-    /// FILE_LOADED. Its lock also guards every change of `loaded`.
+    /// `FILE_LOADED`. Its lock also guards every change of `loaded`.
     start_position: Mutex<Option<f64>>,
     /// Bumped by every `load`; a frame rendered under an older epoch belongs
     /// to the previous file and is not published.
@@ -91,7 +91,7 @@ impl Shared {
     pub(crate) fn status(&self) -> MediaStatus {
         self.status
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
@@ -101,7 +101,7 @@ impl Shared {
             let mut current = self
                 .status
                 .lock()
-                .unwrap_or_else(|poison| poison.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if *current == status {
                 false
             } else {
@@ -116,9 +116,9 @@ impl Shared {
 
     /// The decoded video size, once known.
     pub(crate) fn video_size(&self) -> Option<(u32, u32)> {
-        let width = self.dwidth.load(Ordering::Acquire);
-        let height = self.dheight.load(Ordering::Acquire);
-        (width > 0 && height > 0).then_some((width as u32, height as u32))
+        let width = u32::try_from(self.dwidth.load(Ordering::Acquire)).ok()?;
+        let height = u32::try_from(self.dheight.load(Ordering::Acquire)).ok()?;
+        (width > 0 && height > 0).then_some((width, height))
     }
 
     pub(crate) fn is_playing(&self) -> bool {
@@ -130,13 +130,13 @@ impl Shared {
     pub(crate) fn lock_pending_seek(&self) -> std::sync::MutexGuard<'_, Option<f64>> {
         self.pending_seek
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn lock_start_position(&self) -> std::sync::MutexGuard<'_, Option<f64>> {
         self.start_position
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// The seek remembered for when the file finishes loading, if any.
@@ -207,7 +207,7 @@ mod tests {
     }
 
     /// Regression: the seek used to read `loaded` and store the start
-    /// position as two steps, so FILE_LOADED could land in between, take
+    /// position as two steps, so `FILE_LOADED` could land in between, take
     /// nothing, and leave a stale start position that was never applied.
     #[test]
     fn a_seek_racing_the_load_is_never_lost() {

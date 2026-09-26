@@ -58,18 +58,60 @@ mpv-player = { path = "crates/mpv-player" }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+unreachable_pub = "deny"
+unused_qualifications = "deny"
+unknown_lints = "deny"
+renamed_and_removed_lints = "deny"
+unfulfilled_lint_expectations = "deny"
+rust_2018_idioms = { level = "deny", priority = -1 }
 
 [workspace.lints.clippy]
-# Faithful numeric ports keep the C++ index loops and argument lists so the
-# operation order (and therefore the printed floats) stays identical.
-needless_range_loop = "allow"
-too_many_arguments = "allow"
-type_complexity = "allow"
-# `!(a > b)` and `a < lo || a > hi` are how the C++ core spells its NaN
-# behaviour; the port keeps the exact comparisons instead of partial_cmp or
-# RangeInclusive::contains, which treat NaN differently.
-neg_cmp_op_on_partial_ord = "allow"
-manual_range_contains = "allow"
+# These apply to ordinary `cargo clippy` too, not just CI. Keep group
+# priorities below individual lints. See CLIPPY.md before adding exceptions.
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+
+# Restrictions that catch common generated-code shortcuts. Do not enable
+# the entire restriction group: some of its rules contradict one another.
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+as_underscore = "deny"
+dbg_macro = "deny"
+exit = "deny"
+expect_used = "deny"
+let_underscore_must_use = "deny"
+mem_forget = "deny"
+panic = "deny"
+rest_pat_in_fully_bound_structs = "deny"
+todo = "deny"
+undocumented_unsafe_blocks = "deny"
+unimplemented = "deny"
+unused_result_ok = "deny"
+unwrap_used = "deny"
+
+# Floating-point operation order is part of the byte-parity contract.
+# FMA/radian/power rewrites need a deliberate numerical change and rebaseline.
+suboptimal_flops = "allow"
+imprecise_flops = "allow"
+# GPUI foreground futures intentionally hold !Send entities and windows;
+# background_spawn separately enforces Send at its type boundary.
+future_not_send = "allow"
+# Framework callbacks use consistent mutable Window/Context signatures even
+# when a particular implementation only reads them.
+needless_pass_by_ref_mut = "allow"
+# Const API commitments and annotations on every reader are design choices.
+# Consuming builders are still checked by return_self_not_must_use.
+missing_const_for_fn = "allow"
+must_use_candidate = "allow"
+# Explicit crate visibility is required by unreachable_pub; this nursery
+# lint recommends the opposite spelling for items inside private modules.
+redundant_pub_crate = "allow"
+# Explicit branches keep UI fallbacks readable and avoid competing closures
+# borrowing the same GPUI context. Both forms are equally checked and lazy.
+option_if_let_else = "allow"
 
 [profile.dev.package."*"]
 opt-level = 2

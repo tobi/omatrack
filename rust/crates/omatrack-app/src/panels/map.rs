@@ -39,6 +39,10 @@ fn gps_track(latitude: &[f64], longitude: &[f64]) -> Option<GpsTrack> {
 /// `track` (the reference lap) resampled onto the primary's `samples`
 /// grid through `map`: sample `i` is where the reference was at primary
 /// fraction `i / (samples - 1)`.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Clamped lap fractions map to indices in resident sample buffers; interpolation intentionally uses f64."
+)]
 fn stationed_track(track: &GpsTrack, map: &dyn FractionMap, samples: usize) -> Option<GpsTrack> {
     if samples < 2 {
         return None;
@@ -137,7 +141,7 @@ pub struct MapPanel {
 }
 
 impl MapPanel {
-    pub fn new(app: AppState, cx: &mut Context<Self>) -> Self {
+    pub fn new(app: AppState, cx: &mut Context<'_, Self>) -> Self {
         let map = cx.new(|cx| TrackMap::new(app.cursor.clone(), cx));
         let subscriptions = vec![
             cx.observe(&app.session, |this, _, cx| this.sync_analysis(cx)),
@@ -163,7 +167,7 @@ impl MapPanel {
         &self.map
     }
 
-    fn sync_analysis(&mut self, cx: &mut Context<Self>) {
+    fn sync_analysis(&mut self, cx: &mut Context<'_, Self>) {
         let analysis = self.app.session.read(cx).analysis().cloned();
         let same = match (&analysis, &self.shown) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
@@ -171,12 +175,7 @@ impl MapPanel {
             _ => false,
         };
         if !same {
-            let data = Arc::new(
-                analysis
-                    .as_deref()
-                    .map(map_data)
-                    .unwrap_or_else(TrackMapData::new),
-            );
+            let data = Arc::new(analysis.as_deref().map_or_else(TrackMapData::new, map_data));
             self.map.update(cx, |map, cx| {
                 map.set_data(data, cx);
                 map.set_focused_corner(None, cx);
@@ -188,7 +187,7 @@ impl MapPanel {
         cx.notify();
     }
 
-    fn on_map_event(&mut self, event: &TrackMapEvent, cx: &mut Context<Self>) {
+    fn on_map_event(&mut self, event: &TrackMapEvent, cx: &mut Context<'_, Self>) {
         match event {
             TrackMapEvent::MapHover(fraction) => {
                 let fraction = *fraction;
@@ -207,7 +206,7 @@ impl MapPanel {
     }
 
     /// Highlight the focused corner's label on the map.
-    fn follow_focus(&mut self, cx: &mut Context<Self>) {
+    fn follow_focus(&mut self, cx: &mut Context<'_, Self>) {
         let focus = self.app.cursor.read(cx).focus();
         if focus == self.followed_focus {
             return;
@@ -227,7 +226,7 @@ impl MapPanel {
             .update(cx, |map, cx| map.set_focused_corner(id, cx));
     }
 
-    fn render_legend(&self, analysis: &Analysis, cx: &App) -> impl IntoElement {
+    fn render_legend(analysis: &Analysis, cx: &App) -> impl IntoElement {
         let theme = cx.theme();
         let entry = |color, label: &'static str| {
             h_flex()
@@ -283,7 +282,7 @@ impl gpui_kit::component::dock::Panel for MapPanel {
         Some(PanelKind::Map.title().into())
     }
 
-    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn title(&mut self, _: &mut Window, _: &mut Context<'_, Self>) -> impl IntoElement {
         PanelKind::Map.title()
     }
 }
@@ -297,7 +296,7 @@ impl gpui_kit::Focusable for MapPanel {
 }
 
 impl Render for MapPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let root = div()
             .id("map-panel")
             .test_support()
@@ -324,7 +323,7 @@ impl Render for MapPanel {
         root.child(
             v_flex()
                 .size_full()
-                .child(self.render_legend(&analysis, cx))
+                .child(Self::render_legend(&analysis, cx))
                 .child(div().flex_1().min_h_0().child(self.map.clone())),
         )
         .into_any_element()

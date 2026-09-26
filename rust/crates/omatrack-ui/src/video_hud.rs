@@ -23,6 +23,7 @@
 //! `warning` for the reference role.
 
 use std::cell::Cell;
+use std::fmt::Write as _;
 use std::rc::Rc;
 
 use gpui_kit::base::TestSupportExt as _;
@@ -53,7 +54,7 @@ pub struct HudPosition {
 impl HudPosition {
     /// Bottom-left: clear of the role caption (top-left) and of an inset
     /// video (bottom-right).
-    pub const DEFAULT: HudPosition = HudPosition { x: 0.0, y: 1.0 };
+    pub const DEFAULT: Self = Self { x: 0.0, y: 1.0 };
 
     /// A position clamped into `0..=1`; non-finite coordinates fall back to
     /// the default.
@@ -182,17 +183,20 @@ impl VideoHud {
     }
 
     /// Primary speed at the cursor, km/h.
+    #[must_use]
     pub fn speed(mut self, kmh: Option<f64>) -> Self {
         self.speed = kmh.filter(|v| v.is_finite());
         self
     }
 
+    #[must_use]
     pub fn gear(mut self, gear: Option<i32>) -> Self {
         self.gear = gear;
         self
     }
 
     /// Cumulative Δt at the cursor, seconds (negative: primary ahead).
+    #[must_use]
     pub fn delta(mut self, seconds: Option<f64>) -> Self {
         self.delta = seconds.filter(|v| v.is_finite());
         self
@@ -200,6 +204,7 @@ impl VideoHud {
 
     /// The Δt is a LOW-confidence estimate: `≈`, two decimals, no gain/loss
     /// colour.
+    #[must_use]
     pub fn approximate(mut self, approximate: bool) -> Self {
         self.approximate = approximate;
         self
@@ -207,18 +212,21 @@ impl VideoHud {
 
     /// Signed along-track metres to the reference car (positive: reference
     /// ahead). Pass `Some` only when both GPS fixes are better than 1 m.
+    #[must_use]
     pub fn gap(mut self, metres: Option<f64>) -> Self {
         self.gap = metres.filter(|v| v.is_finite());
         self
     }
 
     /// Normalized placement (controlled).
+    #[must_use]
     pub fn position(mut self, position: HudPosition) -> Self {
         self.position = position;
         self
     }
 
     /// The position requested by a drag, reported once when it ends.
+    #[must_use]
     pub fn on_moved(
         mut self,
         handler: impl Fn(&HudPosition, &mut Window, &mut App) + 'static,
@@ -231,27 +239,39 @@ impl VideoHud {
         ElementId::Name(format!("{}-{name}", self.id).into())
     }
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "Formatting these strings and primitives into a String cannot fail."
+    )]
     fn spoken(&self) -> SharedString {
         let mut text = match self.speed {
             Some(speed) => format!("Speed {speed:.0} km/h"),
             None => "Speed unavailable".into(),
         };
-        text.push_str(&format!(", gear {}", format_gear(self.gear)));
+        let _ = write!(text, ", gear {}", format_gear(self.gear));
         if let Some(delta) = self.delta {
             if self.approximate {
-                text.push_str(&format!(", delta approximately {delta:+.2} s"));
+                let _ = write!(text, ", delta approximately {delta:+.2} s");
             } else {
-                text.push_str(&format!(", delta {delta:+.3} s"));
+                let _ = write!(text, ", delta {delta:+.3} s");
             }
         }
         if let Some(gap) = self.gap {
-            text.push_str(&format!(", gap {}", format_gap(gap)));
+            let _ = write!(text, ", gap {}", format_gap(gap));
         }
         text.into()
     }
 }
 
 impl RenderOnce for VideoHud {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let drag = window.use_keyed_state(self.part("drag"), cx, |_, _| HudDrag::default());
         let (grabbing, live, track_cell) = {
@@ -441,7 +461,7 @@ impl RenderOnce for VideoHud {
             .child(
                 canvas(
                     move |bounds, _, _| track_cell.set(Some(bounds)),
-                    |_, _, _, _| {},
+                    |_, (), _, _| {},
                 )
                 .size_full(),
             )
@@ -474,7 +494,7 @@ impl RenderOnce for VideoHud {
             .inset_0()
             .child(track)
             .on_mouse_move({
-                let drag = drag.clone();
+                let drag = drag;
                 move |event, _, cx| {
                     let (grab, track) = {
                         let state = drag.read(cx);
@@ -493,7 +513,7 @@ impl RenderOnce for VideoHud {
                 }
             })
             .on_mouse_up(MouseButton::Left, move |_, window, cx| {
-                end_inside(window, cx)
+                end_inside(window, cx);
             })
             .on_mouse_up_out(MouseButton::Left, move |_, window, cx| end_drag(window, cx))
     }
@@ -522,6 +542,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn gap_reads_signed_and_clamps_to_eight_metres() {
         assert_eq!(gap_position(4.0), 0.5);
         assert_eq!(gap_position(-20.0), -1.0);

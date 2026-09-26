@@ -144,6 +144,13 @@ pub fn atlas_complex_zones(layout: &TrackLayout, mapper: &StationMapper) -> Vec<
 
 /// Brake-zone corners for a lap without atlas data (port of
 /// `TelemetryStore::autoGenerateCorners`).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
 pub fn auto_generate_corners(lap: &UnifiedLap) -> Vec<CornerZone> {
     if lap.brake.len() < 100 {
         return Vec::new();

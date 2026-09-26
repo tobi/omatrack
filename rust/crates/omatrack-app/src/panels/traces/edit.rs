@@ -33,6 +33,10 @@ impl ResizeDraft {
     /// FIT reproduces the drawn heights. Invalid input changes nothing.
     ///
     /// `shares` gives each key's `height_percent / 100`.
+    #[expect(
+        clippy::neg_cmp_op_on_partial_ord,
+        reason = "Negated ordered comparisons deliberately include unordered (NaN) values; preserve that behavior."
+    )]
     pub fn apply_heights(
         &mut self,
         keys: &[SharedString],
@@ -99,6 +103,10 @@ impl CornerDraft {
     }
 
     /// Move one zone. Out-of-order or empty ranges are rejected.
+    #[expect(
+        clippy::float_cmp,
+        reason = "Exact equality detects unchanged state or the full-view sentinel; epsilon would hide small changes."
+    )]
     pub fn edit(&mut self, band: u32, start: f64, end: f64) -> bool {
         if !(start.is_finite() && end.is_finite() && end > start) {
             return false;
@@ -180,6 +188,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn reset_sets_every_lane_to_one() {
         let mut draft = ResizeDraft::default();
         draft.reset(keys(&["speed", "gear"]));
@@ -188,6 +200,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn corner_edits_become_user_zones() {
         let zones = vec![
             CornerZone {

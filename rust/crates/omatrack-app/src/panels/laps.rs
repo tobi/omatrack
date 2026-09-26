@@ -200,10 +200,11 @@ impl LapGroup {
     }
 }
 
-/// The groups of the event holding `primary`: every recording of its track
-/// and day, plus the reference's recording when it comes from elsewhere;
-/// the primary's first, then the reference's, then the rest by best lap
-/// time. Empty without a primary in the snapshot.
+/// Recording groups for the event holding `primary`.
+///
+/// Include every recording of its track and day, plus the reference's recording when it
+/// comes from elsewhere. Order the primary first, then the reference, then the rest by
+/// best lap time. Empty without a primary in the snapshot.
 pub fn event_groups(
     snapshot: &LibrarySnapshot,
     primary: Option<&LapRef>,
@@ -290,11 +291,18 @@ fn group_title(node: &SessionNode) -> SharedString {
         None => node
             .session_name
             .clone()
-            .map(SharedString::from)
-            .unwrap_or_else(|| node.title.clone().into()),
+            .map_or_else(|| node.title.clone().into(), SharedString::from),
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+)]
+#[expect(
+    clippy::float_cmp,
+    reason = "The best value is selected from these same lap times; exact equality marks that winner."
+)]
 fn build_group(
     node: &SessionNode,
     title: SharedString,
@@ -426,7 +434,7 @@ pub struct LapsPanel {
 }
 
 impl LapsPanel {
-    pub fn new(app: AppState, cx: &mut Context<Self>) -> Self {
+    pub fn new(app: AppState, cx: &mut Context<'_, Self>) -> Self {
         let subscriptions = vec![
             cx.observe(&app.session, |this, _, cx| this.sync(cx)),
             cx.observe(&app.library, |this, _, cx| this.sync(cx)),
@@ -514,7 +522,7 @@ impl LapsPanel {
     }
 
     /// Rebuild the groups from the library and the session's roles.
-    fn sync(&mut self, cx: &mut Context<Self>) {
+    fn sync(&mut self, cx: &mut Context<'_, Self>) {
         let session = self.app.session.read(cx);
         let primary = session.primary().map(|slot| slot.lap_ref().clone());
         let reference = session.reference().map(|slot| slot.lap_ref().clone());
@@ -530,7 +538,7 @@ impl LapsPanel {
             self.groups = groups.into();
         }
         if primary != self.primary {
-            self.primary = primary.clone();
+            self.primary.clone_from(&primary);
             if let Some(primary) = &primary {
                 self.cursor = Some(LapsCursor::Lap(primary.session().clone(), primary.lap()));
                 self.scroll_to_cursor();
@@ -556,7 +564,7 @@ impl LapsPanel {
         }
     }
 
-    fn move_cursor(&mut self, step: isize, cx: &mut Context<Self>) {
+    fn move_cursor(&mut self, step: isize, cx: &mut Context<'_, Self>) {
         let rows = self.rows();
         if rows.is_empty() {
             return;
@@ -575,7 +583,7 @@ impl LapsPanel {
     }
 
     /// Open or close a group.
-    pub fn toggle_group(&mut self, session: &SharedString, cx: &mut Context<Self>) {
+    pub fn toggle_group(&mut self, session: &SharedString, cx: &mut Context<'_, Self>) {
         let Some(group) = self.group(session) else {
             return;
         };
@@ -592,7 +600,7 @@ impl LapsPanel {
     }
 
     /// Show or hide a group's untimed laps.
-    pub fn toggle_disclosure(&mut self, session: &SharedString, cx: &mut Context<Self>) {
+    pub fn toggle_disclosure(&mut self, session: &SharedString, cx: &mut Context<'_, Self>) {
         if !self.disclosed.remove(session) {
             self.disclosed.insert(session.clone());
         }
@@ -600,7 +608,7 @@ impl LapsPanel {
     }
 
     /// Enter: set the cursor's lap as primary, or open/close its row.
-    fn on_set_primary(&mut self, _: &SetPrimary, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_set_primary(&mut self, _: &SetPrimary, window: &mut Window, cx: &mut Context<'_, Self>) {
         match self.cursor.clone() {
             Some(LapsCursor::Lap(session, lap)) => select(session, lap, Role::Primary, window, cx),
             Some(LapsCursor::Group(session)) => self.toggle_group(&session, cx),
@@ -610,14 +618,19 @@ impl LapsPanel {
     }
 
     /// Alt+Enter: set the cursor's lap as reference.
-    fn on_set_reference(&mut self, _: &SetReference, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_set_reference(
+        &mut self,
+        _: &SetReference,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         if let Some((session, lap)) = self.cursor_lap() {
             select(session, lap, Role::Reference, window, cx);
         }
     }
 
     /// A pointer press on a row: it takes the cursor and the focus.
-    fn point_at(&mut self, cursor: LapsCursor, window: &mut Window, cx: &mut Context<Self>) {
+    fn point_at(&mut self, cursor: LapsCursor, window: &mut Window, cx: &mut Context<'_, Self>) {
         self.cursor = Some(cursor);
         window.focus(&self.focus_handle, cx);
         cx.notify();
@@ -628,7 +641,7 @@ impl LapsPanel {
         ix: usize,
         group: &LapGroup,
         focused: bool,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) -> ListItem {
         let theme = cx.theme();
         let session = group.session.clone();
@@ -710,12 +723,16 @@ impl LapsPanel {
         )
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
     fn render_lap(
         &self,
         group: &LapGroup,
         line: &LapLine,
         focused: bool,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) -> ListItem {
         let theme = cx.theme();
         let session = group.session.clone();
@@ -833,7 +850,7 @@ impl LapsPanel {
         &self,
         group: &LapGroup,
         focused: bool,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) -> ListItem {
         let theme = cx.theme();
         let session = group.session.clone();
@@ -873,7 +890,11 @@ impl LapsPanel {
     }
 
     /// The two load commands with their keys, acting on the cursor's lap.
-    fn render_footer(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_footer(
+        &self,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) -> impl IntoElement + use<> {
         let enabled = self.cursor_lap().is_some();
         let button = |id: &'static str, label: &'static str, role: Role| {
             let action: &dyn gpui_kit::Action = match role {
@@ -910,7 +931,7 @@ impl LapsPanel {
             ))
     }
 
-    fn render_empty(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_empty(cx: &mut Context<'_, Self>) -> impl IntoElement + use<> {
         v_flex()
             .id("laps-empty")
             .test_support()
@@ -933,7 +954,7 @@ impl LapsPanel {
                     .small()
                     .label("Browse library")
                     .on_click(cx.listener(|_, _, window, cx| {
-                        window.dispatch_action(Box::new(FocusPanel6), cx)
+                        window.dispatch_action(Box::new(FocusPanel6), cx);
                     })),
             )
     }
@@ -992,6 +1013,10 @@ struct Trend {
 }
 
 impl RenderOnce for Trend {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
         let Self {
             values,
@@ -1003,7 +1028,7 @@ impl RenderOnce for Trend {
         div().flex_shrink_0().w(TREND_WIDTH).h(TREND_HEIGHT).child(
             canvas(
                 |_, _, _| {},
-                move |bounds: Bounds<Pixels>, _, window, _| {
+                move |bounds: Bounds<Pixels>, (), window, _| {
                     let dot = px(4.);
                     let inset = f32::from(dot) / 2.0 + 0.5;
                     let width = f32::from(bounds.size.width) - 2.0 * inset;
@@ -1062,7 +1087,7 @@ impl gpui_kit::component::dock::Panel for LapsPanel {
         Some(PanelKind::Laps.title().into())
     }
 
-    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn title(&mut self, _: &mut Window, _: &mut Context<'_, Self>) -> impl IntoElement {
         PanelKind::Laps.title()
     }
 }
@@ -1076,7 +1101,7 @@ impl gpui_kit::Focusable for LapsPanel {
 }
 
 impl Render for LapsPanel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let theme = cx.theme();
         let root = v_flex()
             .id("laps-panel")
@@ -1091,7 +1116,7 @@ impl Render for LapsPanel {
             .bg(theme.sidebar)
             .text_color(theme.sidebar_foreground);
         if self.groups.is_empty() {
-            return root.child(self.render_empty(cx));
+            return root.child(Self::render_empty(cx));
         }
         let focused = self.focus_handle.is_focused(window);
         let groups = self.groups.clone();

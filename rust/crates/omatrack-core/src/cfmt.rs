@@ -9,7 +9,6 @@
 //! a char count would).
 
 use std::ffi::CString;
-use std::fmt::Write as _;
 
 /// One printf argument.
 #[derive(Debug, Clone, Copy)]
@@ -69,6 +68,23 @@ impl<'a> From<&'a String> for Arg<'a> {
 /// argument's own type decides), and `d i u x X o f F e E g G s c %`.
 /// A mismatched argument panics: format strings here are compile-time
 /// constants, so that is a programming error, never input-dependent.
+#[expect(
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    reason = "C printf signed/unsigned conversions deliberately preserve the integer bit pattern."
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep the ported analysis/report stages in source order so numerical and CLI parity remain auditable."
+)]
+///
+/// # Panics
+/// Panics for an unsupported, truncated or mismatched format string, or unused
+/// arguments. Callers supply programmer-owned formats, never source-file text.
+#[expect(
+    clippy::panic,
+    reason = "Only programmer-owned printf formats reach this libc boundary; a mismatched format is a programming error, not source input."
+)]
 pub fn sprintf(format: &str, args: &[Arg<'_>]) -> String {
     let mut out = String::with_capacity(format.len() + 16);
     let bytes = format.as_bytes();
@@ -101,15 +117,16 @@ pub fn sprintf(format: &str, args: &[Arg<'_>]) -> String {
             i += 1;
         }
         let width = &format[width_start..i];
-        let mut precision: Option<&str> = None;
-        if i < bytes.len() && bytes[i] == b'.' {
+        let precision = if i < bytes.len() && bytes[i] == b'.' {
             let precision_start = i + 1;
             i += 1;
             while i < bytes.len() && bytes[i].is_ascii_digit() {
                 i += 1;
             }
-            precision = Some(&format[precision_start..i]);
-        }
+            Some(&format[precision_start..i])
+        } else {
+            None
+        };
         while i < bytes.len() && matches!(bytes[i], b'h' | b'l' | b'z' | b'j' | b't' | b'L') {
             i += 1;
         }
@@ -145,9 +162,8 @@ pub fn sprintf(format: &str, args: &[Arg<'_>]) -> String {
                 );
             }
             b'f' | b'F' | b'e' | b'E' | b'g' | b'G' | b'a' | b'A' => {
-                let value = match arg {
-                    Arg::F(v) => v,
-                    _ => panic!("cfmt: %{} wants a double in {format:?}", conversion as char),
+                let Arg::F(value) = arg else {
+                    panic!("cfmt: %{} wants a double in {format:?}", conversion as char)
                 };
                 let spec = c_spec(flags, width, precision, "", conversion);
                 out.push_str(&c_double(&spec, value));
@@ -226,7 +242,18 @@ fn c_spec(flags: &str, width: &str, precision: Option<&str>, length: &str, conv:
     spec
 }
 
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "Use libc snprintf to preserve the frozen CLI's exact float formatting."
+)]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "finish checks that snprintf returned a nonnegative byte count before using it as a buffer length."
+)]
+#[expect(
+    clippy::expect_used,
+    reason = "Only programmer-owned printf formats reach this libc boundary; a mismatched format is a programming error, not source input."
+)]
 fn c_double(spec: &str, value: f64) -> String {
     let spec = CString::new(spec).expect("printf spec has no NUL");
     let mut buffer = [0u8; 512];
@@ -254,7 +281,15 @@ fn c_double(spec: &str, value: f64) -> String {
     })
 }
 
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "Use libc snprintf with the validated signed-integer format and argument."
+)]
+#[expect(
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Only programmer-owned printf formats reach this libc boundary; a mismatched format is a programming error, not source input."
+)]
 fn c_signed(spec: &str, value: i64) -> String {
     let spec = CString::new(spec).expect("printf spec has no NUL");
     let mut buffer = [0u8; 128];
@@ -272,7 +307,15 @@ fn c_signed(spec: &str, value: i64) -> String {
     })
 }
 
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "Use libc snprintf with the validated unsigned-integer format and argument."
+)]
+#[expect(
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Only programmer-owned printf formats reach this libc boundary; a mismatched format is a programming error, not source input."
+)]
 fn c_unsigned(spec: &str, value: u64) -> String {
     let spec = CString::new(spec).expect("printf spec has no NUL");
     let mut buffer = [0u8; 128];
@@ -290,6 +333,10 @@ fn c_unsigned(spec: &str, value: u64) -> String {
     })
 }
 
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "finish checks that snprintf returned a nonnegative byte count before using it as a buffer length."
+)]
 fn finish(buffer: &[u8], written: libc::c_int, retry: impl FnOnce() -> Vec<u8>) -> String {
     assert!(written >= 0, "snprintf failed");
     let written = written as usize;
@@ -303,7 +350,10 @@ fn finish(buffer: &[u8], written: libc::c_int, retry: impl FnOnce() -> Vec<u8>) 
 /// `std::stoi`: skip leading whitespace, parse the longest decimal integer
 /// prefix (`"3x"` is 3). `None` where the C++ would throw
 /// (`invalid_argument` / `out_of_range`).
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "Use libc strtol and thread-local errno to preserve C++ prefix parsing."
+)]
 pub fn stoi(text: &str) -> Option<i32> {
     let c = CString::new(text).ok()?;
     let mut end: *mut libc::c_char = std::ptr::null_mut();
@@ -311,7 +361,7 @@ pub fn stoi(text: &str) -> Option<i32> {
     // pointer into it. errno is thread-local and reset first.
     let (value, consumed, range_error) = unsafe {
         *libc::__errno_location() = 0;
-        let value = libc::strtol(c.as_ptr(), &mut end, 10);
+        let value = libc::strtol(c.as_ptr(), &raw mut end, 10);
         let consumed = end.offset_from(c.as_ptr());
         (value, consumed, *libc::__errno_location() == libc::ERANGE)
     };
@@ -323,14 +373,17 @@ pub fn stoi(text: &str) -> Option<i32> {
 
 /// `std::stod`: the longest `strtod` prefix (decimal, hex, inf, nan). `None`
 /// where the C++ would throw.
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "Use libc strtod and thread-local errno to preserve C++ prefix parsing."
+)]
 pub fn stod(text: &str) -> Option<f64> {
     let c = CString::new(text).ok()?;
     let mut end: *mut libc::c_char = std::ptr::null_mut();
     // SAFETY: as in `stoi`.
     let (value, consumed, range_error) = unsafe {
         *libc::__errno_location() = 0;
-        let value = libc::strtod(c.as_ptr(), &mut end);
+        let value = libc::strtod(c.as_ptr(), &raw mut end);
         let consumed = end.offset_from(c.as_ptr());
         (value, consumed, *libc::__errno_location() == libc::ERANGE)
     };
@@ -350,7 +403,7 @@ macro_rules! sprintf {
 
 /// Append formatted text to a `String` (`fprintf` into a buffer).
 pub fn append(out: &mut String, format: &str, args: &[Arg<'_>]) {
-    let _ = out.write_str(&sprintf(format, args));
+    out.push_str(&sprintf(format, args));
 }
 
 #[cfg(test)]

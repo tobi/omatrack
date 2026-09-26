@@ -4,7 +4,7 @@ use crate::{Out, printf};
 use omatrack_core::{ChannelOverrides, format_lap_time};
 use std::ffi::OsStr;
 
-pub fn run(path: &OsStr) -> i32 {
+pub(crate) fn run(path: &OsStr) -> i32 {
     let Some(src) = super::open(path) else {
         return 1;
     };

@@ -9,6 +9,10 @@ pub fn lower_bound(values: &[f64], value: f64) -> usize {
 
 /// `std::upper_bound`: first index whose value is greater than `value`.
 #[inline]
+#[expect(
+    clippy::neg_cmp_op_on_partial_ord,
+    reason = "Negated ordered comparisons deliberately include unordered (NaN) values; preserve that behavior."
+)]
 pub fn upper_bound(values: &[f64], value: f64) -> usize {
     values.partition_point(|v| !(value < *v))
 }
@@ -114,6 +118,12 @@ pub fn interpolate(x: &[f64], y: &[f64], xq: f64) -> f64 {
 }
 
 /// Interpolate a uniformly spaced array at fraction [0, 1]; clamps.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
 pub fn interpolate_fraction(y: &[f64], fraction: f64) -> f64 {
     let n = y.len();
     if n == 0 {
@@ -130,6 +140,10 @@ pub fn interpolate_fraction(y: &[f64], fraction: f64) -> f64 {
 }
 
 /// Inverse of [`interpolate_fraction`] for a non-decreasing array.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
 pub fn invert_fraction(y: &[f64], yq: f64) -> f64 {
     if y.len() < 2 {
         return 0.0;

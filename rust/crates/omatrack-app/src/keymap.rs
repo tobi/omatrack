@@ -18,16 +18,27 @@
 
 use gpui_kit::{App, KeyBinding};
 
-use crate::actions::*;
+use crate::actions::{
+    CancelEdit, ClosePreferences, ComposeLayout1, ComposeLayout2, ComposeLayout3, ComposeLayout4,
+    ComposeLayout5, ExitFullscreen, FocusPanel1, FocusPanel2, FocusPanel3, FocusPanel4,
+    FocusPanel5, FocusPanel6, NextCorner, NextLap, NextPreferencesSection, OpenFolder,
+    OpenPreferences, PrevCorner, PrevLap, PrevPreferencesSection, Quit, SaveEdit, SeekBack,
+    SeekForward, SetPrimary, SetReference, SwapRoles, ToggleContinuous, ToggleCornerEdit,
+    ToggleInspector, ToggleLibrary, ToggleMute, TogglePalette, TogglePlay, ToggleSlowMotion,
+    ToggleVideoFullscreen, ToggleXAxis, ZoomIn, ZoomOut, ZoomReset,
+};
 
-/// A key context (one identifier). Contexts, not predicates, are what
-/// `tooltip_with_action` and `Kbd::binding_for_action` take: they parse
-/// the string with `KeyContext::parse`, which cannot parse an operator.
+/// A key context (one identifier).
+///
+/// Contexts, not predicates, are what `tooltip_with_action` and
+/// `Kbd::binding_for_action` take: they parse the string with `KeyContext::parse`,
+/// which cannot parse an operator.
 pub const WORKSPACE_CONTEXT: &str = "Workspace";
-/// A binding *predicate*, only for `KeyBinding::new`. Never pass it where a
-/// context is expected (a tooltip's shortcut lookup): `KeyContext::parse`
-/// recurses forever on `&&` and aborts the process. Look the single keys
-/// up in [`WORKSPACE_CONTEXT`]; the predicate matches it.
+/// A binding *predicate*, only for `KeyBinding::new`.
+///
+/// Never pass it where a context is expected (a tooltip's shortcut lookup):
+/// `KeyContext::parse` recurses forever on `&&` and aborts the process. Look the single
+/// keys up in [`WORKSPACE_CONTEXT`]; the predicate matches it.
 pub const SINGLE_KEY_PREDICATE: &str = "Workspace && !Input";
 pub const LIBRARY_CONTEXT: &str = "Library";
 pub const TRACE_EDIT_CONTEXT: &str = "TraceEdit";

@@ -23,6 +23,7 @@
 //! once, at drag end.
 
 use std::cell::RefCell;
+use std::fmt::Write as _;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -68,6 +69,12 @@ pub struct HudReadout {
 impl HudReadout {
     /// Sample the primary lap (and the comparison, when there is one) at
     /// `fraction`.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        reason = "Clamped lap fractions map to indices in resident sample buffers; interpolation intentionally uses f64."
+    )]
     pub fn at(primary: &UnifiedLap, comparison: Option<&Comparison>, fraction: f64) -> Self {
         let fraction = fraction.clamp(0.0, 1.0);
         let finite = |value: f64| value.is_finite().then_some(value);
@@ -155,7 +162,7 @@ struct Shown {
 }
 
 impl VideoOverlay {
-    pub fn new(app: AppState, cx: &mut Context<Self>) -> Self {
+    pub fn new(app: AppState, cx: &mut Context<'_, Self>) -> Self {
         let subscriptions = vec![
             cx.observe(&app.cursor, |_, _, cx| cx.notify()),
             cx.observe(&app.video, |_, _, cx| cx.notify()),
@@ -173,7 +180,7 @@ impl VideoOverlay {
     }
 
     /// Present the fullscreen stage (`Some`) or the docked card (`None`).
-    pub fn set_stage(&mut self, stage: Option<StageOverlay>, cx: &mut Context<Self>) {
+    pub fn set_stage(&mut self, stage: Option<StageOverlay>, cx: &mut Context<'_, Self>) {
         if self.stage != stage {
             if stage.is_none() {
                 self.drag = None;
@@ -246,6 +253,10 @@ impl VideoOverlay {
             .is_some_and(|analysis| crate::workspace::status::analysis_approximate(analysis))
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
     fn stored_position(&self, cx: &App) -> Option<(f32, f32)> {
         self.app
             .video
@@ -260,7 +271,11 @@ impl VideoOverlay {
     /// traces right below, so the row never repeats it; the along-track gap
     /// joins when both GPS fixes allow it. Nothing rides over the pictures
     /// (they carry burned-in timers and dashboards).
-    fn render_docked(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "Formatting these strings and primitives into a String cannot fail."
+    )]
+    fn render_docked(&mut self, cx: &mut Context<'_, Self>) -> AnyElement {
         let Some(fraction) = self.app.cursor.read(cx).fraction() else {
             return div().into_any_element();
         };
@@ -293,10 +308,10 @@ impl VideoOverlay {
         let theme = cx.theme();
         let mut spoken = format!("Cursor at {at}");
         if let Some(place) = &place {
-            spoken.push_str(&format!(", {place}"));
+            let _ = write!(spoken, ", {place}");
         }
         if let Some(gap) = gap {
-            spoken.push_str(&format!(", gap {}", omatrack_ui::format_gap(gap)));
+            let _ = write!(spoken, ", gap {}", omatrack_ui::format_gap(gap));
         }
         h_flex()
             .id("video-cursor-place")
@@ -329,11 +344,15 @@ impl VideoOverlay {
             .into_any_element()
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
     fn render_stage(
         &mut self,
         stage: StageOverlay,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) -> AnyElement {
         let viewport = window.viewport_size();
         let stage_size = (viewport.width.as_f32(), viewport.height.as_f32());
@@ -410,13 +429,13 @@ impl VideoOverlay {
             _ => None,
         };
         let delta_bar = self.render_delta_lane(stage, readout, cx);
-        let end_drag = move |this: &mut Self, cx: &mut Context<Self>| {
+        let end_drag = move |this: &mut Self, cx: &mut Context<'_, Self>| {
             let Some(drag) = this.drag.take() else {
                 return;
             };
             let (x, y) = stage::hud_position(stage_size, hud_size, bottom_inset, drag.origin);
             this.app.video.update(cx, |video, cx| {
-                video.set_hud_position(f64::from(x), f64::from(y), cx)
+                video.set_hud_position(f64::from(x), f64::from(y), cx);
             });
             cx.notify();
         };
@@ -459,6 +478,14 @@ impl VideoOverlay {
     /// live Δt at the centre, the stage's largest number, over a gain/loss
     /// bar. Green ahead, red behind; muted with `≈` when the alignment is
     /// LOW confidence.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
     fn render_delta_lane(
         &self,
         stage: StageOverlay,
@@ -487,7 +514,7 @@ impl VideoOverlay {
             h_flex()
                 .gap_2()
                 .items_center()
-                .when(right, |this| this.flex_row_reverse())
+                .when(right, gpui_kit::Styled::flex_row_reverse)
                 .child(
                     div()
                         .flex_shrink_0()
@@ -742,7 +769,7 @@ pub fn countdown(app: &AppState, window: &Window, cx: &App) -> Option<AnyElement
 }
 
 impl Render for VideoOverlay {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         match self.stage {
             Some(stage) => self.render_stage(stage, window, cx),
             None => self.render_docked(cx),
@@ -758,10 +785,11 @@ fn lap_offset(values: &[f64], fraction: f64) -> Option<f64> {
     value.is_finite().then_some(value.max(0.0))
 }
 
-/// Where on the lap `fraction` is, by its corner zones: the zone's name
-/// inside one (`Turn 1`), else the straight after the last corner behind
-/// it (`straight after T3`; before the first corner, the lap's last one).
-/// `None` without zones.
+/// Name the corner or straight containing the lap `fraction`.
+///
+/// Use the zone's name inside a corner (`Turn 1`), otherwise the straight after the
+/// last corner behind it (`straight after T3`). Before the first corner, use the lap's
+/// last one. Return `None` without zones.
 pub fn cursor_place(zones: &[omatrack_core::corners::CornerZone], fraction: f64) -> Option<String> {
     if let Some(zone) = zones
         .iter()
@@ -798,6 +826,10 @@ mod tests {
 
     /// A straight northbound lap at 180 km/h with GPS fixes of `accuracy` m,
     /// starting `ahead` metres up the road.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+    )]
     fn gps_lap(ahead: f64, accuracy: f64) -> Arc<UnifiedLap> {
         let n = 501;
         let metres_per_degree = 111_320.0;
@@ -861,7 +893,7 @@ mod tests {
             name: name.to_string(),
             start,
             end,
-            source: Default::default(),
+            source: omatrack_core::corners::ZoneSource::default(),
         };
         let zones = [zone("Turn 1", 0.1, 0.2), zone("Turn 3", 0.4, 0.5)];
         assert_eq!(cursor_place(&zones, 0.15).as_deref(), Some("Turn 1"));

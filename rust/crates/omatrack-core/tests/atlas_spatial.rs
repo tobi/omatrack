@@ -1,5 +1,7 @@
 //! Port of tests/TrackAtlasSpatialTest.cpp, plus the typed atlas model.
 
+#![cfg(test)]
+
 use omatrack_core::UnifiedLap;
 use omatrack_core::atlas_spatial::*;
 use omatrack_core::corners::zones::{StationMapper, atlas_complex_zones, atlas_corner_zones};
@@ -108,6 +110,10 @@ fn rejects_poor_accuracy_and_distant_traces() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn empty_mapping_yields_no_station() {
     assert_eq!(lap_fraction_at_station(&[], 0.25), -1.0);
     let mapping = [Point { x: 0.0, y: 0.0 }, Point { x: 1.0, y: 1.0 }];

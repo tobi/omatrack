@@ -1,7 +1,8 @@
-//! One library scan: discover recordings in every enabled location,
-//! summarize them through the index cache, resolve their metadata and
-//! build the tree. Blocking and cancellable; run it on a background
-//! executor and apply the result on the UI thread.
+//! One library scan: discover recordings in every enabled location, summarize them
+//! through the index cache, resolve their metadata and build the tree.
+//!
+//! Blocking and cancellable; run it on a background executor and apply the result on
+//! the UI thread.
 
 use crate::catalog::{CatalogRecord, LibrarySnapshot};
 use crate::config::Config;
@@ -80,10 +81,15 @@ fn event_date_key(summary: &RecordingSummary) -> Option<String> {
     Some(timestamp.to_zoned(zone).date().to_string())
 }
 
-/// Scan `locations`: prune other cache generations, discover, summarize
-/// (cache hit or index open), resolve metadata, build the snapshot. A
-/// location or file that fails is reported and skipped; cancellation stops
-/// between files.
+/// Scan `locations`: prune other cache generations, discover, summarize (cache hit or
+/// index open), resolve metadata, build the snapshot.
+///
+/// A location or file that fails is reported and skipped; cancellation stops between
+/// files.
+///
+/// # Errors
+/// Returns `ScanCancelled` when cancellation is requested. Location and recording
+/// failures are collected in the outcome.
 pub fn scan_library(
     locations: &[Arc<dyn Location>],
     cache: &IndexCache,

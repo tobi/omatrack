@@ -1,5 +1,7 @@
 //! TRACK.yml inheritance and atomic updates, and the five-layer metadata
-//! precedence (mirrors YamlConfigTest's track-metadata cases).
+//! precedence (mirrors `YamlConfigTest`'s track-metadata cases).
+
+#![cfg(test)]
 
 mod common;
 

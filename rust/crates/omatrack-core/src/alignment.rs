@@ -115,6 +115,10 @@ struct Anchor {
     compare_time: f64,
 }
 
+#[expect(
+    clippy::neg_cmp_op_on_partial_ord,
+    reason = "Negated ordered comparisons deliberately include unordered (NaN) values; preserve that behavior."
+)]
 fn distance_base_usable(primary: &UnifiedLap, compare: &UnifiedLap) -> bool {
     if primary.distance_source != DistanceSource::Native
         || compare.distance_source != DistanceSource::Native
@@ -133,6 +137,10 @@ fn distance_base_usable(primary: &UnifiedLap, compare: &UnifiedLap) -> bool {
     (p - c).abs() / max(p, c) <= DISTANCE_BASE_TOTAL_TOLERANCE
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
 fn lap_time_percentage(primary: &UnifiedLap, compare: &UnifiedLap) -> Vec<f64> {
     let n = primary.time.len();
     let mut times = vec![0.0; n];
@@ -140,13 +148,13 @@ fn lap_time_percentage(primary: &UnifiedLap, compare: &UnifiedLap) -> Vec<f64> {
     let primary_span = primary.time[n - 1] - primary_start;
     let compare_start = compare.time[0];
     let compare_span = compare.time[compare.time.len() - 1] - compare_start;
-    for i in 0..n {
+    for (i, time) in times.iter_mut().enumerate() {
         let pct = if primary_span > 0.0 {
             (primary.time[i] - primary_start) / primary_span
         } else {
             i as f64 / (n - 1) as f64
         };
-        times[i] = compare_start + clamp(pct, 0.0, 1.0) * compare_span;
+        *time = compare_start + clamp(pct, 0.0, 1.0) * compare_span;
     }
     times
 }
@@ -207,6 +215,10 @@ fn gps_fix_usable(latitude: f64, longitude: f64, accuracy: f64) -> bool {
         && accuracy <= 25.0
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
 fn gps_coverage_available(lap: &UnifiedLap) -> bool {
     if !gps_arrays_available(lap) || lap.time.len() < 8 {
         return false;
@@ -232,6 +244,11 @@ struct Heading {
     east: f64,
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
 fn travel_heading(lap: &UnifiedLap, index: usize) -> Option<Heading> {
     let half = max(
         1.0,
@@ -266,6 +283,10 @@ fn travel_heading(lap: &UnifiedLap, index: usize) -> Option<Heading> {
     })
 }
 
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
 fn nearest_gps_index(
     primary: &UnifiedLap,
     primary_index: usize,
@@ -334,6 +355,15 @@ fn nearest_gps_index(
     Some(best)
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
+#[expect(
+    clippy::neg_cmp_op_on_partial_ord,
+    reason = "Negated ordered comparisons deliberately include unordered (NaN) values; preserve that behavior."
+)]
 fn gps_self_consistent(lap: &UnifiedLap, index: usize) -> bool {
     if lap.speed.len() != lap.time.len() || index >= lap.time.len() {
         return false;
@@ -391,6 +421,10 @@ fn speeds_agree(primary: &UnifiedLap, i: usize, compare: &UnifiedLap, j: usize) 
 
 /// Mean absolute speed difference at the mapped compare times: the correct
 /// station map minimises it.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
 fn mapped_speed_disagreement(primary: &UnifiedLap, compare: &UnifiedLap, times: &[f64]) -> f64 {
     let mut sum = 0.0;
     let mut count = 0usize;
@@ -428,6 +462,12 @@ struct GpsAnchors {
     continuous: bool,
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
 fn validated_gps_anchors(
     primary: &UnifiedLap,
     compare: &UnifiedLap,
@@ -505,6 +545,10 @@ fn front_damper_series(lap: &UnifiedLap) -> Vec<f64> {
 
 /// A mapped damper channel is not enough: loggers without the sensors carry
 /// a constant channel. Require most samples finite and real motion.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
 fn front_damper_available(lap: &UnifiedLap) -> bool {
     if lap.damper_fl.len() != lap.time.len() && lap.damper_fr.len() != lap.time.len() {
         return false;
@@ -529,6 +573,13 @@ fn front_damper_available(lap: &UnifiedLap) -> bool {
     variance > 1e-9 * max(1.0, mean * mean)
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
 fn damper_time_at_corner(
     primary: &UnifiedLap,
     primary_damper: &[f64],
@@ -612,6 +663,12 @@ fn damper_time_at_corner(
     Some(compare.time[best_index])
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
 fn pre_corner_damper_anchors(
     primary: &UnifiedLap,
     compare: &UnifiedLap,
@@ -653,6 +710,10 @@ fn pre_corner_damper_anchors(
     anchors
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
 fn apply_anchors(times: &mut [f64], anchors: &[Anchor], compare: &UnifiedLap, median_filter: bool) {
     if anchors.is_empty() {
         return;
@@ -707,10 +768,18 @@ fn apply_anchors(times: &mut [f64], anchors: &[Anchor], compare: &UnifiedLap, me
     }
 }
 
+#[expect(
+    clippy::neg_cmp_op_on_partial_ord,
+    reason = "Negated ordered comparisons deliberately include unordered (NaN) values; preserve that behavior."
+)]
 fn is_monotonic_non_decreasing(values: &[f64]) -> bool {
     values.windows(2).all(|w| !(w[1] < w[0] - 1e-9))
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
 fn build_fractions(result: &mut AlignmentResult, compare: &UnifiedLap) {
     if !is_monotonic_non_decreasing(&compare.time) {
         result.fraction.clear();
@@ -766,6 +835,11 @@ pub fn damper_available(primary: &UnifiedLap, compare: &UnifiedLap) -> bool {
 
 /// Compute the primary -> compare map. Pure. An unavailable strategy
 /// degrades to lap percentage rather than manufacturing an alignment.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
 pub fn compute(primary: &UnifiedLap, compare: &UnifiedLap, options: &Options) -> AlignmentResult {
     let mut result = AlignmentResult::default();
     if primary.time.len() < 2 || compare.time.len() < 2 {
@@ -836,6 +910,10 @@ fn alignment_map_usable(map: &[f64]) -> bool {
 
 /// Compare-lap fraction for a primary fraction. An empty or degenerate map
 /// is identity: "not yet aligned" must never read as "at the lap start".
+#[expect(
+    clippy::neg_cmp_op_on_partial_ord,
+    reason = "Negated ordered comparisons deliberately include unordered (NaN) values; preserve that behavior."
+)]
 pub fn interpolate_fraction(map: &[f64], primary_fraction: f64) -> f64 {
     if map.len() < 2 || !(map[map.len() - 1] - map[0] >= 0.01) {
         return clamp(primary_fraction, 0.0, 1.0);
@@ -851,6 +929,16 @@ pub fn invert_fraction(map: &[f64], compare_fraction: f64) -> f64 {
     monotonic::invert_fraction(map, compare_fraction)
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
+#[expect(
+    clippy::neg_cmp_op_on_partial_ord,
+    reason = "Negated ordered comparisons deliberately include unordered (NaN) values; preserve that behavior."
+)]
 fn precise_gps_at(lap: &UnifiedLap, fraction: f64, max_accuracy: f64) -> Option<(f64, f64)> {
     if !gps_arrays_available(lap)
         || lap.time.len() < 2
@@ -875,10 +963,17 @@ fn precise_gps_at(lap: &UnifiedLap, fraction: f64, max_accuracy: f64) -> Option<
     ))
 }
 
-/// Signed along-track metres from the primary car to the reference car
-/// (positive: reference ahead). `None` unless both fixes are better than
-/// `max_accuracy_meters`, the primary is moving, and the cars are on the
-/// same stretch of track.
+/// Signed along-track metres from the primary car to the reference car (positive:
+/// reference ahead).
+///
+/// `None` unless both fixes are better than `max_accuracy_meters`, the primary is
+/// moving, and the cars are on the same stretch of track.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
 pub fn relative_along_track_meters(
     primary: &UnifiedLap,
     primary_fraction: f64,

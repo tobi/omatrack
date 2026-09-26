@@ -42,8 +42,12 @@ impl Out {
             std::io::stderr().lock().write_all(&self.buffer)
         } else {
             let mut out = std::io::stdout().lock();
-            out.write_all(&self.buffer).and_then(|_| out.flush())
+            out.write_all(&self.buffer).and_then(|()| out.flush())
         };
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "Preserve the frozen CLI stdio behavior: output failure, including a closed pipe, does not change its exit status."
+        )]
         let _ = result;
         self.buffer.clear();
     }

@@ -139,7 +139,7 @@ fn set_docks(
     area: &mut DockArea,
     docks: DockWidths,
     window: &mut Window,
-    cx: &mut Context<DockArea>,
+    cx: &mut Context<'_, DockArea>,
 ) {
     area.set_dock_size(DockPlacement::Left, docks.left, window, cx);
     area.set_dock_size(DockPlacement::Right, docks.right, window, cx);
@@ -242,7 +242,7 @@ pub(crate) fn reveal_dock(
     panels: &WorkspacePanels,
     kind: PanelKind,
     window: &mut Window,
-    cx: &mut Context<DockArea>,
+    cx: &mut Context<'_, DockArea>,
 ) {
     let placement =
         current_placement(area, panels, kind, cx).unwrap_or_else(|| default_placement(kind));

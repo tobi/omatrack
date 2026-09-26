@@ -2,6 +2,8 @@
 //! (recording metadata, `TRACK.yml`). Every configuration root, library
 //! folder and `TRACK.yml` lives in a temporary directory.
 
+#![cfg(test)]
+
 mod common;
 
 use std::path::{Path, PathBuf};
@@ -113,7 +115,7 @@ fn saved_config(
     cx.executor().advance_clock(Duration::from_secs(1));
     cx.run_until_parked();
     let preferences = test.app.preferences.clone();
-    cx.update(|cx| preferences.update(cx, |preferences, cx| preferences.flush(cx)));
+    cx.update(|cx| preferences.update(cx, omatrack_app::state::Preferences::flush));
     sandbox.read_config()
 }
 

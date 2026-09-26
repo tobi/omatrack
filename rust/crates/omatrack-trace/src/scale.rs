@@ -27,7 +27,7 @@ impl Default for Viewport {
 }
 
 impl Viewport {
-    pub const FULL: Viewport = Viewport {
+    pub const FULL: Self = Self {
         start: 0.0,
         end: 1.0,
     };
@@ -53,6 +53,10 @@ impl Viewport {
         self.end - self.start
     }
 
+    #[expect(
+        clippy::float_cmp,
+        reason = "Exact equality detects unchanged state or the full-view sentinel; epsilon would hide small changes."
+    )]
     pub fn is_full(&self) -> bool {
         self.start == 0.0 && self.end == 1.0
     }
@@ -72,6 +76,7 @@ impl Viewport {
     /// Zoom by `factor` (<1 zooms in) keeping `anchor` (a lap fraction) under
     /// the pointer. The result stays inside the lap; span is clamped to
     /// `MIN_SPAN..=1`. Port of `TelemetryStore::zoomAt`.
+    #[must_use]
     pub fn zoom_about(&self, anchor: f64, factor: f64) -> Self {
         if !anchor.is_finite() || !factor.is_finite() || factor <= 0.0 {
             return *self;
@@ -101,6 +106,7 @@ impl Viewport {
     /// scaled its argument by the span a second time; here the argument is
     /// the lap-fraction distance itself, so a grab-pan keeps the grabbed
     /// sample under the pointer.
+    #[must_use]
     pub fn pan_by(&self, delta: f64) -> Self {
         if !delta.is_finite() {
             return *self;
@@ -131,7 +137,8 @@ impl Viewport {
     }
 
     /// Linear interpolation between two viewports (for animation).
-    pub fn lerp(&self, to: &Viewport, t: f64) -> Self {
+    #[must_use]
+    pub fn lerp(&self, to: &Self, t: f64) -> Self {
         Self {
             start: self.start + (to.start - self.start) * t,
             end: self.end + (to.end - self.end) * t,
@@ -148,10 +155,11 @@ pub enum XAxis {
 }
 
 impl XAxis {
+    #[must_use]
     pub fn toggled(self) -> Self {
         match self {
-            XAxis::Distance => XAxis::Time,
-            XAxis::Time => XAxis::Distance,
+            Self::Distance => Self::Time,
+            Self::Time => Self::Distance,
         }
     }
 }
@@ -176,6 +184,12 @@ impl Tick {
 }
 
 /// Value of a sampled lap array at a lap fraction (linear interpolation).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Clamped lap fractions map to indices in resident sample buffers; interpolation intentionally uses f64."
+)]
 pub fn value_at_fraction(values: &[f64], fraction: f64) -> f64 {
     if values.is_empty() {
         return f64::NAN;
@@ -194,6 +208,10 @@ pub fn value_at_fraction(values: &[f64], fraction: f64) -> f64 {
 
 /// Lap fraction at which a monotonic non-decreasing array first reaches
 /// `value` (linear interpolation between samples).
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Clamped lap fractions map to indices in resident sample buffers; interpolation intentionally uses f64."
+)]
 pub fn fraction_at_value(monotonic: &[f64], value: f64) -> f64 {
     let n = monotonic.len();
     if n < 2 || !value.is_finite() {
@@ -257,6 +275,11 @@ fn group_thousands(value: i64) -> String {
 }
 
 /// "850 m", "1,250 m", "12.5 m" (decimals only when the step needs them).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "Axis labels intentionally round floating-point units to integer display precision."
+)]
 pub fn format_distance(metres: f64, step: f64) -> String {
     if step >= 1.0 {
         format!("{} m", group_thousands(metres.round() as i64))
@@ -267,6 +290,12 @@ pub fn format_distance(metres: f64, step: f64) -> String {
 }
 
 /// "0:42", "1:13.6", "0:42.31" (decimals only when the step needs them).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    reason = "Axis labels intentionally round floating-point units to integer display precision."
+)]
 pub fn format_time(seconds: f64, step: f64) -> String {
     let negative = seconds < 0.0;
     let seconds = seconds.abs();
@@ -288,10 +317,20 @@ pub fn format_time(seconds: f64, step: f64) -> String {
     )
 }
 
-/// Ticks for the visible part of the lap, at least `min_spacing` logical
-/// pixels apart across a plot `width` wide. `values` is the lap's distance
-/// (m) or time (s) array; both are monotonic on the normalized lap. Writes
-/// into `out` (cleared first).
+/// Ticks for the visible part of the lap, at least `min_spacing` logical pixels apart
+/// across a plot `width` wide.
+///
+/// `values` is the lap's distance (m) or time (s) array; both are monotonic on the
+/// normalized lap. Writes into `out` (cleared first).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+)]
+#[expect(
+    clippy::neg_cmp_op_on_partial_ord,
+    reason = "Negated ordered comparisons deliberately include unordered (NaN) values; preserve that behavior."
+)]
 pub fn axis_ticks(
     axis: XAxis,
     viewport: &Viewport,
@@ -373,6 +412,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn pan_is_in_lap_fraction_and_clamped() {
         let v = Viewport::new(0.2, 0.4).pan_by(0.1);
         assert!((v.start - 0.3).abs() < 1e-12 && (v.end - 0.5).abs() < 1e-12);
@@ -383,6 +426,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn x_and_fraction_round_trip() {
         let v = Viewport::new(0.25, 0.75);
         let x = v.x_for_fraction(0.5, 100.0, 400.0);
@@ -402,6 +449,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn nice_steps() {
         assert_eq!(nice_step(0.7), 1.0);
         assert_eq!(nice_step(1.3), 2.0);
@@ -422,12 +473,16 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn distance_ticks_land_on_nice_values() {
         // 4000 m lap, 90 s, non-uniform speed.
         let n = 4501;
         let distance: Vec<f64> = (0..n)
             .map(|i| {
-                let t = i as f64 / (n - 1) as f64;
+                let t = f64::from(i) / f64::from(n - 1);
                 4000.0 * (t + 0.05 * (t * 12.0).sin() / 12.0)
             })
             .collect();
@@ -460,7 +515,7 @@ mod tests {
 
     #[test]
     fn time_ticks_use_clock_labels() {
-        let time: Vec<f64> = (0..4501).map(|i| i as f64 * 0.02).collect();
+        let time: Vec<f64> = (0..4501).map(|i| f64::from(i) * 0.02).collect();
         let mut ticks = Vec::new();
         axis_ticks(XAxis::Time, &Viewport::FULL, &time, 900.0, 80.0, &mut ticks);
         assert_eq!(ticks[0].label, "0:00");
@@ -468,6 +523,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn fraction_lookup_handles_flat_runs() {
         let values = [0.0, 1.0, 1.0, 1.0, 2.0];
         assert!((fraction_at_value(&values, 1.0) - 0.25).abs() < 1e-12);

@@ -13,7 +13,7 @@ use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 
 /// Parse the argument list after the command (`args[0]` is `corners`).
-pub fn run_args(args: &[OsString], program: &OsStr) -> i32 {
+pub(crate) fn run_args(args: &[OsString], program: &OsStr) -> i32 {
     let mut reference: Option<&OsStr> = None;
     let mut lap_id = -1;
     let mut reference_lap_id = -1;
@@ -85,7 +85,11 @@ fn metres(value: f64) -> String {
     }
 }
 
-pub fn run(
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep the ported analysis/report stages in source order so numerical and CLI parity remain auditable."
+)]
+pub(crate) fn run(
     path: &OsStr,
     lap_id: i32,
     reference_path: Option<&OsStr>,

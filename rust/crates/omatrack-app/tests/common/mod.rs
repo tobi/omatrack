@@ -2,7 +2,10 @@
 //! application (temporary XDG roots, built-in theme, no video, no startup
 //! scan) and a small synthetic library.
 
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "Each integration-test crate imports a different subset of these fixture helpers."
+)]
 
 use std::path::{Path, PathBuf};
 
@@ -17,18 +20,18 @@ use omatrack_library::{
 };
 
 /// A temporary home for one test's configuration, cache and state.
-pub struct Sandbox {
+pub(crate) struct Sandbox {
     pub dir: tempfile::TempDir,
 }
 
 impl Sandbox {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             dir: tempfile::tempdir().expect("temporary directory"),
         }
     }
 
-    pub fn paths(&self) -> Paths {
+    pub(crate) fn paths(&self) -> Paths {
         Paths::with_roots(
             self.dir.path().join("config"),
             self.dir.path().join("cache"),
@@ -37,36 +40,36 @@ impl Sandbox {
     }
 
     /// Write `omatrack.yml` before the application starts.
-    pub fn write_config(&self, yaml: &str) {
+    pub(crate) fn write_config(&self, yaml: &str) {
         let path = self.paths().config_file();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, yaml).unwrap();
     }
 
-    pub fn read_config(&self) -> Config {
+    pub(crate) fn read_config(&self) -> Config {
         Config::load(&self.paths().config_file()).expect("omatrack.yml parses")
     }
 
-    pub fn options(&self) -> StateOptions {
+    pub(crate) fn options(&self) -> StateOptions {
         StateOptions::isolated(self.paths())
     }
 }
 
 /// The running test application.
-pub struct TestApp {
+pub(crate) struct TestApp {
     pub window: WindowHandle<Root>,
     pub workspace: Entity<Workspace>,
     pub app: AppState,
 }
 
 /// Initialize the application with `state` and open the main window.
-pub fn start(cx: &mut TestAppContext, state: StateOptions) -> TestApp {
+pub(crate) fn start(cx: &mut TestAppContext, state: StateOptions) -> TestApp {
     cx.update(|cx| omatrack_app::init_with(AppOptions::isolated(state), cx));
     open(cx)
 }
 
 /// Open (another) main window on the already initialized application.
-pub fn open(cx: &mut TestAppContext) -> TestApp {
+pub(crate) fn open(cx: &mut TestAppContext) -> TestApp {
     let window = cx
         .update(omatrack_app::open_main_window)
         .expect("main window opens");
@@ -87,6 +90,11 @@ pub fn open(cx: &mut TestAppContext) -> TestApp {
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn summary(laps: &[(i32, f64, bool, &str)], numbered: bool) -> RecordingSummary {
     let mut start = 0.0;
     let laps: Vec<serde_json::Value> = laps
@@ -149,13 +157,13 @@ fn record(
 /// One track, one day, two recordings of five laps each (out, three
 /// flying laps, in). The files do not exist: loading a lap fails, which is
 /// enough to observe which lap a role asked for.
-pub fn synthetic_snapshot() -> LibrarySnapshot {
+pub(crate) fn synthetic_snapshot() -> LibrarySnapshot {
     synthetic_snapshot_numbered(false)
 }
 
 /// [`synthetic_snapshot`]; with `numbered`, laps carry the recording's own
 /// lap numbers (their ids), the way most loggers report them.
-pub fn synthetic_snapshot_numbered(numbered: bool) -> LibrarySnapshot {
+pub(crate) fn synthetic_snapshot_numbered(numbered: bool) -> LibrarySnapshot {
     let laps_a = [
         (1, 95.0, false, "out"),
         (2, 76.5, true, "flying"),
@@ -187,12 +195,12 @@ pub fn synthetic_snapshot_numbered(numbered: bool) -> LibrarySnapshot {
 }
 
 /// Install [`synthetic_snapshot`] into the running application.
-pub fn load_synthetic_library(test: &TestApp, cx: &mut TestAppContext) -> LibrarySnapshot {
+pub(crate) fn load_synthetic_library(test: &TestApp, cx: &mut TestAppContext) -> LibrarySnapshot {
     install_snapshot(test, cx, synthetic_snapshot())
 }
 
 /// Install `snapshot` into the running application.
-pub fn install_snapshot(
+pub(crate) fn install_snapshot(
     test: &TestApp,
     cx: &mut TestAppContext,
     snapshot: LibrarySnapshot,

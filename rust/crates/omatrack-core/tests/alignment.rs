@@ -1,6 +1,8 @@
 //! Port of tests/AlignmentTest.cpp: the comparison-alignment strategies
 //! shared by traces, delta, cursor readouts and synchronized video.
 
+#![cfg(test)]
+
 use omatrack_core::alignment::{
     self, AlignmentResult, Options, Strategy, compute, confidence_label,
     relative_along_track_meters,
@@ -22,6 +24,10 @@ fn place_on_line(meters: f64) -> (f64, f64) {
     )
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn make_lap(samples: usize, gps: bool, dampers: bool) -> UnifiedLap {
     let mut lap = UnifiedLap {
         sample_rate: 50,
@@ -59,6 +65,12 @@ fn make_lap(samples: usize, gps: bool, dampers: bool) -> UnifiedLap {
 }
 
 /// The compare lap drives the primary's line on a warped clock.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn warped_lap(primary: &UnifiedLap, amplitude: f64) -> UnifiedLap {
     let mut lap = primary.clone();
     let total = *primary.time.last().unwrap();
@@ -112,6 +124,10 @@ fn monotonic(values: &[f64]) -> bool {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn non_owning_lookup_matches_and_falls_back() {
     let map = [0.03, 0.2, 0.7, 0.98];
     for f in [-0.1, 0.0, 0.15, 0.5, 0.95, 1.1] {
@@ -126,6 +142,10 @@ fn non_owning_lookup_matches_and_falls_back() {
 }
 
 #[test]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn lap_percentage_uses_time_over_speed_fused_distance() {
     const N: usize = 1000;
     let mut primary = make_lap(N, false, false);
@@ -194,6 +214,10 @@ fn verified_gps_corrects_variable_track_progress() {
 }
 
 #[test]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn patchy_gps_resyncs_where_it_is_good() {
     let mut primary = make_lap(1500, true, false);
     let amplitude = 1.5;
@@ -235,12 +259,19 @@ fn gps_that_disagrees_with_the_car_is_ignored() {
 }
 
 #[test]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn gps_anchors_reject_the_other_leg_of_a_hairpin() {
+    const SPEED: f64 = 20.0;
+
     const RATE: f64 = 50.0;
     const LEG: f64 = 10.0;
     const LAG: f64 = 0.5;
     let samples = ((2.0 * LEG + LAG) * RATE) as usize + 1;
-    const SPEED: f64 = 20.0;
     let lon_scale = 1.0 / (METERS_PER_DEGREE * (43.0 * PI / 180.0).cos());
     let position = |t: f64| {
         let t = t.clamp(0.0, 2.0 * LEG);
@@ -272,6 +303,12 @@ fn gps_anchors_reject_the_other_leg_of_a_hairpin() {
 }
 
 #[test]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn pre_corner_dampers_match_local_signature() {
     const N: usize = 1200;
     const SHIFT: usize = 11;
@@ -319,6 +356,10 @@ fn unavailable_strategies_fall_back_honestly() {
     assert_eq!(gps.gps_anchors, 0);
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn straight(accuracy: f64, samples: usize) -> UnifiedLap {
     let mut lap = UnifiedLap {
         sample_rate: 50,
@@ -416,6 +457,10 @@ fn tiny_lap_produces_no_alignment() {
 // ── Comparison: the one map every surface consumes ──────────────────
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn delta_starts_at_zero_and_matches_readout() {
     let primary = Arc::new(make_lap(1500, true, false));
     let compare = Arc::new(warped_lap(&primary, 1.5));

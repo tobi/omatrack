@@ -30,13 +30,19 @@
 //! # let _ = view; Ok(()) }
 //! ```
 
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "All libmpv FFI and allocation operations are contained in this audited module."
+)]
 mod ffi;
 
 mod clock;
 mod events;
 mod player;
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "The software renderer contains the documented unaligned pixel-copy kernel."
+)]
 mod render;
 mod source;
 mod state;

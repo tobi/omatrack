@@ -10,7 +10,7 @@
 //! Render demand: the backend renders only while some view reports a target
 //! size. The surface reports it during prepaint, which runs only while the
 //! view is painted, so a view that stops being painted must withdraw it
-//! explicitly: [`VideoView::set_visible`]`(false)` (an inactive dock tab, a
+//! explicitly: <code>[VideoView::set_visible](false)</code> (an inactive dock tab, a
 //! layout that hides one player), replacing the source, and releasing the
 //! view all report "no target", after which the backend consumes frames
 //! without drawing them.
@@ -52,7 +52,7 @@ pub enum VideoViewEvent {
 ///
 /// GPUI does not tell an element that it stopped being painted. An owner
 /// that keeps the view alive while not showing it (a background dock tab, a
-/// collapsed pane) must call [`VideoView::set_visible`]`(false)`, or the
+/// collapsed pane) must call <code>[VideoView::set_visible](false)</code>, or the
 /// backend keeps rendering frames nobody sees.
 pub struct VideoView {
     id: ElementId,
@@ -64,7 +64,7 @@ pub struct VideoView {
     first_frame_emitted: bool,
     reported_error: Option<String>,
     dropped_images: usize,
-    _signal: Task<()>,
+    signal_task: Task<()>,
     _release: Subscription,
 }
 
@@ -78,7 +78,7 @@ impl VideoView {
         source: Arc<dyn FrameSource>,
         letterbox: Hsla,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) -> Self {
         let signal = Self::listen(&source, window, cx);
         let release = cx.on_release(|view: &mut Self, cx: &mut App| {
@@ -98,7 +98,7 @@ impl VideoView {
             first_frame_emitted: false,
             reported_error: None,
             dropped_images: 0,
-            _signal: signal,
+            signal_task: signal,
             _release: release,
         };
         // Adopt the current frame now (no loading flash on the first draw),
@@ -118,15 +118,12 @@ impl VideoView {
     fn listen(
         source: &Arc<dyn FrameSource>,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) -> Task<()> {
         let signal = source.frame_signal();
         cx.spawn_in(window, async move |view, cx| {
             while signal.recv().await.is_ok() {
-                if view
-                    .update_in(cx, |view, window, cx| view.sync_frame(window, cx))
-                    .is_err()
-                {
+                if view.update_in(cx, Self::sync_frame).is_err() {
                     break;
                 }
             }
@@ -138,11 +135,11 @@ impl VideoView {
         &mut self,
         source: Arc<dyn FrameSource>,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) {
         // The old source loses its only view.
         self.source.set_target_size(None);
-        self._signal = Self::listen(&source, window, cx);
+        self.signal_task = Self::listen(&source, window, cx);
         self.source = source;
         self.generation = u64::MAX;
         self.first_frame_emitted = false;
@@ -157,7 +154,7 @@ impl VideoView {
     ///
     /// Call it when the view stays alive but leaves the screen (an inactive
     /// dock tab, a layout that hides this player). Views start visible.
-    pub fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+    pub fn set_visible(&mut self, visible: bool, cx: &mut Context<'_, Self>) {
         if self.visible == visible {
             return;
         }
@@ -175,7 +172,7 @@ impl VideoView {
     }
 
     /// Changes the letterbox color.
-    pub fn set_letterbox(&mut self, letterbox: Hsla, cx: &mut Context<Self>) {
+    pub fn set_letterbox(&mut self, letterbox: Hsla, cx: &mut Context<'_, Self>) {
         if self.letterbox != letterbox {
             self.letterbox = letterbox;
             cx.notify();
@@ -204,7 +201,7 @@ impl VideoView {
 
     /// Pulls the source's latest frame and status. Called when the source
     /// signals; replaced images are dropped from the atlas immediately.
-    fn sync_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn sync_frame(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         for event in self.pull(window) {
             cx.emit(event);
         }
@@ -231,7 +228,9 @@ impl VideoView {
                 if let Some(previous) = std::mem::replace(&mut self.image, next) {
                     // Remove the replaced texture from this window's atlas.
                     // A no-op if it was never painted.
-                    let _ = window.drop_image(previous);
+                    if let Err(error) = window.drop_image(previous) {
+                        log::debug!("could not evict the previous video frame: {error}");
+                    }
                     self.dropped_images += 1;
                 }
                 match self.image {
@@ -259,7 +258,7 @@ impl VideoView {
 }
 
 impl Render for VideoView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         if self.visible && self.source.is_playing() {
             // One notify per display frame while playing: the next frame is
             // pulled even if the wake-up raced, and observers can sample the
@@ -340,6 +339,10 @@ impl Render for VideoView {
 
 /// Fits `content` (device pixels) inside `container`, centered, preserving
 /// its aspect ratio. An empty content size fills nothing.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+)]
 pub fn aspect_fit(container: Bounds<Pixels>, content: Size<DevicePixels>) -> Bounds<Pixels> {
     let container_width = f32::from(container.size.width);
     let container_height = f32::from(container.size.height);
@@ -383,6 +386,7 @@ impl VideoSurface {
 
     /// Reports the surface's device-pixel size to `source` during prepaint
     /// (only changes reach the backend), so it renders at display size.
+    #[must_use]
     pub fn report_size_to(mut self, source: Arc<dyn FrameSource>) -> Self {
         self.size_sink = Some(source);
         self

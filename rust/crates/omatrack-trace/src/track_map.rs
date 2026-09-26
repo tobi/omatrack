@@ -78,9 +78,10 @@ pub const HEAT_LEVELS: usize = 6;
 /// Share of the losing stations below the top of the heat ramp: a robust
 /// maximum, so one spike does not flatten the rest of the lap to quiet.
 pub const HEAT_SCALE_QUANTILE: f64 = 0.95;
-/// Share of the losing stations at the quiet end of the ramp: the lap's
-/// background loss (a straight under a time-share alignment still "loses"
-/// in proportion to its time) stays quiet so the corners stand out.
+/// Share of the losing stations at the quiet end of the heat ramp.
+///
+/// The lap's background loss stays quiet so corners stand out. A straight under a
+/// time-share alignment still loses time in proportion to its duration.
 pub const HEAT_FLOOR_QUANTILE: f64 = 0.25;
 /// Narrowest stroke of the heat lap, logical pixels (it widens with the
 /// drawing, up to 6 px).
@@ -160,6 +161,12 @@ impl GpsTrack {
     /// `start..=end` (a corner's zone): a GPS gap at a corner's midpoint
     /// places it on the nearest real fix instead of dropping it. `None` when
     /// the zone has no fix at all.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        reason = "Clamped lap fractions map to indices in resident sample buffers; interpolation intentionally uses f64."
+    )]
     pub fn position_near(&self, fraction: f64, start: f64, end: f64) -> Option<GeoPoint> {
         if let Some(point) = self.position_at(fraction) {
             return Some(point);
@@ -238,16 +245,19 @@ impl TrackMapData {
         }
     }
     /// The layout centerline (Track Atlas), as a closed loop.
+    #[must_use]
     pub fn with_centerline(mut self, centerline: impl IntoIterator<Item = GeoPoint>) -> Self {
         self.centerline = centerline.into_iter().collect();
         self.generation = next_generation();
         self
     }
+    #[must_use]
     pub fn with_primary(mut self, track: Option<GpsTrack>) -> Self {
         self.primary = track.filter(|t| !t.is_empty());
         self.generation = next_generation();
         self
     }
+    #[must_use]
     pub fn with_reference(mut self, track: Option<GpsTrack>) -> Self {
         self.reference = track.filter(|t| !t.is_empty());
         self.generation = next_generation();
@@ -255,17 +265,20 @@ impl TrackMapData {
     }
     /// Cumulative Δt (s, positive: primary slower) on the primary grid; its
     /// slope colours the primary lap.
+    #[must_use]
     pub fn with_delta(mut self, delta: Option<Arc<[f64]>>) -> Self {
         self.delta = delta;
         self.generation = next_generation();
         self
     }
     /// The shared primary → reference map (places the R dot).
+    #[must_use]
     pub fn with_map(mut self, map: Option<Arc<dyn FractionMap>>) -> Self {
         self.map = map;
         self.generation = next_generation();
         self
     }
+    #[must_use]
     pub fn with_corners(mut self, corners: Vec<MapCorner>) -> Self {
         self.corners = corners;
         self.generation = next_generation();
@@ -274,6 +287,7 @@ impl TrackMapData {
     /// Heat mode: time lost per metre (s/m) on the primary grid colours the
     /// primary lap on the loss ramp (see the module docs). Ignored unless it
     /// is as long as the primary lap.
+    #[must_use]
     pub fn with_heat(mut self, loss_rate: Option<Arc<[f64]>>) -> Self {
         self.heat = loss_rate;
         self.generation = next_generation();
@@ -364,6 +378,12 @@ impl MapProjection {
     /// Fit `points` into `width` × `height` logical pixels with `padding` on
     /// every side, preserving the aspect ratio and centring the drawing.
     /// `None` without at least two distinct valid points or without room.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
     pub fn fit(
         points: impl IntoIterator<Item = GeoPoint>,
         width: f64,
@@ -500,10 +520,17 @@ pub fn delta_slope_signs(delta: &[f64], half_window: usize, deadband: f64) -> Ve
         .collect()
 }
 
-/// Ramp step (0 = quiet .. `levels - 1` = hottest) of every loss rate: the
-/// losing stations spread from their [`HEAT_FLOOR_QUANTILE`] (quiet) to
-/// their [`HEAT_SCALE_QUANTILE`] (hottest); gains and non-finite values
-/// quiet.
+/// Ramp step (0 = quiet ..
+///
+/// `levels - 1` = hottest) of every loss rate: the losing stations spread from their
+/// [`HEAT_FLOOR_QUANTILE`] (quiet) to their [`HEAT_SCALE_QUANTILE`] (hottest); gains
+/// and non-finite values quiet.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Quantiles select bounded sample indices and normalized heat values are rounded to palette entries."
+)]
 pub fn heat_levels(loss_rate: &[f64], levels: usize) -> Vec<u8> {
     let top = levels.clamp(1, usize::from(u8::MAX)) - 1;
     let mut losing: Vec<f64> = loss_rate
@@ -664,6 +691,15 @@ impl MapGeometry {
         .chain(self.heat.iter_mut())
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
     fn build(&mut self, data: &TrackMapData, width: f32, height: f32, dpr: f32) {
         // Strokes follow the drawing's size: a panel-wide map reads with a
         // bolder lap than a thumbnail.
@@ -672,12 +708,13 @@ impl MapGeometry {
         let heat_stroke = (side / 75.0).clamp(HEAT_STROKE, 6.0);
         self.targets.clear();
         self.target_fractions.clear();
-        let padding = (width.min(height) as f64 * 0.06).clamp(8.0, 24.0);
-        self.projection = MapProjection::fit(data.points(), width as f64, height as f64, padding);
+        let padding = (f64::from(width.min(height)) * 0.06).clamp(8.0, 24.0);
+        self.projection =
+            MapProjection::fit(data.points(), f64::from(width), f64::from(height), padding);
         let Some(projection) = self.projection else {
             return;
         };
-        let min_step = 0.75 / dpr.max(1.0) as f64;
+        let min_step = 0.75 / f64::from(dpr.max(1.0));
         let project = |p: GeoPoint| {
             let (x, y) = projection.project(p);
             PathPoint::new(x, y)
@@ -838,7 +875,7 @@ pub struct TrackMap {
 impl EventEmitter<TrackMapEvent> for TrackMap {}
 
 impl TrackMap {
-    pub fn new(cursor: Entity<CursorState>, cx: &mut Context<Self>) -> Self {
+    pub fn new(cursor: Entity<CursorState>, cx: &mut Context<'_, Self>) -> Self {
         let subscriptions = vec![cx.observe(&cursor, |_, _, cx| cx.notify())];
         let data = Arc::new(TrackMapData::default());
         let geometry: Rc<RefCell<MapGeometry>> = Rc::default();
@@ -855,7 +892,7 @@ impl TrackMap {
         }
     }
 
-    pub fn set_data(&mut self, data: Arc<TrackMapData>, cx: &mut Context<Self>) {
+    pub fn set_data(&mut self, data: Arc<TrackMapData>, cx: &mut Context<'_, Self>) {
         self.data = data.clone();
         self.hover = None;
         self.layer.update(cx, |layer, cx| layer.set_data(data, cx));
@@ -867,7 +904,7 @@ impl TrackMap {
     }
 
     /// The focused corner (controlled by the owner).
-    pub fn set_focused_corner(&mut self, id: Option<u32>, cx: &mut Context<Self>) {
+    pub fn set_focused_corner(&mut self, id: Option<u32>, cx: &mut Context<'_, Self>) {
         if self.focused != id {
             self.focused = id;
             cx.notify();
@@ -897,6 +934,10 @@ impl TrackMap {
     /// Window position of the primary lap at a lap fraction, as last
     /// painted; `None` before the first paint, without a primary GPS lap, or
     /// in a GPS gap.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
     pub fn primary_position(&self, fraction: f64) -> Option<Point<Pixels>> {
         let geometry = self.geometry.borrow();
         let projection = geometry.projection?;
@@ -905,6 +946,10 @@ impl TrackMap {
         Some(geometry.origin + point(px(x as f32), px(y as f32)))
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
     fn target_at(&self, position: Point<Pixels>) -> Option<f64> {
         let geometry = self.geometry.borrow();
         let index = nearest_point(
@@ -916,7 +961,7 @@ impl TrackMap {
         geometry.target_fractions.get(index).copied()
     }
 
-    fn pointer_move(&mut self, local: Option<Point<Pixels>>, cx: &mut Context<Self>) {
+    fn pointer_move(&mut self, local: Option<Point<Pixels>>, cx: &mut Context<'_, Self>) {
         let hover = local.and_then(|p| self.target_at(p));
         if hover != self.hover {
             self.hover = hover;
@@ -929,14 +974,14 @@ impl TrackMap {
         self.press = Some(local);
     }
 
-    fn pointer_up(&mut self, local: Point<Pixels>, cx: &mut Context<Self>) {
+    fn pointer_up(&mut self, local: Point<Pixels>, cx: &mut Context<'_, Self>) {
         let Some(press) = self.press.take() else {
             return;
         };
         let moved = (local.x - press.x)
             .as_f32()
             .hypot((local.y - press.y).as_f32());
-        if (moved as f64) < CLICK_SLOP
+        if f64::from(moved) < CLICK_SLOP
             && let Some(fraction) = self.target_at(local)
         {
             cx.emit(TrackMapEvent::MapClicked(fraction));
@@ -945,7 +990,7 @@ impl TrackMap {
 }
 
 impl Render for TrackMap {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let theme = cx.theme();
         let palette = TracePalette::from_theme(theme);
         let cursor = self.cursor.read(cx).fraction();
@@ -1021,7 +1066,7 @@ impl MapLayer {
     fn new(
         data: Arc<TrackMapData>,
         geometry: Rc<RefCell<MapGeometry>>,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) -> Self {
         Self {
             data,
@@ -1031,7 +1076,7 @@ impl MapLayer {
         }
     }
 
-    fn set_data(&mut self, data: Arc<TrackMapData>, cx: &mut Context<Self>) {
+    fn set_data(&mut self, data: Arc<TrackMapData>, cx: &mut Context<'_, Self>) {
         if !Arc::ptr_eq(&self.data, &data) {
             self.data = data;
             cx.notify();
@@ -1040,7 +1085,7 @@ impl MapLayer {
 }
 
 impl Render for MapLayer {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         self.geometry.borrow_mut().renders += 1;
         let theme = cx.theme();
         MapStaticElement {
@@ -1113,20 +1158,24 @@ impl Element for MapStaticElement {
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        _: &mut (),
+        (): &mut (),
         window: &mut Window,
         _: &mut App,
     ) {
         prepare_geometry(&self.geometry, &self.data, bounds, window);
     }
 
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
     fn paint(
         &mut self,
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        _: &mut (),
-        _: &mut (),
+        (): &mut (),
+        (): &mut (),
         window: &mut Window,
         _: &mut App,
     ) {
@@ -1209,7 +1258,7 @@ impl Element for MapOverlay {
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        _: &mut (),
+        (): &mut (),
         window: &mut Window,
         _: &mut App,
     ) -> Hitbox {
@@ -1224,7 +1273,7 @@ impl Element for MapOverlay {
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        _: &mut (),
+        (): &mut (),
         hitbox: &mut Hitbox,
         window: &mut Window,
         cx: &mut App,
@@ -1246,6 +1295,14 @@ impl Element for MapOverlay {
 }
 
 impl MapOverlay {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
     fn paint_marks(
         &self,
         projection: &MapProjection,
@@ -1415,7 +1472,8 @@ impl MapOverlay {
                 return;
             }
             let local = hit.is_hovered(window).then(|| event.position - origin);
-            map.update(cx, |map, cx| map.pointer_move(local, cx)).ok();
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no input/deferred update; the weak entity handle may already be gone.")]
+            let _ = map.update(cx, |map, cx| map.pointer_move(local, cx));
         });
 
         let map = self.map.clone();
@@ -1428,7 +1486,8 @@ impl MapOverlay {
                 return;
             }
             let local = event.position - origin;
-            map.update(cx, |map, _| map.pointer_down(local)).ok();
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no input/deferred update; the weak entity handle may already be gone.")]
+            let _ = map.update(cx, |map, _| map.pointer_down(local));
         });
 
         let map = self.map.clone();
@@ -1440,7 +1499,8 @@ impl MapOverlay {
                 return;
             }
             let local = event.position - origin;
-            map.update(cx, |map, cx| map.pointer_up(local, cx)).ok();
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no input/deferred update; the weak entity handle may already be gone.")]
+            let _ = map.update(cx, |map, cx| map.pointer_up(local, cx));
         });
     }
 }
@@ -1536,11 +1596,11 @@ mod tests {
         // Level, then losing 10 ms per sample, then gaining.
         let mut delta = vec![0.0; 40];
         for i in 40..80 {
-            delta.push((i - 39) as f64 * 0.01);
+            delta.push(f64::from(i - 39) * 0.01);
         }
         let top = *delta.last().unwrap();
         for i in 80..120 {
-            delta.push(top - (i - 79) as f64 * 0.01);
+            delta.push(top - f64::from(i - 79) * 0.01);
         }
         let signs = delta_slope_signs(&delta, 3, 0.002);
         assert_eq!(signs[10], SlopeSign::Level);
@@ -1567,6 +1627,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+    )]
     fn primary_runs_split_by_sign_and_share_boundaries() {
         let n = 200;
         let lat: Arc<[f64]> = (0..n).map(|i| 34.15 + i as f64 * 1e-5).collect();
@@ -1597,6 +1661,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+    )]
     fn heat_levels_ramp_losses_and_keep_gains_quiet() {
         let mut rate: Vec<f64> = (0..100).map(|i| f64::from(i) * 1e-4).collect();
         rate.extend([-0.01, f64::NAN, 1.0]);
@@ -1624,6 +1692,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+    )]
     fn heat_mode_strokes_the_ramp_and_drops_the_reference() {
         let n = 200;
         let lat: Arc<[f64]> = (0..n).map(|i| 34.15 + i as f64 * 1e-5).collect();
@@ -1687,7 +1759,7 @@ mod tests {
     #[test]
     fn a_gps_gap_at_the_midpoint_uses_the_nearest_fix_in_the_zone() {
         let n = 101;
-        let mut lat: Vec<f64> = (0..n).map(|i| 34.15 + i as f64 * 1e-5).collect();
+        let mut lat: Vec<f64> = (0..n).map(|i| 34.15 + f64::from(i) * 1e-5).collect();
         let lon: Arc<[f64]> = (0..n).map(|_| -83.81).collect();
         for value in &mut lat[45..=52] {
             *value = f64::NAN;
@@ -1712,8 +1784,8 @@ mod tests {
     fn every_mesh_chunk_carries_the_bounds_of_its_triangles() {
         // GPUI clips a path to its bounds: zero bounds paint nothing.
         let n = 200;
-        let lat: Arc<[f64]> = (0..n).map(|i| 34.15 + i as f64 * 1e-5).collect();
-        let lon: Arc<[f64]> = (0..n).map(|i| -83.81 + i as f64 * 1e-5).collect();
+        let lat: Arc<[f64]> = (0..n).map(|i| 34.15 + f64::from(i) * 1e-5).collect();
+        let lon: Arc<[f64]> = (0..n).map(|i| -83.81 + f64::from(i) * 1e-5).collect();
         let data = TrackMapData::new()
             .with_centerline(rectangle())
             .with_primary(Some(GpsTrack::new(lat.clone(), lon.clone())))

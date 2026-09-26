@@ -124,6 +124,20 @@ fn pedal_factor(unit: &str) -> f64 {
 
 impl Recording {
     /// Build a 50 Hz [`UnifiedLap`] over `[start_time, end_time]` seconds.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep the ported analysis/report stages in source order so numerical and CLI parity remain auditable."
+    )]
+    #[expect(
+        clippy::neg_cmp_op_on_partial_ord,
+        reason = "Negated ordered comparisons deliberately include unordered (NaN) values; preserve that behavior."
+    )]
     pub fn unify_lap(
         &self,
         start_time: f64,
@@ -183,7 +197,7 @@ impl Recording {
                 }
             }
         };
-        let unit_of = |field: &str| -> &str { units.get(field).map(String::as_str).unwrap_or("") };
+        let unit_of = |field: &str| -> &str { units.get(field).map_or("", String::as_str) };
         let speed_factor = |field: &str, fallback: f64| -> f64 {
             speed_unit_factor(unit_of(field)).unwrap_or(fallback)
         };
@@ -286,7 +300,7 @@ impl Recording {
             } else {
                 0.0
             };
-            if !speed.is_finite() || speed < 0.0 || speed > MAXIMUM_SPEED_KMH {
+            if !speed.is_finite() || !(0.0..=MAXIMUM_SPEED_KMH).contains(&speed) {
                 speed = u.speed.last().copied().unwrap_or(0.0);
             }
             u.speed.push(speed);
@@ -349,7 +363,7 @@ impl Recording {
                 get("gps_speed_accuracy", i) * gps_speed_accuracy_factor,
             ));
             let mut gps_speed = get("gps_speed", i) * gps_speed_factor;
-            if !gps_speed.is_finite() || gps_speed < 0.0 || gps_speed > MAXIMUM_GPS_SPEED_MPS {
+            if !gps_speed.is_finite() || !(0.0..=MAXIMUM_GPS_SPEED_MPS).contains(&gps_speed) {
                 gps_speed = 0.0;
             }
             gps_speed_mps.push(gps_speed);
@@ -367,18 +381,21 @@ impl Recording {
         for i in 0..n {
             let wheel = max(0.0, u.speed[i] / 3.6);
             let gps = gps_speed_mps[i];
-            let mut gps_weight = 0.0;
-            if gps > 0.0 {
+            let measured_gps_weight = if gps > 0.0 {
                 let accuracy = u.gps_speed_accuracy[i];
-                gps_weight = if has_gps_speed_accuracy && accuracy > 0.0 {
+                if has_gps_speed_accuracy && accuracy > 0.0 {
                     clamp((1.5 - accuracy) / 1.25, 0.0, 1.0) * 0.5
                 } else {
                     0.2
-                };
-            }
-            if wheel <= 0.0 {
-                gps_weight = if gps > 0.0 { 1.0 } else { 0.0 };
-            }
+                }
+            } else {
+                0.0
+            };
+            let gps_weight = if wheel <= 0.0 {
+                if gps > 0.0 { 1.0 } else { 0.0 }
+            } else {
+                measured_gps_weight
+            };
             fused_speed[i] = wheel * (1.0 - gps_weight) + gps * gps_weight;
         }
         for i in 1..n {
@@ -438,6 +455,16 @@ impl Recording {
 
 /// Linear resample of a uniformly sampled series (port of
 /// `MoTecParser.resample`).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
+#[expect(
+    clippy::neg_cmp_op_on_partial_ord,
+    reason = "Negated ordered comparisons deliberately include unordered (NaN) values; preserve that behavior."
+)]
 pub fn resample(values: &[f64], src_freq: f64, target_freq: f64, duration: f64) -> Vec<f64> {
     if values.is_empty()
         || !src_freq.is_finite()

@@ -24,14 +24,14 @@ pub use track_yml::{FolderField, TrackYmlForm};
 /// Edit the per-recording metadata override of a library recording.
 /// `session` is the catalog session id; `None` means the recording of the
 /// Library's selected row.
-#[derive(Debug, Clone, PartialEq, gpui_kit::Action)]
+#[derive(Debug, Clone, PartialEq, Eq, gpui_kit::Action)]
 #[action(namespace = omatrack, no_json)]
 pub struct EditRecordingMetadata {
     pub session: Option<SharedString>,
 }
 
 /// Edit the `TRACK.yml` of the folder holding a library recording.
-#[derive(Debug, Clone, PartialEq, gpui_kit::Action)]
+#[derive(Debug, Clone, PartialEq, Eq, gpui_kit::Action)]
 #[action(namespace = omatrack, no_json)]
 pub struct EditFolderMetadata {
     pub session: SharedString,
@@ -66,17 +66,17 @@ pub(crate) fn init(cx: &mut App) {
     }));
 }
 
-/// The folder of `recording` when it lies inside an enabled folder
-/// location of the library: only those folders are offered for
-/// `TRACK.yml` editing. A path comparison only (no file system access),
-/// so it is cheap enough for building menus: catalog paths are found by
-/// walking the location roots and so start with them.
+/// The folder of `recording` when it lies inside an enabled folder location of the
+/// library: only those folders are offered for `TRACK.yml` editing.
+///
+/// A path comparison only (no file system access), so it is cheap enough for building
+/// menus: catalog paths are found by walking the location roots and so start with them.
 pub fn user_library_folder(config: &Config, recording: &Path) -> Option<PathBuf> {
     let folder = recording.parent()?;
     config
         .folder_locations()
         .filter(|location| location.is_enabled())
-        .filter_map(|location| location.target_path())
+        .filter_map(omatrack_library::config::FolderLocationConfig::target_path)
         .any(|root| folder.starts_with(&root))
         .then(|| folder.to_path_buf())
 }

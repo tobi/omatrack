@@ -1,0 +1,10 @@
+# Test assertions and fixture setup may fail fast. These exceptions do not
+# apply to production code or examples. Integration tests declare cfg(test)
+# at their crate root so Clippy also recognizes their shared fixture helpers.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-print-in-tests = true
+
+# Debug leftovers are errors in tests as well as in production.
+allow-dbg-in-tests = false

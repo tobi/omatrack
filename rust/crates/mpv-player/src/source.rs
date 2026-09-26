@@ -142,12 +142,16 @@ impl FrameSlot {
 
     /// Replaces the current frame (or clears it with `None`) and wakes the
     /// consumer.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "Publish the value and its generation/count in the same critical section."
+    )]
     pub fn publish(&self, frame: Option<VideoFrame>) {
         let previous = {
             let mut slot = self
                 .frame
                 .lock()
-                .unwrap_or_else(|poison| poison.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let previous = std::mem::replace(&mut *slot, frame);
             self.generation.fetch_add(1, Ordering::AcqRel);
             previous
@@ -160,6 +164,10 @@ impl FrameSlot {
     /// Wakes the consumer without changing the frame (for status changes).
     pub fn signal(&self) {
         // Capacity 1: a full channel already carries a pending wake-up.
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "Bounded wakeups coalesce when full; a closed receiver means the consumer has gone away."
+        )]
         let _ = self.signal_tx.try_send(());
     }
 
@@ -167,7 +175,7 @@ impl FrameSlot {
     pub fn latest(&self) -> Option<VideoFrame> {
         self.frame
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
@@ -187,6 +195,10 @@ mod tests {
     use super::*;
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn from_bgra_checks_the_byte_count() {
         assert!(VideoFrame::from_bgra(2, 2, vec![0; 16], 0.0).is_some());
         assert!(VideoFrame::from_bgra(2, 2, vec![0; 15], 0.0).is_none());
@@ -196,6 +208,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn slot_is_latest_wins_and_coalesces_signals() {
         let slot = FrameSlot::new();
         let receiver = slot.receiver();

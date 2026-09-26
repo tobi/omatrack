@@ -67,6 +67,10 @@ pub fn hierarchy_paths(directory: &Path, include_target: bool) -> Vec<PathBuf> {
 }
 
 /// Read one document; an empty file is an empty mapping.
+///
+/// # Errors
+/// Returns `TrackYmlError` for I/O errors other than a missing file, invalid YAML or a
+/// non-mapping document.
 pub fn read_document(path: &Path) -> Result<Mapping, TrackYmlError> {
     let text = std::fs::read_to_string(path).map_err(|source| TrackYmlError::Io {
         path: path.to_path_buf(),
@@ -130,9 +134,14 @@ pub fn read_hierarchy(directory: &Path, include_target: bool) -> (Mapping, Vec<P
     (merged, paths)
 }
 
-/// Replace the Omatrack-owned keys of `directory`'s `TRACK.yml` with those
-/// in `owned` (other keys of `owned` are ignored), keeping every unrelated
-/// key. Creates the file when missing; writes atomically. Returns the path.
+/// Replace the Omatrack-owned keys of `directory`'s `TRACK.yml` with those in `owned`
+/// (other keys of `owned` are ignored), keeping every unrelated key.
+///
+/// Creates the file when missing; writes atomically. Returns the path.
+///
+/// # Errors
+/// Returns `TrackYmlError` if the existing document cannot be read or parsed, or
+/// serialization or atomic replacement fails.
 pub fn update(directory: &Path, owned: &Mapping) -> Result<PathBuf, TrackYmlError> {
     let target = file_path(directory)
         .ok_or_else(|| TrackYmlError::MissingFolder(directory.to_path_buf()))?;

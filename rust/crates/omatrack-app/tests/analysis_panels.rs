@@ -5,8 +5,10 @@
 //! alignment, corners) over a synthetic Motorsport Telemetry JSONL recording
 //! written into the test's temporary directory: four 20 s flying laps with
 //! two braked corners each and a GPS circle, the same model as the core's
-//! session tests. The `real_*` tests run on the AiM fixtures
+//! session tests. The `real_*` tests run on the `AiM` fixtures
 //! (`OMATRACK_FIXTURES`, read-only) and are ignored by default.
+
+#![cfg(test)]
 
 mod common;
 
@@ -69,6 +71,12 @@ fn sample(t: f64) -> [f64; 8] {
 
 /// Write the synthetic recording as an MTJ document into `dir` (without
 /// the two GPS channels unless `gps`).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn write_recording(dir: &Path, gps: bool, lap_distance: bool) -> PathBuf {
     const CHANNELS: [(&str, &str); 8] = [
         ("Speed", "km/h"),
@@ -100,8 +108,8 @@ fn write_recording(dir: &Path, gps: bool, lap_distance: bool) -> PathBuf {
             }
         }
         let mut totals = std::collections::BTreeMap::new();
-        for i in 0..count {
-            totals.insert(lap_of(i), integral[i]);
+        for (i, &distance) in integral.iter().enumerate() {
+            totals.insert(lap_of(i), distance);
         }
         let track = (0..4).map(|lap| totals[&lap]).sum::<f64>() / 4.0;
         let distance: Vec<f64> = (0..count)
@@ -189,7 +197,7 @@ async fn scan_written(cx: &mut TestAppContext, gps: bool, lap_distance: bool) ->
     let test = common::start(cx, sandbox.options());
     let handle: AnyWindowHandle = test.window.into();
     let library = test.app.library.clone();
-    cx.update(|cx| library.update(cx, |library, cx| library.rescan(cx)));
+    cx.update(|cx| library.update(cx, omatrack_app::state::Library::rescan));
     cx.run_until_parked();
     cx.wait_for(handle, Duration::from_secs(60), |_, cx| {
         let library = library.read(cx);
@@ -209,7 +217,7 @@ async fn scan_written(cx: &mut TestAppContext, gps: bool, lap_distance: bool) ->
             .filter(|lap| lap.complete)
             .map(|lap| lap.lap_id)
             .collect();
-        (SharedString::from(node.id.clone()), laps)
+        (SharedString::from(node.id), laps)
     });
     assert_eq!(laps.len(), 4, "four complete laps: {laps:?}");
     Scene {
@@ -285,7 +293,7 @@ fn show_panel(test: &common::TestApp, kind: PanelKind, cx: &mut TestAppContext) 
                     cx,
                 );
             }
-            area.select_panel(id, window, cx)
+            area.select_panel(id, window, cx);
         });
         window.render_frame(cx);
     })
@@ -307,7 +315,7 @@ fn corner_dts(scene: &Scene, cx: &mut TestAppContext) -> Vec<f64> {
             .delegate()
             .lines()
             .iter()
-            .map(|line| line.dt())
+            .map(omatrack_app::panels::corners::CornerLine::dt)
             .collect()
     })
 }
@@ -467,7 +475,7 @@ async fn enter_on_a_corner_row_focuses_it_in_the_traces(cx: &mut TestAppContext)
             .clone()
     });
     assert_eq!(
-        cx.update(|cx| corners.read(cx).selected(cx).map(|id| id.to_string())),
+        cx.update(|cx| corners.read(cx).selected(cx).map(ToString::to_string)),
         Some(focused_id),
         "the row follows the focused corner"
     );
@@ -492,7 +500,7 @@ fn channel_switches_and_style_controls_write_preferences(cx: &mut TestAppContext
     .unwrap();
     cx.run_until_parked();
     assert!(!visible(cx), "the switch hid speed");
-    cx.update(|cx| preferences.update(cx, |preferences, cx| preferences.flush(cx)));
+    cx.update(|cx| preferences.update(cx, omatrack_app::state::Preferences::flush));
     assert_eq!(
         sandbox.read_config().channels["speed"].visible,
         Some(false),
@@ -510,7 +518,7 @@ fn channel_switches_and_style_controls_write_preferences(cx: &mut TestAppContext
         .workspace
         .read_with(cx, |w, _| w.panels().channels.clone());
     assert_eq!(
-        cx.update(|cx| channels.read(cx).selected(cx).map(|k| k.to_string())),
+        cx.update(|cx| channels.read(cx).selected(cx).map(ToString::to_string)),
         Some("speed".to_string())
     );
     let stroke = |cx: &mut TestAppContext| {
@@ -704,7 +712,7 @@ async fn where_the_time_goes_leads_the_right_dock_largest_loss_first(cx: &mut Te
             panel
                 .lines()
                 .iter()
-                .map(|line| line.dt())
+                .map(omatrack_app::panels::time_goes::LossLine::dt)
                 .collect::<Vec<_>>(),
             analysis.time_split().expect("a reference: a split"),
             *analysis.delta().last().unwrap(),
@@ -796,7 +804,7 @@ async fn the_time_goes_card_follows_the_selected_corner(cx: &mut TestAppContext)
     cx.run_until_parked();
     cx.executor().advance_clock(Duration::from_millis(300));
     cx.run_until_parked();
-    assert_eq!(selected_corner(&scene, cx), Some(target.clone()));
+    assert_eq!(selected_corner(&scene, cx), Some(target));
     assert_eq!(
         cx.update(|cx| scene.test.workspace.read(cx).focused_corner()),
         Some(1)
@@ -805,7 +813,7 @@ async fn the_time_goes_card_follows_the_selected_corner(cx: &mut TestAppContext)
         let line = panel.read(cx).selected().unwrap().clone();
         (
             line.name().to_string(),
-            line.notes().map(|n| n.to_string()).collect::<Vec<_>>(),
+            line.notes().map(ToString::to_string).collect::<Vec<_>>(),
         )
     });
     assert!(!notes.is_empty(), "the checks' notes (or Closely matched)");
@@ -954,7 +962,11 @@ fn fixtures() -> String {
 }
 
 #[gpui_kit::test]
-#[ignore]
+#[ignore = "requires private telemetry/video fixtures; set OMATRACK_FIXTURES"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Exercise the complete workflow in order, keeping its setup and state assertions together."
+)]
 async fn real_run4_against_run1_fills_the_corners_table_and_the_map(cx: &mut TestAppContext) {
     let sandbox = common::Sandbox::new();
     sandbox.write_config(&format!(
@@ -964,7 +976,7 @@ async fn real_run4_against_run1_fills_the_corners_table_and_the_map(cx: &mut Tes
     let test = common::start(cx, sandbox.options());
     let handle: AnyWindowHandle = test.window.into();
     let library = test.app.library.clone();
-    cx.update(|cx| library.update(cx, |library, cx| library.rescan(cx)));
+    cx.update(|cx| library.update(cx, omatrack_app::state::Library::rescan));
     cx.run_until_parked();
     cx.wait_for(handle, Duration::from_secs(600), |_, cx| {
         let library = library.read(cx);
@@ -1033,7 +1045,10 @@ async fn real_run4_against_run1_fills_the_corners_table_and_the_map(cx: &mut Tes
     // Run4's GPS misses the centreline, so the pair aligns by a share of
     // lap time: its Δt ranks corner length, and the table keeps track
     // order instead of sorting by it.
-    let orders: Vec<usize> = lines.iter().map(|line| line.order()).collect();
+    let orders: Vec<usize> = lines
+        .iter()
+        .map(omatrack_app::panels::corners::CornerLine::order)
+        .collect();
     assert!(
         orders.windows(2).all(|pair| pair[0] < pair[1]),
         "track order under a time-share alignment: {orders:?}"
@@ -1102,6 +1117,10 @@ async fn the_first_analysis_puts_the_cursor_at_lap_start_for_every_readout(
 }
 
 #[gpui_kit::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Exercise the complete workflow in order, keeping its setup and state assertions together."
+)]
 async fn the_title_bar_states_the_pair_its_gap_and_its_sync(cx: &mut TestAppContext) {
     let scene = analysed(cx).await;
     let session = scene.test.app.session.clone();
@@ -1192,7 +1211,7 @@ async fn the_title_bar_states_the_pair_its_gap_and_its_sync(cx: &mut TestAppCont
         let choice = *available
             .iter()
             .find(|strategy| Some(**strategy) != current)
-            .or(available.first())
+            .or_else(|| available.first())
             .expect("a strategy");
         (choice, choice.label())
     });
@@ -1244,7 +1263,11 @@ async fn a_pill_goes_to_the_lap_list_and_the_swap_button_swaps(cx: &mut TestAppC
     cx.run_until_parked();
     cx.wait_for(scene.handle, Duration::from_secs(60), |_, cx| {
         let session = session.read(cx);
-        !session.is_loading() && session.primary().map(|slot| slot.lap_ref()) == Some(&before.1)
+        !session.is_loading()
+            && session
+                .primary()
+                .map(omatrack_app::state::RoleSlot::lap_ref)
+                == Some(&before.1)
     })
     .await;
     assert_eq!(

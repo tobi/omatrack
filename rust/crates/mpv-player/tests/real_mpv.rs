@@ -1,4 +1,4 @@
-//! Real-file checks against the AiM onboard recordings. Ignored by default;
+//! Real-file checks against the `AiM` onboard recordings. Ignored by default;
 //! run with
 //!
 //! ```sh
@@ -9,6 +9,8 @@
 //! The recordings are opened read-only by mpv, with a null audio output and
 //! muted. Every wait is bounded, and the tests run one at a time so the
 //! printed software-render timings are not skewed by each other.
+
+#![cfg(test)]
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -54,8 +56,8 @@ fn wait_until(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
     condition()
 }
 
-fn device(width: i32, height: i32) -> Option<Size<DevicePixels>> {
-    Some(Size::new(DevicePixels(width), DevicePixels(height)))
+fn device(width: i32, height: i32) -> Size<DevicePixels> {
+    Size::new(DevicePixels(width), DevicePixels(height))
 }
 
 fn open(path: &Path) -> (Player, std::sync::Arc<dyn FrameSource>) {
@@ -90,6 +92,10 @@ fn drop_within(player: Player, timeout: Duration) {
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         drop(player);
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "The timeout test may already have dropped the receiver; the worker must still finish dropping the player."
+        )]
         let _ = done_tx.send(());
     });
     done_rx
@@ -104,7 +110,7 @@ fn measure(
     size: (i32, i32),
     duration: Duration,
 ) -> (f64, f64, f64, u64, (u32, u32)) {
-    source.set_target_size(device(size.0, size.1));
+    source.set_target_size(Some(device(size.0, size.1)));
     // Let the size change land, then measure steady-state playback.
     std::thread::sleep(Duration::from_millis(300));
     player.reset_render_stats();
@@ -121,8 +127,14 @@ fn measure(
 
 #[test]
 #[ignore = "needs OMATRACK_FIXTURES"]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn real_frame_is_not_black_and_sw_render_timings() {
-    let _serial = SERIAL.lock().unwrap_or_else(|poison| poison.into_inner());
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(path) = run1() else { return };
     let (player, source) = open(&path);
     assert_eq!(player.state().status, MediaStatus::Ready);
@@ -133,7 +145,7 @@ fn real_frame_is_not_black_and_sw_render_timings() {
     let state = player.state();
     assert_eq!((state.dwidth, state.dheight), (1920, 1080), "{state:?}");
 
-    source.set_target_size(device(960, 540));
+    source.set_target_size(Some(device(960, 540)));
     let generation = source.frame_generation();
     player.seek_exact(30.0);
     let frame = wait_for_frame(&player, source.as_ref(), generation);
@@ -151,7 +163,9 @@ fn real_frame_is_not_black_and_sw_render_timings() {
     let pixels = (bytes.len() / 4) as f64;
     let mean = bytes
         .chunks_exact(4)
-        .map(|pixel| (u32::from(pixel[0]) + u32::from(pixel[1]) + u32::from(pixel[2])) as f64 / 3.0)
+        .map(|pixel| {
+            f64::from(u32::from(pixel[0]) + u32::from(pixel[1]) + u32::from(pixel[2])) / 3.0
+        })
         .sum::<f64>()
         / pixels;
     let lit = bytes
@@ -194,11 +208,17 @@ fn real_frame_is_not_black_and_sw_render_timings() {
 
 #[test]
 #[ignore = "needs OMATRACK_FIXTURES"]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn real_exact_seek_lands_within_one_frame() {
-    let _serial = SERIAL.lock().unwrap_or_else(|poison| poison.into_inner());
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(path) = run1() else { return };
     let (player, source) = open(&path);
-    source.set_target_size(device(640, 360));
+    source.set_target_size(Some(device(640, 360)));
 
     let generation = source.frame_generation();
     player.seek_exact(12.345);
@@ -230,10 +250,12 @@ fn real_exact_seek_lands_within_one_frame() {
 #[test]
 #[ignore = "needs OMATRACK_FIXTURES"]
 fn real_clock_advances_when_playing_and_pause_holds() {
-    let _serial = SERIAL.lock().unwrap_or_else(|poison| poison.into_inner());
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(path) = run1() else { return };
     let (player, source) = open(&path);
-    source.set_target_size(device(640, 360));
+    source.set_target_size(Some(device(640, 360)));
     let generation = source.frame_generation();
     player.seek_exact(60.0);
     wait_for_frame(&player, source.as_ref(), generation);
@@ -283,10 +305,12 @@ fn real_clock_advances_when_playing_and_pause_holds() {
 #[test]
 #[ignore = "needs OMATRACK_FIXTURES"]
 fn real_drop_while_playing_is_clean() {
-    let _serial = SERIAL.lock().unwrap_or_else(|poison| poison.into_inner());
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(path) = run1() else { return };
     let (player, source) = open(&path);
-    source.set_target_size(device(1920, 1080));
+    source.set_target_size(Some(device(1920, 1080)));
     player.play();
     assert!(wait_until(Duration::from_secs(10), || player
         .render_stats()
@@ -302,11 +326,13 @@ fn real_drop_while_playing_is_clean() {
 #[test]
 #[ignore = "needs OMATRACK_FIXTURES"]
 fn real_reload_of_a_same_size_file_keeps_rendering() {
-    let _serial = SERIAL.lock().unwrap_or_else(|poison| poison.into_inner());
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(first) = run1() else { return };
     let second = recording("Run5").expect("fixtures");
     let (player, source) = open(&first);
-    source.set_target_size(device(640, 360));
+    source.set_target_size(Some(device(640, 360)));
     let generation = source.frame_generation();
     player.seek_exact(20.0);
     wait_for_frame(&player, source.as_ref(), generation);
@@ -340,12 +366,14 @@ fn real_reload_of_a_same_size_file_keeps_rendering() {
 #[test]
 #[ignore = "needs OMATRACK_FIXTURES"]
 fn real_frame_rate_cap_skips_frames() {
-    let _serial = SERIAL.lock().unwrap_or_else(|poison| poison.into_inner());
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(path) = run1() else { return };
     let (player, source) = open(&path);
     player.set_max_fps(Some(30.0));
     let generation = source.frame_generation();
-    source.set_target_size(device(640, 360));
+    source.set_target_size(Some(device(640, 360)));
     player.seek_exact(40.0);
     wait_for_frame(&player, source.as_ref(), generation);
     player.play();
@@ -374,11 +402,13 @@ fn real_frame_rate_cap_skips_frames() {
 #[test]
 #[ignore = "needs OMATRACK_FIXTURES"]
 fn real_withdrawn_target_size_stops_drawing_while_playing() {
-    let _serial = SERIAL.lock().unwrap_or_else(|poison| poison.into_inner());
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(path) = run1() else { return };
     let (player, source) = open(&path);
     let generation = source.frame_generation();
-    source.set_target_size(device(640, 360));
+    source.set_target_size(Some(device(640, 360)));
     player.seek_exact(50.0);
     wait_for_frame(&player, source.as_ref(), generation);
     player.play();
@@ -402,7 +432,7 @@ fn real_withdrawn_target_size_stops_drawing_while_playing() {
 
     // Shown again: the current frame is redrawn and playback renders.
     let generation = source.frame_generation();
-    source.set_target_size(device(640, 360));
+    source.set_target_size(Some(device(640, 360)));
     wait_for_frame(&player, source.as_ref(), generation);
     assert!(player.render_stats().frames >= 1);
     drop_within(player, Duration::from_secs(10));
@@ -411,12 +441,14 @@ fn real_withdrawn_target_size_stops_drawing_while_playing() {
 #[test]
 #[ignore = "needs OMATRACK_FIXTURES"]
 fn real_seek_requested_while_loading_is_applied_once() {
-    let _serial = SERIAL.lock().unwrap_or_else(|poison| poison.into_inner());
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(path) = run1() else { return };
     let player = Player::new(PlayerOptions::default().muted(true).audio_output("null"))
         .expect("create player");
     let source = player.frame_source();
-    source.set_target_size(device(640, 360));
+    source.set_target_size(Some(device(640, 360)));
     player.load(&path).expect("load");
     // Before FILE_LOADED: remembered, and relative seeks build on it.
     player.seek_exact(21.0);

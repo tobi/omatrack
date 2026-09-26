@@ -1,7 +1,8 @@
-//! The title bar: the comparison in one line. Where (track, event), who
-//! against whom (the primary and reference pills: driver, lap, time), the
-//! headline lap-time difference, how the pair is aligned (the sync button:
-//! basis and confidence, opening the strategy menu), and the window-level
+//! The title bar: the comparison in one line.
+//!
+//! Where (track, event), who against whom (the primary and reference pills: driver,
+//! lap, time), the headline lap-time difference, how the pair is aligned (the sync
+//! button: basis and confidence, opening the strategy menu), and the window-level
 //! commands (palette, preferences).
 //!
 //! The pills summarise the comparison; the filmstrip below the title bar
@@ -54,7 +55,7 @@ pub(super) fn swap_icon() -> Icon {
 }
 
 /// One entry of the sync strategy menu; `None` is the automatic choice.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncOption {
     value: Option<Strategy>,
     title: SharedString,
@@ -246,12 +247,7 @@ fn role_disc(role: LapRole, theme: &Theme) -> impl IntoElement {
 impl Workspace {
     /// One role pill: disc, driver, lap and time; a click goes to the left
     /// surface to choose that role's lap.
-    fn role_pill(
-        &self,
-        role: LapRole,
-        slot: Option<&RoleSlot>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn role_pill(role: LapRole, slot: Option<&RoleSlot>, cx: &mut Context<'_, Self>) -> AnyElement {
         let theme = cx.theme();
         let content = PillContent::of(slot);
         let (id, tooltip) = match role {
@@ -328,7 +324,7 @@ impl Workspace {
 
     /// The sync button: basis and confidence, warning-tinted when deltas
     /// are approximate; it opens the strategy menu.
-    fn sync_button(&self, compact: bool, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn sync_button(&self, compact: bool, cx: &mut Context<'_, Self>) -> Option<AnyElement> {
         let session = self.app.session.read(cx);
         let analysis = session.analysis()?;
         let comparison = analysis.comparison()?;
@@ -344,7 +340,7 @@ impl Workspace {
         let low = super::status::approximate(&confidence);
         let theme = cx.theme();
         let phrase: SharedString = if compact {
-            SharedString::from(basis.clone())
+            SharedString::from(basis)
         } else {
             sync_phrase(&basis)
         };
@@ -366,7 +362,7 @@ impl Workspace {
                 .small()
                 .h_7()
                 .outline()
-                .when(low, |this| this.warning())
+                .when(low, gpui_kit::component::button::ButtonVariants::warning)
                 .dropdown_caret(true)
                 .accessibility_label(SharedString::from(format!("Reference sync: {summary}")))
                 .when(low, |this| this.icon(IconName::TriangleAlert))
@@ -392,7 +388,7 @@ impl Workspace {
                                 .checked(value == current)
                                 .on_click(move |_, _, cx| {
                                     session.update(cx, |session, cx| {
-                                        session.set_strategy(SyncOption::request(value), cx)
+                                        session.set_strategy(SyncOption::request(value), cx);
                                     });
                                 }),
                         );
@@ -405,20 +401,24 @@ impl Workspace {
         )
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
     pub(super) fn render_header(
         &self,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         let compact = f32::from(window.viewport_size().width) / f32::from(window.rem_size())
             < COMPACT_BELOW_REMS;
         let session = self.app.session.read(cx);
         let primary = session.primary().cloned();
         let reference = session.reference().cloned();
-        let track = primary
-            .as_ref()
-            .map(|slot| slot.info().track.clone())
-            .unwrap_or_else(|| SharedString::from("Omatrack"));
+        let track = primary.as_ref().map_or_else(
+            || SharedString::from("Omatrack"),
+            |slot| slot.info().track.clone(),
+        );
         let event = primary.as_ref().map(|slot| {
             let info = slot.info();
             match &info.session_name {
@@ -438,7 +438,7 @@ impl Workspace {
                 .min_w_0()
                 .flex_shrink(1.)
                 .gap_2()
-                .child(self.role_pill(LapRole::Primary, Some(primary), cx))
+                .child(Self::role_pill(LapRole::Primary, Some(primary), cx))
                 .child(
                     h_flex()
                         .flex_shrink_0()
@@ -457,11 +457,13 @@ impl Workspace {
                                     Some(WORKSPACE_CONTEXT),
                                 )
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.app.session.update(cx, |session, cx| session.swap(cx));
+                                    this.app
+                                        .session
+                                        .update(cx, super::super::state::session::Session::swap);
                                 })),
                         ),
                 )
-                .child(self.role_pill(LapRole::Reference, reference.as_ref(), cx))
+                .child(Self::role_pill(LapRole::Reference, reference.as_ref(), cx))
         });
 
         let headline = lap_delta.map(|delta| {

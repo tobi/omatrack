@@ -24,7 +24,10 @@ use crate::keymap::TRACE_EDIT_CONTEXT;
 impl TracesPanel {
     /// The statistics of the range selection, floating at the top right of
     /// the lanes while a range is selected, with its clear button.
-    pub(super) fn render_range_stats(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+    pub(super) fn render_range_stats(
+        &self,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<impl IntoElement> {
         let summary = SharedString::from(self.range?.summary());
         let theme = cx.theme();
         Some(
@@ -67,7 +70,7 @@ impl TracesPanel {
     }
 
     /// The bar of the active editor: what it does, and its commands.
-    pub(super) fn render_mode_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_mode_bar(&self, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let theme = cx.theme();
         let label = self.mode.label();
         let (hint, can_save): (SharedString, bool) = match self.mode {
@@ -157,16 +160,15 @@ impl TracesPanel {
 
     /// Corner zones and complexes on the shared x mapping, labelled with
     /// where the zones come from.
-    pub(super) fn render_ruler_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_ruler_row(&self, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let theme = cx.theme();
         let source = self.analysis().map(|analysis| analysis.corner_source());
         let label: SharedString = match source {
-            Some(CornerSource::Atlas) => "Corners · Track Atlas".into(),
             Some(CornerSource::User) => "Corners · edited".into(),
             Some(CornerSource::Generated) => "Corners · from braking".into(),
             // Atlas corners placed through the reference lap; the Sync
             // menu says why.
-            Some(CornerSource::Reference) => "Corners · Track Atlas".into(),
+            Some(CornerSource::Atlas | CornerSource::Reference) => "Corners · Track Atlas".into(),
             Some(CornerSource::Unmatched) => "Corners · GPS off the map".into(),
             None => "Corners".into(),
         };

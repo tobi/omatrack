@@ -2,6 +2,8 @@
 //! real entities in a headless window under `Root`, driven by native pointer
 //! events, asserting the events their owners receive.
 
+#![cfg(test)]
+
 use std::cell::RefCell;
 use std::f64::consts::TAU;
 use std::rc::Rc;
@@ -29,7 +31,7 @@ struct Host<V: 'static> {
 }
 
 impl<V: Render> Render for Host<V> {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, _: &mut Context<'_, Self>) -> impl IntoElement {
         div()
             .size_full()
             .p_4()
@@ -62,7 +64,7 @@ where
     let sink = events.clone();
     cx.update(|cx| {
         cx.subscribe(&view, move |_, event: &E, _| {
-            sink.borrow_mut().push(event.clone())
+            sink.borrow_mut().push(event.clone());
         })
         .detach();
     });
@@ -207,6 +209,10 @@ fn corner_ruler_click_emits_corner_clicked(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn corner_ruler_edit_drag_emits_corner_edited(cx: &mut TestAppContext) {
     let (window, ruler, events) = open_ruler(cx);
     ruler.update(cx, |r, cx| r.set_editing(true, cx));
@@ -243,6 +249,12 @@ fn corner_ruler_edit_drag_emits_corner_edited(cx: &mut TestAppContext) {
 
 const LAP_SECONDS: f64 = 90.0;
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn damper_series(phase: f64) -> Arc<[f64]> {
     let n = (LAP_SECONDS * 50.0) as usize + 1;
     (0..n)
@@ -312,7 +324,7 @@ fn damper_strip_drag_slides_the_reference(cx: &mut TestAppContext) {
 
     // The nudge buttons move one 20 ms sample.
     cx.update_window(window, |_, window, cx| {
-        window.click("damper-nudge-later", cx)
+        window.click("damper-nudge-later", cx);
     })
     .unwrap();
     assert!((last_offset(&events).0 - 1.52).abs() < 1e-6);
@@ -325,6 +337,10 @@ fn damper_strip_drag_slides_the_reference(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn damper_strip_double_click_resets_the_offset(cx: &mut TestAppContext) {
     let (window, strip, events) = open_damper(cx);
     strip.update(cx, |s, cx| s.set_offset_seconds(0.8, cx));
@@ -344,6 +360,10 @@ fn damper_strip_double_click_resets_the_offset(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn damper_strip_wheel_zooms_between_one_second_and_the_lap(cx: &mut TestAppContext) {
     let (window, strip, _) = open_damper(cx);
     let plot = bounds_of(cx, window, "damper-strip-plot");
@@ -377,6 +397,10 @@ fn damper_strip_wheel_zooms_between_one_second_and_the_lap(cx: &mut TestAppConte
 const METERS_PER_DEGREE: f64 = 111_319.490_793_273_57;
 
 /// A 300 m-radius circle, anticlockwise from east.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn circle(samples: usize, radius_m: f64) -> Vec<GeoPoint> {
     let (lon0, lat0): (f64, f64) = (-83.81, 34.15);
     (0..samples)
@@ -396,7 +420,7 @@ fn map_data() -> TrackMapData {
     let longitude: Arc<[f64]> = lap.iter().map(|p| p.lon).collect();
     let reference = circle(4401, 302.0);
     let delta: Arc<[f64]> = (0..4501)
-        .map(|i| 0.4 * (TAU * i as f64 / 4500.0).sin())
+        .map(|i| 0.4 * (TAU * f64::from(i) / 4500.0).sin())
         .collect();
     TrackMapData::new()
         .with_centerline(circle(200, 300.0))
@@ -409,14 +433,14 @@ fn map_data() -> TrackMapData {
         .with_corners(vec![MapCorner::new(1, "T1", circle(9, 300.0)[2])])
 }
 
-fn open_map(
-    cx: &mut TestAppContext,
-) -> (
+type MapFixture = (
     AnyWindowHandle,
     Entity<TrackMap>,
     Entity<CursorState>,
     Rc<RefCell<Vec<TrackMapEvent>>>,
-) {
+);
+
+fn open_map(cx: &mut TestAppContext) -> MapFixture {
     let mut cursor = None;
     let (window, map, events) = open(cx, size(px(640.), px(520.)), |_, cx| {
         let shared = cx.new(|_| CursorState::new());
@@ -461,7 +485,7 @@ fn track_map_renders_and_reports_hover_and_clicks(cx: &mut TestAppContext) {
     release(cx, window, quarter);
     match events.borrow().last() {
         Some(TrackMapEvent::MapClicked(fraction)) => {
-            assert!((fraction - 0.25).abs() < 0.005, "{fraction}")
+            assert!((fraction - 0.25).abs() < 0.005, "{fraction}");
         }
         other => panic!("{other:?}"),
     }

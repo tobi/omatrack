@@ -22,6 +22,10 @@ impl FractionMap for WarpMap {
 struct Noise(u64);
 
 impl Noise {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "The benchmark uses bounded synthetic sample counts, pixel projections and floating-point timing statistics."
+    )]
     fn next(&mut self) -> f64 {
         self.0 = self
             .0
@@ -31,7 +35,7 @@ impl Noise {
     }
 }
 
-/// One synthetic lap: (speed, throttle, brake, gear, steering, rpm, g_long).
+/// One synthetic lap: (speed, throttle, brake, gear, steering, rpm, `g_long`).
 struct Lap {
     speed: Vec<f64>,
     throttle: Vec<f64>,
@@ -55,8 +59,13 @@ const CORNERS: [(f64, f64); 8] = [
     (0.90, 0.94),
 ];
 
-fn lap(samples: usize, pace: f64, seed: u64) -> Lap {
-    let mut noise = Noise(seed);
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "The benchmark uses bounded synthetic sample counts, pixel projections and floating-point timing statistics."
+)]
+fn lap(samples: usize, pace: f64, random_seed: u64) -> Lap {
+    let mut noise = Noise(random_seed);
     let mut lap = Lap {
         speed: Vec::with_capacity(samples),
         throttle: Vec::with_capacity(samples),
@@ -89,7 +98,7 @@ fn lap(samples: usize, pace: f64, seed: u64) -> Lap {
         } else {
             (1.0 - corner * 1.2).clamp(0.0, 1.0)
         };
-        let brake = braking * 85.0 + (braking > 0.0) as u8 as f64 * 2.0 * noise.next().abs();
+        let brake = braking * 85.0 + f64::from(u8::from(braking > 0.0)) * 2.0 * noise.next().abs();
         let gear = (speed / 40.0).floor().clamp(1.0, 6.0);
         let rpm = 3000.0 + (speed % 40.0) / 40.0 * 5500.0 + 50.0 * noise.next();
         let steering = 160.0
@@ -125,7 +134,12 @@ pub const PRIMARY_SAMPLES: usize = 4501;
 pub const REFERENCE_SAMPLES: usize = 4601;
 
 /// An 8-lane, two-lap scene: speed, throttle, brake (combined with
-/// throttle by default styles), gear, steering, rpm, g_long and Δ.
+/// throttle by default styles), gear, steering, rpm, `g_long` and Δ.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "The benchmark uses bounded synthetic sample counts, pixel projections and floating-point timing statistics."
+)]
 pub fn scene() -> TraceScene {
     let primary = lap(PRIMARY_SAMPLES, 1.0, 7);
     let reference = lap(REFERENCE_SAMPLES, 0.985, 11);

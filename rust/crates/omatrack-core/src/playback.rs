@@ -143,13 +143,14 @@ pub fn reference_rate(
             clamp(s.map_rate() + error / CORRECTION_SECONDS, 0.5, 2.0)
         }
         ReferencePlayback::Corners => {
-            if cursor_in_corner(cursor, s.corners()) {
-                return 1.0;
-            }
             const LOCK_SECONDS: f64 = 0.25;
             const MIN_RATE: f64 = 0.70;
             const MAX_RATE: f64 = 1.80;
             const UNGUIDED_HORIZON: f64 = 4.0;
+
+            if cursor_in_corner(cursor, s.corners()) {
+                return 1.0;
+            }
             if s.corners().is_empty() {
                 let error =
                     s.reference_video_time_at(clamp(cursor, 0.0, 1.0)) - reference_media_time;
@@ -198,6 +199,10 @@ pub enum SyncAction {
 
 /// Inputs to [`sync_reference`].
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "These are independent flags in a snapshot/input record, not mutually exclusive lifecycle states."
+)]
 pub struct SyncInput {
     pub reference_loaded: bool,
     /// Reference presentation time at the primary cursor; <= 0 unknown.
@@ -274,6 +279,10 @@ pub fn sync_reference(input: SyncInput) -> SyncAction {
 }
 
 /// After a paused aligning seek lands: re-seek (`Some(target)`) or settle.
+///
+/// # Errors
+/// Returns `Err(target)` when the paused reference is outside the seek tolerance and
+/// retry attempts remain.
 pub fn verify_paused(
     target: f64,
     reference_position: f64,

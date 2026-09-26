@@ -29,7 +29,7 @@ pub struct StatusView {
 }
 
 impl StatusView {
-    pub fn new(app: AppState, cx: &mut Context<Self>) -> Self {
+    pub fn new(app: AppState, cx: &mut Context<'_, Self>) -> Self {
         let subscriptions = vec![
             cx.observe(&app.cursor, |_, _, cx| cx.notify()),
             cx.observe(&app.session, |_, _, cx| cx.notify()),
@@ -73,6 +73,12 @@ pub fn cursor_text(analysis: &Analysis, fraction: f64) -> SharedString {
     .into()
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Clamped lap fractions map to indices in resident sample buffers; interpolation intentionally uses f64."
+)]
 fn lowest(values: &[f64], from: f64, to: f64) -> Option<f64> {
     if values.len() < 2 {
         return None;
@@ -103,10 +109,11 @@ pub fn analysis_approximate(analysis: &Analysis) -> bool {
         .is_some_and(|comparison| approximate(comparison.confidence()))
 }
 
-/// Whether the comparison is a share of lap time (`Lap time %`): every
-/// station then maps to the same share of the other lap's duration, so the
-/// cumulative Δt is a ramp of the lap-time difference, not a station
-/// delta, and a corner's Δt mostly measures how long the corner is.
+/// Whether the comparison aligns by share of lap time (`Lap time %`).
+///
+/// Each station maps to the same share of the other lap's duration. Cumulative delta is
+/// therefore a ramp of the lap-time difference, rather than a station delta; a corner's
+/// delta mostly measures its duration.
 pub fn analysis_time_share(analysis: &Analysis) -> bool {
     analysis
         .comparison()
@@ -201,8 +208,8 @@ impl StatusView {
         });
         let speeds = format!(
             "min {} / {} km/h",
-            primary_min.map_or("—".to_string(), |v| format!("{v:.0}")),
-            reference_min.map_or("—".to_string(), |v| format!("{v:.0}")),
+            primary_min.map_or_else(|| "—".to_string(), |v| format!("{v:.0}")),
+            reference_min.map_or_else(|| "—".to_string(), |v| format!("{v:.0}")),
         );
         let (label, _) = omatrack_ui::format_delta(finite, 3, DeltaSense::LowerIsBetter);
         Some(item(
@@ -236,7 +243,7 @@ impl StatusView {
 }
 
 impl Render for StatusView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         // Only what no other surface says: background work and the range
         // readout. The cursor and its Δ live in the traces and the video
         // bar, the sync basis and confidence in the title bar, the theme in

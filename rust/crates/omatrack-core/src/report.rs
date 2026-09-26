@@ -1,12 +1,14 @@
-//! Side-by-side dump of two recordings of the same run (typically an AiM
-//! MP4 and its `.telemetry` companion): GPS, main channels, laps and video
-//! frame sync. Port of `compareTelemetrySources`; the C++ builds it with an
-//! `ostringstream` in `std::fixed` mode, reproduced here with `%.Nf`.
+//! Side-by-side dump of two recordings of the same run (typically an `AiM` MP4 and its
+//! `.telemetry` companion): GPS, main channels, laps and video frame sync.
+//!
+//! Port of `compareTelemetrySources`; the C++ builds it with an `ostringstream` in
+//! `std::fixed` mode, reproduced here with `%.Nf`.
 
 use crate::cfmt::fixed;
 use crate::laps::Lap;
 use crate::mapping::{ChannelMapping, ChannelOverrides};
 use crate::recording::{RawChannel, Recording};
+use std::fmt::Write as _;
 
 const CONCEPTS: [&str; 10] = [
     "speed",
@@ -59,6 +61,10 @@ fn sample_text(source: &Recording, index: Option<usize>, time: f64, linear: bool
     }
 }
 
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "Formatting these strings and primitives into a String cannot fail."
+)]
 fn raw_anchors(out: &mut String, source: &Recording, index: usize) {
     let samples = source.samples(index);
     if samples.is_empty() {
@@ -69,25 +75,24 @@ fn raw_anchors(out: &mut String, source: &Recording, index: usize) {
         samples[start..]
             .iter()
             .find(|v| v.is_finite())
-            .map(|v| fixed(*v, 6))
-            .unwrap_or_else(|| "nan".to_string())
+            .map_or_else(|| "nan".to_string(), |v| fixed(*v, 6))
     };
     let backward = |start: usize| -> String {
         samples[..=start]
             .iter()
             .rev()
             .find(|v| v.is_finite())
-            .map(|v| fixed(*v, 6))
-            .unwrap_or_else(|| "nan".to_string())
+            .map_or_else(|| "nan".to_string(), |v| fixed(*v, 6))
     };
     let last = samples.len() - 1;
     let mid = last / 2;
-    out.push_str(&format!(
-        "    raw[0]={}  [{mid}]={}  [{last}]={}\n",
+    let _ = writeln!(
+        out,
+        "    raw[0]={}  [{mid}]={}  [{last}]={}",
         forward(0),
         forward(mid),
         backward(last)
-    ));
+    );
 }
 
 fn laps_of(source: &Recording) -> Vec<Lap> {
@@ -99,6 +104,18 @@ fn laps_of(source: &Recording) -> Vec<Lap> {
 }
 
 /// Render the comparison report.
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep the ported analysis/report stages in source order so numerical and CLI parity remain auditable."
+)]
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "Formatting these strings and primitives into a String cannot fail."
+)]
 pub fn compare_telemetry_sources(
     left: &Recording,
     right: &Recording,
@@ -113,64 +130,71 @@ pub fn compare_telemetry_sources(
     let duration = crate::num::max(left_duration, right_duration);
 
     let mut out = String::new();
-    out.push_str(&format!("compare {left_label} vs {right_label}\n"));
-    out.push_str(&format!(
-        "  format  {} / {}\n",
+    let _ = writeln!(out, "compare {left_label} vs {right_label}");
+    let _ = writeln!(
+        out,
+        "  format  {} / {}",
         left.format_name(),
         right.format_name()
-    ));
-    out.push_str(&format!("  path    {}\n", left.path()));
-    out.push_str(&format!("          {}\n", right.path()));
-    out.push_str(&format!(
-        "  channels {} / {}\n",
+    );
+    let _ = writeln!(out, "  path    {}", left.path());
+    let _ = writeln!(out, "          {}", right.path());
+    let _ = writeln!(
+        out,
+        "  channels {} / {}",
         left.channels().len(),
         right.channels().len()
-    ));
-    out.push_str(&format!(
-        "  duration {} / {} s  d={}\n",
+    );
+    let _ = writeln!(
+        out,
+        "  duration {} / {} s  d={}",
         fixed(left_duration, 6),
         fixed(right_duration, 6),
         fixed(right_duration - left_duration, 6)
-    ));
-    out.push_str(&format!(
-        "  offset  {} / {} s\n",
+    );
+    let _ = writeln!(
+        out,
+        "  offset  {} / {} s",
         optional(left.video_presentation_offset_sec(), 9),
         optional(right.video_presentation_offset_sec(), 9)
-    ));
+    );
 
     let left_laps = laps_of(left);
     let right_laps = laps_of(right);
-    out.push_str(&format!(
-        "  laps    {} / {}\n",
-        left_laps.len(),
-        right_laps.len()
-    ));
+    let _ = writeln!(out, "  laps    {} / {}", left_laps.len(), right_laps.len());
     let lap_count = left_laps.len().max(right_laps.len());
     for i in 0..lap_count.min(12) {
-        out.push_str(&format!("    L{}  ", i + 1));
+        let _ = write!(out, "    L{}  ", i + 1);
         match left_laps.get(i) {
-            Some(lap) => out.push_str(&format!(
-                "{}->{}",
-                fixed(lap.start_time, 3),
-                fixed(lap.end_time, 3)
-            )),
+            Some(lap) => {
+                let _ = write!(
+                    out,
+                    "{}->{}",
+                    fixed(lap.start_time, 3),
+                    fixed(lap.end_time, 3)
+                );
+            }
             None => out.push('-'),
         }
         out.push_str("  /  ");
         match right_laps.get(i) {
-            Some(lap) => out.push_str(&format!(
-                "{}->{}",
-                fixed(lap.start_time, 3),
-                fixed(lap.end_time, 3)
-            )),
+            Some(lap) => {
+                let _ = write!(
+                    out,
+                    "{}->{}",
+                    fixed(lap.start_time, 3),
+                    fixed(lap.end_time, 3)
+                );
+            }
             None => out.push('-'),
         }
         if let (Some(l), Some(r)) = (left_laps.get(i), right_laps.get(i)) {
-            out.push_str(&format!(
+            let _ = write!(
+                out,
                 "  dStart={}  dEnd={}",
                 fixed(r.start_time - l.start_time, 6),
                 fixed(r.end_time - l.end_time, 6)
-            ));
+            );
         }
         out.push('\n');
     }
@@ -179,21 +203,24 @@ pub fn compare_telemetry_sources(
     for concept in CONCEPTS {
         let left_channel = mapped(left, &left_map, concept);
         let right_channel = mapped(right, &right_map, concept);
-        out.push_str(&format!("    {concept:<16} {left_label}="));
+        let _ = write!(out, "    {concept:<16} {left_label}=");
         let describe = |out: &mut String,
                         source: &Recording,
                         entry: Option<(usize, &RawChannel)>| match entry {
-            Some((index, channel)) => out.push_str(&format!(
-                "{} unit='{}' {}Hz n={}",
-                channel.name,
-                channel.unit,
-                fixed(channel.frequency_hz, 3),
-                source.samples(index).len()
-            )),
+            Some((index, channel)) => {
+                let _ = write!(
+                    out,
+                    "{} unit='{}' {}Hz n={}",
+                    channel.name,
+                    channel.unit,
+                    fixed(channel.frequency_hz, 3),
+                    source.samples(index).len()
+                );
+            }
             None => out.push('-'),
         };
         describe(&mut out, left, left_channel);
-        out.push_str(&format!("\n                    {right_label}="));
+        let _ = write!(out, "\n                    {right_label}=");
         describe(&mut out, right, right_channel);
         out.push('\n');
         if let Some((index, _)) = left_channel {
@@ -228,16 +255,17 @@ pub fn compare_telemetry_sources(
 
     out.push_str("  samples:\n");
     for &time in &times {
-        out.push_str(&format!("    t={}s\n", fixed(time, 6)));
+        let _ = writeln!(out, "    t={}s", fixed(time, 6));
         for concept in CONCEPTS {
             let left_index = left_map.get(concept).copied();
             let right_index = right_map.get(concept).copied();
             let linear = concept != "gear";
             let left_text = sample_text(left, left_index, time, linear);
             let right_text = sample_text(right, right_index, time, linear);
-            out.push_str(&format!(
+            let _ = write!(
+                out,
                 "      {concept:<16} {left_label}={left_text}  {right_label}={right_text}"
-            ));
+            );
             if let (Some(li), Some(ri)) = (left_index, right_index)
                 && let (Some(lv), Some(rv)) = (
                     left.sample_at(li, time, linear),
@@ -246,24 +274,24 @@ pub fn compare_telemetry_sources(
                 && lv.is_finite()
                 && rv.is_finite()
             {
-                out.push_str(&format!("  d={}", fixed(rv - lv, 6)));
+                let _ = write!(out, "  d={}", fixed(rv - lv, 6));
             }
             out.push('\n');
         }
         let left_frame = left.video_frame_at(time);
         let right_frame = right.video_frame_at(time);
-        out.push_str(&format!("      {:<16} {left_label}=", "video_frame"));
+        let _ = write!(out, "      {:<16} {left_label}=", "video_frame");
         match left_frame {
             Some(frame) => out.push_str(&frame.to_string()),
             None => out.push('-'),
         }
-        out.push_str(&format!("  {right_label}="));
+        let _ = write!(out, "  {right_label}=");
         match right_frame {
             Some(frame) => out.push_str(&frame.to_string()),
             None => out.push('-'),
         }
         if let (Some(l), Some(r)) = (left_frame, right_frame) {
-            out.push_str(&format!("  d={}", r as i64 - l as i64));
+            let _ = write!(out, "  d={}", r as i64 - l as i64);
         }
         out.push('\n');
     }

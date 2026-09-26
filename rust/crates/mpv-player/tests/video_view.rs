@@ -2,6 +2,8 @@
 //! `FrameSource`: painting, atlas hygiene, loading/error states, size
 //! reporting and animation-frame demand.
 
+#![cfg(test)]
+
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -67,6 +69,10 @@ impl FrameSource for MockSource {
         self.slot.receiver()
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "Publish the value and its generation/count in the same critical section."
+    )]
     fn set_target_size(&self, size: Option<Size<DevicePixels>>) {
         let mut target = self.target.lock().unwrap();
         if *target != size {
@@ -110,6 +116,10 @@ fn open(
 }
 
 #[gpui_kit::test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn paints_the_latest_frame_and_drops_replaced_images(cx: &mut TestAppContext) {
     let source = MockSource::new(MediaStatus::Ready);
     let first = source.publish(160, 90, 1.0);
@@ -159,6 +169,10 @@ fn paints_the_latest_frame_and_drops_replaced_images(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "Read assertions from one consistent event snapshot; the guard is released at the end of the test."
+)]
 fn shows_loading_until_a_frame_arrives_then_errors(cx: &mut TestAppContext) {
     let source = MockSource::new(MediaStatus::Loading);
     let (handle, view, events) = open(cx, source.clone());
@@ -269,7 +283,7 @@ fn replacing_the_source_drops_the_old_image(cx: &mut TestAppContext) {
     let second = second_source.publish(32, 18, 0.0);
     cx.update_window(handle.into(), |_, window, cx| {
         view.update(cx, |view, cx| {
-            view.set_source(second_source.clone(), window, cx)
+            view.set_source(second_source.clone(), window, cx);
         });
         window.render_frame(cx);
         assert!(!window.has_image_atlas_entry(first.image()));
@@ -349,7 +363,7 @@ fn releasing_or_replacing_the_view_withdraws_its_render_size(cx: &mut TestAppCon
     second_source.publish(64, 36, 0.0);
     cx.update_window(handle.into(), |_, window, cx| {
         view.update(cx, |view, cx| {
-            view.set_source(second_source.clone(), window, cx)
+            view.set_source(second_source.clone(), window, cx);
         });
         window.render_frame(cx);
     })

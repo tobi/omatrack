@@ -1,6 +1,8 @@
 //! The status bar's job list ends every job whose work was cancelled or
 //! replaced (a replaced task drops its future and the job handle with it).
 
+#![cfg(test)]
+
 mod common;
 
 use gpui_kit::AppContext as _;
@@ -51,7 +53,7 @@ fn rescanning_twice_leaves_no_job_running(cx: &mut TestAppContext) {
         library.update(cx, |library, cx| {
             library.rescan(cx);
             library.rescan(cx);
-        })
+        });
     });
     cx.run_until_parked();
     assert!(cx.update(|cx| !library.read(cx).is_scanning()));
@@ -77,7 +79,7 @@ fn replacing_a_lap_load_leaves_no_job_running(cx: &mut TestAppContext) {
             assert!(session.is_loading(), "the selection starts a load");
             session.set_primary(id.clone().into(), 3, cx);
             session.next_lap(cx);
-        })
+        });
     });
     cx.run_until_parked();
     assert!(cx.update(|cx| !session.read(cx).is_loading()));

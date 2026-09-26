@@ -1,7 +1,9 @@
-//! Session races on the real AiM recordings (read-only): a request made
+//! Session races on the real `AiM` recordings (read-only): a request made
 //! while an analysis is in flight must win, and replaced work must not
 //! leave jobs behind. Ignored by default; run with
 //! `OMATRACK_FIXTURES=~/Documents/Telemetry/26T07_PLM cargo test -p omatrack-app -- --include-ignored real_`.
+
+#![cfg(test)]
 
 mod common;
 
@@ -30,7 +32,7 @@ async fn scanned(
     ));
     let test = common::start(cx, sandbox.options());
     let library = test.app.library.clone();
-    cx.update(|cx| library.update(cx, |library, cx| library.rescan(cx)));
+    cx.update(|cx| library.update(cx, omatrack_app::state::Library::rescan));
     cx.run_until_parked();
     cx.wait_for(test.window.into(), Duration::from_secs(600), |_, cx| {
         let library = library.read(cx);
@@ -74,7 +76,7 @@ fn running_jobs(test: &common::TestApp, cx: &mut TestAppContext) -> Vec<String> 
 }
 
 #[gpui_kit::test]
-#[ignore]
+#[ignore = "requires private telemetry/video fixtures; set OMATRACK_FIXTURES"]
 async fn real_requests_made_during_an_analysis_win(cx: &mut TestAppContext) {
     let (_sandbox, test, run4, run1) = scanned(cx).await;
     let handle: AnyWindowHandle = test.window.into();
@@ -130,7 +132,7 @@ async fn real_requests_made_during_an_analysis_win(cx: &mut TestAppContext) {
         primary.neighbour_lap(-1).map(|lap| lap.id).unwrap()
     });
     session.update(cx, |session, cx| {
-        session.set_primary(run1.id.clone().into(), neighbour, cx)
+        session.set_primary(run1.id.clone().into(), neighbour, cx);
     });
     cx.run_until_parked();
     cx.wait_for(handle, Duration::from_secs(600), |_, cx| {
@@ -140,7 +142,7 @@ async fn real_requests_made_during_an_analysis_win(cx: &mut TestAppContext) {
             .is_some_and(|slot| matches!(slot.state(), RoleState::Loaded(_)))
     })
     .await;
-    session.update(cx, |session, cx| session.swap(cx));
+    session.update(cx, Session::swap);
     settle(handle, &session, cx).await;
     cx.update(|cx| {
         let analysis = session.read(cx).analysis().unwrap();
@@ -185,7 +187,7 @@ async fn real_requests_made_during_an_analysis_win(cx: &mut TestAppContext) {
 /// swap while one role is still loading moves the loaded lap as it is
 /// instead of reading it from disk again.
 #[gpui_kit::test]
-#[ignore]
+#[ignore = "requires private telemetry/video fixtures; set OMATRACK_FIXTURES"]
 async fn real_loaded_recordings_are_reused_across_lap_steps_and_swaps(cx: &mut TestAppContext) {
     use std::sync::Arc;
 
@@ -195,7 +197,7 @@ async fn real_loaded_recordings_are_reused_across_lap_steps_and_swaps(cx: &mut T
     let run1_best = run1.best_lap_id.unwrap();
     let run4_best = run4.best_lap_id.unwrap();
     session.update(cx, |session, cx| {
-        session.set_primary(run1.id.clone().into(), run1_best, cx)
+        session.set_primary(run1.id.clone().into(), run1_best, cx);
     });
     settle(handle, &session, cx).await;
     let loaded_primary = |cx: &mut TestAppContext| {
@@ -211,7 +213,7 @@ async fn real_loaded_recordings_are_reused_across_lap_steps_and_swaps(cx: &mut T
     let best = loaded_primary(cx);
 
     // [ : the neighbour lap comes from the same parsed recording.
-    session.update(cx, |session, cx| session.prev_lap(cx));
+    session.update(cx, Session::prev_lap);
     settle(handle, &session, cx).await;
     let neighbour = loaded_primary(cx);
     assert_ne!(neighbour.lap_id(), best.lap_id());

@@ -3,7 +3,10 @@
 //! Space plays/pauses, Left/Right seek 2 s, M mutes, Ctrl+Q quits. The
 //! status line shows the interpolated clock and the software render cost.
 
+use std::cell::Cell;
 use std::path::PathBuf;
+use std::process::ExitCode;
+use std::rc::Rc;
 
 use gpui_kit::component::{ActiveTheme as _, Root};
 use gpui_kit::{
@@ -18,6 +21,12 @@ actions!(
     [TogglePause, SeekForward, SeekBackward, ToggleMute, Quit]
 );
 
+impl Eq for TogglePause {}
+impl Eq for SeekForward {}
+impl Eq for SeekBackward {}
+impl Eq for ToggleMute {}
+impl Eq for Quit {}
+
 const CONTEXT: &str = "PlayExample";
 const SKIP_SECONDS: f64 = 2.0;
 
@@ -29,12 +38,7 @@ struct PlayWindow {
 }
 
 impl PlayWindow {
-    fn new(path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let player = Player::new(PlayerOptions::default().client_name("mpv-player example"))
-            .expect("libmpv player");
-        if let Err(error) = player.load(&path) {
-            log::error!("cannot open {}: {error}", path.display());
-        }
+    fn new(player: Player, window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
         let letterbox = cx.theme().background;
         let source = player.frame_source();
         let video = cx.new(|cx| VideoView::new("example-video", source, letterbox, window, cx));
@@ -51,22 +55,22 @@ impl PlayWindow {
         }
     }
 
-    fn toggle_pause(&mut self, _: &TogglePause, _: &mut Window, cx: &mut Context<Self>) {
+    fn toggle_pause(&mut self, _: &TogglePause, _: &mut Window, cx: &mut Context<'_, Self>) {
         self.player.toggle();
         cx.notify();
     }
 
-    fn seek_forward(&mut self, _: &SeekForward, _: &mut Window, cx: &mut Context<Self>) {
+    fn seek_forward(&mut self, _: &SeekForward, _: &mut Window, cx: &mut Context<'_, Self>) {
         self.player.seek_relative(SKIP_SECONDS);
         cx.notify();
     }
 
-    fn seek_backward(&mut self, _: &SeekBackward, _: &mut Window, cx: &mut Context<Self>) {
+    fn seek_backward(&mut self, _: &SeekBackward, _: &mut Window, cx: &mut Context<'_, Self>) {
         self.player.seek_relative(-SKIP_SECONDS);
         cx.notify();
     }
 
-    fn toggle_mute(&mut self, _: &ToggleMute, _: &mut Window, cx: &mut Context<Self>) {
+    fn toggle_mute(&mut self, _: &ToggleMute, _: &mut Window, cx: &mut Context<'_, Self>) {
         self.player.set_mute(!self.player.state().muted);
         cx.notify();
     }
@@ -74,16 +78,16 @@ impl PlayWindow {
     fn status_line(&self) -> SharedString {
         let state = self.player.state();
         let position = self.player.clock().estimate(std::time::Instant::now());
-        let stats = self.player.render_stats();
+        let render_stats = self.player.render_stats();
         format!(
             "{} {:.3} / {:.3} s · {}x{} · render {:.2} ms, convert {:.2} ms{}",
             if state.paused { "Paused" } else { "Playing" },
             position,
             state.duration,
-            stats.last_size.0,
-            stats.last_size.1,
-            stats.average_render_ms(),
-            stats.average_convert_ms(),
+            render_stats.last_size.0,
+            render_stats.last_size.1,
+            render_stats.average_render_ms(),
+            render_stats.average_convert_ms(),
             if state.muted { " · muted" } else { "" },
         )
         .into()
@@ -91,7 +95,7 @@ impl PlayWindow {
 }
 
 impl Render for PlayWindow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let theme = cx.theme();
         div()
             .id("play-window")
@@ -121,12 +125,25 @@ impl Render for PlayWindow {
     }
 }
 
-fn main() {
+fn main() -> ExitCode {
     env_logger_init();
     let Some(path) = std::env::args_os().nth(1).map(PathBuf::from) else {
         eprintln!("usage: play <video file>");
-        std::process::exit(2);
+        return ExitCode::from(2);
     };
+    let player = match Player::new(PlayerOptions::default().client_name("mpv-player example")) {
+        Ok(player) => player,
+        Err(error) => {
+            log::error!("cannot initialize libmpv: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(error) = player.load(&path) {
+        log::error!("cannot open {}: {error}", path.display());
+        return ExitCode::FAILURE;
+    }
+    let failed = Rc::new(Cell::new(false));
+    let startup_failed = failed.clone();
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx: &mut App| {
@@ -139,13 +156,22 @@ fn main() {
                 KeyBinding::new("ctrl-q", Quit, None),
             ]);
             cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
-            cx.open_window(WindowOptions::default(), |window, cx| {
-                let view = cx.new(|cx| PlayWindow::new(path, window, cx));
+            if let Err(error) = cx.open_window(WindowOptions::default(), |window, cx| {
+                let view = cx.new(|cx| PlayWindow::new(player, window, cx));
                 cx.new(|cx| Root::new(view, window, cx))
-            })
-            .expect("open window");
+            }) {
+                log::error!("cannot open window: {error}");
+                startup_failed.set(true);
+                cx.quit();
+                return;
+            }
             cx.activate(true);
         });
+    if failed.get() {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /// Routes `log` output to stderr at warn level without an extra dependency.

@@ -1,6 +1,8 @@
 //! `omatrack.yml`: typed keys, unknown keys kept at every level, lenient
 //! scalars, atomic saves, and a malformed document never overwritten.
 
+#![cfg(test)]
+
 use omatrack_core::alignment::Strategy;
 use omatrack_core::corners::{CornerZone, ZoneSource};
 use omatrack_core::playback::ReferencePlayback;
@@ -77,6 +79,10 @@ fn extra_key<'a>(map: &'a serde_yaml::Mapping, key: &str) -> Option<&'a Value> {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn typed_keys_parse_leniently() {
     let config = Config::from_yaml_str(DOCUMENT).unwrap();
     let folders: Vec<_> = config.folder_locations().collect();

@@ -1,6 +1,7 @@
-//! What a recording itself says, cheaply: the index-open summary the
-//! library tree is built from and the index cache stores (metadata layer 4
-//! only, so preferences and `TRACK.yml` edits never invalidate it).
+//! The recording's own metadata, obtained through a cheap index open.
+//!
+//! This summary builds the library tree and is stored by the index cache. It contains
+//! metadata layer 4 only, so preferences and `TRACK.yml` edits never invalidate it.
 
 use omatrack_core::laps::{Lap, LapKind, classify_laps};
 use omatrack_core::mapping::{ChannelOverrides, gps_coordinate_degrees, lower_trimmed};
@@ -108,6 +109,10 @@ pub struct RecordingSummary {
 
 /// Median of 19 probes of the mapped GPS channels (port of
 /// `SessionHandle::captureGpsLocation`).
+#[expect(
+    clippy::neg_cmp_op_on_partial_ord,
+    reason = "Negated ordered comparisons deliberately include unordered (NaN) values; preserve that behavior."
+)]
 fn gps_location(recording: &Recording) -> Option<[f64; 2]> {
     let mapping = recording.map_channels(&ChannelOverrides::new());
     let (&lat_index, &lon_index) = (mapping.get("gps_lat")?, mapping.get("gps_lon")?);

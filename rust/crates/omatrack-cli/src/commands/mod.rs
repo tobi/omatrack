@@ -1,9 +1,9 @@
 //! One module per headless command.
 
-pub mod compare;
-pub mod corners;
-pub mod parse;
-pub mod unify;
+pub(crate) mod compare;
+pub(crate) mod corners;
+pub(crate) mod parse;
+pub(crate) mod unify;
 
 use crate::Out;
 use omatrack_core::Recording;

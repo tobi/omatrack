@@ -76,6 +76,7 @@ impl ThemeSource {
 
     /// Where the font choice is read; bundled fonts without one (the
     /// default).
+    #[must_use]
     pub fn fonts(mut self, fonts: FontSource) -> Self {
         self.fonts = fonts;
         self
@@ -280,9 +281,7 @@ pub fn install(source: ThemeSource, cx: &mut App) {
     }
     fonts::install_fonts(&source.fonts, cx);
     // Register before reading so a change during startup is not missed.
-    let watcher = if !source.has_palette_locations() {
-        None
-    } else {
+    let watcher = if source.has_palette_locations() {
         match PaletteWatcher::new(source.watched_files()) {
             Ok(watcher) => Some(watcher),
             Err(error) => {
@@ -290,6 +289,8 @@ pub fn install(source: ThemeSource, cx: &mut App) {
                 None
             }
         }
+    } else {
+        None
     };
     let mut applied = apply(None, source.load(), cx);
     let Some((mut watcher, events)) = watcher else {

@@ -166,7 +166,7 @@ pub struct Filmstrip {
 }
 
 impl Filmstrip {
-    pub fn new(app: AppState, cx: &mut Context<Self>) -> Self {
+    pub fn new(app: AppState, cx: &mut Context<'_, Self>) -> Self {
         let subscriptions = vec![
             cx.observe(&app.session, |this, _, cx| {
                 this.rebuild(cx);
@@ -201,7 +201,7 @@ impl Filmstrip {
 
     /// Present the strip as the fullscreen lane (`true`) or the full-width
     /// bar below the title bar.
-    pub fn set_on_stage(&mut self, on_stage: bool, cx: &mut Context<Self>) {
+    pub fn set_on_stage(&mut self, on_stage: bool, cx: &mut Context<'_, Self>) {
         if self.on_stage != on_stage {
             self.on_stage = on_stage;
             cx.notify();
@@ -214,6 +214,10 @@ impl Filmstrip {
 
     /// The strip's height in rem: one 1.5 rem row per recording, 0.25 rem
     /// apart, 0.25 rem padding above and below; 0 without rows.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
     pub fn height_rems(&self) -> f32 {
         match self.rows.len() {
             0 => 0.,
@@ -227,7 +231,7 @@ impl Filmstrip {
     }
 
     /// Derive the rows from the session's two roles.
-    fn rebuild(&mut self, cx: &mut Context<Self>) {
+    fn rebuild(&mut self, cx: &mut Context<'_, Self>) {
         let session = self.app.session.read(cx);
         let slots = [
             (LapRole::Primary, session.primary()),
@@ -243,26 +247,25 @@ impl Filmstrip {
                 self.cells.insert(id.clone(), items);
             }
             let lap = row_lap(role, slot);
-            match rows.iter_mut().find(|row| row.session == id) {
-                Some(row) => row.laps.push(lap),
-                None => {
-                    let info = slot.info();
-                    rows.push(FilmstripRow {
-                        items: self
-                            .cells
-                            .get(&id)
-                            .cloned()
-                            .unwrap_or_else(|| Arc::from(Vec::new())),
-                        session: id,
-                        driver: info.driver.clone().unwrap_or_else(|| info.title.clone()),
-                        detail: info
-                            .driver
-                            .as_ref()
-                            .and(info.session_name.clone())
-                            .filter(|name| !name.is_empty()),
-                        laps: vec![lap],
-                    });
-                }
+            if let Some(row) = rows.iter_mut().find(|row| row.session == id) {
+                row.laps.push(lap);
+            } else {
+                let info = slot.info();
+                rows.push(FilmstripRow {
+                    items: self
+                        .cells
+                        .get(&id)
+                        .cloned()
+                        .unwrap_or_else(|| Arc::from(Vec::new())),
+                    session: id,
+                    driver: info.driver.clone().unwrap_or_else(|| info.title.clone()),
+                    detail: info
+                        .driver
+                        .as_ref()
+                        .and_then(|_| info.session_name.clone())
+                        .filter(|name| !name.is_empty()),
+                    laps: vec![lap],
+                });
             }
         }
         // Only the recordings on screen keep cells.
@@ -272,7 +275,7 @@ impl Filmstrip {
     }
 
     /// Follow the shared cursor into the playheads; true when one moved.
-    fn follow_cursor(&mut self, cx: &mut Context<Self>) -> bool {
+    fn follow_cursor(&mut self, cx: &mut Context<'_, Self>) -> bool {
         let fraction = self
             .app
             .cursor
@@ -297,7 +300,7 @@ impl Filmstrip {
         changed
     }
 
-    fn render_gutter(&self, row: &FilmstripRow, theme: &Theme) -> AnyElement {
+    fn render_gutter(row: &FilmstripRow, theme: &Theme) -> AnyElement {
         let two_roles = row.laps.len() > 1;
         let id = match row.click_role() {
             LapRole::Primary => "filmstrip-primary",
@@ -402,7 +405,7 @@ impl Filmstrip {
             .primary_playhead(primary.and(self.playhead))
             .reference_playhead(reference.and(self.reference_playhead))
             .on_select(move |select: &LapSelect, _, cx| {
-                select_lap(&app, &session, select, cx);
+                select_lap(&app, &session, *select, cx);
             })
             .into_any_element()
     }
@@ -410,7 +413,7 @@ impl Filmstrip {
 
 /// Apply a strip request: select the lap for the role, or, when a plain
 /// click hits the lap the role already holds, jump back to its start.
-fn select_lap(app: &AppState, session: &SharedString, select: &LapSelect, cx: &mut App) {
+fn select_lap(app: &AppState, session: &SharedString, select: LapSelect, cx: &mut App) {
     let role = match select.role {
         LapRole::Primary => Role::Primary,
         LapRole::Reference => Role::Reference,
@@ -448,7 +451,7 @@ fn row_lap(role: LapRole, slot: &RoleSlot) -> RowLap {
 }
 
 impl Render for Filmstrip {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let _ = window;
         let theme = cx.theme();
         let root = div()
@@ -483,7 +486,7 @@ impl Render for Filmstrip {
                     .w_64()
                     .flex_shrink_0()
                     .gap_1()
-                    .children(self.rows.iter().map(|row| self.render_gutter(row, theme))),
+                    .children(self.rows.iter().map(|row| Self::render_gutter(row, theme))),
             )
             .child(
                 Button::new("filmstrip-swap")
@@ -498,7 +501,7 @@ impl Render for Filmstrip {
                         Some(WORKSPACE_CONTEXT),
                     )
                     .on_click(move |_, _, cx| {
-                        session.update(cx, |session, cx| session.swap(cx));
+                        session.update(cx, super::super::state::session::Session::swap);
                     }),
             )
             .child(

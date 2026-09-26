@@ -64,42 +64,49 @@ impl Default for PlayerOptions {
 
 impl PlayerOptions {
     /// Sets [`PlayerOptions::cache_dir`].
+    #[must_use]
     pub fn cache_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.cache_dir = Some(dir.into());
         self
     }
 
     /// Sets [`PlayerOptions::muted`].
+    #[must_use]
     pub fn muted(mut self, muted: bool) -> Self {
         self.muted = muted;
         self
     }
 
     /// Sets [`PlayerOptions::hwdec`].
+    #[must_use]
     pub fn hwdec(mut self, hwdec: impl Into<String>) -> Self {
         self.hwdec = hwdec.into();
         self
     }
 
     /// Sets [`PlayerOptions::audio_output`].
+    #[must_use]
     pub fn audio_output(mut self, output: impl Into<String>) -> Self {
         self.audio_output = Some(output.into());
         self
     }
 
     /// Sets [`PlayerOptions::volume`].
+    #[must_use]
     pub fn volume(mut self, volume: f64) -> Self {
         self.volume = volume;
         self
     }
 
     /// Sets [`PlayerOptions::max_fps`].
+    #[must_use]
     pub fn max_fps(mut self, max_fps: Option<f64>) -> Self {
         self.max_fps = max_fps;
         self
     }
 
     /// Sets [`PlayerOptions::client_name`].
+    #[must_use]
     pub fn client_name(mut self, name: impl Into<String>) -> Self {
         self.client_name = name.into();
         self
@@ -109,6 +116,10 @@ impl PlayerOptions {
 /// A snapshot of the player's observed state.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "These are independent flags in a snapshot/input record, not mutually exclusive lifecycle states."
+)]
 pub struct PlayerState {
     /// Last reported media time in seconds (see [`Player::clock`] for an
     /// interpolated value).
@@ -187,6 +198,10 @@ impl Player {
     /// `vo=libmpv`, no config/terminal/OSC/input bindings, builtin bilinear
     /// scalers (see `docs/VIDEO_SCALER_COMPATIBILITY.md`), exact seeks,
     /// `keep-open`, starting paused.
+    ///
+    /// # Errors
+    /// Returns an error if libmpv initialization, option setup, property observation or
+    /// worker-thread startup fails, or the cache path is not UTF-8.
     pub fn new(options: PlayerOptions) -> Result<Self, MpvError> {
         let handle = Arc::new(MpvHandle::create()?);
         let volume = options.volume.clamp(0.0, 100.0);
@@ -206,7 +221,7 @@ impl Player {
             ("dscale", "bilinear".into()),
             ("sws-scaler", "bilinear".into()),
             ("zimg-scaler", "bilinear".into()),
-            ("hwdec", options.hwdec.clone()),
+            ("hwdec", options.hwdec),
             ("hr-seek", "yes".into()),
             // Signal a frame when it is due instead of early and then blocking
             // inside mpv_render_context_render until its display time: the
@@ -217,10 +232,10 @@ impl Player {
             ("pause", "yes".into()),
             ("mute", if options.muted { "yes" } else { "no" }.into()),
             ("volume", format!("{volume}")),
-            ("audio-client-name", options.client_name.clone()),
+            ("audio-client-name", options.client_name),
         ];
-        if let Some(output) = &options.audio_output {
-            settings.push(("ao", output.clone()));
+        if let Some(output) = options.audio_output {
+            settings.push(("ao", output));
         }
         if let Some(dir) = &options.cache_dir {
             let dir = dir.to_str().ok_or_else(|| {
@@ -263,6 +278,9 @@ impl Player {
 
     /// Opens `path`, replacing the current file. Playback state (paused,
     /// speed, mute) carries over; the clock resets to 0.
+    ///
+    /// # Errors
+    /// Returns an error for a non-UTF-8 path or if libmpv rejects the load command.
     pub fn load(&self, path: &Path) -> Result<(), MpvError> {
         let path_str = path
             .to_str()
@@ -309,7 +327,7 @@ impl Player {
         self.shared.paused.store(paused, Ordering::Release);
         self.shared.clock.set_paused(paused, Instant::now());
         self.shared.frames.signal();
-        self.report(self.handle.set_flag_async(0, "pause", paused));
+        Self::report(self.handle.set_flag_async(0, "pause", paused));
     }
 
     /// Exact seek to `seconds` (clamped to the file). Before the file has
@@ -337,7 +355,7 @@ impl Player {
             .store(false, Ordering::Release);
         self.shared.clock.seek_started(target, now);
         let argument = format!("{target:.6}");
-        self.report(
+        Self::report(
             self.handle
                 .command_async(SEEK_USERDATA, &["seek", &argument, "absolute+exact"]),
         );
@@ -351,7 +369,8 @@ impl Player {
     /// Where the playhead is or is about to be: the target of an unfinished
     /// seek, else the last reported position.
     pub fn target_position(&self) -> f64 {
-        if let Some(target) = *self.shared.lock_pending_seek() {
+        let value = *self.shared.lock_pending_seek();
+        if let Some(target) = value {
             return target;
         }
         if let Some(target) = self.shared.start_position() {
@@ -368,13 +387,13 @@ impl Player {
         let speed = speed.clamp(MIN_SPEED, MAX_SPEED);
         self.shared.speed.store(speed);
         self.shared.clock.set_speed(speed, Instant::now());
-        self.report(self.handle.set_double_async(0, "speed", speed));
+        Self::report(self.handle.set_double_async(0, "speed", speed));
     }
 
     /// Mutes or unmutes audio.
     pub fn set_mute(&self, muted: bool) {
         self.shared.muted.store(muted, Ordering::Release);
-        self.report(self.handle.set_flag_async(0, "mute", muted));
+        Self::report(self.handle.set_flag_async(0, "mute", muted));
     }
 
     /// Sets the volume, 0–100.
@@ -384,7 +403,7 @@ impl Player {
         }
         let volume = volume.clamp(0.0, 100.0);
         self.shared.volume.store(volume);
-        self.report(self.handle.set_double_async(0, "volume", volume));
+        Self::report(self.handle.set_double_async(0, "volume", volume));
     }
 
     /// Applies a [`Follower`](crate::Follower) decision.
@@ -446,7 +465,7 @@ impl Player {
             .shared
             .stats
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Clears [`Player::render_stats`].
@@ -455,16 +474,19 @@ impl Player {
             .shared
             .stats
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner()) = RenderStats::default();
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = RenderStats::default();
     }
 
     /// Reads the exact current `time-pos` from mpv (a synchronous round trip;
     /// prefer [`Player::state`] or [`Player::clock`] on the UI thread).
+    ///
+    /// # Errors
+    /// Returns an error if libmpv cannot provide the current playback position.
     pub fn query_time_pos(&self) -> Result<f64, MpvError> {
         self.handle.get_double("time-pos")
     }
 
-    fn report(&self, result: Result<(), MpvError>) {
+    fn report(result: Result<(), MpvError>) {
         if let Err(error) = result {
             log::warn!("mpv request failed: {error}");
         }

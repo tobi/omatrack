@@ -1,6 +1,8 @@
-//! The session model on the real AiM recordings (read-only). Ignored by
+//! The session model on the real `AiM` recordings (read-only). Ignored by
 //! default; run with
 //! `OMATRACK_FIXTURES=~/Documents/Telemetry/26T07_PLM cargo test -- --include-ignored real_`.
+
+#![cfg(test)]
 
 use omatrack_core::consistency::SessionLaps;
 use omatrack_core::session::{CornerSource, IdentityState, LoadedLap, MarkerKind, StrategyRequest};
@@ -37,7 +39,15 @@ fn fastest(run: &str, cancel: &AtomicBool) -> LoadedLap {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requires private telemetry/video fixtures; set OMATRACK_FIXTURES"]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Exercise the complete workflow in order, keeping its setup and state assertions together."
+)]
 fn real_session_pair_run4_against_run1() {
     let cancel = AtomicBool::new(false);
     let reference = fastest("Run1", &cancel);
@@ -167,7 +177,7 @@ fn real_session_pair_run4_against_run1() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requires private telemetry/video fixtures; set OMATRACK_FIXTURES"]
 fn real_session_consistency() {
     let cancel = AtomicBool::new(false);
     let primary = fastest("Run1", &cancel);
@@ -212,7 +222,7 @@ fn real_session_consistency() {
 /// 6-20 m accuracy. That is the source data, not an alignment bug, and why
 /// this pair aligns on lap time.
 #[test]
-#[ignore]
+#[ignore = "requires private telemetry/video fixtures; set OMATRACK_FIXTURES"]
 fn real_run4_lap10_gps_is_off_track() {
     let cancel = AtomicBool::new(false);
     let primary = fastest("Run4", &cancel);

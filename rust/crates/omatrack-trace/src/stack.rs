@@ -30,6 +30,7 @@
 //! (`step_cursor`, `zoom_in`, `zoom_out`, `reset_view`, `toggle_axis`).
 
 use std::cell::Cell;
+use std::fmt::Write as _;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -128,7 +129,7 @@ impl TraceStack {
         viewport: Entity<ViewportState>,
         cursor: Entity<CursorState>,
         _window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) -> Self {
         let styles = Arc::new(LaneStyles::new());
         let layout = Arc::new(LaneLayout::default());
@@ -184,7 +185,7 @@ impl TraceStack {
     }
 
     /// Replace the drawn data. Corners come with the scene.
-    pub fn set_scene(&mut self, scene: Arc<TraceScene>, cx: &mut Context<Self>) {
+    pub fn set_scene(&mut self, scene: Arc<TraceScene>, cx: &mut Context<'_, Self>) {
         self.corners = scene.corners.clone().into();
         self.corner_spans = spans(&self.corners);
         if let Some(id) = self.focused_corner
@@ -202,7 +203,7 @@ impl TraceStack {
     }
 
     /// Replace corner zones without touching the static layer (corner edits).
-    pub fn set_corners(&mut self, corners: Vec<CornerBand>, cx: &mut Context<Self>) {
+    pub fn set_corners(&mut self, corners: Vec<CornerBand>, cx: &mut Context<'_, Self>) {
         self.corners = corners.into();
         self.corner_spans = spans(&self.corners);
         cx.notify();
@@ -213,7 +214,7 @@ impl TraceStack {
     }
 
     /// Per-channel appearance and sizing (`channels.<key>.*`).
-    pub fn set_lane_styles(&mut self, styles: LaneStyles, cx: &mut Context<Self>) {
+    pub fn set_lane_styles(&mut self, styles: LaneStyles, cx: &mut Context<'_, Self>) {
         if styles == *self.styles {
             return;
         }
@@ -226,7 +227,7 @@ impl TraceStack {
     }
 
     /// FIT (weights) or manual (exact percentages, scrolls on overflow).
-    pub fn set_fit(&mut self, fit: bool, cx: &mut Context<Self>) {
+    pub fn set_fit(&mut self, fit: bool, cx: &mut Context<'_, Self>) {
         if self.mode.fit != fit {
             self.mode = LayoutMode::fit(fit).resizing(self.mode.resizing);
             self.relayout(cx);
@@ -239,7 +240,7 @@ impl TraceStack {
     }
 
     /// Lane resize editing: dividers drag, lanes project into FIT.
-    pub fn set_resizing(&mut self, resizing: bool, cx: &mut Context<Self>) {
+    pub fn set_resizing(&mut self, resizing: bool, cx: &mut Context<'_, Self>) {
         if self.mode.resizing != resizing {
             self.mode = self.mode.resizing(resizing);
             self.resize_draft = None;
@@ -253,7 +254,7 @@ impl TraceStack {
         self.mode.resizing
     }
 
-    pub fn set_editing_corners(&mut self, editing: bool, cx: &mut Context<Self>) {
+    pub fn set_editing_corners(&mut self, editing: bool, cx: &mut Context<'_, Self>) {
         if self.editing_corners != editing {
             self.editing_corners = editing;
             self.interaction.cancel();
@@ -270,8 +271,8 @@ impl TraceStack {
     }
 
     /// Focus a corner: ease the viewport so the zone sits in the left half
-    /// (140 ms, OutCubic) and dim the traces outside it.
-    pub fn focus_corner(&mut self, id: u32, animate: bool, cx: &mut Context<Self>) {
+    /// (140 ms, `OutCubic`) and dim the traces outside it.
+    pub fn focus_corner(&mut self, id: u32, animate: bool, cx: &mut Context<'_, Self>) {
         let Some(corner) = self.corners.iter().find(|c| c.id == id).cloned() else {
             return;
         };
@@ -279,12 +280,12 @@ impl TraceStack {
         self.viewport
             .update(cx, |v, cx| v.focus(corner.start, corner.end, animate, cx));
         self.cursor.update(cx, |c, cx| {
-            c.set_focus(Some(Selection::new(corner.start, corner.end)), cx)
+            c.set_focus(Some(Selection::new(corner.start, corner.end)), cx);
         });
         cx.notify();
     }
 
-    pub fn clear_corner_focus(&mut self, cx: &mut Context<Self>) {
+    pub fn clear_corner_focus(&mut self, cx: &mut Context<'_, Self>) {
         if self.focused_corner.take().is_some() {
             self.cursor.update(cx, |c, cx| c.set_focus(None, cx));
             cx.notify();
@@ -292,7 +293,7 @@ impl TraceStack {
     }
 
     /// Pin or unpin a lane (by its root channel key).
-    pub fn toggle_lane_pinned(&mut self, key: &str, cx: &mut Context<Self>) {
+    pub fn toggle_lane_pinned(&mut self, key: &str, cx: &mut Context<'_, Self>) {
         let mut styles = (*self.styles).clone();
         let style = styles.get_mut(key);
         style.sizing.pinned = !style.sizing.pinned;
@@ -305,7 +306,7 @@ impl TraceStack {
     }
 
     /// Move the cursor by whole samples of the primary lap.
-    pub fn step_cursor(&mut self, steps: i64, cx: &mut Context<Self>) {
+    pub fn step_cursor(&mut self, steps: i64, cx: &mut Context<'_, Self>) {
         let samples = self.primary_samples();
         self.cursor.update(cx, |c, cx| c.step(steps, samples, cx));
         if let Some(fraction) = self.cursor.read(cx).fraction() {
@@ -313,26 +314,26 @@ impl TraceStack {
         }
     }
 
-    pub fn zoom_in(&mut self, cx: &mut Context<Self>) {
+    pub fn zoom_in(&mut self, cx: &mut Context<'_, Self>) {
         let anchor = self.cursor.read(cx).fraction();
         self.viewport.update(cx, |v, cx| v.zoom_in(anchor, cx));
         self.emit_viewport(cx);
     }
 
-    pub fn zoom_out(&mut self, cx: &mut Context<Self>) {
+    pub fn zoom_out(&mut self, cx: &mut Context<'_, Self>) {
         let anchor = self.cursor.read(cx).fraction();
         self.viewport.update(cx, |v, cx| v.zoom_out(anchor, cx));
         self.emit_viewport(cx);
     }
 
-    pub fn reset_view(&mut self, cx: &mut Context<Self>) {
-        self.viewport.update(cx, |v, cx| v.reset(cx));
+    pub fn reset_view(&mut self, cx: &mut Context<'_, Self>) {
+        self.viewport.update(cx, ViewportState::reset);
         self.clear_corner_focus(cx);
         self.emit_viewport(cx);
     }
 
-    pub fn toggle_axis(&mut self, cx: &mut Context<Self>) {
-        self.viewport.update(cx, |v, cx| v.toggle_axis(cx));
+    pub fn toggle_axis(&mut self, cx: &mut Context<'_, Self>) {
+        self.viewport.update(cx, ViewportState::toggle_axis);
     }
 
     /// Times the static layer has rendered. A cursor move must not change it.
@@ -380,7 +381,7 @@ impl TraceStack {
             .collect()
     }
 
-    pub(crate) fn set_plot_bounds(&mut self, bounds: Bounds<Pixels>, cx: &mut Context<Self>) {
+    pub(crate) fn set_plot_bounds(&mut self, bounds: Bounds<Pixels>, cx: &mut Context<'_, Self>) {
         if self.plot_bounds != Some(bounds) {
             let resized = self.plot_bounds.map(|b| b.size) != Some(bounds.size);
             self.plot_bounds = Some(bounds);
@@ -392,10 +393,10 @@ impl TraceStack {
         }
     }
 
-    fn relayout(&mut self, cx: &mut Context<Self>) {
+    fn relayout(&mut self, cx: &mut Context<'_, Self>) {
         let height = self
             .plot_bounds
-            .map_or(0.0, |b| b.size.height.as_f32() as f64);
+            .map_or(0.0, |b| f64::from(b.size.height.as_f32()));
         let mut layout = layout_lanes(&self.sizing(), self.mode, height, self.scroll);
         if self.mode.resizing
             && let Some(draft) = &self.resize_draft
@@ -419,10 +420,10 @@ impl TraceStack {
         }
     }
 
-    fn refresh_ticks(&mut self, cx: &mut Context<Self>) {
+    fn refresh_ticks(&mut self, cx: &mut Context<'_, Self>) {
         let width = self
             .plot_bounds
-            .map_or(0.0, |b| b.size.width.as_f32() as f64);
+            .map_or(0.0, |b| f64::from(b.size.width.as_f32()));
         let state = self.viewport.read(cx);
         let (viewport, axis) = (state.viewport(), state.axis());
         let values = match axis {
@@ -441,6 +442,10 @@ impl TraceStack {
 
     // ---- input ------------------------------------------------------------
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Project the current independent layout and gesture inputs into one borrowed interaction snapshot."
+    )]
     fn context<'a>(
         viewport: Viewport,
         width: f64,
@@ -473,13 +478,13 @@ impl TraceStack {
 
     fn with_context<R>(
         &mut self,
-        cx: &mut Context<Self>,
-        f: impl FnOnce(&mut Interaction, &InteractionContext) -> R,
+        cx: &mut Context<'_, Self>,
+        f: impl FnOnce(&mut Interaction, &InteractionContext<'_>) -> R,
     ) -> R {
         let viewport = self.viewport.read(cx).viewport();
         let width = self
             .plot_bounds
-            .map_or(1.0, |b| b.size.width.as_f32() as f64);
+            .map_or(1.0, |b| f64::from(b.size.width.as_f32()));
         let focused = self
             .focused_corner
             .and_then(|id| self.corners.iter().position(|c| c.id == id));
@@ -499,7 +504,10 @@ impl TraceStack {
         f(&mut self.interaction, &ctx)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Bridge the complete pointer event and plot coordinates into one gesture update."
+    )]
     pub(crate) fn pointer_down(
         &mut self,
         x: f64,
@@ -508,7 +516,7 @@ impl TraceStack {
         click_count: usize,
         position: Point<Pixels>,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) {
         window.focus(&self.focus_handle, cx);
         let effects = self.with_context(cx, |machine, ctx| {
@@ -518,7 +526,13 @@ impl TraceStack {
         cx.notify();
     }
 
-    pub(crate) fn pointer_move(&mut self, x: f64, y: f64, inside: bool, cx: &mut Context<Self>) {
+    pub(crate) fn pointer_move(
+        &mut self,
+        x: f64,
+        y: f64,
+        inside: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
         let before = self.interaction.cursor();
         let effects = if self.interaction.is_dragging() || inside {
             self.pointer_inside = inside;
@@ -535,7 +549,7 @@ impl TraceStack {
         }
     }
 
-    pub(crate) fn pointer_up(&mut self, x: f64, button: PointerButton, cx: &mut Context<Self>) {
+    pub(crate) fn pointer_up(&mut self, x: f64, button: PointerButton, cx: &mut Context<'_, Self>) {
         if !self.interaction.is_dragging() {
             return;
         }
@@ -549,18 +563,22 @@ impl TraceStack {
         x: f64,
         delta: WheelDelta,
         modifiers: KeyModifiers,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) {
         let effects = self.with_context(cx, |machine, ctx| machine.wheel(x, delta, modifiers, ctx));
         self.apply(effects, Point::default(), cx);
     }
 
-    fn emit_viewport(&mut self, cx: &mut Context<Self>) {
+    fn emit_viewport(&mut self, cx: &mut Context<'_, Self>) {
         let viewport = self.viewport.read(cx).viewport();
         cx.emit(TraceEvent::ViewportChanged(viewport));
     }
 
-    fn apply(&mut self, effects: Effects, position: Point<Pixels>, cx: &mut Context<Self>) {
+    #[expect(
+        clippy::float_cmp,
+        reason = "Exact equality detects unchanged state or the full-view sentinel; epsilon would hide small changes."
+    )]
+    fn apply(&mut self, effects: Effects, position: Point<Pixels>, cx: &mut Context<'_, Self>) {
         for effect in effects {
             match effect {
                 Effect::MoveCursor(fraction) => {
@@ -637,11 +655,23 @@ impl TraceStack {
 
     // ---- rendering ----------------------------------------------------------
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "Formatting these strings and primitives into a String cannot fail."
+    )]
     fn render_chrome(
         &self,
         readout_at: Option<f64>,
         palette: &TracePalette,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         let theme = cx.theme();
         let pinned_height = self.layout.pinned_height as f32;
@@ -681,7 +711,7 @@ impl TraceStack {
                 let unit: SharedString = units.join(" / ").into();
                 let combined = channels.len() > 1;
                 let mut label = if unit.is_empty() {
-                    title.clone()
+                    title
                 } else {
                     format!("{title}, {unit}")
                 };
@@ -718,30 +748,27 @@ impl TraceStack {
                     let zoomed = viewport != Viewport::FULL;
                     let change = root.change_in(viewport);
                     let (view_text, _) = delta_seconds(change, approximate);
-                    label.push_str(&format!(", in view {view_text}"));
-                    let figure = match readout_at {
-                        Some(fraction) => {
-                            let readout = root.readout(fraction, map);
-                            let (text, trend) = delta_seconds(readout.primary, approximate);
-                            label.push_str(&format!(", at cursor {text}"));
-                            let context = if zoomed {
-                                format!("s at cursor, {view_text} in view")
-                            } else {
-                                let (end, _) =
-                                    delta_seconds(root.change_in(Viewport::FULL), approximate);
-                                format!("s at cursor, ends {end}")
-                            };
-                            ("cursor", text, trend, context)
-                        }
-                        None => {
-                            let (text, trend) = delta_seconds(change, approximate);
-                            let context = if zoomed {
-                                "s in view"
-                            } else {
-                                "s over the lap"
-                            };
-                            ("view", text, trend, context.to_string())
-                        }
+                    let _ = write!(label, ", in view {view_text}");
+                    let figure = if let Some(fraction) = readout_at {
+                        let readout = root.readout(fraction, map);
+                        let (text, trend) = delta_seconds(readout.primary, approximate);
+                        let _ = write!(label, ", at cursor {text}");
+                        let context = if zoomed {
+                            format!("s at cursor, {view_text} in view")
+                        } else {
+                            let (end, _) =
+                                delta_seconds(root.change_in(Viewport::FULL), approximate);
+                            format!("s at cursor, ends {end}")
+                        };
+                        ("cursor", text, trend, context)
+                    } else {
+                        let (text, trend) = delta_seconds(change, approximate);
+                        let context = if zoomed {
+                            "s in view"
+                        } else {
+                            "s over the lap"
+                        };
+                        ("view", text, trend, context.to_string())
                     };
                     rows.push(
                         gap_figure(&root.key, figure, approximate, palette, muted)
@@ -762,7 +789,7 @@ impl TraceStack {
                             (palette.primary, palette.reference)
                         };
                         let text = ReadoutText::new(lane, &readout);
-                        label.push_str(&format!(", {}", text.spoken(lane)));
+                        let _ = write!(label, ", {}", text.spoken(lane));
                         rows.push(
                             readout_row(lane, text, shared.then_some(combined), hue, roles, muted)
                                 .into_any_element(),
@@ -949,13 +976,17 @@ impl ReadoutText {
         }
     }
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "Formatting these strings and primitives into a String cannot fail."
+    )]
     fn spoken(&self, lane: &LaneSeries) -> String {
         let mut text = format!("{} primary {}", lane.title, self.primary);
         if let Some(reference) = &self.reference {
-            text.push_str(&format!(" reference {reference}"));
+            let _ = write!(text, " reference {reference}");
         }
         if let Some(delta) = &self.delta {
-            text.push_str(&format!(" delta {delta}"));
+            let _ = write!(text, " delta {delta}");
         }
         text
     }
@@ -1049,6 +1080,11 @@ fn gap_figure(
 /// A time delta for the gap lane: signed seconds (`≈` and two decimals under
 /// a LOW-confidence alignment) and its trend, `Some(true)` for a gain.
 /// Below the display resolution it is neither.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "The callers supply a small fixed decimal precision for the delta label."
+)]
 fn delta_seconds(value: f64, approximate: bool) -> (SharedString, Option<bool>) {
     if !value.is_finite() {
         return ("—".into(), None);
@@ -1084,7 +1120,15 @@ fn spans(corners: &[CornerBand]) -> Vec<CornerSpan> {
 }
 
 impl Render for TraceStack {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
+    fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let theme = cx.theme();
         let palette = TracePalette::from_theme(theme);
         let (background, border, muted) = (theme.background, theme.border, theme.muted_foreground);
@@ -1135,8 +1179,8 @@ impl Render for TraceStack {
         let next_label = (viewport.end > 1.0)
             .then(|| self.scene.next_label.clone())
             .flatten();
-        let lap_start = viewport.x_for_fraction(0.0, 0.0, width as f64) as f32;
-        let lap_end = viewport.x_for_fraction(1.0, 0.0, width as f64) as f32;
+        let lap_start = viewport.x_for_fraction(0.0, 0.0, f64::from(width)) as f32;
+        let lap_end = viewport.x_for_fraction(1.0, 0.0, f64::from(width)) as f32;
 
         let plot = div()
             .id("trace-plot")

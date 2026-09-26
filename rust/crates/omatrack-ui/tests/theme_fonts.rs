@@ -2,6 +2,8 @@
 //! named on the theme whatever palette applies, and a desktop choice that is
 //! not installed never replaces them.
 
+#![cfg(test)]
+
 use std::fs;
 
 use gpui_kit::TestAppContext;

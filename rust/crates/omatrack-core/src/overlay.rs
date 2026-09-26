@@ -61,6 +61,10 @@ pub trait ChannelProvider: Send + Sync {
     /// What this provider can plot for `recording`.
     fn catalog(&self, recording: &Recording) -> Vec<ChannelInfo>;
     /// The requested channels on `lap`'s grid.
+    ///
+    /// # Errors
+    /// Returns `OverlayError` when the provider cannot supply or resample the requested
+    /// channels.
     fn resample(
         &self,
         recording: &Recording,
@@ -122,14 +126,14 @@ pub fn standard_values(lap: &UnifiedLap, key: &str) -> Option<Vec<f64>> {
 }
 
 impl ChannelProvider for StandardChannels {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "standard"
     }
-    fn title(&self) -> &str {
+    fn title(&self) -> &'static str {
         "Standard"
     }
     fn catalog(&self, recording: &Recording) -> Vec<ChannelInfo> {
-        let mapping = recording.map_channels(&Default::default());
+        let mapping = recording.map_channels(&std::collections::BTreeMap::default());
         STANDARD_CHANNELS
             .iter()
             .filter(|(key, _, _)| {
@@ -182,10 +186,10 @@ pub struct SourceChannels;
 pub const RAW_PREFIX: &str = "raw:";
 
 impl ChannelProvider for SourceChannels {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "source"
     }
-    fn title(&self) -> &str {
+    fn title(&self) -> &'static str {
         "Source channels"
     }
     fn catalog(&self, recording: &Recording) -> Vec<ChannelInfo> {
@@ -204,6 +208,10 @@ impl ChannelProvider for SourceChannels {
     }
     /// Sampled through the source clock on the lap's 50 Hz grid; a gap
     /// holds the previous value (the store's `extraChannelData`).
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+    )]
     fn resample(
         &self,
         recording: &Recording,

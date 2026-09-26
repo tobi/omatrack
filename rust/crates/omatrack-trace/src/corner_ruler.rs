@@ -44,6 +44,7 @@
 //! mapping: measured runtime geometry, the documented `px` exception.
 //! Colours come from [`TracePalette`] and theme tokens only.
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use gpui_kit::base::TestSupportExt as _;
@@ -106,7 +107,7 @@ pub struct CornerRuler {
 impl EventEmitter<CornerRulerEvent> for CornerRuler {}
 
 impl CornerRuler {
-    pub fn new(viewport: Entity<ViewportState>, cx: &mut Context<Self>) -> Self {
+    pub fn new(viewport: Entity<ViewportState>, cx: &mut Context<'_, Self>) -> Self {
         let subscriptions = vec![cx.observe(&viewport, |_, _, cx| cx.notify())];
         Self {
             viewport,
@@ -124,6 +125,7 @@ impl CornerRuler {
     }
 
     /// The zones and complexes of `scene`.
+    #[must_use]
     pub fn with_scene(mut self, scene: &TraceScene) -> Self {
         self.replace(scene.corners().to_vec(), scene.complexes().to_vec());
         self
@@ -150,7 +152,7 @@ impl CornerRuler {
         &mut self,
         corners: Vec<CornerBand>,
         complexes: Vec<ComplexBand>,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) {
         self.interaction.cancel();
         self.press = None;
@@ -169,7 +171,7 @@ impl CornerRuler {
     }
 
     /// The focused corner (controlled by the owner).
-    pub fn set_focused_corner(&mut self, id: Option<u32>, cx: &mut Context<Self>) {
+    pub fn set_focused_corner(&mut self, id: Option<u32>, cx: &mut Context<'_, Self>) {
         if self.focused != id {
             self.focused = id;
             cx.notify();
@@ -183,7 +185,7 @@ impl CornerRuler {
     /// The corner under the shared cursor (controlled by the owner, which
     /// calls this on every cursor move; it repaints only when the corner
     /// changes). It shows as the chip unless another corner is focused.
-    pub fn set_cursor_corner(&mut self, id: Option<u32>, cx: &mut Context<Self>) {
+    pub fn set_cursor_corner(&mut self, id: Option<u32>, cx: &mut Context<'_, Self>) {
         if self.cursor_corner != id {
             self.cursor_corner = id;
             cx.notify();
@@ -201,7 +203,7 @@ impl CornerRuler {
     }
 
     /// Corner edit mode: edges become grips and drags edit zones.
-    pub fn set_editing(&mut self, editing: bool, cx: &mut Context<Self>) {
+    pub fn set_editing(&mut self, editing: bool, cx: &mut Context<'_, Self>) {
         if self.editing != editing {
             self.editing = editing;
             self.interaction.cancel();
@@ -240,7 +242,7 @@ impl CornerRuler {
         &mut self,
         width: f64,
         cx: &App,
-        f: impl FnOnce(&mut Interaction, &InteractionContext) -> R,
+        f: impl FnOnce(&mut Interaction, &InteractionContext<'_>) -> R,
     ) -> R {
         let viewport = self.viewport.read(cx).viewport();
         let ctx = ruler_context(
@@ -262,7 +264,7 @@ impl CornerRuler {
         Some((corner.id, hit.part))
     }
 
-    fn pointer_down(&mut self, x: f64, width: f64, cx: &mut Context<Self>) {
+    fn pointer_down(&mut self, x: f64, width: f64, cx: &mut Context<'_, Self>) {
         let hit = self.hit(x, width, cx);
         if self.editing {
             if hit.is_some() {
@@ -277,7 +279,7 @@ impl CornerRuler {
         self.press = hit.map(|(corner, _)| Press { x, corner });
     }
 
-    fn pointer_move(&mut self, x: f64, width: f64, inside: bool, cx: &mut Context<Self>) {
+    fn pointer_move(&mut self, x: f64, width: f64, inside: bool, cx: &mut Context<'_, Self>) {
         if self.interaction.is_dragging() {
             let effects =
                 self.with_interaction(width, cx, |machine, ctx| machine.pointer_move(x, 0.0, ctx));
@@ -295,7 +297,7 @@ impl CornerRuler {
         }
     }
 
-    fn pointer_up(&mut self, x: f64, width: f64, cx: &mut Context<Self>) {
+    fn pointer_up(&mut self, x: f64, width: f64, cx: &mut Context<'_, Self>) {
         if self.interaction.is_dragging() {
             self.with_interaction(width, cx, |machine, ctx| {
                 machine.pointer_up(x, PointerButton::Left, ctx)
@@ -313,7 +315,7 @@ impl CornerRuler {
         }
     }
 
-    fn edit(&mut self, index: usize, start: f64, end: f64, cx: &mut Context<Self>) {
+    fn edit(&mut self, index: usize, start: f64, end: f64, cx: &mut Context<'_, Self>) {
         let mut corners = self.corners.to_vec();
         let Some(corner) = corners.get_mut(index) else {
             return;
@@ -327,6 +329,10 @@ impl CornerRuler {
         cx.notify();
     }
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "Formatting these strings and primitives into a String cannot fail."
+    )]
     fn spoken(&self) -> SharedString {
         if self.corners.is_empty() {
             return "Corners: none".into();
@@ -337,7 +343,7 @@ impl CornerRuler {
             .focused
             .and_then(|id| self.corners.iter().find(|c| c.id == id))
         {
-            text.push_str(&format!("; focused {}", focused.label));
+            let _ = write!(text, "; focused {}", focused.label);
         }
         if self.editing {
             text.push_str("; editing");
@@ -490,7 +496,7 @@ fn ruler_context<'a>(
 }
 
 impl Render for CornerRuler {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let theme = cx.theme();
         let palette = TracePalette::from_theme(theme);
         let element = RulerElement {
@@ -612,7 +618,7 @@ impl Element for RulerElement {
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        _: &mut (),
+        (): &mut (),
         window: &mut Window,
         _: &mut App,
     ) -> Hitbox {
@@ -624,7 +630,7 @@ impl Element for RulerElement {
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        _: &mut (),
+        (): &mut (),
         hitbox: &mut Hitbox,
         window: &mut Window,
         cx: &mut App,
@@ -642,6 +648,14 @@ impl Element for RulerElement {
 }
 
 impl RulerElement {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
     fn paint_ruler(&self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
         let width = bounds.size.width.as_f32();
         let height = bounds.size.height.as_f32();
@@ -652,8 +666,10 @@ impl RulerElement {
         let text_size = TypeStep::Label.size(window);
         let text_height = text_size.as_f32() * 1.25;
         let tiers = ruler_tiers(height, text_height, !self.complexes.is_empty());
-        let x_for =
-            |fraction: f64| self.viewport.x_for_fraction(fraction, 0.0, width as f64) as f32;
+        let x_for = |fraction: f64| {
+            self.viewport
+                .x_for_fraction(fraction, 0.0, f64::from(width)) as f32
+        };
         let rect = |window: &mut Window, left: f32, top: f32, w: f32, h: f32, color: Hsla| {
             let left_clamped = left.max(0.0);
             let right = (left + w).min(width);
@@ -847,9 +863,9 @@ impl RulerElement {
 
     fn register_input(&self, bounds: Bounds<Pixels>, hitbox: Hitbox, window: &mut Window) {
         let origin = bounds.origin;
-        let width = bounds.size.width.as_f32() as f64;
+        let width = f64::from(bounds.size.width.as_f32());
         let local_x =
-            move |position: gpui_kit::Point<Pixels>| (position.x - origin.x).as_f32() as f64;
+            move |position: gpui_kit::Point<Pixels>| f64::from((position.x - origin.x).as_f32());
 
         let ruler = self.ruler.clone();
         let hit = hitbox.clone();
@@ -861,23 +877,23 @@ impl RulerElement {
                 return;
             }
             let x = local_x(event.position);
-            ruler
-                .update(cx, |ruler, cx| ruler.pointer_down(x, width, cx))
-                .ok();
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no input/deferred update; the weak entity handle may already be gone.")]
+            let _ = ruler
+                .update(cx, |ruler, cx| ruler.pointer_down(x, width, cx));
             cx.stop_propagation();
         });
 
         let ruler = self.ruler.clone();
-        let hit = hitbox.clone();
+        let hit = hitbox;
         window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
             if phase != DispatchPhase::Bubble {
                 return;
             }
             let x = local_x(event.position);
             let inside = hit.is_hovered(window);
-            ruler
-                .update(cx, |ruler, cx| ruler.pointer_move(x, width, inside, cx))
-                .ok();
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no input/deferred update; the weak entity handle may already be gone.")]
+            let _ = ruler
+                .update(cx, |ruler, cx| ruler.pointer_move(x, width, inside, cx));
         });
 
         let ruler = self.ruler.clone();
@@ -886,9 +902,9 @@ impl RulerElement {
                 return;
             }
             let x = local_x(event.position);
-            ruler
-                .update(cx, |ruler, cx| ruler.pointer_up(x, width, cx))
-                .ok();
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no input/deferred update; the weak entity handle may already be gone.")]
+            let _ = ruler
+                .update(cx, |ruler, cx| ruler.pointer_up(x, width, cx));
         });
     }
 }
@@ -971,6 +987,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn the_chip_label_is_always_placed_first() {
         let mut chip = candidate(100.0, 110.0, 50.0, None, 0);
         chip.priority = 2;
@@ -1004,6 +1024,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn tiers_split_two_label_rows_under_an_optional_bracket_line() {
         let plain = ruler_tiers(36.0, 15.0, false);
         assert_eq!(plain.complex_height, 0.0);
@@ -1015,7 +1039,7 @@ mod tests {
         assert!((with.row_height - 17.16).abs() < 1e-4);
     }
 
-    fn ctx<'a>(spans: &'a [CornerSpan], focused: Option<usize>) -> InteractionContext<'a> {
+    fn ctx(spans: &[CornerSpan], focused: Option<usize>) -> InteractionContext<'_> {
         InteractionContext {
             viewport: Viewport::FULL,
             plot_left: 0.0,

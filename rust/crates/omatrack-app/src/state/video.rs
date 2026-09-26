@@ -93,6 +93,7 @@ impl ComposeLayout {
 
     /// What is actually shown: with a single video (no reference video)
     /// every composition shows the primary alone.
+    #[must_use]
     pub fn effective(self, dual: bool) -> Self {
         if dual { self } else { Self::PrimaryOnly }
     }
@@ -210,7 +211,7 @@ struct Deck {
     /// The file (and start, s) to open once the player has started.
     pending_open: Option<(PathBuf, f64)>,
     bound: Option<PathBuf>,
-    /// The recording whose video is bound (the file itself for an AiM
+    /// The recording whose video is bound (the file itself for an `AiM`
     /// MP4, else the recording beside its video).
     recording: Option<PathBuf>,
     /// The lap shown.
@@ -251,7 +252,7 @@ impl Deck {
     fn target(&self) -> Option<&PathBuf> {
         self.bound
             .as_ref()
-            .or(self.pending_open.as_ref().map(|(path, _)| path))
+            .or_else(|| self.pending_open.as_ref().map(|(path, _)| path))
     }
 
     fn is_external(&self) -> bool {
@@ -314,7 +315,7 @@ pub struct VideoController {
     /// The fraction of the previous frame (lap-end edge detection).
     last_fraction: Option<f64>,
     _subscriptions: Vec<Subscription>,
-    _cursor: Option<Subscription>,
+    cursor_subscription: Option<Subscription>,
 }
 
 impl EventEmitter<VideoEvent> for VideoController {}
@@ -325,7 +326,7 @@ impl VideoController {
         session: &Entity<Session>,
         enabled: bool,
         audio_output: Option<String>,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) -> Self {
         let subscriptions = vec![cx.subscribe(session, |this, _, event, cx| {
             this.on_session_event(event, cx);
@@ -354,7 +355,7 @@ impl VideoController {
             seen_focus: None,
             last_fraction: None,
             _subscriptions: subscriptions,
-            _cursor: None,
+            cursor_subscription: None,
         }
     }
 
@@ -365,11 +366,12 @@ impl VideoController {
         &mut self,
         cursor: Entity<CursorState>,
         viewport: Entity<ViewportState>,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) {
         self.written = cursor.read(cx).fraction();
         self.seen_focus = cursor.read(cx).focus();
-        self._cursor = Some(cx.observe(&cursor, |this, _, cx| this.on_cursor_changed(cx)));
+        self.cursor_subscription =
+            Some(cx.observe(&cursor, |this, _, cx| this.on_cursor_changed(cx)));
         self.cursor = Some(cursor);
         self.viewport = Some(viewport);
     }
@@ -561,7 +563,7 @@ impl VideoController {
 
     // ── session ─────────────────────────────────────────────────────
 
-    fn on_session_event(&mut self, event: &SessionEvent, cx: &mut Context<Self>) {
+    fn on_session_event(&mut self, event: &SessionEvent, cx: &mut Context<'_, Self>) {
         match event {
             SessionEvent::AnalysisReady => {
                 self.rebuild_pair(cx);
@@ -582,7 +584,7 @@ impl VideoController {
 
     /// Bring both decks in line with the session's roles. A swap exchanges
     /// the players instead of reopening both files.
-    fn reconcile(&mut self, cx: &mut Context<Self>) {
+    fn reconcile(&mut self, cx: &mut Context<'_, Self>) {
         let (primary, reference) = {
             let session = self.session.read(cx);
             (session.primary().cloned(), session.reference().cloned())
@@ -610,7 +612,7 @@ impl VideoController {
     /// Follow one role. While another lap of the recording already bound is
     /// loading, the video stays bound and keeps its frame; the finished load
     /// re-parks it. A lap of another recording unbinds it until it loads.
-    fn follow(&mut self, role: Role, slot: Option<&RoleSlot>, cx: &mut Context<Self>) {
+    fn follow(&mut self, role: Role, slot: Option<&RoleSlot>, cx: &mut Context<'_, Self>) {
         let deck = self.deck(role);
         match slot.map(|slot| (slot, slot.state())) {
             Some((_, RoleState::Loaded(lap))) => self.bind_role(role, Some(lap), cx),
@@ -621,7 +623,7 @@ impl VideoController {
         }
     }
 
-    fn swap_decks(&mut self, cx: &mut Context<Self>) {
+    fn swap_decks(&mut self, cx: &mut Context<'_, Self>) {
         std::mem::swap(&mut self.primary, &mut self.reference);
         let muted = self.is_muted(cx);
         let rate = self.clock_rate();
@@ -645,7 +647,7 @@ impl VideoController {
     }
 
     /// Rebuild the pair map from the analysis of exactly the bound laps.
-    fn rebuild_pair(&mut self, cx: &mut Context<Self>) {
+    fn rebuild_pair(&mut self, cx: &mut Context<'_, Self>) {
         let pair = {
             let session = self.session.read(cx);
             let analysis = session.analysis();
@@ -680,7 +682,7 @@ impl VideoController {
         self.pair = pair;
     }
 
-    fn rebuild_pacer(&mut self, cx: &mut Context<Self>) {
+    fn rebuild_pacer(&mut self, cx: &mut Context<'_, Self>) {
         let mode = self.reference_playback(cx);
         self.pacer = self
             .reference
@@ -690,7 +692,7 @@ impl VideoController {
     }
 
     /// Bind the primary lap's video (or nothing).
-    pub fn bind(&mut self, lap: Option<&LoadedLap>, cx: &mut Context<Self>) {
+    pub fn bind(&mut self, lap: Option<&LoadedLap>, cx: &mut Context<'_, Self>) {
         self.bind_role(Role::Primary, lap, cx);
     }
 
@@ -698,7 +700,7 @@ impl VideoController {
     /// lap being adopted by continuous playback is not sought). Binding the
     /// lap already bound does nothing; another lap of the file already
     /// bound only seeks: the file is never reopened.
-    fn bind_role(&mut self, role: Role, lap: Option<&LoadedLap>, cx: &mut Context<Self>) {
+    fn bind_role(&mut self, role: Role, lap: Option<&LoadedLap>, cx: &mut Context<'_, Self>) {
         let Some(lap) = lap else {
             self.unbind(role, cx);
             return;
@@ -790,7 +792,7 @@ impl VideoController {
         }
     }
 
-    fn unbind(&mut self, role: Role, cx: &mut Context<Self>) {
+    fn unbind(&mut self, role: Role, cx: &mut Context<'_, Self>) {
         let enabled = self.enabled;
         let deck = self.deck_mut(role);
         let had = deck.target().is_some() || deck.lap.is_some();
@@ -832,11 +834,11 @@ impl VideoController {
     /// for the player to start ([`VideoAvailability::Starting`]). A file
     /// libmpv cannot play turns [`Self::availability`] into `Failed` and
     /// emits [`VideoEvent::Failed`] once libmpv reports it.
-    pub fn open_file(&mut self, path: PathBuf, start_seconds: f64, cx: &mut Context<Self>) {
+    pub fn open_file(&mut self, path: PathBuf, start_seconds: f64, cx: &mut Context<'_, Self>) {
         self.open_file_as(Role::Primary, path, start_seconds, cx);
     }
 
-    fn open_file_as(&mut self, role: Role, path: PathBuf, start: f64, cx: &mut Context<Self>) {
+    fn open_file_as(&mut self, role: Role, path: PathBuf, start: f64, cx: &mut Context<'_, Self>) {
         let enabled = self.enabled;
         let deck = self.deck_mut(role);
         deck.bound = None;
@@ -870,7 +872,7 @@ impl VideoController {
     /// Start libmpv on the background executor (`mpv_initialize` and the
     /// player's threads are too slow for the UI thread); a start already in
     /// flight is reused. [`Self::player_started`] opens the waiting file.
-    fn start_player(&mut self, role: Role, cx: &mut Context<Self>) {
+    fn start_player(&mut self, role: Role, cx: &mut Context<'_, Self>) {
         if self.deck(role).starting.is_some() {
             return;
         }
@@ -889,6 +891,7 @@ impl VideoController {
         let created = cx.background_spawn(async move { Player::new(options) });
         self.deck_mut(role).starting = Some(cx.spawn(async move |this, cx| {
             let result = created.await;
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no deferred result; this weak entity/window handle may already be gone.")]
             let _ = this.update(cx, |this, cx| this.player_started(token, result, cx));
         }));
     }
@@ -897,7 +900,7 @@ impl VideoController {
         &mut self,
         token: u64,
         result: Result<Player, MpvError>,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) {
         let Some(role) = self.role_of(token) else {
             return;
@@ -923,7 +926,7 @@ impl VideoController {
         let task = cx.spawn(async move |this, cx| {
             while let Ok(event) = events.recv().await {
                 if this
-                    .update(cx, |this, cx| this.on_player_event(token, event, cx))
+                    .update(cx, |this, cx| this.on_player_event(token, &event, cx))
                     .is_err()
                 {
                     break;
@@ -944,12 +947,11 @@ impl VideoController {
         let deck = self.deck_mut(role);
         deck.events = Some(task);
         deck.transport = Some(Transport::Player(player));
-        match deck.pending_open.take() {
-            Some((path, start)) => self.load(role, path, start, cx),
-            None => {
-                deck.availability = VideoAvailability::Idle;
-                cx.notify();
-            }
+        if let Some((path, start)) = deck.pending_open.take() {
+            self.load(role, path, start, cx);
+        } else {
+            deck.availability = VideoAvailability::Idle;
+            cx.notify();
         }
         if role == Role::Reference {
             self.rebuild_pacer(cx);
@@ -957,7 +959,7 @@ impl VideoController {
     }
 
     /// Queue `path` on the started player, parked paused at `start`.
-    fn load(&mut self, role: Role, path: PathBuf, start: f64, cx: &mut Context<Self>) {
+    fn load(&mut self, role: Role, path: PathBuf, start: f64, cx: &mut Context<'_, Self>) {
         let deck = self.deck_mut(role);
         let Some(player) = deck.transport.as_ref().and_then(Transport::player) else {
             return;
@@ -979,7 +981,7 @@ impl VideoController {
         cx.notify();
     }
 
-    fn on_player_event(&mut self, token: u64, event: PlayerEvent, cx: &mut Context<Self>) {
+    fn on_player_event(&mut self, token: u64, event: &PlayerEvent, cx: &mut Context<'_, Self>) {
         let Some(role) = self.role_of(token) else {
             return;
         };
@@ -1020,7 +1022,7 @@ impl VideoController {
     /// The bound file failed: drop it and say why. The lap stays held, so
     /// later session changes do not reopen the same failing file; selecting
     /// another lap tries again.
-    fn fail(&mut self, role: Role, message: SharedString, cx: &mut Context<Self>) {
+    fn fail(&mut self, role: Role, message: SharedString, cx: &mut Context<'_, Self>) {
         let deck = self.deck_mut(role);
         if let Some(transport) = deck.transport.as_ref() {
             transport.set_paused(true);
@@ -1043,7 +1045,7 @@ impl VideoController {
         &mut self,
         clock: PlaybackClock,
         map: VideoMap,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) {
         let lap = self.primary.lap.take();
         let deck = &mut self.primary;
@@ -1068,7 +1070,7 @@ impl VideoController {
     /// Check the identity of every bound video again on a worker (BLAKE3 of
     /// a companion file) and report each result through
     /// [`VideoEvent::IdentityChecked`].
-    pub fn verify_identity(&mut self, cx: &mut Context<Self>) {
+    pub fn verify_identity(&mut self, cx: &mut Context<'_, Self>) {
         let mut any = false;
         for role in [Role::Primary, Role::Reference] {
             let deck = self.deck(role);
@@ -1096,7 +1098,7 @@ impl VideoController {
         cx.notify();
     }
 
-    fn check_identity(&mut self, role: Role, explicit: bool, cx: &mut Context<Self>) {
+    fn check_identity(&mut self, role: Role, explicit: bool, cx: &mut Context<'_, Self>) {
         let deck = self.deck(role);
         let (Some(lap), token) = (deck.lap.as_ref(), deck.token) else {
             return;
@@ -1115,8 +1117,9 @@ impl VideoController {
         }
         deck.identity_check = Some(cx.spawn(async move |this, cx| {
             let status = work.await;
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no deferred result; this weak entity/window handle may already be gone.")]
             let _ = this.update(cx, |this, cx| {
-                this.identity_checked(token, lap_id, &checked_path, status, explicit, cx)
+                this.identity_checked(token, lap_id, &checked_path, status, explicit, cx);
             });
         }));
     }
@@ -1128,7 +1131,7 @@ impl VideoController {
         path: &Path,
         status: IdentityStatus,
         explicit: bool,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) {
         let Some(role) = self.role_of(token) else {
             return;
@@ -1142,16 +1145,17 @@ impl VideoController {
         }
         deck.identity_check = None;
         let was_trusted = deck.identity.is_trusted();
-        deck.identity = status.clone();
+        deck.identity = status;
+        let trusted = deck.identity.is_trusted();
         if explicit {
             cx.emit(VideoEvent::IdentityChecked {
                 role,
-                summary: status.summary(),
-                trusted: status.is_trusted(),
+                summary: deck.identity.summary(),
+                trusted,
             });
         }
         // Newly trusted: bring the video onto the cursor.
-        if status.is_trusted() && !was_trusted {
+        if trusted && !was_trusted {
             match role {
                 Role::Primary => {
                     if let Some(fraction) = self.written {
@@ -1166,7 +1170,7 @@ impl VideoController {
 
     // ── the cursor ──────────────────────────────────────────────────
 
-    fn write_cursor(&mut self, fraction: f64, cx: &mut Context<Self>) {
+    fn write_cursor(&mut self, fraction: f64, cx: &mut Context<'_, Self>) {
         let Some(cursor) = self.cursor.clone() else {
             return;
         };
@@ -1183,7 +1187,7 @@ impl VideoController {
 
     /// The shared cursor changed. A value this controller did not write is
     /// an explicit jump; a newly focused corner is a jump to its start.
-    fn on_cursor_changed(&mut self, cx: &mut Context<Self>) {
+    fn on_cursor_changed(&mut self, cx: &mut Context<'_, Self>) {
         let Some(cursor) = self.cursor.as_ref() else {
             return;
         };
@@ -1212,7 +1216,7 @@ impl VideoController {
     /// An explicit cursor jump (trace click or scrub, corner focus): seek
     /// both players. The playing primary is sought only beyond
     /// `PLAYING_SEEK_ERROR`; it is the clock.
-    pub fn seek_to_fraction(&mut self, fraction: f64, cx: &mut Context<Self>) {
+    pub fn seek_to_fraction(&mut self, fraction: f64, cx: &mut Context<'_, Self>) {
         if !fraction.is_finite() {
             return;
         }
@@ -1223,7 +1227,7 @@ impl VideoController {
         self.jump_to(fraction, cx);
     }
 
-    fn jump_to(&mut self, fraction: f64, cx: &mut Context<Self>) {
+    fn jump_to(&mut self, fraction: f64, cx: &mut Context<'_, Self>) {
         if !self.primary.is_synced() {
             return;
         }
@@ -1253,7 +1257,7 @@ impl VideoController {
     /// clock to a lap fraction and write it to the cursor (the only
     /// notification), pace the reference, handle the lap end and, in
     /// continuous playback, keep the playhead at 33% of the viewport.
-    pub fn sync_frame(&mut self, now: Instant, cx: &mut Context<Self>) {
+    pub fn sync_frame(&mut self, now: Instant, cx: &mut Context<'_, Self>) {
         if !self.primary.is_synced() || self.advance.is_counting() {
             return;
         }
@@ -1287,7 +1291,7 @@ impl VideoController {
         self.pace_reference(now, false, cx);
     }
 
-    fn follow_playhead(&mut self, fraction: f64, cx: &mut Context<Self>) {
+    fn follow_playhead(&mut self, fraction: f64, cx: &mut Context<'_, Self>) {
         let focused = self
             .cursor
             .as_ref()
@@ -1303,14 +1307,14 @@ impl VideoController {
 
     // ── the reference ───────────────────────────────────────────────
 
-    fn force_reference_sync(&mut self, cx: &mut Context<Self>) {
+    fn force_reference_sync(&mut self, cx: &mut Context<'_, Self>) {
         self.last_pace = None;
         self.pace_reference(Instant::now(), true, cx);
     }
 
     /// One pacing decision, at most every `REFERENCE_SYNC_INTERVAL_MS`
     /// unless forced.
-    fn pace_reference(&mut self, now: Instant, force: bool, cx: &mut Context<Self>) {
+    fn pace_reference(&mut self, now: Instant, force: bool, cx: &mut Context<'_, Self>) {
         if !self.reference.is_synced() || !self.primary.is_synced() {
             return;
         }
@@ -1359,15 +1363,16 @@ impl VideoController {
     }
 
     /// Re-check a paused aligning seek after it had time to land.
-    fn schedule_paused_verify(&mut self, cx: &mut Context<Self>) {
+    fn schedule_paused_verify(&mut self, cx: &mut Context<'_, Self>) {
         let delay = Duration::from_millis(PAUSED_ALIGNMENT_INTERVAL_MS);
         self.paused_verify = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(delay).await;
-            let _ = this.update(cx, |this, cx| this.verify_paused_reference(cx));
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no deferred result; this weak entity/window handle may already be gone.")]
+            let _ = this.update(cx, Self::verify_paused_reference);
         }));
     }
 
-    fn verify_paused_reference(&mut self, cx: &mut Context<Self>) {
+    fn verify_paused_reference(&mut self, cx: &mut Context<'_, Self>) {
         self.paused_verify = None;
         let playing = self.is_playing();
         let cursor = self.written.unwrap_or(0.0);
@@ -1394,7 +1399,7 @@ impl VideoController {
     }
 
     /// The reference plays exactly when the primary does.
-    fn mirror_pause(&mut self, _cx: &mut Context<Self>) {
+    fn mirror_pause(&mut self, _cx: &mut Context<'_, Self>) {
         if !self.reference.is_synced() {
             return;
         }
@@ -1408,7 +1413,7 @@ impl VideoController {
 
     // ── lap end ─────────────────────────────────────────────────────
 
-    fn on_lap_end(&mut self, video: f64, continuous: bool, cx: &mut Context<Self>) {
+    fn on_lap_end(&mut self, video: f64, continuous: bool, cx: &mut Context<'_, Self>) {
         let next = self
             .primary
             .lap
@@ -1428,7 +1433,7 @@ impl VideoController {
 
     /// Continuous playback: select the next lap and take the cursor from
     /// the current video position. The playing video is never sought.
-    fn adopt(&mut self, next_lap: i32, video: f64, cx: &mut Context<Self>) {
+    fn adopt(&mut self, next_lap: i32, video: f64, cx: &mut Context<'_, Self>) {
         self.adopting = Some(next_lap);
         if let Some(timeline) = self
             .prefetched
@@ -1446,7 +1451,7 @@ impl VideoController {
         self.select_primary_lap(next_lap, cx);
     }
 
-    fn select_primary_lap(&mut self, lap: i32, cx: &mut Context<Self>) {
+    fn select_primary_lap(&mut self, lap: i32, cx: &mut Context<'_, Self>) {
         let Some(session_id) = self
             .session
             .read(cx)
@@ -1456,13 +1461,13 @@ impl VideoController {
             return;
         };
         self.session.update(cx, |session, cx| {
-            session.set_lap(Role::Primary, LapRef::new(session_id, lap), cx)
+            session.set_lap(Role::Primary, LapRef::new(session_id, lap), cx);
         });
     }
 
     /// Past 70% of the lap in continuous playback: build the next lap's
     /// timeline in the background so the hand-over maps the cursor at once.
-    fn prefetch_next(&mut self, cx: &mut Context<Self>) {
+    fn prefetch_next(&mut self, cx: &mut Context<'_, Self>) {
         let (Some(lap), Some(timeline)) = (self.primary.lap.as_ref(), &self.primary.timeline)
         else {
             return;
@@ -1487,6 +1492,7 @@ impl VideoController {
         });
         let task = cx.spawn(async move |this, cx| {
             let timeline = work.await;
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no deferred result; this weak entity/window handle may already be gone.")]
             let _ = this.update(cx, |this, _| {
                 this.prefetch = None;
                 this.prefetched = Some(timeline);
@@ -1496,14 +1502,14 @@ impl VideoController {
     }
 
     /// Per-lap playback: pause both and count 3-2-1 into `next_lap`.
-    fn start_countdown(&mut self, next_lap: i32, cx: &mut Context<Self>) {
+    fn start_countdown(&mut self, next_lap: i32, cx: &mut Context<'_, Self>) {
         self.set_playing(false, cx);
         self.advance = LapAdvance::start(next_lap);
         let interval = Duration::from_millis(LAP_ADVANCE_INTERVAL_MS);
         self.advance_timer = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(interval).await;
-                let Ok(counting) = this.update(cx, |this, cx| this.tick_countdown(cx)) else {
+                let Ok(counting) = this.update(cx, Self::tick_countdown) else {
                     break;
                 };
                 if !counting {
@@ -1515,7 +1521,7 @@ impl VideoController {
     }
 
     /// One countdown step; false once the countdown is over.
-    fn tick_countdown(&mut self, cx: &mut Context<Self>) -> bool {
+    fn tick_countdown(&mut self, cx: &mut Context<'_, Self>) -> bool {
         if !self.advance.is_counting() {
             return false;
         }
@@ -1534,7 +1540,7 @@ impl VideoController {
         }
     }
 
-    fn cancel_advance(&mut self, cx: &mut Context<Self>) {
+    fn cancel_advance(&mut self, cx: &mut Context<'_, Self>) {
         if self.advance != LapAdvance::Idle {
             self.advance.cancel();
             self.advance_timer = None;
@@ -1545,7 +1551,7 @@ impl VideoController {
     // ── commands ────────────────────────────────────────────────────
 
     /// Play or pause both videos together.
-    fn set_playing(&mut self, playing: bool, cx: &mut Context<Self>) {
+    fn set_playing(&mut self, playing: bool, cx: &mut Context<'_, Self>) {
         let Some(primary) = self.primary.active() else {
             return;
         };
@@ -1560,7 +1566,7 @@ impl VideoController {
     }
 
     /// Play/pause. During the lap countdown it cancels the countdown.
-    pub fn toggle_play(&mut self, cx: &mut Context<Self>) {
+    pub fn toggle_play(&mut self, cx: &mut Context<'_, Self>) {
         if self.advance != LapAdvance::Idle {
             self.cancel_advance(cx);
             return;
@@ -1572,7 +1578,7 @@ impl VideoController {
 
     /// Seek the primary by `seconds` (from a seek still in flight, so taps
     /// add up); the cursor and the reference follow.
-    pub fn seek_by(&mut self, seconds: f64, cx: &mut Context<Self>) {
+    pub fn seek_by(&mut self, seconds: f64, cx: &mut Context<'_, Self>) {
         self.cancel_advance(cx);
         let Some(transport) = self.primary.active() else {
             return;
@@ -1595,7 +1601,7 @@ impl VideoController {
 
     /// Toggle audio and persist `video.muted` (the reference never plays
     /// sound).
-    pub fn toggle_mute(&mut self, cx: &mut Context<Self>) {
+    pub fn toggle_mute(&mut self, cx: &mut Context<'_, Self>) {
         let muted = !self.is_muted(cx);
         self.preferences.update(cx, |preferences, cx| {
             preferences.update(cx, |config| config.video.muted = Some(muted));
@@ -1607,7 +1613,7 @@ impl VideoController {
     }
 
     /// 0.25x on the primary clock, or back to 1x; the reference follows.
-    pub fn toggle_slow_motion(&mut self, cx: &mut Context<Self>) {
+    pub fn toggle_slow_motion(&mut self, cx: &mut Context<'_, Self>) {
         self.slow_motion = !self.slow_motion;
         let rate = self.clock_rate();
         if let Some(transport) = &self.primary.transport {
@@ -1620,14 +1626,16 @@ impl VideoController {
 
     /// Per-lap or continuous playback (`video.continuous_playback`).
     /// Switching to continuous during a countdown goes on at once.
-    pub fn toggle_continuous(&mut self, cx: &mut Context<Self>) {
+    pub fn toggle_continuous(&mut self, cx: &mut Context<'_, Self>) {
         let continuous = !self.is_continuous(cx);
         self.preferences.update(cx, |preferences, cx| {
             preferences.update(cx, |config| {
-                config.video.continuous_playback = Some(continuous)
+                config.video.continuous_playback = Some(continuous);
             });
         });
-        if continuous && let Some(next_lap) = self.advance.countdown().and(self.advancing_to()) {
+        if continuous
+            && let Some(next_lap) = self.advance.countdown().and_then(|_| self.advancing_to())
+        {
             self.advance = LapAdvance::Resuming { next_lap };
             self.advance_timer = None;
             self.write_cursor(0.0, cx);
@@ -1638,10 +1646,10 @@ impl VideoController {
     }
 
     /// How the reference is paced; persisted as `video.reference_playback`.
-    pub fn set_reference_playback(&mut self, mode: ReferencePlayback, cx: &mut Context<Self>) {
+    pub fn set_reference_playback(&mut self, mode: ReferencePlayback, cx: &mut Context<'_, Self>) {
         self.preferences.update(cx, |preferences, cx| {
             preferences.update(cx, |config| {
-                config.video.reference_playback = Some(mode.key().to_string())
+                config.video.reference_playback = Some(mode.key().to_string());
             });
         });
         if let Some(pacer) = self.pacer.as_mut() {
@@ -1651,7 +1659,7 @@ impl VideoController {
         cx.notify();
     }
 
-    pub fn set_layout(&mut self, layout: ComposeLayout, cx: &mut Context<Self>) {
+    pub fn set_layout(&mut self, layout: ComposeLayout, cx: &mut Context<'_, Self>) {
         if layout != self.layout {
             self.layout = layout;
             cx.notify();
@@ -1659,7 +1667,7 @@ impl VideoController {
     }
 
     /// Persist the HUD placement (normalized; written at drag end).
-    pub fn set_hud_position(&mut self, x: f64, y: f64, cx: &mut Context<Self>) {
+    pub fn set_hud_position(&mut self, x: f64, y: f64, cx: &mut Context<'_, Self>) {
         let position = HudPosition::new(x.clamp(0.0, 1.0), y.clamp(0.0, 1.0));
         self.preferences.update(cx, |preferences, cx| {
             preferences.update(cx, |config| config.video.hud_position = Some(position));

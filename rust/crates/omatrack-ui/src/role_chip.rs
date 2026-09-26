@@ -85,17 +85,20 @@ impl RoleChip {
         }
     }
 
+    #[must_use]
     pub fn driver(mut self, driver: impl Into<SharedString>) -> Self {
         self.driver = Some(driver.into());
         self
     }
 
     /// The lap time, preformatted (`1:13.644`).
+    #[must_use]
     pub fn time(mut self, time: impl Into<SharedString>) -> Self {
         self.time = Some(time.into());
         self
     }
 
+    #[must_use]
     pub fn on_click(
         mut self,
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,

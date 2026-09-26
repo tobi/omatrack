@@ -4,6 +4,7 @@
 use crate::num::{llround, llround_i32, max, min, trunc_i32};
 
 /// Upstream `motorsport-telemetry-rs` lap role (`LapKind`), forwarded as-is.
+///
 /// `Pit` on an incomplete interval is the stationary time upstream carved out
 /// of the lap that held a pit stop: not a lap, just the stop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
@@ -107,6 +108,10 @@ pub fn classify_laps(laps: &mut [Lap]) {
 /// Representative fastest lap: complete and not a pit outlier, else the
 /// fastest complete lap, else index 0. Classifies `laps` first, exactly as
 /// the C++ CLI and GUI do.
+#[expect(
+    clippy::neg_cmp_op_on_partial_ord,
+    reason = "Negated ordered comparisons deliberately include unordered (NaN) values; preserve that behavior."
+)]
 pub fn fastest_lap_index(laps: &mut [Lap]) -> usize {
     classify_laps(laps);
     let mut best: Option<usize> = None;
@@ -143,6 +148,10 @@ pub fn lap_index_by_id(laps: &[Lap], id: i32) -> Option<usize> {
 // ── split detectors (port of MoTecParser.pds*Splits) ────────────────
 
 /// Rising-edge splits from a beacon/trigger channel.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
 pub fn pds_beacon_splits(values: &[f64], freq: i32) -> Vec<f64> {
     let mut splits = Vec::new();
     if freq <= 0 || values.is_empty() {
@@ -160,6 +169,12 @@ pub fn pds_beacon_splits(values: &[f64], freq: i32) -> Vec<f64> {
 }
 
 /// Splits from a cumulative lap-time channel (backward jumps > 5 s).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
 pub fn pds_lap_time_splits(values: &[f64], freq: i32) -> Vec<f64> {
     let mut splits = Vec::new();
     if freq <= 0 || values.len() < 2 {
@@ -180,7 +195,7 @@ fn lap_time_seconds(value: f64) -> f64 {
     if !value.is_finite() || value <= 0.0 {
         return -1.0;
     }
-    let value = if value > 1000.0 && value < 600000.0 {
+    let value = if value > 1000.0 && value < 600_000.0 {
         value / 1000.0
     } else {
         value
@@ -193,6 +208,12 @@ fn lap_time_seconds(value: f64) -> f64 {
 }
 
 /// Splits from a last/previous-lap-time channel (a new posted time).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
 pub fn pds_last_lap_time_splits(values: &[f64], freq: i32) -> Vec<f64> {
     let mut splits = Vec::new();
     if freq <= 0 || values.len() < 2 {
@@ -201,8 +222,8 @@ pub fn pds_last_lap_time_splits(values: &[f64], freq: i32) -> Vec<f64> {
     let mut previous = lap_time_seconds(values[0]);
     let mut last_split_index: i32 = -freq.max(1);
     let cluster_gap = (freq / 2).max(1);
-    for i in 1..values.len() {
-        let current = lap_time_seconds(values[i]);
+    for (i, &value) in values.iter().enumerate().skip(1) {
+        let current = lap_time_seconds(value);
         if current < 0.0 {
             continue;
         }
@@ -220,6 +241,10 @@ pub fn pds_last_lap_time_splits(values: &[f64], freq: i32) -> Vec<f64> {
 
 /// Splits from a lap-number channel (positive-to-next-positive increments;
 /// zero/dropout recovery only re-establishes counter state).
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
 pub fn pds_lap_number_splits(values: &[f64], freq: i32) -> Vec<f64> {
     let mut splits = Vec::new();
     if freq <= 0 || values.len() < 2 {
@@ -227,8 +252,8 @@ pub fn pds_lap_number_splits(values: &[f64], freq: i32) -> Vec<f64> {
     }
     let mut prev = llround_i32(values[0]);
     let mut prev_valid = prev > 0;
-    for i in 1..values.len() {
-        let current = llround_i32(values[i]);
+    for (i, &value) in values.iter().enumerate().skip(1) {
+        let current = llround_i32(value);
         if current <= 0 {
             prev_valid = false;
             continue;
@@ -272,6 +297,16 @@ pub fn select_lap_splits(
 
 /// Splits from a wrapping lap-distance channel: a reset is a drop of more
 /// than half the observed peak (works for m, km, % and 0-1 fractions).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
+#[expect(
+    clippy::neg_cmp_op_on_partial_ord,
+    reason = "Negated ordered comparisons deliberately include unordered (NaN) values; preserve that behavior."
+)]
 pub fn pds_distance_splits(values: &[f64], freq: i32) -> Vec<f64> {
     let mut splits = Vec::new();
     if freq <= 0 || values.len() < 2 {
@@ -301,17 +336,28 @@ pub fn pds_distance_splits(values: &[f64], freq: i32) -> Vec<f64> {
 
 /// Build laps from split times. Head/tail fragments are incomplete;
 /// heuristic crossings much shorter than the median can be rejected.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
 pub fn build_laps_from_splits(
     split_times: &[f64],
     duration: f64,
     reject_short_crossings: bool,
 ) -> Vec<Lap> {
-    if duration <= 0.0 {
-        return Vec::new();
-    }
     // Two crossings within 10 s are one beacon seen twice: collapse onto the
     // first so consecutive laps stay contiguous.
     const MINIMUM_CROSSING_GAP_SECONDS: f64 = 10.0;
+    struct Bound {
+        start: f64,
+        end: f64,
+        complete: bool,
+    }
+
+    if duration <= 0.0 {
+        return Vec::new();
+    }
     let mut filtered: Vec<f64> = split_times
         .iter()
         .copied()
@@ -331,11 +377,6 @@ pub fn build_laps_from_splits(
     let whole = || vec![Lap::new(0, 0.0, duration, duration * 1000.0, false)];
     if splits.len() < 2 {
         return whole();
-    }
-    struct Bound {
-        start: f64,
-        end: f64,
-        complete: bool,
     }
     let mut bounds: Vec<Bound> = splits
         .windows(2)
@@ -416,6 +457,10 @@ pub fn mark_short_crossings_incomplete(laps: &mut [Lap]) {
 
 /// Override lap times from a "previous lap time" channel when it agrees with
 /// the crossing-derived estimate.
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
 pub fn pds_apply_previous_lap_times(
     laps: &[Lap],
     previous_lap_time_values: &[f64],
@@ -429,7 +474,7 @@ pub fn pds_apply_previous_lap_times(
         if !value.is_finite() {
             return -1.0;
         }
-        let value = if value > 1000.0 && value < 600000.0 {
+        let value = if value > 1000.0 && value < 600_000.0 {
             value / 1000.0
         } else {
             value
@@ -457,7 +502,7 @@ pub fn pds_apply_previous_lap_times(
         -1.0
     };
     let mut out = laps.to_vec();
-    for lap in out.iter_mut() {
+    for lap in &mut out {
         // A head/tail fragment ends at the recording boundary, not at a
         // crossing; its "previous lap time" describes the lap before it.
         if !lap.complete {
@@ -482,6 +527,15 @@ pub fn pds_apply_previous_lap_times(
 
 /// Reject crossing pairs that cover substantially less of a lap-position
 /// signal than the typical crossing pair in the same recording.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
+#[expect(
+    clippy::neg_cmp_op_on_partial_ord,
+    reason = "Negated ordered comparisons deliberately include unordered (NaN) values; preserve that behavior."
+)]
 pub fn pds_apply_lap_distance_coverage(laps: &[Lap], lap_distance: &[f64], freq: i32) -> Vec<Lap> {
     if laps.is_empty() || lap_distance.len() < 2 || freq <= 0 {
         return laps.to_vec();
@@ -542,6 +596,6 @@ mod tests {
     fn lap_time_text_matches_printf() {
         assert_eq!(format_lap_time(83550.0), "1:23.550");
         assert_eq!(format_lap_time(59999.0), "0:59.999");
-        assert_eq!(format_lap_time(600000.0), "10:00.000");
+        assert_eq!(format_lap_time(600_000.0), "10:00.000");
     }
 }

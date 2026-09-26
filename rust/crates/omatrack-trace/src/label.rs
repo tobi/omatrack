@@ -44,5 +44,7 @@ pub(crate) fn paint(
 ) {
     // Painting only fails when the glyph atlas cannot grow; a missing label
     // is the right degradation for a chart annotation.
-    let _ = line.paint(origin, height, TextAlign::Left, None, window, cx);
+    if let Err(error) = line.paint(origin, height, TextAlign::Left, None, window, cx) {
+        log::warn!("could not paint trace label: {error}");
+    }
 }

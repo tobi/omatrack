@@ -77,7 +77,7 @@ pub fn is_recording_path(path: &Path) -> bool {
         .is_some_and(|ext| RECORDING_EXTENSIONS.contains(&ext.as_str()))
 }
 
-/// True when the recording file is itself the onboard video (AiM MP4).
+/// True when the recording file is itself the onboard video (`AiM` MP4).
 pub fn is_video_path(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
@@ -86,10 +86,11 @@ pub fn is_video_path(path: &Path) -> bool {
 
 // ── laps ────────────────────────────────────────────────────────────
 
-/// Driver-facing labels for a classified lap list, in order: `L<n>` for a
-/// complete lap (the source number when upstream supplied one, else the
-/// sequential count), else the fragment role `Out`, `In`, `Pit` or `Frag`
-/// (port of `SessionHandle::populateLaps`).
+/// Driver-facing labels for a classified lap list, in order.
+///
+/// Complete laps use `L<n>` (the source number when upstream supplied one, else the
+/// sequential count). Fragments use `Out`, `In`, `Pit` or `Frag` (port of
+/// `SessionHandle::populateLaps`).
 pub fn lap_labels(laps: &[Lap]) -> Vec<String> {
     let mut sequential = 0;
     laps.iter()
@@ -207,7 +208,7 @@ pub enum IdentityState {
     /// Hashing was not requested.
     #[default]
     NotChecked,
-    /// The telemetry and the video are the same file (AiM MP4).
+    /// The telemetry and the video are the same file (`AiM` MP4).
     ExactSource,
     /// The file's BLAKE3 matches the catalog.
     VerifiedHash,
@@ -267,7 +268,7 @@ pub fn verify_video_identity(
         // recording was renamed; there is still only one clock.
         .or_else(|| (clock.files.len() == 1).then(|| &clock.files[0]));
 
-    let video_size = std::fs::metadata(video_path).map(|m| m.len()).unwrap_or(0);
+    let video_size = std::fs::metadata(video_path).map_or(0, |m| m.len());
     let same_file = video_size > 0
         && canonical(Path::new(recording.path())).is_some_and(|a| Some(a) == canonical(video_path));
     if same_file {
@@ -389,18 +390,21 @@ impl LoadOptions {
     }
 
     /// Concept -> source channel overrides (effective recording metadata).
+    #[must_use]
     pub fn with_overrides(mut self, overrides: ChannelOverrides) -> Self {
         self.overrides = overrides;
         self
     }
 
     /// Replace the provider list.
+    #[must_use]
     pub fn with_providers(mut self, providers: Vec<Arc<dyn ChannelProvider>>) -> Self {
         self.providers = providers;
         self
     }
 
     /// Append one provider (ignored when one with the same id is present).
+    #[must_use]
     pub fn with_provider(mut self, provider: Arc<dyn ChannelProvider>) -> Self {
         if !self.providers.iter().any(|p| p.id() == provider.id()) {
             self.providers.push(provider);
@@ -410,6 +414,7 @@ impl LoadOptions {
 
     /// Resample only `keys` from provider `id`. A provider without explicit
     /// keys resamples its whole catalog.
+    #[must_use]
     pub fn with_provider_keys(mut self, id: impl Into<String>, keys: Vec<String>) -> Self {
         self.provider_keys.insert(id.into(), keys);
         self
@@ -417,6 +422,7 @@ impl LoadOptions {
 
     /// Opt in to raw source channels (`raw:<name>` keys) through
     /// [`SourceChannels`]. An empty list removes the opt-in.
+    #[must_use]
     pub fn with_source_channel_keys(self, keys: Vec<String>) -> Self {
         let id = SourceChannels.id().to_string();
         if keys.is_empty() {
@@ -431,18 +437,21 @@ impl LoadOptions {
 
     /// Track name or slug from recording metadata; the lap's GPS resolves
     /// the facility when absent.
+    #[must_use]
     pub fn with_track_hint(mut self, hint: Option<String>) -> Self {
         self.track_hint = hint.filter(|h| !h.trim().is_empty());
         self
     }
 
     /// The video file to bind (a location's media path).
+    #[must_use]
     pub fn with_video_path(mut self, path: Option<PathBuf>) -> Self {
         self.video_path = path;
         self
     }
 
     /// Hash a separate linked video against the catalog BLAKE3.
+    #[must_use]
     pub fn verify_video_hash(mut self, verify: bool) -> Self {
         self.verify_video_hash = verify;
         self
@@ -582,10 +591,15 @@ fn resample_overlays(
     Ok(groups)
 }
 
-/// Load one lap for analysis: classify the recording's laps, unify the
-/// selected one, resolve its Track Atlas layout, resample every provider's
-/// channels, build the lap strip, and bind the onboard video. The cancel
-/// flag is checked between stages.
+/// Load one lap and its analysis inputs.
+///
+/// Classify the recording's laps, unify the selected one, resolve its Track Atlas
+/// layout, resample every provider's channels, build the lap strip, and bind the
+/// onboard video. The cancel flag is checked between stages.
+///
+/// # Errors
+/// Returns `SessionError` if cancelled, the requested lap is unavailable or empty, or
+/// an overlay provider fails.
 pub fn load_lap(
     recording: Arc<Recording>,
     lap_id: i32,
@@ -731,9 +745,10 @@ pub struct CornerMarker {
     pub reference_fraction: Option<f64>,
 }
 
-/// One corner of an analysis (plain data). Distances are metres, times
-/// seconds, speeds km/h. Every delta is primary minus reference, NaN when
-/// unknown: + time means the primary lost time; + metres means the
+/// One corner of an analysis (plain data).
+///
+/// Distances are metres, times seconds, speeds km/h. Every delta is primary minus
+/// reference, NaN when unknown: + time means the primary lost time; + metres means the
 /// primary's event is later along the track.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -777,9 +792,10 @@ pub struct ComplexRow {
     pub members: Vec<usize>,
 }
 
-/// Where the lap's time went: the final delta split into the part lost
-/// inside corner zones and the part lost between them (seconds, + the
-/// primary is slower). `corners + straights == total` by construction.
+/// Where the lap's time went: the final delta split into the part lost inside corner
+/// zones and the part lost between them (seconds, + the primary is slower).
+///
+/// `corners + straights == total` by construction.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub struct TimeSplit {
@@ -922,15 +938,15 @@ impl RowInputs<'_> {
     }
 
     fn compare_fraction(&self, primary_fraction: f64) -> f64 {
-        self.comparison
-            .map(|c| c.compare_fraction_for_primary_fraction(primary_fraction))
-            .unwrap_or(primary_fraction)
+        self.comparison.map_or(primary_fraction, |c| {
+            c.compare_fraction_for_primary_fraction(primary_fraction)
+        })
     }
 
     fn primary_fraction(&self, compare_fraction: f64) -> f64 {
-        self.comparison
-            .map(|c| c.primary_fraction_for_compare_fraction(compare_fraction))
-            .unwrap_or(compare_fraction)
+        self.comparison.map_or(compare_fraction, |c| {
+            c.primary_fraction_for_compare_fraction(compare_fraction)
+        })
     }
 
     /// A reference event (metres from the reference zone start) on the
@@ -946,6 +962,14 @@ impl RowInputs<'_> {
         self.primary_fraction(compare)
     }
 
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep the ported analysis/report stages in source order so numerical and CLI parity remain auditable."
+    )]
     fn row(&self, zone: &CornerZone) -> CornerRow {
         let primary = self.primary;
         let speeds_of = |lap: &UnifiedLap, start: f64, end: f64, apex: f64| CornerSpeeds {
@@ -1170,6 +1194,10 @@ impl Analysis {
     /// laps support it (see [`comparison::effective_strategy`]); the manual
     /// offset only applies to manual damper alignment. Never call from a
     /// paint, cursor or playback path: this is the static per-pair work.
+    ///
+    /// # Errors
+    /// Returns `SessionError::Cancelled` when the cancellation flag is observed while
+    /// rebuilding the analysis.
     pub fn build(
         primary: &LoadedLap,
         reference: Option<&LoadedLap>,
@@ -1183,12 +1211,10 @@ impl Analysis {
             corner_zones(primary, corner_override.as_deref());
         check_cancel(cancel)?;
         let mut available = Vec::new();
-        let mut comparison = None;
-        if let Some(reference) = reference {
+        let comparison = if let Some(reference) = reference {
             let requested = request.requested();
             let (p, r) = (primary.unified(), reference.unified());
-            let mut provisional = None;
-            if source == CornerSource::Unmatched {
+            let provisional = if source == CornerSource::Unmatched {
                 // The primary's GPS misses the centerline: carry the
                 // reference's atlas ranges over through a map built without
                 // corners (only pre-corner dampers need corner starts).
@@ -1198,8 +1224,10 @@ impl Analysis {
                 if let Some((zones, groups)) = transferred_zones(reference, &map) {
                     (corners, complexes, source) = (zones, groups, CornerSource::Reference);
                 }
-                provisional = Some(map);
-            }
+                Some(map)
+            } else {
+                None
+            };
             let has_corners = !corners.is_empty();
             available = comparison::available_strategies(p, r, has_corners);
             let strategy = comparison::effective_strategy(requested, p, r, has_corners);
@@ -1218,8 +1246,10 @@ impl Analysis {
             {
                 (corners, complexes) = (zones, groups);
             }
-            comparison = Some(Arc::new(map));
-        }
+            Some(Arc::new(map))
+        } else {
+            None
+        };
         Self::assemble(
             primary.clone(),
             reference.cloned(),
@@ -1232,6 +1262,10 @@ impl Analysis {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Internal assembly boundary combines the loaded pair, cached map, corner projection and cancellation input."
+    )]
     fn assemble(
         primary: LoadedLap,
         reference: Option<LoadedLap>,
@@ -1280,6 +1314,10 @@ impl Analysis {
     /// re-mapped onto the new primary. Cursor and viewport fractions are
     /// the caller's and stay where they are. Without a reference this is a
     /// clone.
+    ///
+    /// # Errors
+    /// Returns `SessionError::Cancelled` when the cancellation flag is observed while
+    /// rebuilding the analysis.
     pub fn swapped(&self, cancel: &AtomicBool) -> Result<Self, SessionError> {
         let Some(reference) = self.reference.clone() else {
             return Ok(self.clone());
@@ -1327,6 +1365,10 @@ impl Analysis {
     /// The same analysis with a new manual damper offset (primary lap
     /// fraction). Only the delta and the rows are rebuilt; a no-op for
     /// other strategies.
+    ///
+    /// # Errors
+    /// Returns `SessionError::Cancelled` when the cancellation flag is observed while
+    /// rebuilding the analysis.
     pub fn with_manual_offset(
         &self,
         offset: f64,
@@ -1340,18 +1382,19 @@ impl Analysis {
         }
         let mut updated = Comparison::clone(comparison);
         updated.set_manual_offset(offset);
-        let mut zones = (
-            self.corners.to_vec(),
-            self.complexes.to_vec(),
-            self.corner_source,
-        );
         // Carried-over ranges follow the map they were carried through.
-        if self.corner_source == CornerSource::Reference
+        let zones = if self.corner_source == CornerSource::Reference
             && let Some(reference) = self.reference.as_ref()
             && let Some((corners, complexes)) = transferred_zones(reference, &updated)
         {
-            zones = (corners, complexes, CornerSource::Reference);
-        }
+            (corners, complexes, CornerSource::Reference)
+        } else {
+            (
+                self.corners.to_vec(),
+                self.complexes.to_vec(),
+                self.corner_source,
+            )
+        };
         Self::assemble(
             self.primary.clone(),
             self.reference.clone(),
@@ -1397,7 +1440,9 @@ impl Analysis {
     }
     /// Cumulative delta (s) on the primary grid; empty without one.
     pub fn delta(&self) -> &[f64] {
-        self.comparison.as_ref().map(|c| c.delta()).unwrap_or(&[])
+        self.comparison
+            .as_ref()
+            .map_or(&[] as &[f64], |c| c.delta())
     }
     pub fn corner_source(&self) -> CornerSource {
         self.corner_source
@@ -1426,8 +1471,7 @@ impl Analysis {
     pub fn loss_rate(&self) -> &[f64] {
         self.comparison
             .as_ref()
-            .map(|c| c.loss_rate())
-            .unwrap_or(&[])
+            .map_or(&[] as &[f64], |c| c.loss_rate())
     }
     /// Whether the one delta places time loss on the lap
     /// ([`Comparison::places_time_loss`]). When it does not (a lap-time

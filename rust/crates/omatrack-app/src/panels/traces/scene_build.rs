@@ -55,7 +55,7 @@ fn is_rpm(key: &str) -> bool {
 /// The neighbouring primary laps, unified once per primary lap and reused
 /// by every later scene of the same lap (a new reference, strategy or
 /// offset keeps the primary).
-pub struct Neighbours {
+pub(super) struct Neighbours {
     /// The primary lap they belong to (by identity).
     primary: Arc<UnifiedLap>,
     previous: Option<NeighbourLap>,
@@ -74,7 +74,7 @@ struct NeighbourLap {
 }
 
 /// One corner band of the scene and the analysis zone it stands for.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CornerLink {
     /// The band id in the scene (stable within one analysis).
     pub band: u32,
@@ -83,7 +83,7 @@ pub struct CornerLink {
 }
 
 /// A scene and what the panel needs to relate it to the analysis.
-pub struct BuiltScene {
+pub(super) struct BuiltScene {
     pub analysis: Arc<Analysis>,
     pub scene: Arc<TraceScene>,
     pub corners: Vec<CornerLink>,
@@ -92,7 +92,11 @@ pub struct BuiltScene {
 
 /// The scene of `analysis`. `neighbours` from an earlier scene of the same
 /// primary lap are reused; otherwise the neighbouring laps are unified here.
-pub fn build(analysis: Arc<Analysis>, neighbours: Option<Arc<Neighbours>>) -> BuiltScene {
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Corner band identifiers are indices into the small per-track zone list."
+)]
+pub(super) fn build(analysis: Arc<Analysis>, neighbours: Option<Arc<Neighbours>>) -> BuiltScene {
     let primary = analysis.primary();
     let reference = analysis.reference();
     let unified = primary.unified();
@@ -233,8 +237,10 @@ fn unify_neighbours(primary: &LoadedLap) -> Neighbours {
             .strip()
             .iter()
             .find(|cell| cell.lap_id == lap.id)
-            .map(|cell| SharedString::from(cell.label.clone()))
-            .unwrap_or_else(|| format!("L{}", lap.id).into())
+            .map_or_else(
+                || format!("L{}", lap.id).into(),
+                |cell| SharedString::from(cell.label.clone()),
+            )
     };
     let is_pit_stop = |lap: &Lap| {
         primary
@@ -269,7 +275,11 @@ fn unify_neighbours(primary: &LoadedLap) -> Neighbours {
 /// lane, speed, throttle, brake and gear show, everything else is opt in. Δ also
 /// defaults to a pinned lane. Heights and fills come from the library's
 /// channel defaults (the same numbers the Channels panel shows).
-pub fn lane_style(config: &Config, key: &str, pinned: Option<bool>) -> LaneStyle {
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+)]
+pub(super) fn lane_style(config: &Config, key: &str, pinned: Option<bool>) -> LaneStyle {
     let style: ChannelStyle = config.channel_style(key);
     let configured = config.channels.get(key);
     let visible = configured
@@ -299,7 +309,7 @@ fn user_color(text: &str) -> Option<gpui_kit::Hsla> {
 
 /// Styles of every lane of `scene`. `pinned` holds this session's pin
 /// choices; `weights` a resize draft that overrides the configured weights.
-pub fn lane_styles(
+pub(super) fn lane_styles(
     config: &Config,
     scene: &TraceScene,
     pinned: &HashMap<SharedString, bool>,
@@ -326,7 +336,7 @@ pub fn lane_styles(
 }
 
 /// Whether a lane of `key` shows under `config` (for menus and the palette).
-pub fn is_lane_visible(config: &Config, key: &str) -> bool {
+pub(super) fn is_lane_visible(config: &Config, key: &str) -> bool {
     lane_style(config, key, None).sizing.visible
 }
 
@@ -415,6 +425,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn delta_is_pinned_and_shown_by_default() {
         let config = Config::default();
         let delta = lane_style(&config, DELTA_KEY, None);

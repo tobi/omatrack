@@ -63,7 +63,7 @@ const INDENT_STEP: f32 = 0.625;
 const INDENT_BASE: f32 = 0.25;
 
 /// One facet choice; `None` is "all".
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FacetOption {
     value: Option<String>,
     /// The menu row and the accessible value: `All tracks`, `Road Atlanta (3)`.
@@ -127,17 +127,17 @@ enum Facet {
 impl Facet {
     fn name(self) -> &'static str {
         match self {
-            Facet::Track => "Track",
-            Facet::Year => "Year",
-            Facet::Driver => "Driver",
+            Self::Track => "Track",
+            Self::Year => "Year",
+            Self::Driver => "Driver",
         }
     }
 
     fn all(self) -> &'static str {
         match self {
-            Facet::Track => "All tracks",
-            Facet::Year => "All years",
-            Facet::Driver => "All drivers",
+            Self::Track => "All tracks",
+            Self::Year => "All years",
+            Self::Driver => "All drivers",
         }
     }
 
@@ -207,7 +207,7 @@ pub(crate) struct Driver {
 impl Row {
     fn lap_target(&self) -> Option<(SharedString, i32)> {
         match self {
-            Row::Lap { session, lap, .. } => Some((session.clone(), *lap)),
+            Self::Lap { session, lap, .. } => Some((session.clone(), *lap)),
             _ => None,
         }
     }
@@ -302,9 +302,9 @@ pub struct LibraryPanel {
 }
 
 impl LibraryPanel {
-    pub fn new(app: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(app: AppState, window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search library"));
-        let facet = |facet: Facet, window: &mut Window, cx: &mut Context<Self>| {
+        let facet = |facet: Facet, window: &mut Window, cx: &mut Context<'_, Self>| {
             let options = vec![facet.all_option()];
             cx.new(|cx| SelectState::new(options, Some(IndexPath::default()), window, cx))
         };
@@ -315,7 +315,7 @@ impl LibraryPanel {
 
         let subscriptions = vec![
             cx.subscribe_in(&search, window, |this, search, event, _, cx| {
-                if let InputEvent::Change = event {
+                if matches!(event, InputEvent::Change) {
                     let query = search.read(cx).value().to_string();
                     this.app
                         .library
@@ -416,7 +416,7 @@ impl LibraryPanel {
     }
 
     /// Select and reveal a row by its catalog id (expanding its parents).
-    pub fn reveal(&mut self, id: &SharedString, cx: &mut Context<Self>) {
+    pub fn reveal(&mut self, id: &SharedString, cx: &mut Context<'_, Self>) {
         self.tree.update(cx, |tree, cx| {
             tree.reveal_item(id, gpui_kit::ScrollStrategy::Center, cx);
             let ix = tree.index_of(id);
@@ -434,7 +434,7 @@ impl LibraryPanel {
         }
     }
 
-    fn sync_facets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn sync_facets(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         let library = self.app.library.read(cx);
         let facets = library.facets().clone();
         let current = (
@@ -494,7 +494,7 @@ impl LibraryPanel {
 
     /// Rebuild the tree from the filtered snapshot, keeping expansion and
     /// the selected row by id.
-    fn rebuild(&mut self, cx: &mut Context<Self>) {
+    fn rebuild(&mut self, cx: &mut Context<'_, Self>) {
         let snapshot = self.app.library.read(cx).filtered().clone();
         let session = self.app.session.read(cx);
         let primary = session.primary().map(|slot| slot.lap_ref().row_id());
@@ -514,6 +514,10 @@ impl LibraryPanel {
         cx.notify();
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Build the track/date/session tree and its row index in one traversal of the same snapshot."
+    )]
     fn build_items(
         &self,
         snapshot: &LibrarySnapshot,
@@ -683,7 +687,7 @@ impl LibraryPanel {
         Some((id, row))
     }
 
-    fn load_selected(&mut self, role: Role, window: &mut Window, cx: &mut Context<Self>) {
+    fn load_selected(&mut self, role: Role, window: &mut Window, cx: &mut Context<'_, Self>) {
         if self.selected_row(cx).is_none() {
             return;
         }
@@ -702,11 +706,16 @@ impl LibraryPanel {
         }
     }
 
-    fn on_set_primary(&mut self, _: &SetPrimary, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_set_primary(&mut self, _: &SetPrimary, window: &mut Window, cx: &mut Context<'_, Self>) {
         self.load_selected(Role::Primary, window, cx);
     }
 
-    fn on_set_reference(&mut self, _: &SetReference, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_set_reference(
+        &mut self,
+        _: &SetReference,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         self.load_selected(Role::Reference, window, cx);
     }
 
@@ -723,7 +732,7 @@ impl LibraryPanel {
         &mut self,
         action: &EditRecordingMetadata,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) {
         let Some(session) = self.target_session(action.session.as_ref(), cx) else {
             return;
@@ -738,7 +747,7 @@ impl LibraryPanel {
         &mut self,
         action: &EditFolderMetadata,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) {
         let folder = {
             let library = self.app.library.read(cx);
@@ -754,7 +763,7 @@ impl LibraryPanel {
         dialogs::track_yml::open(&self.app, folder, window, cx);
     }
 
-    fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_toolbar(&self, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let scanning = self.app.library.read(cx).is_scanning();
         v_flex()
             .gap_2()
@@ -783,7 +792,7 @@ impl LibraryPanel {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.app
                                     .library
-                                    .update(cx, |library, cx| library.rescan(cx));
+                                    .update(cx, super::super::state::library::Library::rescan);
                             })),
                     )
                     .child(
@@ -798,9 +807,10 @@ impl LibraryPanel {
                                 Some(WORKSPACE_CONTEXT),
                             )
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.app
-                                    .library
-                                    .update(cx, |library, cx| library.prompt_add_folder(cx));
+                                this.app.library.update(
+                                    cx,
+                                    super::super::state::library::Library::prompt_add_folder,
+                                );
                             })),
                     ),
             )
@@ -828,7 +838,7 @@ impl LibraryPanel {
 
     /// One muted status line under the toolbar: what the filter hides, what
     /// the last scan could not read.
-    fn render_status(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+    fn render_status(&self, cx: &mut Context<'_, Self>) -> Option<impl IntoElement + use<>> {
         let library = self.app.library.read(cx);
         let filtered = library.has_filter() && !library.filtered().is_empty();
         if !filtered && self.unreadable == 0 {
@@ -892,12 +902,12 @@ impl LibraryPanel {
         )
     }
 
-    fn clear_filters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn clear_filters(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         self.search
             .update(cx, |search, cx| search.set_value("", window, cx));
         self.app
             .library
-            .update(cx, |library, cx| library.clear_filter(cx));
+            .update(cx, super::super::state::library::Library::clear_filter);
         self.sync_facets(window, cx);
     }
 
@@ -912,7 +922,11 @@ impl LibraryPanel {
 
     /// The two load commands with their keys, acting on the selected row:
     /// the panel's main task stays visible and its keyboard path learnable.
-    fn render_footer(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_footer(
+        &self,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) -> impl IntoElement + use<> {
         let enabled = self.selected_target(cx).is_some();
         let primary = LapRole::Primary.color(cx.theme());
         let reference = LapRole::Reference.color(cx.theme());
@@ -982,7 +996,7 @@ impl LibraryPanel {
         )
     }
 
-    fn render_empty(&self, cx: &mut Context<Self>) -> Option<gpui_kit::AnyElement> {
+    fn render_empty(&self, cx: &mut Context<'_, Self>) -> Option<AnyElement> {
         let library = self.app.library.read(cx);
         let (icon, title, description, action): (IconName, &str, SharedString, Option<&str>) =
             if !library.snapshot().is_empty() {
@@ -1040,7 +1054,7 @@ impl LibraryPanel {
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.app
                         .library
-                        .update(cx, |library, cx| library.rescan(cx));
+                        .update(cx, super::super::state::library::Library::rescan);
                 })),
             _ => Button::new("library-empty-add-folder")
                 .outline()
@@ -1049,7 +1063,7 @@ impl LibraryPanel {
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.app
                         .library
-                        .update(cx, |library, cx| library.prompt_add_folder(cx));
+                        .update(cx, super::super::state::library::Library::prompt_add_folder);
                 })),
         });
         let label = SharedString::from(format!("{title}. {description}"));
@@ -1159,6 +1173,14 @@ fn context_menu_entries(index: &RowIndex, id: &SharedString) -> Vec<MenuEntry> {
     entries
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+)]
 fn render_row(entry: &TreeEntry, index: &RowIndex, cx: &App) -> ListItem {
     let id = entry.item().id.clone();
     let theme = cx.theme();
@@ -1273,7 +1295,7 @@ fn render_row(entry: &TreeEntry, index: &RowIndex, cx: &App) -> ListItem {
                                             .min_w_0()
                                             .truncate()
                                             .text_color(theme.muted_foreground)
-                                            .when(driver.unnamed, |this| this.italic())
+                                            .when(driver.unnamed, gpui_kit::Styled::italic)
                                             .child(driver.name),
                                     )
                                 })
@@ -1340,7 +1362,10 @@ fn render_row(entry: &TreeEntry, index: &RowIndex, cx: &App) -> ListItem {
                                         this.child(
                                             div()
                                                 .flex_shrink_0()
-                                                .when(role.is_some(), |this| this.font_semibold())
+                                                .when(
+                                                    role.is_some(),
+                                                    gpui_kit::base::StyledExt::font_semibold,
+                                                )
                                                 .child(number),
                                         )
                                     })
@@ -1392,7 +1417,7 @@ impl gpui_kit::component::dock::Panel for LibraryPanel {
         Some(PanelKind::Library.title().into())
     }
 
-    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn title(&mut self, _: &mut Window, _: &mut Context<'_, Self>) -> impl IntoElement {
         PanelKind::Library.title()
     }
 }
@@ -1406,7 +1431,7 @@ impl Focusable for LibraryPanel {
 }
 
 impl Render for LibraryPanel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let (body, footer) = match self.render_empty(cx) {
             Some(empty) => (empty, None),
             None => (
@@ -1442,7 +1467,7 @@ impl Render for LibraryPanel {
 /// This panel's app-wide setup: its dock registration (saved layouts
 /// rebuild it by name) and, when it has them, its own actions and key
 /// bindings. Called once from [`crate::panels::init`].
-pub fn init(cx: &mut gpui_kit::App) {
+pub fn init(cx: &mut App) {
     crate::panels::register(PanelKind::Library, cx);
     dialogs::init(cx);
     // Get Info on the selected recording.

@@ -20,7 +20,7 @@ pub struct PathPoint {
 }
 
 impl PathPoint {
-    pub const PEN_UP: PathPoint = PathPoint {
+    pub const PEN_UP: Self = Self {
         x: f64::NAN,
         y: f64::NAN,
     };
@@ -119,6 +119,11 @@ pub fn point_capacity(columns: usize) -> usize {
 }
 
 /// Number of device columns for a plot width.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "Device columns and clamped source indices are rounded at the sampling boundary; interpolation uses f64."
+)]
 pub fn device_columns(width: f64, dpr: f64) -> usize {
     ((width * dpr).ceil() as i64).max(2) as usize
 }
@@ -136,6 +141,16 @@ pub fn decimate(
 
 /// First pass: per-device-column temporal min/max with pen-ups. Exposed so
 /// tests can check the column logic independently of simplification.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Device columns and clamped source indices are rounded at the sampling boundary; interpolation uses f64."
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One ordered decimation pass preserves pen-up breaks, extrema order and pixel-column boundaries."
+)]
 pub fn decimate_columns(
     series: &[f64],
     source_fraction: &dyn Fn(f64) -> f64,
@@ -415,6 +430,10 @@ mod tests {
         f.clamp(0.0, 1.0)
     }
 
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+    )]
     fn noisy(n: usize) -> Vec<f64> {
         (0..n)
             .map(|i| {
@@ -427,13 +446,13 @@ mod tests {
     #[test]
     fn nan_is_a_pen_up_even_mid_column() {
         // 1000 samples into 10 columns: the NaN sits in the middle of column 5.
-        let mut series: Vec<f64> = (0..1000).map(|i| (i as f64 * 0.05).sin()).collect();
+        let mut series: Vec<f64> = (0..1000).map(|i| (f64::from(i) * 0.05).sin()).collect();
         series[555] = f64::NAN;
         let mut out = Vec::new();
         decimate(&series, &identity, &params(10.0, 1.0), &mut out);
         let pen_ups = out.iter().filter(|p| p.is_pen_up()).count();
         assert_eq!(pen_ups, 1, "one gap, one pen-up: {out:?}");
-        let gap = out.iter().position(|p| p.is_pen_up()).unwrap();
+        let gap = out.iter().position(PathPoint::is_pen_up).unwrap();
         // The gap costs at most one column (column width is 1 px here).
         let before = out[gap - 1].x;
         let after = out[gap + 1].x;
@@ -476,6 +495,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "Use conventional x/y/w/h coordinate names in this geometry calculation."
+    )]
     fn simplification_error_is_bounded_by_two_epsilon() {
         for dpr in [1.0, 1.5, 2.0] {
             let series = noisy(20_000);
@@ -515,6 +538,12 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+    )]
     fn nonlinear_map_matches_brute_force_per_column() {
         let series = noisy(5_000);
         let map = |f: f64| (f * f).clamp(0.0, 1.0);
@@ -592,8 +621,8 @@ mod tests {
         let pointer = out.as_ptr();
         for zoom in 1..50 {
             let q = DecimateParams {
-                x_start: 0.01 * zoom as f64,
-                x_span: 1.0 / zoom as f64,
+                x_start: 0.01 * f64::from(zoom),
+                x_span: 1.0 / f64::from(zoom),
                 ..p
             };
             decimate(&series, &identity, &q, &mut out);

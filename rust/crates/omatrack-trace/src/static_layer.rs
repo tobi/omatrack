@@ -96,7 +96,7 @@ impl TraceStaticView {
         styles: Arc<LaneStyles>,
         layout: Arc<LaneLayout>,
         viewport: Entity<ViewportState>,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) -> Self {
         let subscription = cx.observe(&viewport, |_, _, cx| cx.notify());
         Self {
@@ -109,21 +109,21 @@ impl TraceStaticView {
         }
     }
 
-    pub fn set_scene(&mut self, scene: Arc<TraceScene>, cx: &mut Context<Self>) {
+    pub fn set_scene(&mut self, scene: Arc<TraceScene>, cx: &mut Context<'_, Self>) {
         if !Arc::ptr_eq(&scene, &self.scene) {
             self.scene = scene;
             cx.notify();
         }
     }
 
-    pub fn set_styles(&mut self, styles: Arc<LaneStyles>, cx: &mut Context<Self>) {
+    pub fn set_styles(&mut self, styles: Arc<LaneStyles>, cx: &mut Context<'_, Self>) {
         if *styles != *self.styles {
             self.styles = styles;
             cx.notify();
         }
     }
 
-    pub fn set_layout(&mut self, layout: Arc<LaneLayout>, cx: &mut Context<Self>) {
+    pub fn set_layout(&mut self, layout: Arc<LaneLayout>, cx: &mut Context<'_, Self>) {
         if *layout != *self.layout {
             self.layout = layout;
             cx.notify();
@@ -136,7 +136,7 @@ impl TraceStaticView {
 }
 
 impl Render for TraceStaticView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         self.cache.borrow_mut().stats.renders += 1;
         let state = self.viewport.read(cx);
         StaticLayerElement {
@@ -169,6 +169,10 @@ impl IntoElement for StaticLayerElement {
 }
 
 /// Whether a lane rectangle is visible inside its region.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+)]
 fn region_of(layout: &LaneLayout, pinned: bool, height: f32) -> (f32, f32) {
     if pinned {
         (0.0, layout.pinned_height as f32)
@@ -202,12 +206,16 @@ impl Element for StaticLayerElement {
         (window.request_layout(style, [], cx), ())
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
     fn prepaint(
         &mut self,
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        _: &mut (),
+        (): &mut (),
         window: &mut Window,
         _: &mut App,
     ) {
@@ -251,7 +259,7 @@ impl Element for StaticLayerElement {
                 XAxis::Distance => &self.scene.distance_m,
                 XAxis::Time => &self.scene.time_s,
             },
-            width as f64,
+            f64::from(width),
             TICK_SPACING,
             &mut cache.ticks,
         );
@@ -261,13 +269,26 @@ impl Element for StaticLayerElement {
         }
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
+    #[expect(
+        clippy::while_float,
+        reason = "The bounded pixel/sample sweep uses a fixed positive step, not floating-point equality as a stop condition."
+    )]
     fn paint(
         &mut self,
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        _: &mut (),
-        _: &mut (),
+        (): &mut (),
+        (): &mut (),
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -278,7 +299,8 @@ impl Element for StaticLayerElement {
         let width = bounds.size.width.as_f32();
         let height = bounds.size.height.as_f32();
         let x_for = |fraction: f64| -> f32 {
-            self.viewport.x_for_fraction(fraction, 0.0, width as f64) as f32
+            self.viewport
+                .x_for_fraction(fraction, 0.0, f64::from(width)) as f32
         };
         let hline = |window: &mut Window, y: f32, left: f32, right: f32, color: Hsla| {
             window.paint_quad(fill(

@@ -133,7 +133,7 @@ impl TracePalette {
             _ => {
                 let hash = key
                     .bytes()
-                    .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
+                    .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)));
                 self.chart[hash as usize % self.chart.len()]
             }
         }
@@ -157,14 +157,10 @@ impl TracePalette {
             )
         };
         (
-            style
-                .color
-                .map(|c| self.background.blend(c))
-                .unwrap_or(primary),
+            style.color.map_or(primary, |c| self.background.blend(c)),
             style
                 .reference_color
-                .map(|c| self.background.blend(c))
-                .unwrap_or(reference),
+                .map_or(reference, |c| self.background.blend(c)),
         )
     }
 }
@@ -175,6 +171,10 @@ mod tests {
     use gpui_kit::TestAppContext;
 
     #[gpui_kit::test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn roles_follow_theme_tokens(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
         let palette = cx.update(|cx| TracePalette::from_theme(Theme::global(cx)));

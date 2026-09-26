@@ -18,8 +18,7 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     fs::create_dir_all(directory)?;
     let name = path
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "file".to_string());
+        .map_or_else(|| "file".to_string(), |n| n.to_string_lossy().into_owned());
     let temporary = directory.join(format!(
         ".{name}.tmp-{}-{}",
         std::process::id(),
@@ -32,8 +31,14 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         drop(file);
         fs::rename(&temporary, path)
     })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
+    if result.is_err()
+        && let Err(error) = fs::remove_file(&temporary)
+        && error.kind() != io::ErrorKind::NotFound
+    {
+        log::warn!(
+            "could not remove failed temporary write {}: {error}",
+            temporary.display()
+        );
     }
     result
 }

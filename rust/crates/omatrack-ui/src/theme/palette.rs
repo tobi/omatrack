@@ -91,9 +91,14 @@ impl Srgb8 {
     }
 
     /// Linear interpolation in sRGB from `self` (amount 0) to `other` (1).
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "Color interpolation is rounded and clamped to the byte range before conversion."
+    )]
     fn mix(self, other: Self, amount: f32) -> Self {
         let lerp = |a: u8, b: u8| {
-            let value = a as f32 + (b as f32 - a as f32) * amount;
+            let value = f32::from(a) + (f32::from(b) - f32::from(a)) * amount;
             value.round().clamp(0., 255.) as u8
         };
         Self {
@@ -107,7 +112,7 @@ impl Srgb8 {
     /// WCAG relative luminance.
     fn luminance(self) -> f32 {
         let linear = |v: u8| {
-            let v = v as f32 / 255.;
+            let v = f32::from(v) / 255.;
             if v <= 0.04045 {
                 v / 12.92
             } else {
@@ -125,10 +130,10 @@ impl Srgb8 {
 
     pub(crate) fn to_hsla(self) -> Hsla {
         Rgba {
-            r: self.r as f32 / 255.,
-            g: self.g as f32 / 255.,
-            b: self.b as f32 / 255.,
-            a: self.a as f32 / 255.,
+            r: f32::from(self.r) / 255.,
+            g: f32::from(self.g) / 255.,
+            b: f32::from(self.b) / 255.,
+            a: f32::from(self.a) / 255.,
         }
         .into()
     }
@@ -187,6 +192,10 @@ impl OmarchyPalette {
     /// `lighter_background`) are derived when absent. An explicit
     /// `mode = "dark" | "light"` wins; otherwise the palette is dark when its
     /// background is darker than its foreground.
+    ///
+    /// # Errors
+    /// Returns `ThemeLoadError` for invalid TOML or missing or malformed required
+    /// palette colors.
     pub fn from_colors_toml(name: &str, contents: &str) -> Result<Self, ThemeLoadError> {
         let table: toml::Table =
             toml::from_str(contents).map_err(|error| ThemeLoadError::Toml(error.to_string()))?;
@@ -280,6 +289,18 @@ impl OmarchyPalette {
     /// derives them from the ones it does (hover and active shades, button
     /// fills). Surfaces are quiet mixes of background and foreground, the
     /// radius is nearly square, and chart hues follow the palette.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep the complete typed theme projection together so palette coverage is reviewable."
+    )]
+    ///
+    /// # Panics
+    /// Panics if the built-in projection uses keys or values incompatible with the
+    /// pinned component theme schema.
+    #[expect(
+        clippy::expect_used,
+        reason = "The built-in projection emits only validated values and keys of the pinned theme schema."
+    )]
     pub fn theme_config(&self) -> ThemeConfig {
         let bg = self.background;
         let fg = self.foreground;

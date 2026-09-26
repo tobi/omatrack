@@ -63,16 +63,18 @@ pub fn effective_strategy(
     Strategy::LapPercentage
 }
 
-/// Half-width (metres of primary lap distance) of the window the loss rate
-/// is measured over: wide enough to smooth GPS and 50 Hz jitter out of the
-/// delta's slope, narrow enough to keep a braking zone apart from its apex.
+/// Half-width of the loss-rate window, in metres of primary lap distance.
+///
+/// The window is wide enough to smooth GPS and 50 Hz jitter out of the delta's slope,
+/// but narrow enough to separate a braking zone from its apex.
 pub const LOSS_RATE_HALF_WINDOW_M: f64 = 8.0;
 
-/// Time lost per metre (s/m, + the primary is slower) at every primary
-/// sample: the slope of the cumulative `delta` over `distance`, measured
-/// across `±half_window` metres (clipped at the lap ends). A window spanning
-/// no distance (standing still) reads 0; the result is always finite and as
-/// long as `delta`, or empty when the arrays disagree.
+/// Time lost per metre (s/m) at every primary sample; positive means the primary is
+/// slower.
+///
+/// Measure the slope of cumulative `delta` over `distance` across `±half_window`
+/// metres, clipped at the lap ends. A window spanning no distance reads 0. The result
+/// is always finite and as long as `delta`, or empty when the arrays disagree.
 pub fn loss_rate(delta: &[f64], distance: &[f64], half_window: f64) -> Vec<f64> {
     let n = delta.len();
     if n < 2 || distance.len() != n {
@@ -106,7 +108,7 @@ pub struct Comparison {
     primary: Arc<UnifiedLap>,
     reference: Arc<UnifiedLap>,
     strategy: Strategy,
-    /// Manual damper offset in primary lap fraction (ManualDampers only).
+    /// Manual damper offset in primary lap fraction (`ManualDampers` only).
     manual_offset: f64,
     alignment: AlignmentResult,
     delta: Vec<f64>,
@@ -227,6 +229,10 @@ impl Comparison {
         clamp(primary + self.manual_offset, 0.0, 1.0)
     }
 
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+    )]
     fn rebuild_delta(&mut self) {
         self.delta.clear();
         self.loss_rate.clear();
@@ -239,7 +245,7 @@ impl Comparison {
         let count = primary.len();
         let mut delta = vec![0.0; count];
         let mut base = 0.0;
-        for i in 0..count {
+        for (i, value) in delta.iter_mut().enumerate() {
             let fraction = i as f64 / (count - 1) as f64;
             let reference_time = self.compare_time_for_primary_fraction(fraction);
             if reference_time < 0.0 {
@@ -249,7 +255,7 @@ impl Comparison {
             if i == 0 {
                 base = raw;
             }
-            delta[i] = raw - base;
+            *value = raw - base;
         }
         if self.places_time_loss() {
             self.loss_rate = loss_rate(&delta, &primary.distance, LOSS_RATE_HALF_WINDOW_M);
@@ -272,6 +278,12 @@ impl Comparison {
     }
 
     /// Delta at a primary fraction (NaN without a delta).
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+    )]
     pub fn time_delta_at(&self, fraction: f64) -> f64 {
         let delta = &self.delta;
         if delta.len() < 2 {
@@ -301,6 +313,12 @@ impl Comparison {
 
     /// Local slope of the map around the cursor (reference seconds per
     /// primary second), clamped to [0.5, 2].
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+    )]
     pub fn video_rate_at(&self, cursor_fraction: f64) -> f64 {
         let primary = &self.primary;
         let map = &self.alignment.time;
@@ -322,6 +340,7 @@ impl Comparison {
     /// The same pair with roles exchanged: the reference becomes primary,
     /// the manual offset inverts. Cursor and viewport fractions are the
     /// caller's and stay where they are.
+    #[must_use]
     pub fn swapped(&self, corner_starts: Vec<f64>) -> Self {
         Self::new(
             self.reference.clone(),
@@ -338,6 +357,10 @@ mod tests {
     use super::*;
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn loss_rate_is_the_delta_slope_over_distance() {
         // 1 m per sample; the primary loses 0.01 s/m over metres 40..60.
         let distance: Vec<f64> = (0..100).map(f64::from).collect();
@@ -379,10 +402,10 @@ mod tests {
         };
         let mut time = 0.0;
         for i in 0..n {
-            let share = i as f64 / (n - 1) as f64;
+            let share = f64::from(i) / f64::from(n - 1);
             let v = speed(share);
             if i > 0 {
-                time += metres / (n - 1) as f64 / (v / 3.6);
+                time += metres / f64::from(n - 1) / (v / 3.6);
             }
             lap.time.push(time);
             lap.distance.push(share * metres);

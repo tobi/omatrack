@@ -89,6 +89,10 @@ fn opt_f64<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<f64>, D:
     Ok(text_f64(&Value::deserialize(deserializer)?))
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "The preceding filter requires an integral value within the i32 range."
+)]
 fn opt_i32<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<i32>, D::Error> {
     Ok(text_f64(&Value::deserialize(deserializer)?)
         .filter(|n| n.fract() == 0.0 && *n >= f64::from(i32::MIN) && *n <= f64::from(i32::MAX))
@@ -198,10 +202,10 @@ impl FolderLocationConfig {
             return name.clone();
         }
         let target = self.target.as_deref().unwrap_or("");
-        Path::new(target)
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| target.to_string())
+        Path::new(target).file_name().map_or_else(
+            || target.to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        )
     }
 }
 
@@ -356,9 +360,8 @@ impl ChannelStyle {
         // `omatrack_trace::layout::default_height_percent`.
         let height_percent = match key {
             "speed" => 34.0,
-            "throttle" | "brake" => 16.0,
+            "throttle" | "brake" | "steering" => 16.0,
             "delta" => 20.0,
-            "steering" => 16.0,
             "gear" => 12.0,
             _ if key.to_ascii_lowercase().contains("rpm") => 14.0,
             _ => 12.0,
@@ -381,8 +384,8 @@ impl ChannelStyle {
         if let Some(visible) = config.visible {
             self.visible = visible;
         }
-        self.color = config.color.clone();
-        self.reference_color = config.reference_color.clone();
+        self.color.clone_from(&config.color);
+        self.reference_color.clone_from(&config.reference_color);
         if let Some(width) = config.stroke_width {
             self.stroke_width = width.clamp(0.5, 4.0);
         }
@@ -777,6 +780,10 @@ pub fn track_key(track: &str) -> String {
 
 impl Config {
     /// Parse a document. An empty document is the default configuration.
+    ///
+    /// # Errors
+    /// Returns the YAML error if the document is malformed or cannot deserialize into
+    /// the configuration schema.
     pub fn from_yaml_str(text: &str) -> Result<Self, serde_yaml::Error> {
         if text.trim().is_empty() {
             return Ok(Self::default());
@@ -788,11 +795,19 @@ impl Config {
         }
     }
 
+    ///
+    /// # Errors
+    /// Returns the YAML serialization error if a configuration value cannot be
+    /// represented.
     pub fn to_yaml_string(&self) -> Result<String, serde_yaml::Error> {
         serde_yaml::to_string(self)
     }
 
     /// Read `path`; a missing file is the default configuration.
+    ///
+    /// # Errors
+    /// Returns `ConfigError` for read failures other than a missing file, or for
+    /// malformed configuration data.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let text = match std::fs::read_to_string(path) {
             Ok(text) => text,
@@ -811,6 +826,10 @@ impl Config {
     }
 
     /// Write `path` atomically (temporary file, then rename).
+    ///
+    /// # Errors
+    /// Returns `ConfigError` if serialization, directory creation, writing, syncing or
+    /// atomic replacement fails.
     pub fn save(&self, path: &Path) -> Result<(), ConfigError> {
         let text = self.to_yaml_string().map_err(|error| ConfigError::Parse {
             path: path.to_path_buf(),
@@ -978,6 +997,10 @@ impl ConfigFile {
 
     /// Write the configuration atomically, unless the document on disk
     /// could not be read.
+    ///
+    /// # Errors
+    /// Returns `ConfigError` if serialization, directory creation, writing, syncing or
+    /// atomic replacement fails.
     pub fn save(&self) -> Result<(), ConfigError> {
         if !self.is_writable() {
             return Err(ConfigError::Readonly {
