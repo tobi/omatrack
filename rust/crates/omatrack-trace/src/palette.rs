@@ -31,6 +31,8 @@ const SHARED_REFERENCE_ALPHA: f32 = 0.6;
 /// Strength of a shared-lane channel's primary line against the lane root's
 /// (full) primary colour.
 const SHARED_PRIMARY_ALPHA: f32 = 0.6;
+/// Loss-role opacity at the quiet end of the heat ramp.
+const HEAT_RAMP_FLOOR: f32 = 0.22;
 
 /// Resolved colours of one trace frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -108,10 +110,15 @@ impl TracePalette {
     }
 
     /// Default hue of a channel key.
-    /// The loss ramp at `t` in `[0, 1]`: the quiet muted tone at 0, the
-    /// loss role (`danger`) at 1, opaque in between.
+    /// The loss ramp at `t` in `[0, 1]`: a dim tint of the loss role over
+    /// the quiet muted tone at 0 (low loss still reads as the ramp, not as
+    /// grey), the loss role (`danger`) at 1, opaque in between.
     pub fn heat(&self, t: f32) -> Hsla {
-        self.heat_quiet.blend(self.loss.opacity(t.clamp(0.0, 1.0)))
+        let t = t.clamp(0.0, 1.0);
+        self.heat_quiet.blend(
+            self.loss
+                .opacity(HEAT_RAMP_FLOOR + (1.0 - HEAT_RAMP_FLOOR) * t),
+        )
     }
 
     pub fn channel_hue(&self, key: &str) -> Hsla {

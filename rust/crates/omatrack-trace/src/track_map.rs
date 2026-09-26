@@ -82,8 +82,9 @@ pub const HEAT_SCALE_QUANTILE: f64 = 0.95;
 /// background loss (a straight under a time-share alignment still "loses"
 /// in proportion to its time) stays quiet so the corners stand out.
 pub const HEAT_FLOOR_QUANTILE: f64 = 0.25;
-/// Stroke width of the heat lap, logical pixels.
-const HEAT_STROKE: f64 = 3.5;
+/// Narrowest stroke of the heat lap, logical pixels (it widens with the
+/// drawing, up to 6 px).
+const HEAT_STROKE: f64 = 3.0;
 
 /// A WGS84 position.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -335,18 +336,29 @@ impl TrackMapData {
     }
 }
 
-/// Equirectangular projection around a centroid, fitted into a rectangle.
+/// Equirectangular projection around a centroid, fitted into a rectangle,
+/// north up unless a rotation fills the rectangle clearly better (a long
+/// circuit in a wide panel).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MapProjection {
     lon0: f64,
     lat0: f64,
     east_scale: f64,
+    /// Rotation of the drawing (counter-clockwise), as cosine and sine.
+    cos: f64,
+    sin: f64,
     /// Logical pixels per metre.
     scale: f64,
     /// Pixel position of the metre origin (the centroid), y down.
     origin_x: f64,
     origin_y: f64,
 }
+
+/// Rotations tried when fitting, in degrees apart (0 to 180).
+const FIT_ROTATION_STEP_DEGREES: f64 = 5.0;
+/// A rotation replaces north-up only when it draws the circuit this much
+/// larger.
+const FIT_ROTATION_MIN_GAIN: f64 = 1.15;
 
 impl MapProjection {
     /// Fit `points` into `width` × `height` logical pixels with `padding` on
@@ -369,31 +381,57 @@ impl MapProjection {
             lon0,
             lat0,
             east_scale: (lat0.to_radians()).cos(),
+            cos: 1.0,
+            sin: 0.0,
             scale: 1.0,
             origin_x: 0.0,
             origin_y: 0.0,
         };
-        let (mut min_x, mut max_x) = (f64::INFINITY, f64::NEG_INFINITY);
-        let (mut min_y, mut max_y) = (f64::INFINITY, f64::NEG_INFINITY);
-        for point in &points {
-            let (east, north) = projection.metres(*point);
-            min_x = min_x.min(east);
-            max_x = max_x.max(east);
-            min_y = min_y.min(north);
-            max_y = max_y.max(north);
-        }
-        let (span_x, span_y) = (max_x - min_x, max_y - min_y);
         let (room_x, room_y) = (width - 2.0 * padding, height - 2.0 * padding);
-        if room_x <= 0.0 || room_y <= 0.0 || (span_x <= 0.0 && span_y <= 0.0) {
+        if room_x <= 0.0 || room_y <= 0.0 {
             return None;
         }
-        let scale = match (span_x > 0.0, span_y > 0.0) {
-            (true, true) => (room_x / span_x).min(room_y / span_y),
-            (true, false) => room_x / span_x,
-            _ => room_y / span_y,
+        let metres: Vec<(f64, f64)> = points.iter().map(|p| projection.metres(*p)).collect();
+        // Bounding box and scale of the drawing rotated by (cos, sin).
+        let fit_at = |cos: f64, sin: f64| {
+            let (mut min_x, mut max_x) = (f64::INFINITY, f64::NEG_INFINITY);
+            let (mut min_y, mut max_y) = (f64::INFINITY, f64::NEG_INFINITY);
+            for &(east, north) in &metres {
+                let (x, y) = (east * cos - north * sin, east * sin + north * cos);
+                min_x = min_x.min(x);
+                max_x = max_x.max(x);
+                min_y = min_y.min(y);
+                max_y = max_y.max(y);
+            }
+            let (span_x, span_y) = (max_x - min_x, max_y - min_y);
+            let scale = match (span_x > 1e-9, span_y > 1e-9) {
+                (true, true) => (room_x / span_x).min(room_y / span_y),
+                (true, false) => room_x / span_x,
+                (false, true) => room_y / span_y,
+                (false, false) => return None,
+            };
+            Some((scale, min_x, max_x, min_y, max_y))
         };
+        let north_up = fit_at(1.0, 0.0)?;
+        let mut best = (north_up, 1.0, 0.0);
+        let steps = (180.0 / FIT_ROTATION_STEP_DEGREES) as usize;
+        for step in 1..steps {
+            let angle = (step as f64 * FIT_ROTATION_STEP_DEGREES).to_radians();
+            let (sin, cos) = angle.sin_cos();
+            if let Some(fit) = fit_at(cos, sin)
+                && fit.0 > best.0.0
+            {
+                best = (fit, cos, sin);
+            }
+        }
+        if best.0.0 < north_up.0 * FIT_ROTATION_MIN_GAIN {
+            best = (north_up, 1.0, 0.0);
+        }
+        let ((scale, min_x, max_x, min_y, max_y), cos, sin) = best;
+        projection.cos = cos;
+        projection.sin = sin;
         projection.scale = scale;
-        // Centre the metre bounding box; north is up, so y flips.
+        // Centre the rotated metre bounding box; y flips (up is +y).
         projection.origin_x = width * 0.5 - (min_x + max_x) * 0.5 * scale;
         projection.origin_y = height * 0.5 + (min_y + max_y) * 0.5 * scale;
         Some(projection)
@@ -410,10 +448,19 @@ impl MapProjection {
     /// Logical pixel position inside the fitted rectangle (y down).
     pub fn project(&self, point: GeoPoint) -> (f64, f64) {
         let (east, north) = self.metres(point);
+        let (x, y) = (
+            east * self.cos - north * self.sin,
+            east * self.sin + north * self.cos,
+        );
         (
-            self.origin_x + east * self.scale,
-            self.origin_y - north * self.scale,
+            self.origin_x + x * self.scale,
+            self.origin_y - y * self.scale,
         )
+    }
+
+    /// Whether the drawing is north-up (not rotated to fill the rectangle).
+    pub fn is_north_up(&self) -> bool {
+        self.sin == 0.0
     }
 
     /// Logical pixels per metre.
@@ -539,21 +586,42 @@ struct MapGeometry {
     labels: Vec<Bounds<Pixels>>,
 }
 
-/// Where a label of `size` goes beside a dot at `centre` with `radius`: to
-/// the right, else to the left, inside `area` and clear of every `placed`
-/// box; `None` when neither side fits (the dot stays, the label is dropped).
+/// Where a label of `size` goes beside a dot at `centre` with `radius`:
+/// first away from the drawing along `outward` (the unit direction from the
+/// map's centre to the dot, so labels sit outside the lap rather than on
+/// it), then to the right, the left, above and below; inside `area` and
+/// clear of every `placed` box. `None` when nothing fits (the dot stays,
+/// the label is dropped).
 fn place_label(
     centre: Point<Pixels>,
     radius: Pixels,
     size: gpui_kit::Size<Pixels>,
     area: Bounds<Pixels>,
     placed: &[Bounds<Pixels>],
+    outward: (f32, f32),
 ) -> Option<Bounds<Pixels>> {
     let gap = radius + px(3.);
-    let top = centre.y - size.height * 0.5;
-    [centre.x + gap, centre.x - gap - size.width]
+    let (w, h) = (size.width, size.height);
+    let top = centre.y - h * 0.5;
+    let (dx, dy) = outward;
+    let outward = (dx.is_finite() && dy.is_finite() && dx.hypot(dy) > 0.5).then(|| {
+        // The box touching the dot's gap circle in the outward direction.
+        let reach = gap.as_f32() + 0.5 * (w.as_f32() * dx.abs() + h.as_f32() * dy.abs());
+        point(
+            centre.x + px(dx * reach) - w * 0.5,
+            centre.y + px(dy * reach) - h * 0.5,
+        )
+    });
+    outward
         .into_iter()
-        .map(|left| Bounds::new(point(left, top), size))
+        .chain([
+            point(centre.x + gap, top),
+            point(centre.x - gap - w, top),
+            // Above and below clear the side boxes' rows.
+            point(centre.x - w * 0.5, top - h - px(2.)),
+            point(centre.x - w * 0.5, top + h + px(2.)),
+        ])
+        .map(|origin| Bounds::new(origin, size))
         .find(|candidate| {
             area.contains(&candidate.origin)
                 && area.contains(&candidate.bottom_right())
@@ -597,6 +665,11 @@ impl MapGeometry {
     }
 
     fn build(&mut self, data: &TrackMapData, width: f32, height: f32, dpr: f32) {
+        // Strokes follow the drawing's size: a panel-wide map reads with a
+        // bolder lap than a thumbnail.
+        let side = f64::from(width.min(height));
+        let lap_stroke = (side / 140.0).clamp(2.0, 3.5);
+        let heat_stroke = (side / 75.0).clamp(HEAT_STROKE, 6.0);
         self.targets.clear();
         self.target_fractions.clear();
         let padding = (width.min(height) as f64 * 0.06).clamp(8.0, 24.0);
@@ -659,12 +732,12 @@ impl MapGeometry {
             let last = (n - 1).max(1) as f64;
             let flush = |run: &mut Vec<PathPoint>, bucket: Bucket, geometry: &mut Self| {
                 let (buffer, width) = match bucket {
-                    Bucket::Slope(SlopeSign::Level) => (&mut geometry.level, 2.0),
-                    Bucket::Slope(SlopeSign::Gain) => (&mut geometry.gain, 2.0),
-                    Bucket::Slope(SlopeSign::Loss) => (&mut geometry.loss, 2.0),
+                    Bucket::Slope(SlopeSign::Level) => (&mut geometry.level, lap_stroke),
+                    Bucket::Slope(SlopeSign::Gain) => (&mut geometry.gain, lap_stroke),
+                    Bucket::Slope(SlopeSign::Loss) => (&mut geometry.loss, lap_stroke),
                     Bucket::Heat(level) => (
                         &mut geometry.heat[usize::from(level).min(HEAT_LEVELS - 1)],
-                        HEAT_STROKE,
+                        heat_stroke,
                     ),
                 };
                 stroke(run, width, buffer);
@@ -1243,12 +1316,24 @@ impl MapOverlay {
             let (color, weight, radius) = style(focused);
             let line = label::shape(corner.short.clone(), text_size, weight, color, window);
             let centre = at(corner.position);
+            let middle = bounds.center();
+            let (dx, dy) = (
+                (centre.x - middle.x).as_f32(),
+                (centre.y - middle.y).as_f32(),
+            );
+            let length = dx.hypot(dy);
+            let outward = if length > 0.0 {
+                (dx / length, dy / length)
+            } else {
+                (0.0, 0.0)
+            };
             let Some(rect) = place_label(
                 centre,
                 px(radius),
                 size(line.width, text_height),
                 bounds,
                 placed,
+                outward,
             ) else {
                 continue;
             };
@@ -1398,6 +1483,32 @@ mod tests {
     }
 
     #[test]
+    fn a_long_circuit_turns_to_fill_a_wide_rectangle() {
+        // 1000 m north-south, 100 m wide, in a 400 x 200 px box: north-up
+        // it would be 20 px wide.
+        let (lon0, lat0): (f64, f64) = (-83.81, 34.14);
+        let dlat = 1000.0 / METERS_PER_DEGREE;
+        let dlon = 100.0 / (METERS_PER_DEGREE * lat0.to_radians().cos());
+        let points = vec![
+            GeoPoint::new(lon0, lat0),
+            GeoPoint::new(lon0 + dlon, lat0),
+            GeoPoint::new(lon0 + dlon, lat0 + dlat),
+            GeoPoint::new(lon0, lat0 + dlat),
+        ];
+        let projection = MapProjection::fit(points.clone(), 400.0, 200.0, 0.0).unwrap();
+        assert!(!projection.is_north_up());
+        assert!(projection.scale() > 0.3, "{}", projection.scale());
+        for point in points {
+            let (x, y) = projection.project(point);
+            assert!((-1e-6..=400.0 + 1e-6).contains(&x), "{x}");
+            assert!((-1e-6..=200.0 + 1e-6).contains(&y), "{y}");
+        }
+        // A square box keeps it north-up.
+        let square = MapProjection::fit(rectangle(), 400.0, 400.0, 0.0).unwrap();
+        assert!(square.is_north_up());
+    }
+
+    #[test]
     fn fit_preserves_aspect_and_centres() {
         let points = rectangle();
         let projection = MapProjection::fit(points.clone(), 400.0, 400.0, 20.0).unwrap();
@@ -1539,21 +1650,37 @@ mod tests {
     }
 
     #[test]
-    fn labels_go_right_then_left_and_never_overlap() {
+    fn labels_go_outward_then_around_and_never_overlap() {
         let area = Bounds::new(point(px(0.), px(0.)), size(px(200.), px(100.)));
         let label = size(px(30.), px(12.));
         let centre = point(px(100.), px(50.));
-        let right = place_label(centre, px(2.), label, area, &[]).unwrap();
+        let none = (0.0, 0.0);
+        let right = place_label(centre, px(2.), label, area, &[], none).unwrap();
         assert!(right.origin.x > centre.x);
-        let left = place_label(centre, px(2.), label, area, &[right]).unwrap();
+        let left = place_label(centre, px(2.), label, area, &[right], none).unwrap();
         assert!(left.bottom_right().x < centre.x);
+        let above = place_label(centre, px(2.), label, area, &[right, left], none).unwrap();
+        assert!(above.bottom_right().y < centre.y);
+        let below = place_label(centre, px(2.), label, area, &[right, left, above], none).unwrap();
+        assert!(below.origin.y > centre.y);
         assert_eq!(
-            place_label(centre, px(2.), label, area, &[right, left]),
+            place_label(
+                centre,
+                px(2.),
+                label,
+                area,
+                &[right, left, above, below],
+                none
+            ),
             None
         );
+        // Outward first: a dot on the upper edge of the drawing labels above.
+        let up = place_label(centre, px(2.), label, area, &[], (0.0, -1.0)).unwrap();
+        assert!(up.bottom_right().y < centre.y);
+        assert!((up.center().x - centre.x).abs() < px(0.5));
         // At the right edge only the left side fits.
         let edge = point(px(190.), px(50.));
-        let placed = place_label(edge, px(2.), label, area, &[]).unwrap();
+        let placed = place_label(edge, px(2.), label, area, &[], (1.0, 0.0)).unwrap();
         assert!(placed.bottom_right().x < edge.x);
     }
 
