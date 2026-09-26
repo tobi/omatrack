@@ -658,6 +658,9 @@ impl DamperPlot {
         let (low, span) = window_range(&data.primary, start, end);
         decimate(&data.primary, &|f| f, &params(low, span), points);
         stroke(points, STROKE_WIDTH, primary);
+        // Paths are clipped to their bounds: without these they paint nothing.
+        reference.finish();
+        primary.finish();
     }
 
     fn register_input(&self, bounds: Bounds<Pixels>, hitbox: Hitbox, window: &mut Window) {

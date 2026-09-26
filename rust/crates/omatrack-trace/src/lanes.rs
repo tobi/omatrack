@@ -88,7 +88,10 @@ impl PathBuffer {
         });
     }
 
-    fn finish(&mut self) {
+    /// Seal each chunk's bounds from its vertices. Call once after the last
+    /// triangle: GPUI clips a path to its bounds, so an unsealed buffer
+    /// paints nothing.
+    pub fn finish(&mut self) {
         for (chunk, (min, max)) in self.chunks[..self.used].iter_mut().zip(&self.bounds) {
             let (mut top, mut bottom) = (min[1], max[1]);
             if let Some((t, b)) = self.extent {

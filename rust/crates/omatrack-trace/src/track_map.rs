@@ -142,14 +142,19 @@ pub struct MapCorner {
     /// Stable corner id (as [`crate::CornerBand::id`]).
     pub id: u32,
     pub label: SharedString,
+    /// `T10A` for `Turn 10A`, what the map draws; the full label otherwise.
+    pub short: SharedString,
     pub position: GeoPoint,
 }
 
 impl MapCorner {
     pub fn new(id: u32, label: impl Into<SharedString>, position: GeoPoint) -> Self {
+        let label = label.into();
+        let short = crate::corner_ruler::short_label(&label).unwrap_or_else(|| label.clone());
         Self {
             id,
-            label: label.into(),
+            label,
+            short,
             position,
         }
     }
@@ -423,6 +428,30 @@ struct MapGeometry {
     renders: usize,
     /// Window origin of the last paint.
     origin: Point<Pixels>,
+    /// Corner label boxes placed this frame (retained, cleared per paint).
+    labels: Vec<Bounds<Pixels>>,
+}
+
+/// Where a label of `size` goes beside a dot at `centre` with `radius`: to
+/// the right, else to the left, inside `area` and clear of every `placed`
+/// box; `None` when neither side fits (the dot stays, the label is dropped).
+fn place_label(
+    centre: Point<Pixels>,
+    radius: Pixels,
+    size: gpui_kit::Size<Pixels>,
+    area: Bounds<Pixels>,
+    placed: &[Bounds<Pixels>],
+) -> Option<Bounds<Pixels>> {
+    let gap = radius + px(3.);
+    let top = centre.y - size.height * 0.5;
+    [centre.x + gap, centre.x - gap - size.width]
+        .into_iter()
+        .map(|left| Bounds::new(point(left, top), size))
+        .find(|candidate| {
+            area.contains(&candidate.origin)
+                && area.contains(&candidate.bottom_right())
+                && !placed.iter().any(|b| b.intersects(candidate))
+        })
 }
 
 impl MapGeometry {
@@ -438,15 +467,27 @@ impl MapGeometry {
         }
         self.key = Some(key);
         self.builds += 1;
-        for buffer in [
+        for buffer in self.buffers_mut() {
+            buffer.clear();
+        }
+        self.build(data, width, height, dpr);
+        // Paths are clipped to their bounds: without these they paint nothing.
+        for buffer in self.buffers_mut() {
+            buffer.finish();
+        }
+    }
+
+    fn buffers_mut(&mut self) -> [&mut PathBuffer; 5] {
+        [
             &mut self.centerline,
             &mut self.reference,
             &mut self.level,
             &mut self.gain,
             &mut self.loss,
-        ] {
-            buffer.clear();
-        }
+        ]
+    }
+
+    fn build(&mut self, data: &TrackMapData, width: f32, height: f32, dpr: f32) {
         self.targets.clear();
         self.target_fractions.clear();
         let padding = (width.min(height) as f64 * 0.06).clamp(8.0, 24.0);
@@ -977,10 +1018,9 @@ impl Element for MapOverlay {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let origin = bounds.origin;
         let projection = self.geometry.borrow().projection;
         if let Some(projection) = projection {
-            self.paint_marks(&projection, origin, window, cx);
+            self.paint_marks(&projection, bounds, window, cx);
         }
         window.set_cursor_style(
             if self.hover.is_some() {
@@ -998,10 +1038,11 @@ impl MapOverlay {
     fn paint_marks(
         &self,
         projection: &MapProjection,
-        origin: Point<Pixels>,
+        bounds: Bounds<Pixels>,
         window: &mut Window,
         cx: &mut App,
     ) {
+        let origin = bounds.origin;
         let palette = &self.palette;
         let at = |p: GeoPoint| {
             let (x, y) = projection.project(p);
@@ -1023,36 +1064,60 @@ impl MapOverlay {
                 );
             };
 
-        // Corner labels, the focused one emphasised.
+        // Corner dots, then their short labels: the focused one first and
+        // emphasised, the rest in lap order wherever they fit without
+        // overlapping (a crowded map drops labels, never stacks them).
         let text_size = label::xs(window);
         let text_height = px(text_size.as_f32() * 1.25);
-        for corner in &self.data.corners {
-            if !corner.position.is_valid() {
-                continue;
-            }
-            let centre = at(corner.position);
-            let focused = self.focused == Some(corner.id);
-            let (color, weight, radius) = if focused {
+        let style = |focused: bool| {
+            if focused {
                 (self.strong, FontWeight::SEMIBOLD, 3.5)
             } else {
                 (self.label, FontWeight::NORMAL, 2.0)
-            };
+            }
+        };
+        let corners = || {
+            self.data
+                .corners
+                .iter()
+                .filter(|corner| corner.position.is_valid())
+        };
+        for corner in corners() {
+            let focused = self.focused == Some(corner.id);
+            let (_, _, radius) = style(focused);
+            let fill = if focused { palette.primary } else { self.label };
             dot(
                 window,
-                centre,
+                at(corner.position),
                 radius,
-                if focused { palette.primary } else { self.label },
+                fill,
                 palette.background,
             );
-            let line = label::shape(corner.label.clone(), text_size, weight, color, window);
-            label::paint(
-                &line,
-                centre + point(px(radius + 3.0), -text_height),
-                text_height,
-                window,
-                cx,
-            );
         }
+        let mut geometry = self.geometry.borrow_mut();
+        let placed = &mut geometry.labels;
+        placed.clear();
+        let focused_first = corners()
+            .filter(|c| self.focused == Some(c.id))
+            .chain(corners().filter(|c| self.focused != Some(c.id)));
+        for corner in focused_first {
+            let focused = self.focused == Some(corner.id);
+            let (color, weight, radius) = style(focused);
+            let line = label::shape(corner.short.clone(), text_size, weight, color, window);
+            let centre = at(corner.position);
+            let Some(rect) = place_label(
+                centre,
+                px(radius),
+                size(line.width, text_height),
+                bounds,
+                placed,
+            ) else {
+                continue;
+            };
+            placed.push(rect);
+            label::paint(&line, rect.origin, text_height, window, cx);
+        }
+        drop(geometry);
 
         // Hover ring on the lap.
         if let Some(hover) = self.hover
@@ -1267,5 +1332,57 @@ mod tests {
         assert_eq!(geometry.builds, 1);
         geometry.prepare(&data, 301.0, 300.0, 2.0);
         assert_eq!(geometry.builds, 2);
+    }
+
+    #[test]
+    fn labels_go_right_then_left_and_never_overlap() {
+        let area = Bounds::new(point(px(0.), px(0.)), size(px(200.), px(100.)));
+        let label = size(px(30.), px(12.));
+        let centre = point(px(100.), px(50.));
+        let right = place_label(centre, px(2.), label, area, &[]).unwrap();
+        assert!(right.origin.x > centre.x);
+        let left = place_label(centre, px(2.), label, area, &[right]).unwrap();
+        assert!(left.bottom_right().x < centre.x);
+        assert_eq!(
+            place_label(centre, px(2.), label, area, &[right, left]),
+            None
+        );
+        // At the right edge only the left side fits.
+        let edge = point(px(190.), px(50.));
+        let placed = place_label(edge, px(2.), label, area, &[]).unwrap();
+        assert!(placed.bottom_right().x < edge.x);
+    }
+
+    #[test]
+    fn map_corners_draw_their_short_names() {
+        let corner = MapCorner::new(1, "Turn 10A", GeoPoint::new(0.0, 0.0));
+        assert_eq!(corner.short.as_ref(), "T10A");
+        let corner = MapCorner::new(2, "Esses", GeoPoint::new(0.0, 0.0));
+        assert_eq!(corner.short.as_ref(), "Esses");
+    }
+
+    #[test]
+    fn every_mesh_chunk_carries_the_bounds_of_its_triangles() {
+        // GPUI clips a path to its bounds: zero bounds paint nothing.
+        let n = 200;
+        let lat: Arc<[f64]> = (0..n).map(|i| 34.15 + i as f64 * 1e-5).collect();
+        let lon: Arc<[f64]> = (0..n).map(|i| -83.81 + i as f64 * 1e-5).collect();
+        let data = TrackMapData::new()
+            .with_centerline(rectangle())
+            .with_primary(Some(GpsTrack::new(lat.clone(), lon.clone())))
+            .with_reference(Some(GpsTrack::new(lat, lon)));
+        let mut geometry = MapGeometry::default();
+        geometry.prepare(&data, 300.0, 200.0, 1.0);
+        for buffer in [&geometry.centerline, &geometry.reference, &geometry.level] {
+            assert!(!buffer.is_empty());
+            for chunk in buffer.chunks() {
+                assert!(chunk.bounds.size.width > px(1.) && chunk.bounds.size.height > px(1.));
+                let (min, max) = (chunk.bounds.origin, chunk.bounds.bottom_right());
+                for v in &chunk.vertices {
+                    let p = v.xy_position;
+                    assert!(p.x >= min.x && p.y >= min.y && p.x <= max.x && p.y <= max.y);
+                }
+            }
+        }
     }
 }
