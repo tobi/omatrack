@@ -2,8 +2,9 @@
 //!
 //! Composition, top to bottom:
 //!
-//! - the lanes: a chrome column (name and unit; mono P/R/Δ readouts only
-//!   while a cursor or hover is active) beside the plot column. The plot column holds the cached
+//! - the lanes: a chrome column (name and unit; P/R/Δ readouts in fixed
+//!   columns, tabular figures, only while a cursor or hover is active)
+//!   beside the plot column. The plot column holds the cached
 //!   [`TraceStaticView`] and the overlay element on top of it. Pinned lanes
 //!   sit above the scroll region;
 //! - the shared x-axis.
@@ -35,11 +36,12 @@ use std::sync::Arc;
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::{ActiveTheme as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::{
-    AppContext as _, Bounds, Context, ElementId, Entity, EventEmitter, FocusHandle, Focusable,
-    Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Point, Render, Role,
-    SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _, Subscription,
-    Window, div, prelude::FluentBuilder as _, px,
+    AnyElement, AppContext as _, Bounds, Context, ElementId, Entity, EventEmitter, FocusHandle,
+    Focusable, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Point,
+    Render, Role, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _,
+    Subscription, Window, div, prelude::FluentBuilder as _, px, rems,
 };
+use omatrack_ui::{DeltaSense, TypeScale as _, format_delta, format_value};
 
 use crate::axis::TraceAxis;
 use crate::interaction::{
@@ -641,11 +643,11 @@ impl TraceStack {
         let theme = cx.theme();
         let pinned_height = self.layout.pinned_height as f32;
         let map = self.scene.map.as_deref();
-        let mono = theme.mono_font_family.clone();
         let muted = theme.muted_foreground;
         let foreground = theme.foreground;
         let border = theme.border;
         let viewport = self.viewport.read(cx).viewport();
+        let approximate = self.scene.approximate_delta;
         let cells = self
             .layout
             .slots
@@ -679,8 +681,8 @@ impl TraceStack {
                 } else {
                     format!("{title}, {unit}")
                 };
-                // A shared lane names each channel in its own hue, so the
-                // overlaid line is findable before any cursor exists.
+                // A shared lane names each channel in the hue of its primary
+                // line, so the overlaid line is findable before any cursor.
                 let names: Vec<_> = channels
                     .iter()
                     .enumerate()
@@ -700,39 +702,48 @@ impl TraceStack {
                             .child(div().text_color(color).truncate().child(lane.title.clone()))
                     })
                     .collect();
-                // Δ states the time gained or lost across the view (its
-                // range follows the view): the lane's one number that
-                // matters before a cursor exists.
-                let approximate = self.scene.approximate_delta;
-                let scale = (root.kind == LaneKind::Delta).then(|| {
+                let mut rows: Vec<AnyElement> = Vec::new();
+                if root.kind == LaneKind::Delta {
+                    // Δ states the time gained or lost across the view (its
+                    // range follows the view): the lane's one number that
+                    // matters before a cursor exists.
                     let change = root.change_in(viewport);
-                    SharedString::from(if !change.is_finite() {
-                        "in view —".to_string()
-                    } else if approximate {
-                        format!("in view ≈{}", signed_seconds(change, 2))
-                    } else {
-                        format!("in view {}", signed_seconds(change, 3))
-                    })
-                });
-                let rows: Vec<_> = readout_at
-                    .map(|fraction| {
-                        channels
-                            .iter()
-                            .enumerate()
-                            .map(|(position, lane)| {
-                                let readout = lane.readout(fraction, map);
-                                let style = self.styles.get(&lane.key);
-                                let (primary, reference) =
-                                    palette.channel_colors(&lane.key, position == 0, &style);
-                                let text = ReadoutText::new(lane, &readout, approximate);
-                                label.push_str(&format!(", {}", text.spoken(lane)));
-                                readout_row(
-                                    lane, text, combined, primary, reference, palette, muted,
-                                )
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                    let (text, trend) = delta_seconds(change, approximate);
+                    label.push_str(&format!(", in view {text}"));
+                    rows.push(
+                        summary_row(&root.key, "view", "In view", text, trend, palette, muted)
+                            .into_any_element(),
+                    );
+                    if let Some(fraction) = readout_at {
+                        let readout = root.readout(fraction, map);
+                        let (text, trend) = delta_seconds(readout.primary, approximate);
+                        label.push_str(&format!(", at cursor {text}"));
+                        rows.push(
+                            summary_row(&root.key, "cursor", "Cursor", text, trend, palette, muted)
+                                .into_any_element(),
+                        );
+                    }
+                } else if let Some(fraction) = readout_at {
+                    for (position, lane) in channels.iter().enumerate() {
+                        let readout = lane.readout(fraction, map);
+                        let style = self.styles.get(&lane.key);
+                        let (hue, reference) =
+                            palette.channel_colors(&lane.key, position == 0, &style);
+                        // Values carry the lap role; a shared channel's hue
+                        // only names it (its label and line), so its figures
+                        // stay as legible as the root's.
+                        let roles = if position == 0 {
+                            (hue, reference)
+                        } else {
+                            (palette.primary, palette.reference)
+                        };
+                        let text = ReadoutText::new(lane, &readout);
+                        label.push_str(&format!(", {}", text.spoken(lane)));
+                        rows.push(
+                            readout_row(lane, text, combined, hue, roles, muted).into_any_element(),
+                        );
+                    }
+                }
                 let id = ElementId::Name(format!("lane-{}", root.key).into());
                 // Scroll lanes are placed inside the scroll region, which
                 // clips them where they pass under the pinned lanes.
@@ -753,29 +764,21 @@ impl TraceStack {
                     .h(px(height))
                     .overflow_hidden()
                     .px_2()
-                    .pt_0p5()
+                    .pt_px()
+                    .text_label()
+                    .line_height(rems(LEGEND_LINE_REMS))
                     .when(ix > 0, |el| el.border_t_1().border_color(border))
                     .child(
                         h_flex()
                             .gap_1()
                             .min_w_0()
-                            .text_xs()
+                            .items_baseline()
                             .child(h_flex().gap_1().min_w_0().font_medium().children(names))
                             .when(!unit.is_empty(), |el| {
                                 el.child(div().text_color(muted).flex_shrink_0().child(unit))
-                            })
-                            .when_some(scale, |el, scale| {
-                                el.child(
-                                    div()
-                                        .ml_auto()
-                                        .flex_shrink_0()
-                                        .font_family(mono.clone())
-                                        .text_color(muted)
-                                        .child(scale),
-                                )
                             }),
                     )
-                    .child(v_flex().font_family(mono.clone()).text_xs().children(rows));
+                    .child(v_flex().numeric().children(rows));
                 Some((slot.pinned, cell.into_any_element()))
             });
         let (pinned, scrolled): (Vec<_>, Vec<_>) = cells.partition(|(pinned, _)| *pinned);
@@ -805,6 +808,81 @@ impl TraceStack {
                     .children(scrolled.into_iter().map(|(_, cell)| cell)),
             )
     }
+
+    /// The key under the readout columns, in the axis row's chrome cell:
+    /// which column is the primary lap, the reference and their difference.
+    /// Shown only while readouts are (colour is never the only cue).
+    fn render_column_key(
+        &self,
+        readout_at: Option<f64>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = cx.theme();
+        let has_reference = self.scene.lanes.iter().any(|lane| lane.reference.is_some());
+        let show = readout_at.is_some() && !self.scene.is_empty();
+        let key = |text: &'static str, color: Hsla| value_cell().text_color(color).child(text);
+        div()
+            .id("readout-key")
+            .test_support()
+            .size_full()
+            .px_2()
+            .flex()
+            .items_center()
+            .text_caption()
+            .when(show, |el| {
+                el.child(
+                    readout_grid()
+                        .child(label_cell())
+                        .child(key("P", theme.muted_foreground))
+                        .when(has_reference, |el| {
+                            el.child(key("R", theme.muted_foreground))
+                                .child(key("Δ", theme.muted_foreground))
+                        }),
+                )
+            })
+    }
+}
+
+/// Line height of a lane legend, rems: dense (1.17 of the label step), so a
+/// shared lane's title and two readout rows fit a
+/// [`MIN_LANE_HEIGHT`](crate::layout::MIN_LANE_HEIGHT) lane.
+const LEGEND_LINE_REMS: f32 = 0.875;
+
+/// Width of a readout row's channel column, rems (`Thr`, `Bra`).
+const LABEL_CELL_REMS: f32 = 1.75;
+/// Minimum width of a readout value column, rems: `-180.0` in tabular
+/// label-size figures. A longer value widens its cell rather than clip.
+const VALUE_CELL_REMS: f32 = 2.5;
+/// Width of the lane chrome column, rems: the readout grid (a channel
+/// column, three value columns and their gaps) plus the cell's inset, so
+/// legends never clip.
+pub const CHROME_REMS: f32 = 12.0;
+/// Gap between readout columns, rems (`gap_1p5`).
+const GAP_REMS: f32 = 0.375;
+/// Width of a full readout row, rems.
+const ROW_REMS: f32 = LABEL_CELL_REMS + 3.0 * VALUE_CELL_REMS + 3.0 * GAP_REMS;
+
+/// One row of the readout grid: the channel column then the value columns,
+/// on the same spines in every lane.
+fn readout_grid() -> gpui_kit::Div {
+    h_flex()
+        .gap(rems(GAP_REMS))
+        .flex_shrink_0()
+        .whitespace_nowrap()
+}
+
+fn label_cell() -> gpui_kit::Div {
+    div()
+        .w(rems(LABEL_CELL_REMS))
+        .flex_shrink_0()
+        .overflow_hidden()
+}
+
+fn value_cell() -> gpui_kit::Div {
+    div()
+        .min_w(rems(VALUE_CELL_REMS))
+        .flex_shrink_0()
+        .text_right()
 }
 
 /// Formatted P/R/Δ values of one channel at the cursor.
@@ -812,65 +890,28 @@ struct ReadoutText {
     primary: SharedString,
     reference: Option<SharedString>,
     delta: Option<SharedString>,
-    delta_color: Option<bool>,
 }
 
 impl ReadoutText {
-    fn new(lane: &LaneSeries, readout: &Readout, approximate: bool) -> Self {
+    fn new(lane: &LaneSeries, readout: &Readout) -> Self {
         let scale = lane.display_scale();
         let span = lane.y_range.span() * scale;
-        let decimals = if lane.kind == LaneKind::Step {
-            0
-        } else if lane.kind == LaneKind::Delta {
-            3
-        } else if span >= 100.0 {
+        let decimals = if lane.kind == LaneKind::Step || span >= 100.0 {
             0
         } else if span >= 10.0 {
             1
         } else {
             2
         };
-        let value = |v: f64| -> SharedString {
-            if v.is_finite() {
-                format!("{:.*}", decimals, v * scale).into()
-            } else {
-                "—".into()
-            }
-        };
-        if lane.kind == LaneKind::Delta {
-            let v = readout.primary;
-            let decimals = if approximate { 2 } else { 3 };
-            let text = if !v.is_finite() {
-                "—".to_string()
-            } else if approximate {
-                format!("≈{}", signed_seconds(v, decimals))
-            } else {
-                signed_seconds(v, decimals)
-            };
-            return Self {
-                primary: text.into(),
-                reference: None,
-                delta: None,
-                // Positive Δt: the primary lap is slower (loss). Below the
-                // display resolution, or under LOW confidence, neither.
-                delta_color: (v.is_finite()
-                    && !approximate
-                    && v.abs() >= 0.5 * 10f64.powi(-(decimals as i32)))
-                .then_some(v < 0.0),
-            };
-        }
+        let value = |v: f64| format_value(Some(v * scale), decimals);
         let has_reference = lane.reference.is_some();
         Self {
             primary: value(readout.primary),
             reference: has_reference.then(|| value(readout.reference)),
+            // The sense only colours; the legend's Δ column stays muted.
             delta: has_reference.then(|| {
-                if readout.delta.is_finite() {
-                    format!("{:+.*}", decimals, readout.delta * scale).into()
-                } else {
-                    "—".into()
-                }
+                format_delta(Some(readout.delta * scale), decimals, DeltaSense::default()).0
             }),
-            delta_color: None,
         }
     }
 
@@ -886,60 +927,101 @@ impl ReadoutText {
     }
 }
 
+/// A channel's values at the cursor: its name in the channel hue, primary
+/// and reference in their lap roles, their difference muted.
 fn readout_row(
     lane: &LaneSeries,
     text: ReadoutText,
     combined: bool,
-    primary: Hsla,
-    reference: Hsla,
+    hue: Hsla,
+    (primary, reference): (Hsla, Hsla),
+    muted: Hsla,
+) -> impl IntoElement {
+    let cell = |column: &str, value: SharedString, color: Hsla| {
+        value_cell()
+            .id(ElementId::Name(
+                format!("readout-{}-{column}", lane.key).into(),
+            ))
+            .test_support()
+            .text_color(color)
+            .child(value)
+    };
+    readout_grid()
+        .child(
+            label_cell()
+                .text_caption()
+                .text_color(hue)
+                .when(combined, |el| {
+                    el.child(SharedString::from(
+                        lane.title.chars().take(3).collect::<String>(),
+                    ))
+                }),
+        )
+        .child(cell("p", text.primary, primary))
+        .when_some(text.reference, |el, value| {
+            el.child(cell("r", value, reference))
+        })
+        .when_some(text.delta, |el, value| el.child(cell("d", value, muted)))
+}
+
+/// A Δt lane figure (`In view`, `Cursor`): its name across the channel and
+/// primary columns, the value right-aligned on the Δ spine.
+fn summary_row(
+    key: &str,
+    column: &str,
+    name: &'static str,
+    value: SharedString,
+    trend: Option<bool>,
     palette: &TracePalette,
     muted: Hsla,
 ) -> impl IntoElement {
-    let value_color = match text.delta_color {
+    let color = match trend {
         Some(true) => palette.gain,
         Some(false) => palette.loss,
-        None if lane.kind == LaneKind::Delta => muted,
-        None => primary,
+        None => palette.foreground,
     };
     h_flex()
-        .gap_2()
-        .min_w_0()
+        .w(rems(ROW_REMS))
+        .flex_shrink_0()
         .whitespace_nowrap()
-        .when(combined, |el| {
-            el.child(
-                div()
-                    .text_color(muted)
-                    .flex_shrink_0()
-                    .child(SharedString::from(
-                        lane.title.chars().take(3).collect::<String>(),
-                    )),
-            )
-        })
-        .when(lane.kind == LaneKind::Delta, |el| {
-            el.child(div().text_color(muted).child("Δ"))
-        })
-        .when(lane.kind != LaneKind::Delta, |el| {
-            el.child(div().text_color(muted).child("P"))
-        })
-        .child(div().text_color(value_color).child(text.primary))
-        .when_some(text.reference, |el, value| {
-            el.child(div().text_color(muted).child("R"))
-                .child(div().text_color(reference).child(value))
-        })
-        .when_some(text.delta, |el, value| {
-            el.child(div().text_color(muted).child("Δ"))
-                .child(div().text_color(muted).child(value))
-        })
+        .justify_between()
+        .items_baseline()
+        .child(div().text_caption().text_color(muted).child(name))
+        .child(
+            div()
+                .id(ElementId::Name(format!("readout-{key}-{column}").into()))
+                .test_support()
+                .text_color(color)
+                .child(value),
+        )
+}
+
+/// A time delta for the Δt lane: signed seconds (`≈` and two decimals under
+/// a LOW-confidence alignment) and its trend, `Some(true)` for a gain.
+/// Below the display resolution, or approximate, it is neither.
+fn delta_seconds(value: f64, approximate: bool) -> (SharedString, Option<bool>) {
+    if !value.is_finite() {
+        return ("—".into(), None);
+    }
+    let decimals = if approximate { 2 } else { 3 };
+    let text = signed_seconds(value, decimals);
+    let text = if approximate {
+        format!("≈{text}")
+    } else {
+        text
+    };
+    // Positive Δt: the primary lap is slower (loss).
+    let trend = (!approximate && value.abs() >= 0.5 * 10f64.powi(-(decimals as i32)))
+        .then_some(value < 0.0);
+    (text.into(), trend)
 }
 
 /// Signed seconds at `decimals`; a value that rounds to zero reads
 /// `±0.000` (neither gain nor loss).
 fn signed_seconds(value: f64, decimals: usize) -> String {
-    if value.abs() < 0.5 * 10f64.powi(-(decimals as i32)) {
-        format!("±{:.*}", decimals, 0.0)
-    } else {
-        format!("{value:+.*}", decimals)
-    }
+    format_delta(Some(value), decimals, DeltaSense::LowerIsBetter)
+        .0
+        .to_string()
 }
 
 fn spans(corners: &[CornerBand]) -> Vec<CornerSpan> {
@@ -1030,7 +1112,7 @@ impl Render for TraceStack {
                         .top_1()
                         .right(px((width - lap_start).max(0.0)))
                         .pr_2()
-                        .text_xs()
+                        .text_caption()
                         .text_color(muted)
                         .child(SharedString::from(format!("« {label}"))),
                 )
@@ -1042,7 +1124,7 @@ impl Render for TraceStack {
                         .top_1()
                         .left(px(lap_end.max(0.0)))
                         .pl_2()
-                        .text_xs()
+                        .text_caption()
                         .text_color(muted)
                         .child(SharedString::from(format!("{label} »"))),
                 )
@@ -1055,7 +1137,7 @@ impl Render for TraceStack {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .text_sm()
+                        .text_body()
                         .text_color(muted)
                         .child("Select a lap to see its traces"),
                 )
@@ -1075,7 +1157,7 @@ impl Render for TraceStack {
                     .items_stretch()
                     .child(
                         div()
-                            .w_40()
+                            .w(rems(CHROME_REMS))
                             .flex_shrink_0()
                             .child(self.render_chrome(readout_at, &palette, cx)),
                     )
@@ -1090,10 +1172,11 @@ impl Render for TraceStack {
                     .border_color(focus_edge)
                     .child(
                         div()
-                            .w_40()
+                            .w(rems(CHROME_REMS))
                             .flex_shrink_0()
                             .border_r_1()
-                            .border_color(border),
+                            .border_color(border)
+                            .child(self.render_column_key(readout_at, cx)),
                     )
                     .child(div().flex_1().min_w_0().child(TraceAxis::new(
                         &self.ticks,

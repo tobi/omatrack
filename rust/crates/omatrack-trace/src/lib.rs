@@ -118,7 +118,7 @@ pub use scene::{
     ComplexBand, CornerBand, FractionMap, LaneKind, LaneSeries, LaneStyle, LaneStyles, Readout,
     TraceScene, YRange,
 };
-pub use stack::{TraceEvent, TraceStack};
+pub use stack::{CHROME_REMS, TraceEvent, TraceStack};
 pub use state::{CursorState, Selection, ViewportState};
 pub use static_layer::{StaticStats, TraceStaticView};
 pub use track_map::{GeoPoint, GpsTrack, MapCorner, TrackMap, TrackMapData, TrackMapEvent};

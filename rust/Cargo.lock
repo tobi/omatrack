@@ -4959,6 +4959,7 @@ dependencies = [
  "gpui-kit",
  "log",
  "omatrack-core",
+ "omatrack-ui",
  "smallvec",
 ]
 

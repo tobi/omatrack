@@ -9,21 +9,25 @@
 //! folded join.
 //!
 //! Channel hues identify a channel that shares a lane with another
-//! (throttle/brake). They come only from the chart tokens (`speed`/`throttle`
+//! (throttle/brake) and mark that channel's primary lap. They come only from the chart tokens (`speed`/`throttle`
 //! `chart_2`, `brake` `chart_4`, `steering` `chart_5`, others hashed over
 //! `chart_1..5`), never from a role token: a red brake would read as Δ loss,
 //! an amber steering as the reference lap. The lane's root channel keeps the
-//! role colours
-//! so primary and reference read the same everywhere. `channels.<key>.color`
+//! role colours, and every reference line (root or shared) stays in the
+//! reference role, so the reference lap reads the same everywhere. `channels.<key>.color`
 //! and `reference_color` overrides (user data, carried by [`LaneStyle`])
 //! win over both.
 //!
 //! Geometry caches never key on colour: a theme change only repaints.
 
 use gpui_kit::Hsla;
-use gpui_kit::component::{Colorize as _, Theme};
+use gpui_kit::component::Theme;
 
 use crate::scene::LaneStyle;
+
+/// Strength of a shared-lane channel's reference line against the lane
+/// root's (full) reference colour.
+const SHARED_REFERENCE_ALPHA: f32 = 0.7;
 
 /// Resolved colours of one trace frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -117,8 +121,15 @@ impl TracePalette {
         let (primary, reference) = if root {
             (self.primary, self.reference)
         } else {
-            let hue = self.channel_hue(key);
-            (hue, hue.mix(self.reference, 0.45))
+            // The channel hue marks the primary lap; the reference stays in
+            // the reference role, a step quieter than the lane root's so the
+            // two reference lines remain tellable apart. Never a hue mix: it
+            // interpolates hue (blue and amber made green).
+            (
+                self.channel_hue(key),
+                self.background
+                    .blend(self.reference.opacity(SHARED_REFERENCE_ALPHA)),
+            )
         };
         (
             style
@@ -161,6 +172,12 @@ mod tests {
         ] {
             assert_ne!(brake, role);
         }
+        // Its reference line stays in the reference role: the reference
+        // hue, quieter than the root's, never a blend towards another hue.
+        let brake_reference = palette.channel_colors("brake", false, &style).1;
+        assert!((brake_reference.h - palette.reference.h).abs() < 0.02);
+        assert_ne!(brake_reference, palette.reference);
+        assert_ne!(brake_reference, brake);
         // Overrides are user data and win.
         let custom_color = gpui_kit::hsla(0.5, 0.5, 0.5, 1.0);
         let custom = LaneStyle::default().with_color(Some(custom_color));

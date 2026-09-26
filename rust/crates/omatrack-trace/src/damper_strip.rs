@@ -47,8 +47,10 @@ use gpui_kit::{
     IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     ParentElement as _, Pixels, Render, Role, ScrollDelta, ScrollWheelEvent, SharedString,
     StatefulInteractiveElement as _, Style, Styled as _, Subscription, WeakEntity, Window, div,
-    fill, point, prelude::FluentBuilder as _, px, relative, size,
+    fill, point, prelude::FluentBuilder as _, px, relative, rems, size,
 };
+
+use omatrack_ui::TypeScale as _;
 
 use crate::decimate::{DecimateParams, PathPoint, PlotRect, decimate};
 use crate::interaction::{CLICK_SLOP, WheelDelta};
@@ -56,6 +58,7 @@ use crate::lanes::PathBuffer;
 use crate::mesh::stroke;
 use crate::palette::TracePalette;
 use crate::scene::FractionMap;
+use crate::stack::CHROME_REMS;
 use crate::state::CursorState;
 
 /// Narrowest window, seconds of the primary lap.
@@ -377,24 +380,22 @@ impl DamperStrip {
     }
 }
 
-/// `+0.120 s`, `-0.040 s`, `±0.000 s`.
+/// `+0.120 s`, `−0.040 s`, `±0.000 s`.
 pub fn format_offset(seconds: f64) -> String {
     if !seconds.is_finite() || seconds.abs() < 0.0005 {
         return "±0.000 s".into();
     }
-    format!("{seconds:+.3} s")
+    format!(
+        "{} s",
+        omatrack_ui::format_delta(Some(seconds), 3, omatrack_ui::DeltaSense::default()).0
+    )
 }
 
 impl Render for DamperStrip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let palette = TracePalette::from_theme(theme);
-        let (muted, foreground, border, mono) = (
-            theme.muted_foreground,
-            theme.foreground,
-            theme.border,
-            theme.mono_font_family.clone(),
-        );
+        let (muted, foreground, border) = (theme.muted_foreground, theme.foreground, theme.border);
         let has_data = self.data.is_some();
         let offset = self.offset();
         let committed = self.data.as_ref().map_or(0.0, |d| d.offset);
@@ -419,7 +420,7 @@ impl Render for DamperStrip {
             .border_color(border)
             .child(
                 v_flex()
-                    .w_40()
+                    .w(rems(CHROME_REMS))
                     .flex_shrink_0()
                     .px_2()
                     .py_1()
@@ -435,7 +436,7 @@ impl Render for DamperStrip {
                                     .flex_1()
                                     .min_w_0()
                                     .truncate()
-                                    .text_xs()
+                                    .text_label()
                                     .font_medium()
                                     .text_color(foreground)
                                     .child("Front dampers"),
@@ -462,8 +463,8 @@ impl Render for DamperStrip {
                                     .flex_1()
                                     .min_w_0()
                                     .truncate()
-                                    .text_xs()
-                                    .font_family(mono)
+                                    .text_label()
+                                    .numeric()
                                     .text_color(if has_data { foreground } else { muted })
                                     .child(self.spoken_offset()),
                             )
@@ -508,7 +509,7 @@ impl Render for DamperStrip {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .text_xs()
+                                .text_caption()
                                 .text_color(muted)
                                 .child("Both laps need front damper data"),
                         )
@@ -757,7 +758,7 @@ mod tests {
     #[test]
     fn offsets_read_with_an_explicit_sign() {
         assert_eq!(format_offset(0.12), "+0.120 s");
-        assert_eq!(format_offset(-0.04), "-0.040 s");
+        assert_eq!(format_offset(-0.04), "\u{2212}0.040 s");
         assert_eq!(format_offset(0.0001), "±0.000 s");
     }
 }

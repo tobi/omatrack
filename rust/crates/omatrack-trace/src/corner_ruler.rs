@@ -28,7 +28,7 @@
 //!   focus (corner editing and analysis focus are separate modes).
 //!
 //! Placement: the ruler maps lap fraction across its own width, so put it in
-//! the plot column (beside a spacer as wide as the lane chrome, `w_40`) for
+//! the plot column (beside a spacer as wide as the lane chrome, [`crate::CHROME_REMS`]) for
 //! its bands to line up with the lanes below.
 //!
 //! State ownership: the application owns the viewport and the corner data;
@@ -52,6 +52,8 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Style, Styled as _, Subscription, WeakEntity, Window, div,
     fill, point, prelude::FluentBuilder as _, px, relative, size,
 };
+
+use omatrack_ui::TypeStep;
 
 use crate::interaction::{
     CLICK_SLOP, CornerPart, CornerSpan, Effect, Interaction, InteractionContext, PointerButton,
@@ -621,7 +623,7 @@ impl RulerElement {
             return;
         }
         let palette = &self.palette;
-        let text_size = label::xs(window);
+        let text_size = TypeStep::Label.size(window);
         let text_height = text_size.as_f32() * 1.25;
         let tiers = ruler_tiers(height, text_height, !self.complexes.is_empty());
         let x_for =

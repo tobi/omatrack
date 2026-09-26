@@ -2,17 +2,15 @@
 //! map, damper strip).
 //!
 //! Follows gpui-component's `plot::label` idiom: shape one line with the
-//! window's text style and paint it at a baseline-free origin. Sizes come
-//! from the window's rem, so labels follow the application zoom.
+//! window's text style and paint it at a baseline-free origin. Sizes are
+//! steps of the one type scale ([`omatrack_ui::TypeStep`], rem-based, so labels follow
+//! the application zoom) and figures are tabular, matching the div-based
+//! chrome.
 
 use gpui_kit::{
     App, FontWeight, Hsla, Pixels, Point, ShapedLine, SharedString, TextAlign, TextRun, Window,
 };
-
-/// `text_xs` of the current rem (0.75 rem).
-pub(crate) fn xs(window: &Window) -> Pixels {
-    window.rem_size() * 0.75
-}
+use omatrack_ui::tabular_figures;
 
 /// Shape one line of `text` with the window's font at `size` and `weight`.
 pub(crate) fn shape(
@@ -24,6 +22,7 @@ pub(crate) fn shape(
 ) -> ShapedLine {
     let mut font = window.text_style().font();
     font.weight = weight;
+    font.features = tabular_figures();
     let run = TextRun {
         len: text.len(),
         font,

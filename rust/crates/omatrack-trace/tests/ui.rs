@@ -412,6 +412,72 @@ fn lane_legends_show_values_only_with_a_cursor(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn legend_values_share_column_spines_and_never_clip(cx: &mut TestAppContext) {
+    let f = open(cx);
+    // Idle: the Δt lane states the change across the view; no column key.
+    cx.update_window(f.window, |_, window, _| {
+        let delta = window.find("lane-delta").label().unwrap().to_string();
+        assert!(delta.contains("in view"), "{delta}");
+        assert!(window.try_find("readout-delta-view").is_some());
+        assert!(window.try_find("readout-speed-p").is_none());
+        assert!(window.try_find("readout-delta-cursor").is_none());
+    })
+    .unwrap();
+    f.cursor
+        .update(cx, |cursor, cx| cursor.set_fraction(Some(0.4), cx));
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| draw(window, cx))
+        .unwrap();
+    cx.update_window(f.window, |_, window, _| {
+        assert!(window.try_find("readout-delta-cursor").is_some());
+        // Primary, reference and Δ columns end on the same spine in every
+        // lane, the shared lane's second channel included.
+        for column in ["p", "r", "d"] {
+            let right = |key: &str| {
+                window
+                    .find(gpui_kit::ElementId::Name(
+                        format!("readout-{key}-{column}").into(),
+                    ))
+                    .bounds()
+                    .right()
+            };
+            let spine = right("speed");
+            for key in ["throttle", "brake", "gear", "steering"] {
+                assert_eq!(right(key), spine, "{key} {column}");
+            }
+        }
+        // The Δt figures sit on the Δ spine.
+        let d = window.find("readout-speed-d").bounds().right();
+        assert_eq!(window.find("readout-delta-view").bounds().right(), d);
+        // Every value lies inside its lane's legend cell: nothing clips.
+        for key in ["speed", "throttle", "gear", "steering"] {
+            let cell = window
+                .find(gpui_kit::ElementId::Name(format!("lane-{key}").into()))
+                .bounds();
+            for column in ["p", "r", "d"] {
+                let value = window
+                    .find(gpui_kit::ElementId::Name(
+                        format!("readout-{key}-{column}").into(),
+                    ))
+                    .bounds();
+                assert!(value.left() >= cell.left(), "{key} {column}");
+                assert!(value.right() <= cell.right(), "{key} {column}");
+            }
+        }
+        let brake = window.find("readout-brake-d").bounds();
+        let throttle = window.find("lane-throttle").bounds();
+        assert!(brake.right() <= throttle.right());
+        // The shared lane's title and both readout rows fit the minimum
+        // lane height, so FIT never clips a legend.
+        let legend = f32::from(brake.bottom() - throttle.top());
+        assert!(legend <= MIN_LANE_HEIGHT as f32, "{legend}");
+        // The key under the columns names them.
+        assert!(window.try_find("readout-key").is_some());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn fit_lanes_keep_a_readable_minimum_and_scroll(cx: &mut TestAppContext) {
     let f = open(cx);
     // Every lane of the synthetic scene, in a short pane.

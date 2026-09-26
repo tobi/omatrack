@@ -12,6 +12,8 @@ use gpui_kit::{
     prelude::FluentBuilder as _, px,
 };
 
+use omatrack_ui::TypeScale as _;
+
 use crate::scale::{Tick, Viewport};
 
 /// One row of tick labels spanning the plot width.
@@ -41,8 +43,8 @@ impl RenderOnce for TraceAxis {
             .relative()
             .size_full()
             .overflow_hidden()
-            .text_xs()
-            .font_family(theme.mono_font_family.clone())
+            .text_caption()
+            .numeric()
             .text_color(theme.muted_foreground)
             .children(self.ticks.into_iter().map(|(x, label)| {
                 div()

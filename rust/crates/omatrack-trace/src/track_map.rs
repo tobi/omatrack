@@ -46,6 +46,8 @@ use gpui_kit::{
     Window, div, fill, point, prelude::FluentBuilder as _, px, relative, size,
 };
 
+use omatrack_ui::TypeStep;
+
 use crate::decimate::PathPoint;
 use crate::interaction::CLICK_SLOP;
 use crate::label;
@@ -1095,7 +1097,7 @@ impl MapOverlay {
         // Corner dots, then their short labels: the focused one first and
         // emphasised, the rest in lap order wherever they fit without
         // overlapping (a crowded map drops labels, never stacks them).
-        let text_size = label::xs(window);
+        let text_size = TypeStep::Caption.size(window);
         let text_height = px(text_size.as_f32() * 1.25);
         let style = |focused: bool| {
             if focused {
