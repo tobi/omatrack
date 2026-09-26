@@ -13,6 +13,7 @@ pub mod inspector;
 pub mod laps;
 pub mod library;
 pub mod map;
+pub mod time_goes;
 pub mod traces;
 pub mod video;
 
@@ -37,6 +38,7 @@ pub use inspector::InspectorPanel;
 pub use laps::LapsPanel;
 pub use library::LibraryPanel;
 pub use map::MapPanel;
+pub use time_goes::TimeGoesPanel;
 pub use traces::{TraceMode, TracesPanel};
 pub use video::VideoPanel;
 
@@ -51,10 +53,11 @@ pub enum PanelKind {
     Channels,
     Inspector,
     Map,
+    TimeGoes,
 }
 
 impl PanelKind {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Library,
         Self::Traces,
         Self::Video,
@@ -63,6 +66,7 @@ impl PanelKind {
         Self::Channels,
         Self::Inspector,
         Self::Map,
+        Self::TimeGoes,
     ];
 
     /// The persisted panel name. Never change it: saved layouts use it.
@@ -76,6 +80,7 @@ impl PanelKind {
             Self::Channels => "omatrack.channels",
             Self::Inspector => "omatrack.inspector",
             Self::Map => "omatrack.map",
+            Self::TimeGoes => "omatrack.time_goes",
         }
     }
 
@@ -90,6 +95,7 @@ impl PanelKind {
             Self::Channels => "Channels",
             Self::Inspector => "Inspector",
             Self::Map => "Map",
+            Self::TimeGoes => "Time lost",
         }
     }
 }
@@ -107,6 +113,7 @@ pub struct WorkspacePanels {
     pub channels: Entity<ChannelsPanel>,
     pub inspector: Entity<InspectorPanel>,
     pub map: Entity<MapPanel>,
+    pub time_goes: Entity<TimeGoesPanel>,
 }
 
 impl WorkspacePanels {
@@ -120,6 +127,7 @@ impl WorkspacePanels {
             channels: cx.new(|cx| ChannelsPanel::new(app.clone(), cx)),
             inspector: cx.new(|cx| InspectorPanel::new(app.clone(), cx)),
             map: cx.new(|cx| MapPanel::new(app.clone(), cx)),
+            time_goes: cx.new(|cx| TimeGoesPanel::new(app.clone(), cx)),
         }
     }
 
@@ -134,6 +142,7 @@ impl WorkspacePanels {
             PanelKind::Channels => panel_handle(self.channels.clone()),
             PanelKind::Inspector => panel_handle(self.inspector.clone()),
             PanelKind::Map => panel_handle(self.map.clone()),
+            PanelKind::TimeGoes => panel_handle(self.time_goes.clone()),
         }
     }
 
@@ -147,6 +156,7 @@ impl WorkspacePanels {
             PanelKind::Channels => Focusable::focus_handle(&self.channels, cx),
             PanelKind::Inspector => Focusable::focus_handle(&self.inspector, cx),
             PanelKind::Map => Focusable::focus_handle(&self.map, cx),
+            PanelKind::TimeGoes => Focusable::focus_handle(&self.time_goes, cx),
         }
     }
 }
@@ -181,6 +191,7 @@ pub(crate) fn init(cx: &mut App) {
     channels::init(cx);
     inspector::init(cx);
     map::init(cx);
+    time_goes::init(cx);
 }
 
 /// Register `kind`'s dock builder for layout persistence: while a

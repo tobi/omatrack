@@ -43,16 +43,18 @@ fn main_window_shows_title_dock_and_status_with_the_built_in_theme(cx: &mut Test
         assert!(library.visible());
         assert!(library.bounds().right() <= window.find("traces-panel").bounds().left());
 
-        // The right dock holds two surfaces: the tables over the map, with
-        // the inspector a tab behind the map (the trace gutter reads the
-        // cursor), so neither clips.
-        let corners = window.find("corners-panel");
-        let map = window.find("map-panel");
-        assert!(corners.visible() && map.visible());
-        assert!(window.try_find("inspector-panel").is_none());
-        assert!(map.bounds().top() >= corners.bounds().bottom());
-        assert!(map.bounds().size.height > px(200.));
-        assert!(corners.bounds().size.height > px(200.));
+        // The right dock is one surface, Where the time goes, the whole
+        // dock tall; the tables, the plain map and the inspector are tabs
+        // behind it.
+        let time_goes = window.find("time-goes-panel");
+        assert!(time_goes.visible());
+        assert!(time_goes.bounds().size.height > px(400.));
+        for hidden in ["corners-panel", "map-panel", "inspector-panel"] {
+            assert!(
+                window.try_find(hidden).is_none(),
+                "{hidden} is a tab behind"
+            );
+        }
     })
     .unwrap();
 

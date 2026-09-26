@@ -67,8 +67,9 @@ fn sample(t: f64) -> [f64; 8] {
     ]
 }
 
-/// Write the synthetic recording as an MTJ document into `dir`.
-fn write_recording(dir: &Path) -> PathBuf {
+/// Write the synthetic recording as an MTJ document into `dir` (without
+/// the two GPS channels unless `gps`).
+fn write_recording(dir: &Path, gps: bool) -> PathBuf {
     const CHANNELS: [(&str, &str); 8] = [
         ("Speed", "km/h"),
         ("Throttle Pos", "%"),
@@ -79,24 +80,25 @@ fn write_recording(dir: &Path) -> PathBuf {
         ("GPS Latitude", "deg"),
         ("GPS Longitude", "deg"),
     ];
+    let channels = if gps { &CHANNELS[..] } else { &CHANNELS[..6] };
     let count = (DURATION * RATE) as usize;
-    let mut columns = vec![Vec::with_capacity(count); CHANNELS.len()];
+    let mut columns = vec![Vec::with_capacity(count); channels.len()];
     for i in 0..count {
         for (column, value) in columns.iter_mut().zip(sample(i as f64 / RATE)) {
             column.push(value);
         }
     }
     let ns = |seconds: f64| (seconds * 1e9).round() as u64;
-    let directory: Vec<String> = CHANNELS
+    let directory: Vec<String> = channels
         .iter()
         .map(|(name, unit)| format!("[\"{name}\",\"{unit}\",50,0,{count}]"))
         .collect();
     let mut document = format!(
         "{{\"mtj\":1,\"q\":20000000,\"dur\":{},\"nc\":{n},\"nsc\":{n},\"ns\":{},\"ch\":[{}],\"src\":\"telemetry\",\"drv\":\"Ada\",\"ven\":\"Synthetic Circuit\"}}\n",
         ns(DURATION),
-        count * CHANNELS.len(),
+        count * channels.len(),
         directory.join(","),
-        n = CHANNELS.len(),
+        n = channels.len(),
     );
     let mut laps = vec![format!("[1,0,{},0]", ns(FIRST_LAP_START))];
     for lap in 0..4 {
@@ -110,7 +112,7 @@ fn write_recording(dir: &Path) -> PathBuf {
     }
     laps.push(format!("[6,{},{},0]", ns(85.0), ns(DURATION)));
     writeln!(document, "[{}]", laps.join(",")).unwrap();
-    for ((name, unit), values) in CHANNELS.iter().zip(&columns) {
+    for ((name, unit), values) in channels.iter().zip(&columns) {
         let values: Vec<String> = values.iter().map(|v| format!("{v:.7}")).collect();
         let unit = if unit.is_empty() {
             String::new()
@@ -141,9 +143,13 @@ struct Scene {
 }
 
 async fn scan_synthetic(cx: &mut TestAppContext) -> Scene {
+    scan_recording(cx, true).await
+}
+
+async fn scan_recording(cx: &mut TestAppContext, gps: bool) -> Scene {
     let sandbox = common::Sandbox::new();
     let recordings = sandbox.dir.path().join("recordings");
-    write_recording(&recordings);
+    write_recording(&recordings, gps);
     sandbox.write_config(&format!(
         "locations:\n  - type: folder\n    name: Synthetic\n    target: {}\n",
         recordings.display()
@@ -185,7 +191,11 @@ async fn scan_synthetic(cx: &mut TestAppContext) -> Scene {
 
 /// Scan, then compare the second complete lap against the fourth.
 async fn analysed(cx: &mut TestAppContext) -> Scene {
-    let scene = scan_synthetic(cx).await;
+    compare(scan_synthetic(cx).await, cx).await
+}
+
+/// Compare the scene's second complete lap against its fourth.
+async fn compare(scene: Scene, cx: &mut TestAppContext) -> Scene {
     let (session, primary, reference) = (scene.session.clone(), scene.laps[1], scene.laps[3]);
     cx.update_window(scene.handle, |_, window, cx| {
         for (lap, role) in [(primary, Role::Primary), (reference, Role::Reference)] {
@@ -235,6 +245,8 @@ fn show_panel(test: &common::TestApp, kind: PanelKind, cx: &mut TestAppContext) 
 }
 
 fn corner_dts(scene: &Scene, cx: &mut TestAppContext) -> Vec<f64> {
+    // Time lost leads the right dock; the table is built when Corners shows.
+    show_panel(&scene.test, PanelKind::Corners, cx);
     let corners = scene
         .test
         .workspace
@@ -322,6 +334,13 @@ async fn enter_on_a_corner_row_focuses_it_in_the_traces(cx: &mut TestAppContext)
     // Ctrl+4 lands on the corners table; Down picks the second row.
     cx.update_window(scene.handle, |_, window, cx| {
         window.press("ctrl-4", cx);
+        // The table is built (and takes focus) on the frame that first
+        // shows the tab.
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(scene.handle, |_, window, cx| {
         window.press("down", cx);
     })
     .unwrap();
@@ -663,6 +682,244 @@ async fn the_map_draws_gps_and_moves_the_cursor_on_click(cx: &mut TestAppContext
         .update(|cx| scene.test.app.cursor.read(cx).fraction())
         .expect("the click moved the cursor");
     assert!((fraction - 0.5).abs() < 0.05, "{fraction}");
+}
+
+// ── where the time goes ─────────────────────────────────────────────────
+
+fn time_goes(
+    scene: &Scene,
+    cx: &mut TestAppContext,
+) -> gpui_kit::Entity<omatrack_app::panels::TimeGoesPanel> {
+    scene
+        .test
+        .workspace
+        .read_with(cx, |w, _| w.panels().time_goes.clone())
+}
+
+fn selected_corner(scene: &Scene, cx: &mut TestAppContext) -> Option<SharedString> {
+    let panel = time_goes(scene, cx);
+    cx.update(|cx| panel.read(cx).selected().map(|line| line.id().clone()))
+}
+
+#[gpui_kit::test]
+async fn where_the_time_goes_leads_the_right_dock_largest_loss_first(cx: &mut TestAppContext) {
+    let scene = analysed(cx).await;
+    let panel = time_goes(&scene, cx);
+    let (ids, dts, split, final_delta) = cx.update(|cx| {
+        let panel = panel.read(cx);
+        let analysis = scene.test.app.session.read(cx).analysis().unwrap().clone();
+        (
+            panel
+                .lines()
+                .iter()
+                .map(|line| line.id().clone())
+                .collect::<Vec<_>>(),
+            panel
+                .lines()
+                .iter()
+                .map(|line| line.dt())
+                .collect::<Vec<_>>(),
+            analysis.time_split().expect("a reference: a split"),
+            *analysis.delta().last().unwrap(),
+        )
+    });
+    assert!(dts.len() >= 2, "the synthetic laps have corners: {dts:?}");
+    assert!(
+        dts.windows(2).all(|pair| pair[0] >= pair[1]),
+        "largest loss first: {dts:?}"
+    );
+    assert!((split.corners + split.straights - final_delta).abs() < 1e-9);
+    // Nothing focused, the cursor outside every corner: the largest loss.
+    assert_eq!(selected_corner(&scene, cx), Some(ids[0].clone()));
+    cx.update_window(scene.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("time-goes-panel").visible(), "the default tab");
+        assert!(window.find("track-map").visible(), "the heat map");
+        let table = window.find("time-goes-table");
+        assert!(table.visible());
+        let first = window.find(SharedString::from(format!("time-goes-row-{}", ids[0])));
+        let second = window.find(SharedString::from(format!("time-goes-row-{}", ids[1])));
+        assert!(first.bounds().top() < second.bounds().top(), "row order");
+        assert_eq!(first.selected(), Some(true));
+        assert_eq!(second.selected(), Some(false));
+        let split = window.find("time-goes-split").label().unwrap().to_string();
+        assert!(split.starts_with("Corners ≈"), "{split}");
+        assert!(split.contains("km/h"), "{split}");
+        let card = window.find("time-goes-card").label().unwrap().to_string();
+        assert!(card.contains(" km/h"), "units are spaced: {card}");
+        assert!(card.contains("vs R"), "{card}");
+    })
+    .unwrap();
+
+    // The map is in heat mode on the one loss rate, all finite.
+    cx.update(|cx| {
+        let panel = panel.read(cx);
+        let data = panel.map().read(cx).data().clone();
+        assert!(data.is_heat());
+        let heat = data.heat().unwrap();
+        assert!(heat.iter().all(|value| value.is_finite()));
+        let analysis = scene.test.app.session.read(cx).analysis().unwrap().clone();
+        assert_eq!(heat, analysis.loss_rate());
+        assert!(data.reference().is_some(), "the shared map still resolves");
+    });
+}
+
+#[gpui_kit::test]
+async fn the_time_goes_card_follows_the_selected_corner(cx: &mut TestAppContext) {
+    let scene = analysed(cx).await;
+    let panel = time_goes(&scene, cx);
+    let lap_order: Vec<SharedString> = cx.update(|cx| {
+        let analysis = scene.test.app.session.read(cx).analysis().unwrap().clone();
+        analysis
+            .corners()
+            .iter()
+            .map(|zone| SharedString::from(zone.id.clone()))
+            .collect()
+    });
+    // J focuses the first corner in lap order: the card follows it.
+    cx.update_window(scene.handle, |_, window, cx| {
+        let traces = scene
+            .test
+            .workspace
+            .read(cx)
+            .panels()
+            .focus_handle(PanelKind::Traces, cx);
+        window.focus(&traces, cx);
+        window.press("j", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(selected_corner(&scene, cx), Some(lap_order[0].clone()));
+    cx.update_window(scene.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let row = window.find(SharedString::from(format!(
+            "time-goes-row-{}",
+            lap_order[0]
+        )));
+        assert_eq!(row.selected(), Some(true));
+    })
+    .unwrap();
+
+    // A row click focuses that corner (FocusCorner) and the card follows.
+    let target = lap_order[1].clone();
+    cx.update_window(scene.handle, |_, window, cx| {
+        window.click(SharedString::from(format!("time-goes-row-{target}")), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.executor().advance_clock(Duration::from_millis(300));
+    cx.run_until_parked();
+    assert_eq!(selected_corner(&scene, cx), Some(target.clone()));
+    assert_eq!(
+        cx.update(|cx| scene.test.workspace.read(cx).focused_corner()),
+        Some(1)
+    );
+    let (name, notes) = cx.update(|cx| {
+        let line = panel.read(cx).selected().unwrap().clone();
+        (
+            line.name().to_string(),
+            line.notes().map(|n| n.to_string()).collect::<Vec<_>>(),
+        )
+    });
+    assert!(!notes.is_empty(), "the checks' notes (or Closely matched)");
+    for note in &notes {
+        assert!(note.ends_with('.'), "a sentence: {note}");
+        assert!(
+            note.chars().next().is_some_and(char::is_uppercase),
+            "{note}"
+        );
+    }
+    cx.update_window(scene.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let card = window.find("time-goes-card").label().unwrap().to_string();
+        assert!(card.starts_with(&name), "{card}");
+        for note in &notes {
+            assert!(card.contains(note.as_str()), "{card} has {note}");
+        }
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn open_in_detail_focuses_the_corner_and_shows_the_corners_table(cx: &mut TestAppContext) {
+    let scene = analysed(cx).await;
+    let worst = selected_corner(&scene, cx).expect("a corner is selected");
+    cx.update_window(scene.handle, |_, window, cx| {
+        assert!(window.try_find("corners-panel").is_none(), "a tab behind");
+        window.click("time-goes-open-corner", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.executor().advance_clock(Duration::from_millis(300));
+    cx.run_until_parked();
+    let ix = cx.update(|cx| {
+        let analysis = scene.test.app.session.read(cx).analysis().unwrap().clone();
+        analysis
+            .corners()
+            .iter()
+            .position(|zone| zone.id == worst.as_ref())
+    });
+    assert_eq!(
+        cx.update(|cx| scene.test.workspace.read(cx).focused_corner()),
+        ix
+    );
+    cx.update_window(scene.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("corners-panel").visible(), "the Corners tab");
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let corners = scene
+        .test
+        .workspace
+        .read_with(cx, |w, _| w.panels().corners.clone());
+    assert_eq!(
+        cx.update(|cx| corners.read(cx).selected(cx).cloned()),
+        Some(worst)
+    );
+}
+
+#[gpui_kit::test]
+async fn without_gps_the_time_goes_table_stands_alone(cx: &mut TestAppContext) {
+    let scene = compare(scan_recording(cx, false).await, cx).await;
+    let panel = time_goes(&scene, cx);
+    cx.update(|cx| {
+        let panel = panel.read(cx);
+        assert!(panel.map().read(cx).data().is_empty(), "nothing to draw");
+        assert!(panel.lines().len() >= 2, "the corners still rank");
+    });
+    cx.update_window(scene.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("track-map").is_none(), "no map without GPS");
+        assert!(window.find("time-goes-table").visible());
+        assert!(window.find("time-goes-card").visible());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn a_cursor_move_leaves_the_heat_map_static_layer_alone(cx: &mut TestAppContext) {
+    let scene = analysed(cx).await;
+    let panel = time_goes(&scene, cx);
+    let map = cx.update(|cx| panel.read(cx).map().clone());
+    cx.update_window(scene.handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    let before = cx.update(|cx| map.read(cx).geometry_builds());
+    assert!(before > 0, "the heat lap was meshed");
+    for fraction in [0.1, 0.3, 0.5] {
+        cx.update(|cx| {
+            scene
+                .test
+                .app
+                .cursor
+                .update(cx, |cursor, cx| cursor.set_fraction(Some(fraction), cx));
+        });
+        cx.update_window(scene.handle, |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+    }
+    // Inside the dock the layer may re-render from its geometry cache (see
+    // traces_panel.rs); the meshes are never rebuilt for a cursor move.
+    assert_eq!(cx.update(|cx| map.read(cx).geometry_builds()), before);
 }
 
 // ── real recordings ─────────────────────────────────────────────────────

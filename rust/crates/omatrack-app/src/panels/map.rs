@@ -38,6 +38,17 @@ fn gps_track(latitude: &[f64], longitude: &[f64]) -> Option<GpsTrack> {
 
 /// Everything the map draws for an analysis.
 pub fn map_data(analysis: &Analysis) -> TrackMapData {
+    // Under a LOW-confidence alignment the gain/loss colouring would claim a
+    // station-by-station verdict the time share cannot support.
+    let delta = (!analysis.delta().is_empty()
+        && !crate::workspace::status::analysis_approximate(analysis))
+    .then(|| Arc::<[f64]>::from(analysis.delta()));
+    map_layers(analysis).with_delta(delta)
+}
+
+/// The map's layers without any colouring of the primary: the centerline,
+/// both GPS laps, the shared map and the corner labels.
+pub(crate) fn map_layers(analysis: &Analysis) -> TrackMapData {
     let primary = analysis.primary();
     let unified = primary.unified();
     let primary_track = gps_track(&unified.gps_lat, &unified.gps_lon);
@@ -70,11 +81,6 @@ pub fn map_data(analysis: &Analysis) -> TrackMapData {
                 .collect()
         })
         .unwrap_or_default();
-    // Under a LOW-confidence alignment the gain/loss colouring would claim a
-    // station-by-station verdict the time share cannot support.
-    let delta = (!analysis.delta().is_empty()
-        && !crate::workspace::status::analysis_approximate(analysis))
-    .then(|| Arc::<[f64]>::from(analysis.delta()));
     let map = analysis
         .comparison()
         .map(|comparison| comparison.clone() as Arc<dyn FractionMap>);
@@ -82,13 +88,12 @@ pub fn map_data(analysis: &Analysis) -> TrackMapData {
         .with_centerline(centerline)
         .with_primary(primary_track)
         .with_reference(reference_track)
-        .with_delta(delta)
         .with_map(map)
         .with_corners(corners)
 }
 
 /// The map's id of the corner at `ix` in lap order.
-fn corner_id(ix: usize) -> u32 {
+pub(crate) fn corner_id(ix: usize) -> u32 {
     u32::try_from(ix + 1).unwrap_or(u32::MAX)
 }
 

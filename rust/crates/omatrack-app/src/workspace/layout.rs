@@ -15,7 +15,10 @@ pub const DOCK_AREA_ID: &str = "omatrack.workspace";
 /// inspector.
 /// 4: the inspector is a tab beside the map (the trace gutter already reads
 /// the cursor), so the right dock holds two surfaces, not three.
-pub const LAYOUT_VERSION: usize = 4;
+/// 5: the right dock is one tab group led by Time lost ("Where the time
+/// goes": heat map, loss table, corner card); Corners, Laps, Channels, Map
+/// and Inspector are tabs behind it.
+pub const LAYOUT_VERSION: usize = 5;
 
 /// Library dock width, in rems (300 px at the default 16 px base).
 pub(crate) const LEFT_DOCK_REMS: f32 = 18.75;
@@ -23,9 +26,6 @@ pub(crate) const LEFT_DOCK_REMS: f32 = 18.75;
 pub(crate) const RIGHT_DOCK_REMS: f32 = 23.75;
 /// Video pane height above the traces, in rems (the traces take the rest).
 pub(crate) const VIDEO_REMS: f32 = 22.5;
-/// Map | Inspector pane height in the right dock, in rems (400 px at the
-/// default base); the tables above take the rest.
-pub(crate) const MAP_REMS: f32 = 25.0;
 
 /// Narrowest window, in rems (1440 px at the default base), whose default
 /// layout opens the Library dock too: below it the traces would get less
@@ -59,7 +59,8 @@ pub(crate) fn default_placement(kind: PanelKind) -> DockPlacement {
     match kind {
         PanelKind::Library => DockPlacement::Left,
         PanelKind::Traces | PanelKind::Video => DockPlacement::Center,
-        PanelKind::Corners
+        PanelKind::TimeGoes
+        | PanelKind::Corners
         | PanelKind::Laps
         | PanelKind::Channels
         | PanelKind::Inspector
@@ -68,9 +69,9 @@ pub(crate) fn default_placement(kind: PanelKind) -> DockPlacement {
 }
 
 /// Library on the left; video over traces in the center;
-/// [Corners | Laps | Channels] over [Map | Inspector] on the right: two
-/// surfaces, each tall enough not to clip (the trace gutter carries the
-/// cursor readouts, so the inspector can sit behind the map).
+/// one tab group on the right led by Time lost, the whole dock height for
+/// its map, table and card; the tables, the plain map and the inspector are
+/// tabs behind it (the trace gutter carries the cursor readouts).
 pub(crate) fn apply_default(
     area: &Entity<DockArea>,
     panels: &WorkspacePanels,
@@ -91,18 +92,18 @@ pub(crate) fn apply_default(
         .child(tabs(&[PanelKind::Video], cx), Some(rem * VIDEO_REMS))
         .child(tabs(&[PanelKind::Traces], cx), None);
     let left = tabs(&[PanelKind::Library], cx);
-    let right = DockLayout::v_split()
-        .child(
-            tabs(
-                &[PanelKind::Corners, PanelKind::Laps, PanelKind::Channels],
-                cx,
-            ),
-            None,
-        )
-        .child(
-            tabs(&[PanelKind::Map, PanelKind::Inspector], cx),
-            Some(rem * MAP_REMS),
-        );
+    let right = tabs(
+        &[
+            PanelKind::TimeGoes,
+            PanelKind::Corners,
+            PanelKind::Laps,
+            PanelKind::Channels,
+            PanelKind::Map,
+            PanelKind::Inspector,
+        ],
+        cx,
+    )
+    .active_index(0);
     area.update(cx, |area, cx| {
         area.set_version(Some(LAYOUT_VERSION), cx);
         area.set_center(center, window, cx);
