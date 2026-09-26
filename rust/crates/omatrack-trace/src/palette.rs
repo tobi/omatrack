@@ -32,6 +32,10 @@ const SHARED_REFERENCE_ALPHA: f32 = 0.6;
 /// (full) primary colour.
 const SHARED_PRIMARY_ALPHA: f32 = 0.6;
 /// Loss-role opacity at the quiet end of the heat ramp.
+/// Opacity of the gain/loss colours on an approximate (LOW confidence)
+/// Δ: still a reading, not a verdict.
+pub(crate) const APPROXIMATE_DELTA_EMPHASIS: f32 = 0.6;
+
 const HEAT_RAMP_FLOOR: f32 = 0.22;
 
 /// Resolved colours of one trace frame.

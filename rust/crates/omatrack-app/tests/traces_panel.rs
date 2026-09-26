@@ -844,7 +844,7 @@ async fn real_run4_against_run1_fills_the_lanes(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-async fn a_time_share_pair_says_so_in_a_slim_delta_lane_with_the_key_on_top(
+async fn a_time_share_pair_keeps_a_readable_delta_lane_with_the_key_on_top(
     cx: &mut TestAppContext,
 ) {
     // The synthetic pair carries no GPS: the map is a share of lap time.
@@ -852,7 +852,8 @@ async fn a_time_share_pair_says_so_in_a_slim_delta_lane_with_the_key_on_top(
     let time_share = cx.update(|cx| f.traces.read(cx).scene().time_share_delta());
     cx.update_window(f.window, |_, window, cx| {
         window.render_frame(cx);
-        assert_eq!(window.try_find("delta-time-share").is_some(), time_share);
+        // The basis is said by the Sync selector, not a lane subtitle.
+        assert!(window.try_find("delta-time-share").is_none());
         let delta = window.find("lane-delta").bounds();
         if time_share {
             let speed = window.find("lane-speed").bounds();
@@ -861,6 +862,11 @@ async fn a_time_share_pair_says_so_in_a_slim_delta_lane_with_the_key_on_top(
                 "a slim Δ lane: {delta:?} vs {speed:?}"
             );
         }
+        let floor = omatrack_trace::layout::GAP_LANE_MIN_HEIGHT as f32;
+        assert!(
+            delta.size.height.as_f32() >= floor - 1.0,
+            "the Δ lane keeps 1.5 lanes: {delta:?}"
+        );
         // The P / R / Δ column key heads the lanes, in the ruler row.
         let ruler = window.find("trace-ruler-row").bounds();
         let key = window.find("readout-key").bounds();

@@ -48,9 +48,9 @@ use crate::interaction::{
     CornerSpan, Effect, Effects, GestureCursor, Interaction, InteractionContext, KeyModifiers,
     PointerButton, WheelDelta,
 };
-use crate::layout::{LaneLayout, LaneSizing, LayoutMode, layout_lanes};
+use crate::layout::{GAP_LANE_MIN_HEIGHT, LaneLayout, LaneSizing, LayoutMode, layout_lanes};
 use crate::overlay::TraceOverlay;
-use crate::palette::TracePalette;
+use crate::palette::{APPROXIMATE_DELTA_EMPHASIS, TracePalette};
 use crate::scale::{Tick, Viewport, XAxis, axis_ticks};
 use crate::scene::{CornerBand, LaneKind, LaneSeries, LaneStyles, Readout, TraceScene};
 use crate::state::{CursorState, Selection, ViewportState};
@@ -372,6 +372,9 @@ impl TraceStack {
             .map(|lane| {
                 let mut sizing = self.styles.get(&lane.key).sizing;
                 sizing.visible = sizing.visible && lane.primary.len() >= 2;
+                if lane.kind == LaneKind::Delta {
+                    sizing.min_height = sizing.min_height.max(GAP_LANE_MIN_HEIGHT);
+                }
                 sizing
             })
             .collect()
@@ -705,7 +708,6 @@ impl TraceStack {
                     .collect();
                 let mut rows: Vec<AnyElement> = Vec::new();
                 let is_gap = root.kind == LaneKind::Delta;
-                let time_share_note = is_gap && self.scene.time_share_delta;
                 if is_gap {
                     // The gap lane's legend is one big figure: the gap at the
                     // cursor (idle: the change across the view), then where
@@ -741,7 +743,10 @@ impl TraceStack {
                             ("view", text, trend, context.to_string())
                         }
                     };
-                    rows.push(gap_figure(&root.key, figure, palette, muted).into_any_element());
+                    rows.push(
+                        gap_figure(&root.key, figure, approximate, palette, muted)
+                            .into_any_element(),
+                    );
                 } else if let Some(fraction) = readout_at {
                     for (position, lane) in channels.iter().enumerate() {
                         let readout = lane.readout(fraction, map);
@@ -797,20 +802,6 @@ impl TraceStack {
                             // The gap lane says its unit under the figure.
                             .when(!unit.is_empty() && !is_gap, |el| {
                                 el.child(div().text_color(muted).flex_shrink_0().child(unit))
-                            })
-                            // The alignment is a share of lap time: said on
-                            // the title row, where it costs no line.
-                            .when(time_share_note, |el| {
-                                el.child(
-                                    div()
-                                        .id("delta-time-share")
-                                        .test_support()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_caption()
-                                        .text_color(muted)
-                                        .child("· share of lap time"),
-                                )
                             }),
                     )
                     .child(v_flex().numeric().children(rows));
@@ -1013,17 +1004,23 @@ fn readout_row(
 }
 
 /// The gap lane's figure: the gap in seconds as the legend's one large
-/// number, gain or loss coloured (muted when approximate), over a caption
-/// saying what it measures and where the gap ends.
+/// number, gain or loss coloured (at reduced emphasis when approximate),
+/// over a caption saying what it measures and where the gap ends.
 fn gap_figure(
     key: &str,
     (column, value, trend, context): (&str, SharedString, Option<bool>, String),
+    approximate: bool,
     palette: &TracePalette,
     muted: Hsla,
 ) -> impl IntoElement {
+    let emphasis = if approximate {
+        APPROXIMATE_DELTA_EMPHASIS
+    } else {
+        1.0
+    };
     let color = match trend {
-        Some(true) => palette.gain,
-        Some(false) => palette.loss,
+        Some(true) => palette.gain.opacity(emphasis),
+        Some(false) => palette.loss.opacity(emphasis),
         None => muted,
     };
     v_flex()
@@ -1051,7 +1048,7 @@ fn gap_figure(
 
 /// A time delta for the gap lane: signed seconds (`≈` and two decimals under
 /// a LOW-confidence alignment) and its trend, `Some(true)` for a gain.
-/// Below the display resolution, or approximate, it is neither.
+/// Below the display resolution it is neither.
 fn delta_seconds(value: f64, approximate: bool) -> (SharedString, Option<bool>) {
     if !value.is_finite() {
         return ("—".into(), None);
@@ -1064,8 +1061,7 @@ fn delta_seconds(value: f64, approximate: bool) -> (SharedString, Option<bool>) 
         text
     };
     // Positive Δt: the primary lap is slower (loss).
-    let trend = (!approximate && value.abs() >= 0.5 * 10f64.powi(-(decimals as i32)))
-        .then_some(value < 0.0);
+    let trend = (value.abs() >= 0.5 * 10f64.powi(-(decimals as i32))).then_some(value < 0.0);
     (text.into(), trend)
 }
 

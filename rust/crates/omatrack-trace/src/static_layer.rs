@@ -25,7 +25,7 @@ use gpui_kit::{
 use crate::label;
 use crate::lanes::{BuildInput, ChannelColors, ChannelGeometry, Scratch};
 use crate::layout::LaneLayout;
-use crate::palette::TracePalette;
+use crate::palette::{APPROXIMATE_DELTA_EMPHASIS, TracePalette};
 use crate::scale::{Tick, Viewport, XAxis, axis_ticks, nice_step};
 use crate::scene::{LaneKind, LaneStyles, TraceScene};
 use crate::state::ViewportState;
@@ -363,9 +363,13 @@ impl Element for StaticLayerElement {
                         let (primary, reference) =
                             palette.channel_colors(&series.key, position == 0, &style);
                         let delta = series.kind == LaneKind::Delta;
-                        // An approximate Δ is not a gain/loss verdict.
+                        // An approximate Δ keeps its gain/loss reading at
+                        // reduced emphasis.
                         let (loss, gain) = if self.scene.approximate_delta {
-                            (palette.label, palette.label)
+                            (
+                                palette.loss.opacity(APPROXIMATE_DELTA_EMPHASIS),
+                                palette.gain.opacity(APPROXIMATE_DELTA_EMPHASIS),
+                            )
                         } else {
                             (palette.loss, palette.gain)
                         };

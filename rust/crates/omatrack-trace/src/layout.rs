@@ -18,6 +18,10 @@ use smallvec::SmallVec;
 /// allocates less; lanes that do not fit scroll instead.
 pub const MIN_LANE_HEIGHT: f64 = 44.0;
 
+/// The gap lane's minimum: its legend is one large figure over a caption,
+/// and its curve is the lap's verdict, so it reads at 1.5 lanes.
+pub const GAP_LANE_MIN_HEIGHT: f64 = 1.5 * MIN_LANE_HEIGHT;
+
 /// Default height share of a channel's lane, percent of the trace area,
 /// unless `channels.<key>.height_percent` is configured. In FIT these are the
 /// relative weights: speed leads, the pedals and Δ are first-class lanes, a
@@ -52,7 +56,18 @@ pub fn lane_height_boost(key: &str) -> f64 {
 /// fit the minimum for every lane, every lane gets the minimum and the sum
 /// exceeds `available` (the caller scrolls). Weights are normalized before
 /// summing so hand-edited, very large finite weights cannot overflow.
-pub fn fit_lane_heights(mut weights: Vec<f64>, available: f64) -> Vec<f64> {
+pub fn fit_lane_heights(weights: Vec<f64>, available: f64) -> Vec<f64> {
+    let floors = vec![MIN_LANE_HEIGHT; weights.len()];
+    fit_lane_heights_with_floors(weights, &floors, available)
+}
+
+/// [`fit_lane_heights`] with a readable minimum per lane (`floors`, one per
+/// weight, never below [`MIN_LANE_HEIGHT`]).
+pub fn fit_lane_heights_with_floors(
+    mut weights: Vec<f64>,
+    floors: &[f64],
+    available: f64,
+) -> Vec<f64> {
     let mut heights = vec![0.0; weights.len()];
     if weights.is_empty() || !available.is_finite() || available <= 0.0 {
         return heights;
@@ -62,9 +77,18 @@ pub fn fit_lane_heights(mut weights: Vec<f64>, available: f64) -> Vec<f64> {
         *weight = valid_lane_weight(*weight);
         largest = largest.max(*weight);
     }
-    let floor = MIN_LANE_HEIGHT;
-    if floor * weights.len() as f64 >= available {
-        heights.fill(floor);
+    let floor = |i: usize| {
+        floors
+            .get(i)
+            .copied()
+            .filter(|f| f.is_finite())
+            .unwrap_or(MIN_LANE_HEIGHT)
+            .max(MIN_LANE_HEIGHT)
+    };
+    if (0..weights.len()).map(floor).sum::<f64>() >= available {
+        for (i, height) in heights.iter_mut().enumerate() {
+            *height = floor(i);
+        }
         return heights;
     }
     let mut remaining = available;
@@ -72,8 +96,8 @@ pub fn fit_lane_heights(mut weights: Vec<f64>, available: f64) -> Vec<f64> {
     for i in 0..weights.len() {
         weights[i] /= largest;
         if weights[i] == 0.0 {
-            heights[i] = floor;
-            remaining -= floor;
+            heights[i] = floor(i);
+            remaining -= floor(i);
         } else {
             total += weights[i];
         }
@@ -84,9 +108,9 @@ pub fn fit_lane_heights(mut weights: Vec<f64>, available: f64) -> Vec<f64> {
             if weights[i] <= 0.0 || total <= 0.0 {
                 continue;
             }
-            if remaining * (weights[i] / total) < floor {
-                heights[i] = floor;
-                remaining -= floor;
+            if remaining * (weights[i] / total) < floor(i) {
+                heights[i] = floor(i);
+                remaining -= floor(i);
                 total -= weights[i];
                 weights[i] = 0.0;
                 changed = true;
@@ -158,6 +182,9 @@ pub struct LaneSizing {
     pub group: Option<u64>,
     /// Draw in the pinned region above the scroll region.
     pub pinned: bool,
+    /// FIT's readable minimum for this lane (never below
+    /// [`MIN_LANE_HEIGHT`]).
+    pub min_height: f64,
 }
 
 impl Default for LaneSizing {
@@ -169,6 +196,7 @@ impl Default for LaneSizing {
             combine_with_previous: false,
             group: None,
             pinned: false,
+            min_height: MIN_LANE_HEIGHT,
         }
     }
 }
@@ -369,7 +397,11 @@ pub fn layout_lanes(
                 valid_lane_weight(channel.weight).min(f64::MAX / share) * share
             })
             .collect();
-        let heights = fit_lane_heights(weights, available);
+        let floors: Vec<f64> = ordered
+            .iter()
+            .map(|lane| channels[lane.root].min_height)
+            .collect();
+        let heights = fit_lane_heights_with_floors(weights, &floors, available);
         let mut y = 0.0;
         for (lane, height) in ordered.into_iter().zip(heights) {
             if lane.pinned {
@@ -525,6 +557,24 @@ mod tests {
             })
             .collect();
         assert!(close(&fit_lane_heights(effective, total), &desired));
+    }
+
+    #[test]
+    fn a_lane_with_a_higher_floor_keeps_it() {
+        let heights = fit_lane_heights_with_floors(
+            vec![0.1, 1.0, 1.0],
+            &[GAP_LANE_MIN_HEIGHT, MIN_LANE_HEIGHT, MIN_LANE_HEIGHT],
+            400.0,
+        );
+        assert!((heights[0] - GAP_LANE_MIN_HEIGHT).abs() < 1e-9);
+        assert!((heights.iter().sum::<f64>() - 400.0).abs() < 1e-9);
+        // Too little room: every lane at its own floor.
+        let heights = fit_lane_heights_with_floors(
+            vec![1.0, 1.0],
+            &[GAP_LANE_MIN_HEIGHT, MIN_LANE_HEIGHT],
+            100.0,
+        );
+        assert_eq!(heights, vec![GAP_LANE_MIN_HEIGHT, MIN_LANE_HEIGHT]);
     }
 
     fn channel() -> LaneSizing {
