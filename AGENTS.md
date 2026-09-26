@@ -329,7 +329,9 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   `workspace.layout`, versioned, default on load error with a notification,
   Reset layout); `Sidebar` + `Tree` library; `DataTable` for Corners and Laps;
   `Command` palette in a `Dialog`; `StatusBar`; notifications (errors
-  persistent, info autohide); Preferences `Sheet`. Never rebuild what the kit
+  persistent, info autohide); a full-window Preferences screen (`Sidebar`
+  section list + `GroupBox` cards, replacing the dock area and status bar
+  while open; the dock stays alive behind it). Never rebuild what the kit
   has.
 - **First-party components** only where the kit has none: trace lanes
   (in the idiom of gpui-component chart/plot: scales, axis, grid, crossline),
@@ -499,6 +501,7 @@ palette items. See [action.md](.agents/skills/gpui-kit/references/gpui/action.md
 | [ / ] / t | Previous / next lap / toggle Distance-Time axis |
 | enter / alt-enter (Library) | Set primary / reference |
 | ctrl-s / escape (resize, corner edit) | Save / cancel |
+| escape; up / down (Preferences) | Back to the workspace (focus restored); previous / next section |
 
 Pointer: left-drag selects, middle-drag and horizontal scroll pan, wheel (also
 shift/ctrl) zooms about the pointer, vertical wheel scrolls overflowing lanes,

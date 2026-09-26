@@ -28,6 +28,7 @@ use crate::actions::*;
 use crate::commands::Palette;
 use crate::keymap::WORKSPACE_CONTEXT;
 use crate::panels::{PanelKind, TraceMode, WorkspacePanels};
+use crate::preferences::PreferencesView;
 use crate::state::{
     AppState, ComposeLayout, LapRef, LibraryEvent, PreferencesEvent, SessionEvent, VideoEvent,
 };
@@ -66,7 +67,15 @@ pub struct Workspace {
     /// toggles a dock (a restored layout is the user's and never refits).
     fit_docks: bool,
     last_fit_width: Option<Pixels>,
+    /// The Preferences screen, shown in place of the dock area while open.
+    preferences: Option<PreferencesScreen>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// An open Preferences screen and the focus to return to on close.
+struct PreferencesScreen {
+    view: Entity<PreferencesView>,
+    restore: Option<FocusHandle>,
 }
 
 impl Workspace {
@@ -173,6 +182,7 @@ impl Workspace {
             pre_focus_cursor: None,
             fit_docks: layout_origin_is_default,
             last_fit_width: None,
+            preferences: None,
             _subscriptions: subscriptions,
         };
         workspace.sync_strategies(window, cx);
@@ -343,12 +353,53 @@ impl Workspace {
         self.palette.toggle(&keys, window, cx);
     }
 
-    /// Preferences open in a sheet ([`crate::preferences::open`]).
-    pub(crate) fn open_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        crate::preferences::open(window, cx);
+    /// Show the Preferences screen in place of the dock area (which stays
+    /// alive behind it) and focus its section list. Already open, only the
+    /// focus moves.
+    pub fn open_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(screen) = &self.preferences {
+            screen
+                .view
+                .update(cx, |view, cx| view.focus_nav(window, cx));
+            return;
+        }
+        // From the palette, focus is in its query field, which closes with
+        // it: return to the traces instead.
+        let restore = if window.has_active_dialog(cx) {
+            None
+        } else {
+            window.focused(cx)
+        };
+        let app = self.app.clone();
+        let view = cx.new(|cx| PreferencesView::new(app, window, cx));
+        view.update(cx, |view, cx| view.focus_nav(window, cx));
+        self.preferences = Some(PreferencesScreen { view, restore });
+        cx.notify();
+    }
+
+    /// Leave the Preferences screen and return focus to where it was
+    /// (the traces when that is unknown).
+    pub fn close_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(screen) = self.preferences.take() else {
+            return;
+        };
+        let restore = screen
+            .restore
+            .unwrap_or_else(|| self.panels.focus_handle(PanelKind::Traces, cx));
+        window.focus(&restore, cx);
+        cx.notify();
+    }
+
+    /// The open Preferences screen, if one is.
+    pub fn preferences(&self) -> Option<&Entity<PreferencesView>> {
+        self.preferences.as_ref().map(|screen| &screen.view)
     }
 
     fn focus_panel(&mut self, kind: PanelKind, window: &mut Window, cx: &mut Context<Self>) {
+        // A panel is behind the Preferences screen: leave it for the panel.
+        if self.preferences.take().is_some() {
+            cx.notify();
+        }
         let handle = self.panels.handle(kind);
         let id = handle.panel_id(cx);
         let present = layout::holds(self.dock_area.read(cx), &self.panels, kind, cx);
@@ -530,6 +581,11 @@ impl Workspace {
         .on_action(
             cx.listener(|this, _: &OpenPreferences, window, cx| this.open_preferences(window, cx)),
         )
+        .on_action(
+            cx.listener(|this, _: &ClosePreferences, window, cx| {
+                this.close_preferences(window, cx)
+            }),
+        )
         .on_action(cx.listener(|this, _: &OpenFolder, _, cx| {
             this.app
                 .library
@@ -606,7 +662,9 @@ impl Workspace {
         }))
         // Escape: leave fullscreen first, then a corner focus.
         .on_action(cx.listener(|this, _: &ExitFullscreen, window, cx| {
-            if this.video_fullscreen || window.is_fullscreen() {
+            if this.preferences.is_some() {
+                this.close_preferences(window, cx);
+            } else if this.video_fullscreen || window.is_fullscreen() {
                 this.exit_video_fullscreen(window, cx);
             } else if !this.unfocus_corner(cx) {
                 cx.propagate();
@@ -728,25 +786,38 @@ impl Render for Workspace {
             .id("workspace")
             .key_context(WORKSPACE_CONTEXT)
             .track_focus(&self.focus_handle);
-        self.register_actions(root, cx)
+        let root = self
+            .register_actions(root, cx)
             .relative()
             .flex()
             .flex_col()
             .size_full()
             .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
-            .child(self.render_header(window, cx))
-            .child(self.filmstrip.clone())
-            .child(
-                div()
-                    .id("workspace-dock")
-                    .test_support()
-                    .flex_1()
-                    .min_h_0()
-                    .child(self.dock_area.clone()),
-            )
-            .child(self.status.clone())
-            .children(sheets)
+            .text_color(cx.theme().foreground);
+        // Preferences replace the dock area and status bar; both entities
+        // stay alive (and untouched) behind the screen.
+        let root = match &self.preferences {
+            Some(screen) => root
+                .child(crate::preferences::title_bar(
+                    cx.listener(|this, _, window, cx| this.close_preferences(window, cx)),
+                    window,
+                    cx,
+                ))
+                .child(div().flex_1().min_h_0().child(screen.view.clone())),
+            None => root
+                .child(self.render_header(window, cx))
+                .child(self.filmstrip.clone())
+                .child(
+                    div()
+                        .id("workspace-dock")
+                        .test_support()
+                        .flex_1()
+                        .min_h_0()
+                        .child(self.dock_area.clone()),
+                )
+                .child(self.status.clone()),
+        };
+        root.children(sheets)
             .children(dialogs)
             .children(notifications)
     }

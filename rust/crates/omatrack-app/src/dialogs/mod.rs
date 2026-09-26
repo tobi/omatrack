@@ -37,8 +37,9 @@ pub struct EditFolderMetadata {
     pub session: SharedString,
 }
 
-/// The key contexts of the component overlays (gpui-base `Sheet`, `Dialog`).
-const OVERLAY_CONTEXTS: [&str; 2] = ["Sheet", "Dialog"];
+/// The key contexts of the component overlays (gpui-base `Sheet`, `Dialog`)
+/// and of the Preferences screen, which covers the workspace the same way.
+const OVERLAY_CONTEXTS: [&str; 3] = ["Sheet", "Dialog", crate::keymap::PREFERENCES_CONTEXT];
 
 /// The workspace's single keys (`keymap.rs`, bound in
 /// `Workspace && !Input`), except Escape, which the overlays bind
@@ -48,7 +49,7 @@ const WORKSPACE_SINGLE_KEYS: [&str; 21] = [
     "-", "[", "]", "t",
 ];
 
-/// Keep the workspace's single keys out of sheets and dialogs.
+/// Keep the workspace's single keys out of sheets, dialogs and Preferences.
 ///
 /// Those overlays render inside the workspace, so without this Space on a
 /// focused switch, tab or button would toggle playback instead of

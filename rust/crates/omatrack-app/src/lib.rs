@@ -15,7 +15,7 @@
 //! - [`actions`] and `keymap`: every command and its default keys.
 //! - [`commands`]: the command registry and palette.
 //! - [`sync`]: video sync rules (identity, pacing, lap end, timelines).
-//! - [`preferences`] and [`dialogs`]: the Preferences sheet and the
+//! - [`preferences`] and [`dialogs`]: the Preferences screen and the
 //!   recording metadata / `TRACK.yml` dialogs.
 
 pub mod actions;
@@ -30,6 +30,9 @@ pub mod sync;
 pub mod workspace;
 
 pub use app::{AppOptions, init, init_with, main_window_options, open_main_window, run};
-pub use keymap::{LIBRARY_CONTEXT, SINGLE_KEY_PREDICATE, TRACE_EDIT_CONTEXT, WORKSPACE_CONTEXT};
+pub use keymap::{
+    LIBRARY_CONTEXT, PREFERENCES_CONTEXT, PREFERENCES_NAV_CONTEXT, SINGLE_KEY_PREDICATE,
+    TRACE_EDIT_CONTEXT, WORKSPACE_CONTEXT,
+};
 pub use state::{AppState, StateOptions};
 pub use workspace::{DOCK_AREA_ID, LAYOUT_VERSION, LayoutOrigin, Workspace};

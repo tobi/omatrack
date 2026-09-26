@@ -1,4 +1,4 @@
-//! UI integration tests for the preferences sheet and the library dialogs
+//! UI integration tests for the Preferences screen and the library dialogs
 //! (recording metadata, `TRACK.yml`). Every configuration root, library
 //! folder and `TRACK.yml` lives in a temporary directory.
 
@@ -10,9 +10,10 @@ use std::time::Duration;
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{AppContext as _, Focusable as _, TestAppContext};
+use omatrack_app::actions::OpenPreferences;
 use omatrack_app::dialogs::{EditFolderMetadata, EditRecordingMetadata};
 use omatrack_app::panels::PanelKind;
-use omatrack_app::preferences::{self, PreferencesTab};
+use omatrack_app::preferences::{PreferencesSection, PreferencesView};
 use omatrack_library::location::{DiscoveredFile, LocationId};
 use omatrack_library::metadata::MetadataSources;
 use omatrack_library::{
@@ -130,19 +131,30 @@ fn focus_traces(test: &common::TestApp, cx: &mut TestAppContext) -> gpui_kit::Fo
     .unwrap()
 }
 
+/// Open Preferences the way the palette and the title bar do: dispatch
+/// the action from the focused element.
 fn open_preferences(
     test: &common::TestApp,
     cx: &mut TestAppContext,
-) -> gpui_kit::Entity<preferences::PreferencesView> {
-    let view = cx
-        .update_window(test.window.into(), |_, window, cx| {
-            let view = preferences::open(window, cx).expect("the application state is installed");
-            window.render_frame(cx);
-            view
-        })
-        .unwrap();
+) -> gpui_kit::Entity<PreferencesView> {
+    cx.update_window(test.window.into(), |_, window, cx| {
+        window.dispatch_action(Box::new(OpenPreferences), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
     cx.run_until_parked();
-    view
+    cx.update(|cx| test.workspace.read(cx).preferences().cloned())
+        .expect("OpenPreferences opens the screen")
+}
+
+/// Click `section` in the section list.
+fn show(window: &mut gpui_kit::Window, section: PreferencesSection, cx: &mut gpui_kit::App) {
+    window.within("preferences-nav").click(section.nav_id(), cx);
+    window.render_frame(cx);
+}
+
+fn is_open(test: &common::TestApp, cx: &mut TestAppContext) -> bool {
+    cx.update(|cx| test.workspace.read(cx).preferences().is_some())
 }
 
 /// Press and release `key`: a keyboard click fires on the release, which
@@ -157,18 +169,22 @@ fn activate(window: &mut gpui_kit::Window, key: &str, cx: &mut gpui_kit::App) {
     window.render_frame(cx);
 }
 
-fn page_visible(test: &common::TestApp, tab: PreferencesTab, cx: &mut TestAppContext) -> bool {
+fn page_visible(
+    test: &common::TestApp,
+    section: PreferencesSection,
+    cx: &mut TestAppContext,
+) -> bool {
     cx.update_window(test.window.into(), |_, window, cx| {
         window.render_frame(cx);
         window
-            .try_find(tab.page_id())
+            .try_find(section.page_id())
             .is_some_and(|page| page.visible())
     })
     .unwrap()
 }
 
 #[gpui_kit::test]
-fn ctrl_comma_opens_preferences_and_escape_returns_focus(cx: &mut TestAppContext) {
+fn ctrl_comma_opens_the_preferences_screen_and_escape_returns_focus(cx: &mut TestAppContext) {
     let sandbox = common::Sandbox::new();
     let test = start(cx, sandbox.options());
     let traces = focus_traces(&test, cx);
@@ -176,92 +192,159 @@ fn ctrl_comma_opens_preferences_and_escape_returns_focus(cx: &mut TestAppContext
     cx.update_window(test.window.into(), |_, window, cx| {
         window.press("ctrl-,", cx);
         window.render_frame(cx);
-        assert!(window.has_active_sheet(cx));
+        // A screen, not an overlay: it replaces the dock area and status bar.
+        assert!(!window.has_active_sheet(cx));
         assert!(window.find("preferences").visible());
-        assert!(!traces.is_focused(window), "the sheet takes focus");
+        assert!(window.find("preferences-title").visible());
+        assert!(window.try_find("workspace-dock").is_none());
+        assert!(window.try_find("theme-status").is_none());
+        assert!(!traces.is_focused(window), "the screen takes focus");
     })
     .unwrap();
+    let nav_focused = cx
+        .update_window(test.window.into(), |_, window, cx| {
+            let view = test.workspace.read(cx).preferences().unwrap().clone();
+            view.read(cx).is_nav_focused(window)
+        })
+        .unwrap();
+    assert!(nav_focused, "the section list has focus");
+
     cx.update_window(test.window.into(), |_, window, cx| {
         window.press("escape", cx);
         window.render_frame(cx);
     })
     .unwrap();
     cx.run_until_parked();
+    assert!(!is_open(&test, cx));
     cx.update_window(test.window.into(), |_, window, cx| {
-        assert!(!window.has_active_sheet(cx));
-        assert!(traces.is_focused(window), "focus returns to the trigger");
+        window.render_frame(cx);
+        assert!(window.find("workspace-dock").visible());
+        assert!(window.try_find("preferences").is_none());
+        assert!(traces.is_focused(window), "focus returns to the traces");
     })
     .unwrap();
 }
 
 #[gpui_kit::test]
-fn the_preferences_sheet_closes_on_escape_and_returns_focus(cx: &mut TestAppContext) {
+fn done_and_escape_from_a_control_return_to_the_workspace(cx: &mut TestAppContext) {
     let sandbox = common::Sandbox::new();
     let test = start(cx, sandbox.options());
     let traces = focus_traces(&test, cx);
-    open_preferences(&test, cx);
-    assert!(page_visible(&test, PreferencesTab::Library, cx));
+    let layout_before = cx.update(|cx| test.workspace.read(cx).dock_area().read(cx).dump(cx));
 
-    // Escape from a control inside the sheet, not only from the sheet.
+    // Escape from a focused control inside the screen, not only the list.
+    open_preferences(&test, cx);
     cx.update_window(test.window.into(), |_, window, cx| {
-        window.within("preferences-tabs").click(2usize, cx);
+        show(window, PreferencesSection::Video, cx);
+        window.click("prefs-video-muted", cx);
         window.press("escape", cx);
         window.render_frame(cx);
     })
     .unwrap();
     cx.run_until_parked();
-    cx.update_window(test.window.into(), |_, window, cx| {
-        assert!(!window.has_active_sheet(cx));
-        assert!(window.try_find("preferences").is_none());
-        assert!(traces.is_focused(window), "focus returns to the trigger");
+    assert!(!is_open(&test, cx));
+    cx.update_window(test.window.into(), |_, window, _| {
+        assert!(traces.is_focused(window), "focus returns to the traces");
     })
     .unwrap();
+
+    // Done in the title bar.
+    open_preferences(&test, cx);
+    cx.update_window(test.window.into(), |_, window, cx| {
+        window.click("preferences-done", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(!is_open(&test, cx));
+    cx.update_window(test.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(traces.is_focused(window), "focus returns to the traces");
+    })
+    .unwrap();
+    let layout_after = cx.update(|cx| test.workspace.read(cx).dock_area().read(cx).dump(cx));
+    assert_eq!(
+        serde_json::to_value(&layout_before).unwrap(),
+        serde_json::to_value(&layout_after).unwrap(),
+        "the dock layout is untouched"
+    );
 }
 
 #[gpui_kit::test]
-fn tabs_switch_with_the_pointer_and_the_keyboard(cx: &mut TestAppContext) {
+fn the_palette_command_opens_preferences(cx: &mut TestAppContext) {
+    let sandbox = common::Sandbox::new();
+    let test = start(cx, sandbox.options());
+    focus_traces(&test, cx);
+    step(&test, cx, |window, cx| {
+        window.press("ctrl-k", cx);
+    });
+    step(&test, cx, |window, cx| {
+        assert!(window.has_active_dialog(cx));
+        window.input("Preferences", cx);
+    });
+    step(&test, cx, |window, cx| window.press("enter", cx));
+    cx.executor().advance_clock(Duration::from_millis(300));
+    cx.run_until_parked();
+    assert!(is_open(&test, cx));
+    let nav_focused = cx
+        .update_window(test.window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(!window.has_active_dialog(cx), "the palette closes");
+            let view = test.workspace.read(cx).preferences().unwrap().clone();
+            view.read(cx).is_nav_focused(window)
+        })
+        .unwrap();
+    assert!(nav_focused, "the section list keeps the focus");
+}
+
+#[gpui_kit::test]
+fn sections_switch_with_the_pointer_and_the_arrow_keys(cx: &mut TestAppContext) {
     let sandbox = common::Sandbox::new();
     let test = start(cx, sandbox.options());
     let view = open_preferences(&test, cx);
-    assert!(page_visible(&test, PreferencesTab::Library, cx));
-    assert!(!page_visible(&test, PreferencesTab::Video, cx));
+    assert!(page_visible(&test, PreferencesSection::Library, cx));
+    assert!(!page_visible(&test, PreferencesSection::Video, cx));
 
     cx.update_window(test.window.into(), |_, window, cx| {
-        window.within("preferences-tabs").click(2usize, cx);
+        show(window, PreferencesSection::Video, cx);
     })
     .unwrap();
-    assert!(page_visible(&test, PreferencesTab::Video, cx));
-    assert!(!page_visible(&test, PreferencesTab::Library, cx));
+    assert!(page_visible(&test, PreferencesSection::Video, cx));
+    assert!(!page_visible(&test, PreferencesSection::Library, cx));
 
-    // The tabs are Tab stops: Tab moves to the next one, Enter or Space
-    // opens it.
-    let focused = |cx: &mut TestAppContext| {
+    // The list is one Tab stop; Up and Down move through it, no wrap.
+    let section = |cx: &mut TestAppContext| {
         cx.update_window(test.window.into(), |_, window, cx| {
             window.render_frame(cx);
-            view.read(cx).focused_tab(window)
+            assert!(view.read(cx).is_nav_focused(window));
+            view.read(cx).section()
         })
         .unwrap()
     };
-    assert_eq!(focused(cx), Some(PreferencesTab::Video));
-    cx.update_window(test.window.into(), |_, window, cx| window.press("tab", cx))
-        .unwrap();
-    assert_eq!(focused(cx), Some(PreferencesTab::Drivers));
-    cx.update_window(test.window.into(), |_, window, cx| {
-        activate(window, "enter", cx)
-    })
-    .unwrap();
-    assert!(page_visible(&test, PreferencesTab::Drivers, cx));
-    cx.update_window(test.window.into(), |_, window, cx| {
-        window.press("tab", cx);
-        activate(window, "space", cx);
-    })
-    .unwrap();
-    assert!(page_visible(&test, PreferencesTab::Tracks, cx));
+    assert_eq!(section(cx), PreferencesSection::Video);
+    step(&test, cx, |window, cx| window.press("down", cx));
+    assert_eq!(section(cx), PreferencesSection::Drivers);
+    step(&test, cx, |window, cx| {
+        window.press("down", cx);
+    });
+    assert!(page_visible(&test, PreferencesSection::Tracks, cx));
     cx.update_window(test.window.into(), |_, window, cx| {
         window.render_frame(cx);
         assert!(window.find("atlas-attribution").visible());
     })
     .unwrap();
+    step(&test, cx, |window, cx| {
+        for _ in 0..4 {
+            window.press("down", cx);
+        }
+    });
+    assert_eq!(section(cx), PreferencesSection::Appearance);
+    step(&test, cx, |window, cx| {
+        for _ in 0..8 {
+            window.press("up", cx);
+        }
+    });
+    assert_eq!(section(cx), PreferencesSection::Library);
 }
 
 #[gpui_kit::test]
@@ -270,7 +353,7 @@ fn the_mute_switch_writes_video_muted(cx: &mut TestAppContext) {
     let test = start(cx, sandbox.options());
     open_preferences(&test, cx);
     cx.update_window(test.window.into(), |_, window, cx| {
-        window.within("preferences-tabs").click(2usize, cx);
+        show(window, PreferencesSection::Video, cx);
         window.render_frame(cx);
         assert_eq!(window.find("prefs-video-muted").checked(), Some(false));
         window.click("prefs-video-muted", cx);
@@ -287,7 +370,7 @@ fn the_mute_switch_writes_video_muted(cx: &mut TestAppContext) {
 
     // The fit switch on the Traces tab writes trace.fit_channels.
     cx.update_window(test.window.into(), |_, window, cx| {
-        window.within("preferences-tabs").click(1usize, cx);
+        show(window, PreferencesSection::Traces, cx);
         window.render_frame(cx);
         window.click("prefs-fit-lanes", cx);
     })
@@ -302,7 +385,7 @@ fn the_driver_table_writes_driver_mappings(cx: &mut TestAppContext) {
     let test = start(cx, sandbox.options());
     open_preferences(&test, cx);
     step(&test, cx, |window, cx| {
-        window.within("preferences-tabs").click(3usize, cx);
+        show(window, PreferencesSection::Drivers, cx);
         window.render_frame(cx);
         window.click("drivers-add", cx);
         // The new row's id field has the caret.
@@ -630,27 +713,35 @@ fn track_yml_is_refused_outside_library_folders(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn single_keys_stay_inside_the_preferences_sheet(cx: &mut TestAppContext) {
+fn single_keys_stay_inside_the_preferences_screen(cx: &mut TestAppContext) {
     let sandbox = common::Sandbox::new();
     let test = start(cx, sandbox.options());
     let view = open_preferences(&test, cx);
     step(&test, cx, |window, cx| {
-        window.within("preferences-tabs").click(1usize, cx);
+        show(window, PreferencesSection::Traces, cx);
         // `m` would mute, `t` would switch the x axis.
         window.press("m", cx);
         window.press("t", cx);
-        // Space activates the focused tab instead of playing video.
+        // Tab leaves the section list for the first control; Space flips
+        // that switch instead of playing video.
         window.press("tab", cx);
         activate(window, "space", cx);
     });
-    let (muted, axis, tab) = cx.update(|cx| {
+    let (muted, axis, section) = cx.update(|cx| {
         (
             test.app.video.read(cx).is_muted(cx),
             test.app.viewport.read(cx).axis(),
-            view.read(cx).tab(),
+            view.read(cx).section(),
         )
     });
     assert!(!muted);
     assert_eq!(axis, omatrack_trace::XAxis::Distance);
-    assert_eq!(tab, PreferencesTab::Video);
+    assert_eq!(section, PreferencesSection::Traces);
+    let saved = saved_config(&test, &sandbox, cx);
+    assert_eq!(
+        saved.trace.fit_channels,
+        Some(false),
+        "Space reached the switch"
+    );
+    assert!(saved.video.muted.is_none());
 }

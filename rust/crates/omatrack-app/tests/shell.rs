@@ -88,7 +88,7 @@ fn notifications_reach_the_screen(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn preferences_open_in_a_sheet_and_escape_closes_it_and_restores_focus(cx: &mut TestAppContext) {
+fn preferences_open_as_a_screen_and_escape_closes_it_and_restores_focus(cx: &mut TestAppContext) {
     let sandbox = common::Sandbox::new();
     let test = common::start(cx, sandbox.options());
     let traces = cx.update(|cx| {
@@ -108,15 +108,18 @@ fn preferences_open_in_a_sheet_and_escape_closes_it_and_restores_focus(cx: &mut 
     cx.update_window(test.window.into(), |_, window, cx| {
         window.render_frame(cx);
         assert!(window.find("preferences").visible());
-        assert!(window.has_active_sheet(cx));
-        assert!(!traces.is_focused(window), "the sheet takes focus");
+        assert!(
+            window.try_find("workspace-dock").is_none(),
+            "it replaces the docks"
+        );
+        assert!(!traces.is_focused(window), "the screen takes focus");
         window.press("escape", cx);
     })
     .unwrap();
     cx.run_until_parked();
     cx.update_window(test.window.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(!window.has_active_sheet(cx));
+        assert!(window.try_find("preferences").is_none());
         assert!(traces.is_focused(window), "focus returns to the traces");
     })
     .unwrap();

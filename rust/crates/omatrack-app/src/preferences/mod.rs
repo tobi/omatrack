@@ -1,60 +1,75 @@
-//! Preferences: a sheet of tabs over `omatrack.yml`.
+//! Preferences: a full-window screen over `omatrack.yml`.
 //!
-//! | Tab | Edits |
+//! | Section | Edits |
 //! | --- | --- |
 //! | Library | folder locations (add, remove, rescan) |
 //! | Traces | fit lanes, x axis |
-//! | Video | mute, reference sync and playback, continuous playback, HUD position |
+//! | Video | mute, continuous playback, reference sync and playback, HUD position |
 //! | Drivers | `driver_mappings` |
 //! | Tracks | per-track corner overrides; Track Atlas revision and attribution |
-//! | Appearance | the theme in use (readonly: Omarchy themes are followed) |
+//! | Appearance | the theme and fonts in use (read-only: Omarchy and the desktop lead) |
+//!
+//! The workspace shows the screen in place of its dock area and status bar
+//! ([`crate::Workspace::open_preferences`]); the dock area stays alive
+//! behind it, so the layout, loaded laps and cursor are untouched. The
+//! screen is a section list (the kit's `Sidebar`, one Tab stop, Up and Down
+//! move between sections) and a centred column of grouped settings.
+//! Escape or Done returns to the workspace and restores focus.
 //!
 //! Every edit goes through the entity that owns it, which writes
 //! `omatrack.yml` through [`crate::state::Preferences::update`] (debounced,
 //! atomic, off the UI thread): mute and continuous playback through the
 //! video controller, the sync strategy through the session, folders
-//! through the library. The sheet is opened by [`open`]; its body is a
-//! [`PreferencesView`] entity owned by the sheet builder, so it lives
-//! exactly as long as the sheet. Escape closes the sheet (the component's
-//! `Sheet` context) and `Root` returns focus to the trigger.
+//! through the library.
+//!
+//! The kit's `setting::Settings` was evaluated and not used: its page
+//! selection is private state that cannot be driven by an action or read
+//! back, its section items are not keyboard focusable, its field ids are
+//! fixed, and it has no readable-width column.
 
 mod drivers;
+mod icons;
+mod layout;
+mod pages;
 
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, IndexPath, Sizable as _, StyledExt as _, ThemeStyled as _,
-    WindowExt as _,
-    button::{Button, ButtonVariant, ButtonVariants as _},
-    description_list::DescriptionList,
-    dialog::DialogButtonProps,
-    form::{Field, Form},
+    ActiveTheme as _, Icon, IconName, IndexPath, Sizable as _, StyledExt as _, Theme, TitleBar,
+    button::{Button, ButtonVariants as _},
     h_flex,
+    kbd::Kbd,
+    scroll::ScrollableElement as _,
     searchable_list::SearchableListItem,
-    select::{Select, SelectEvent, SelectState},
-    switch::Switch,
-    tab::{Tab, TabBar},
-    text::TextView,
+    select::{SelectEvent, SelectState},
+    sidebar::{Sidebar, SidebarMenu, SidebarMenuItem},
     v_flex,
 };
-use gpui_kit::component::{Disableable as _, Theme};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, ElementId, Entity, FocusHandle,
+    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, TestSupportExt as _, Window, div,
+    rems,
 };
 use omatrack_core::alignment::Strategy;
 use omatrack_core::playback::ReferencePlayback;
-use omatrack_library::config::{XAxis, track_key};
-use omatrack_ui::theme::{ThemeOrigin, ThemeStatus};
+use omatrack_library::config::XAxis;
+use omatrack_ui::theme::{ThemeFonts, ThemeStatus};
 
 pub use drivers::DriverMappingsEditor;
 
+use crate::actions::{ClosePreferences, NextPreferencesSection, PrevPreferencesSection};
+use crate::keymap::{PREFERENCES_CONTEXT, PREFERENCES_NAV_CONTEXT};
 use crate::state::{AppState, PreferencesEvent};
 use crate::workspace::SyncOption;
 
-/// One page of the preferences sheet.
+/// The readable width of the settings column.
+const CONTENT_MAX_WIDTH: f32 = 46.;
+/// The width of the section list.
+const NAV_WIDTH: f32 = 15.;
+
+/// One section of the Preferences screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum PreferencesTab {
+pub enum PreferencesSection {
     #[default]
     Library,
     Traces,
@@ -64,7 +79,7 @@ pub enum PreferencesTab {
     Appearance,
 }
 
-impl PreferencesTab {
+impl PreferencesSection {
     pub const ALL: [Self; 6] = [
         Self::Library,
         Self::Traces,
@@ -85,7 +100,21 @@ impl PreferencesTab {
         }
     }
 
-    /// The element id of the tab's page.
+    /// The line under the page title.
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Library => {
+                "Folders Omatrack reads recordings and onboard video from, with their subfolders."
+            }
+            Self::Traces => "How the trace lanes are laid out and what the x axis measures.",
+            Self::Video => "Onboard playback, and how the reference video follows the primary.",
+            Self::Drivers => "Names for the driver ids that loggers record.",
+            Self::Tracks => "Your corner edits and the Track Atlas data beneath them.",
+            Self::Appearance => "Omatrack follows the Omarchy theme and the desktop fonts.",
+        }
+    }
+
+    /// The element id of the section's page.
     pub fn page_id(self) -> &'static str {
         match self {
             Self::Library => "preferences-library",
@@ -97,11 +126,37 @@ impl PreferencesTab {
         }
     }
 
+    /// The element id of the section's entry in the section list.
+    pub fn nav_id(self) -> SharedString {
+        // The kit's sidebar names items `{menu}-{item}`; one menu.
+        format!("0-{}", self.ix()).into()
+    }
+
+    fn icon(self) -> Icon {
+        match self {
+            Self::Library => IconName::FolderOpen.into(),
+            Self::Traces => icons::icon(gpui_kit::assets::IconName::ChartSpline),
+            Self::Video => icons::icon(gpui_kit::assets::IconName::Video),
+            Self::Drivers => icons::icon(gpui_kit::assets::IconName::Users),
+            Self::Tracks => icons::icon(gpui_kit::assets::IconName::Route),
+            Self::Appearance => IconName::Palette.into(),
+        }
+    }
+
     fn ix(self) -> usize {
         Self::ALL
             .iter()
-            .position(|tab| *tab == self)
+            .position(|section| *section == self)
             .unwrap_or_default()
+    }
+
+    /// The section `step` places away, clamped to the list (no wrap).
+    fn step(self, step: isize) -> Self {
+        let ix = self
+            .ix()
+            .saturating_add_signed(step)
+            .min(Self::ALL.len() - 1);
+        Self::ALL[ix]
     }
 }
 
@@ -135,12 +190,12 @@ impl<T: Clone + PartialEq> SearchableListItem for Choice<T> {
 
 type ChoiceSelect<T> = Entity<SelectState<Vec<Choice<T>>>>;
 
-/// The preferences sheet's body.
+/// The Preferences screen below the title bar: section list and page.
 pub struct PreferencesView {
     app: AppState,
-    tab: PreferencesTab,
-    /// One Tab stop per tab, in tab order (Enter or Space selects it).
-    tab_focus: Vec<FocusHandle>,
+    section: PreferencesSection,
+    /// The section list's one Tab stop.
+    nav_focus: FocusHandle,
     x_axis: ChoiceSelect<XAxis>,
     reference_sync: Entity<SelectState<Vec<SyncOption>>>,
     reference_playback: ChoiceSelect<ReferencePlayback>,
@@ -212,8 +267,8 @@ impl PreferencesView {
                     preferences.update(cx, |config| config.video.reference_playback = Some(key));
                 });
             }),
-            // Keys and other surfaces edit the same settings while the
-            // sheet is open: keep the selects in step with the document.
+            // The palette and other surfaces edit the same settings while
+            // the screen is open: keep the selects in step with the document.
             cx.subscribe_in(&app.preferences, window, |this, _, event, window, cx| {
                 if let PreferencesEvent::Changed = event {
                     this.sync_selects(window, cx);
@@ -222,16 +277,14 @@ impl PreferencesView {
             cx.observe(&app.preferences, |_, _, cx| cx.notify()),
             cx.observe(&app.library, |_, _, cx| cx.notify()),
             cx.observe_global::<ThemeStatus>(|_, cx| cx.notify()),
+            cx.observe_global::<ThemeFonts>(|_, cx| cx.notify()),
             cx.observe_global::<Theme>(|_, cx| cx.notify()),
         ];
 
         let mut view = Self {
             app,
-            tab: PreferencesTab::default(),
-            tab_focus: PreferencesTab::ALL
-                .iter()
-                .map(|_| cx.focus_handle().tab_stop(true))
-                .collect(),
+            section: PreferencesSection::default(),
+            nav_focus: cx.focus_handle().tab_stop(true),
             x_axis,
             reference_sync,
             reference_playback,
@@ -242,27 +295,38 @@ impl PreferencesView {
         view
     }
 
-    /// The page on show.
-    pub fn tab(&self) -> PreferencesTab {
-        self.tab
+    /// The section on show.
+    pub fn section(&self) -> PreferencesSection {
+        self.section
     }
 
-    /// Show `tab` and move keyboard focus to its tab.
-    pub fn select_tab(&mut self, tab: PreferencesTab, window: &mut Window, cx: &mut Context<Self>) {
-        self.tab = tab;
-        if let Some(handle) = self.tab_focus.get(tab.ix()) {
-            window.focus(handle, cx);
-        }
+    /// Show `section` and move keyboard focus to the section list.
+    pub fn select_section(
+        &mut self,
+        section: PreferencesSection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.section = section;
+        self.focus_nav(window, cx);
         cx.notify();
     }
 
-    /// The tab that has keyboard focus, if one has.
-    pub fn focused_tab(&self, window: &Window) -> Option<PreferencesTab> {
-        PreferencesTab::ALL
-            .into_iter()
-            .zip(&self.tab_focus)
-            .find(|(_, handle)| handle.is_focused(window))
-            .map(|(tab, _)| tab)
+    /// Give the section list keyboard focus.
+    pub fn focus_nav(&self, window: &mut Window, cx: &mut App) {
+        window.focus(&self.nav_focus, cx);
+    }
+
+    /// Whether the section list has keyboard focus.
+    pub fn is_nav_focused(&self, window: &Window) -> bool {
+        self.nav_focus.is_focused(window)
+    }
+
+    fn step_section(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let next = self.section.step(step);
+        if next != self.section {
+            self.select_section(next, window, cx);
+        }
     }
 
     fn sync_selects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -303,499 +367,39 @@ impl PreferencesView {
         });
     }
 
-    fn confirm_remove_folder(
-        &mut self,
-        id: String,
-        name: SharedString,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let app = self.app.clone();
-        window.open_alert_dialog(cx, move |alert, _, _| {
-            let app = app.clone();
-            let id = id.clone();
-            alert
-                .title(SharedString::from(format!(
-                    "Remove “{name}” from the library?"
-                )))
-                .description("Its recordings stay on disk.")
-                .button_props(
-                    DialogButtonProps::default()
-                        .ok_text("Remove")
-                        .ok_variant(ButtonVariant::Danger)
-                        .show_cancel(true),
-                )
-                .on_ok(move |_, _, cx| {
-                    app.preferences.update(cx, |preferences, cx| {
-                        preferences.update(cx, |config| {
-                            config.remove_location(&id);
-                        });
-                    });
-                    app.library.update(cx, |library, cx| library.rescan(cx));
-                    true
-                })
-        });
-    }
-
-    fn confirm_reset_corners(
-        &mut self,
-        key: String,
-        name: SharedString,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let app = self.app.clone();
-        window.open_alert_dialog(cx, move |alert, _, _| {
-            let app = app.clone();
-            let key = key.clone();
-            alert
-                .title(SharedString::from(format!("Reset the corners of {name}?")))
-                .description("Your edited corners are removed and the Track Atlas corners apply.")
-                .button_props(
-                    DialogButtonProps::default()
-                        .ok_text("Reset")
-                        .ok_variant(ButtonVariant::Danger)
-                        .show_cancel(true),
-                )
-                .on_ok(move |_, _, cx| {
-                    reset_corners(&app, &key, cx);
-                    true
-                })
-        });
-    }
-
-    fn render_tabs(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let tabs = PreferencesTab::ALL
-            .iter()
-            .zip(&self.tab_focus)
-            .map(|(tab, focus)| {
-                let focused = focus.is_focused(window);
-                Tab::new()
-                    .label(tab.title())
-                    .track_focus(focus)
-                    .when(focused, |tab| tab.focus_ring_style(window, cx))
-            });
-        TabBar::new("preferences-tabs")
-            .underline()
-            .small()
-            .selected_index(self.tab.ix())
-            .children(tabs)
-            .on_click(cx.listener(|this, ix: &usize, window, cx| {
-                if let Some(tab) = PreferencesTab::ALL.get(*ix) {
-                    this.select_tab(*tab, window, cx);
-                }
-            }))
-    }
-
-    fn render_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        match self.tab {
-            PreferencesTab::Library => self.render_library(cx).into_any_element(),
-            PreferencesTab::Traces => self.render_traces(cx).into_any_element(),
-            PreferencesTab::Video => self.render_video(cx).into_any_element(),
-            PreferencesTab::Drivers => self.render_drivers(cx).into_any_element(),
-            PreferencesTab::Tracks => self.render_tracks(cx).into_any_element(),
-            PreferencesTab::Appearance => self.render_appearance(cx).into_any_element(),
-        }
-    }
-
-    fn render_library(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let scanning = self.app.library.read(cx).is_scanning();
-        let folders = self
-            .app
-            .preferences
-            .read(cx)
-            .config()
-            .folder_locations()
-            .map(|folder| {
-                (
-                    folder.resolved_id(),
-                    SharedString::from(folder.display_name()),
-                    folder.target.clone().unwrap_or_default(),
-                    folder.is_enabled(),
-                )
-            })
-            .collect::<Vec<_>>();
+    fn render_nav(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let focused = self.is_nav_focused(window);
         let theme = cx.theme();
-        let rows = folders.into_iter().map(|(id, name, target, enabled)| {
-            let remove_name = name.clone();
-            let remove_id = id.clone();
-            h_flex()
-                .id(ElementId::Name(format!("prefs-folder-{id}").into()))
-                .test_support()
-                .aria_label(name.clone())
-                .gap_2()
-                .py_1()
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .child(div().text_sm().truncate().child(name.clone()))
-                                .when(!enabled, |this| {
-                                    this.child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(theme.muted_foreground)
-                                            .child("Disabled"),
-                                    )
-                                }),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .font_family(theme.mono_font_family.clone())
-                                .text_color(theme.muted_foreground)
-                                .truncate()
-                                .child(target),
-                        ),
-                )
-                .child(
-                    Button::new(ElementId::Name(format!("prefs-remove-folder-{id}").into()))
-                        .small()
-                        .outline()
-                        .label("Remove…")
-                        .accessibility_label(format!("Remove {name}…"))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.confirm_remove_folder(
-                                remove_id.clone(),
-                                remove_name.clone(),
-                                window,
-                                cx,
-                            )
-                        })),
-                )
+        let ring = theme.ring;
+        let items = PreferencesSection::ALL.map(|section| {
+            let active = section == self.section;
+            SidebarMenuItem::new(section.title())
+                .icon(section.icon())
+                .active(active)
+                .h_8()
+                .border_1()
+                .border_color(gpui_kit::transparent_black())
+                .when(active && focused, |item| item.border_color(ring))
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    this.select_section(section, window, cx);
+                }))
         });
-        let rows = rows.collect::<Vec<_>>();
-        let empty = rows.is_empty();
-        v_flex()
-            .id(PreferencesTab::Library.page_id())
-            .test_support()
-            .gap_3()
-            .child(section_title("Folders"))
-            .child(muted_text(
-                "Omatrack reads recordings from these folders and their subfolders. Nothing \
-                 is written into them except TRACK.yml files you edit.",
-                cx,
-            ))
-            .children(rows)
-            .when(empty, |this| {
-                this.child(muted_text("No library folders.", cx))
-            })
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(
-                        Button::new("prefs-add-folder")
-                            .small()
-                            .icon(IconName::Plus)
-                            .label("Add folder…")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.app
-                                    .library
-                                    .update(cx, |library, cx| library.prompt_add_folder(cx));
-                            })),
-                    )
-                    .child(
-                        Button::new("prefs-rescan")
-                            .small()
-                            .ghost()
-                            .icon(IconName::RotateCw)
-                            .label("Rescan")
-                            .loading(scanning)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.app
-                                    .library
-                                    .update(cx, |library, cx| library.rescan(cx));
-                            })),
-                    ),
-            )
-    }
-
-    fn render_traces(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let fit = self
-            .app
-            .preferences
-            .read(cx)
-            .config()
-            .trace
-            .is_fitting_channels();
-        v_flex()
-            .id(PreferencesTab::Traces.page_id())
-            .test_support()
-            .gap_3()
-            .child(
-                Form::new()
-                    .child(
-                        Field::new()
-                            .label_indent(false)
-                            .description("Every visible lane shares the panel height; off, lanes keep their own height and scroll.")
-                            .child(
-                                Switch::new("prefs-fit-lanes")
-                                    .label("Fit lanes to the panel")
-                                    .checked(fit)
-                                    .on_change(cx.listener(|this, fit: &bool, _, cx| {
-                                        let fit = *fit;
-                                        this.app.preferences.update(cx, |preferences, cx| {
-                                            preferences.update(cx, |config| {
-                                                config.trace.fit_channels = Some(fit)
-                                            });
-                                        });
-                                    })),
-                            ),
-                    )
-                    .child(
-                        Field::new()
-                            .label("X axis")
-                            .description("Distance aligns laps by track position; time shows each lap as driven.")
-                            .child(
-                                Select::new(&self.x_axis)
-                                    .id("prefs-x-axis")
-                                    .small()
-                                    .accessibility_label("X axis"),
-                            ),
-                    ),
-            )
-    }
-
-    fn render_video(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let video = self.app.preferences.read(cx).config().video.clone();
-        let muted = video.is_muted();
-        let continuous = video.is_continuous_playback();
-        let has_hud_position = video.hud_position().is_some();
-        v_flex()
-            .id(PreferencesTab::Video.page_id())
-            .test_support()
-            .gap_3()
-            .child(
-                Form::new()
-                    .child(
-                        Field::new().label_indent(false).child(
-                            Switch::new("prefs-video-muted")
-                                .label("Mute video")
-                                .checked(muted)
-                                .on_change(cx.listener(|this, muted: &bool, _, cx| {
-                                    let wanted = *muted;
-                                    let video = this.app.video.clone();
-                                    if video.read(cx).is_muted(cx) != wanted {
-                                        video.update(cx, |video, cx| video.toggle_mute(cx));
-                                    }
-                                })),
-                        ),
-                    )
-                    .child(
-                        Field::new()
-                            .label("Reference sync")
-                            .description("How the reference lap is aligned to the primary. Automatic uses GPS, then dampers, then lap %.")
-                            .child(
-                                Select::new(&self.reference_sync)
-                                    .id("prefs-reference-sync")
-                                    .small()
-                                    .accessibility_label("Reference sync"),
-                            ),
-                    )
-                    .child(
-                        Field::new()
-                            .label("Reference playback")
-                            .description("Corners holds 1x through each corner; GPS follows the map continuously; Recording plays both at 1x.")
-                            .child(
-                                Select::new(&self.reference_playback)
-                                    .id("prefs-reference-playback")
-                                    .small()
-                                    .accessibility_label("Reference playback"),
-                            ),
-                    )
-                    .child(
-                        Field::new().label_indent(false).child(
-                            Switch::new("prefs-continuous")
-                                .label("Continuous playback")
-                                .checked(continuous)
-                                .on_change(cx.listener(|this, continuous: &bool, _, cx| {
-                                    let wanted = *continuous;
-                                    let video = this.app.video.clone();
-                                    if video.read(cx).is_continuous(cx) != wanted {
-                                        video.update(cx, |video, cx| video.toggle_continuous(cx));
-                                    }
-                                })),
-                        ),
-                    )
-                    .child(
-                        Field::new()
-                            .label_indent(false)
-                            .description("Drag the HUD over the video to move it.")
-                            .child(
-                                h_flex().child(
-                                    Button::new("prefs-reset-hud")
-                                        .small()
-                                        .outline()
-                                        .icon(IconName::Undo2)
-                                        .label("Reset HUD position")
-                                        .disabled(!has_hud_position)
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.app.preferences.update(cx, |preferences, cx| {
-                                                preferences.update(cx, |config| {
-                                                    config.video.set_hud_position(None)
-                                                });
-                                            });
-                                        })),
-                                ),
-                            ),
-                    ),
-            )
-    }
-
-    fn render_drivers(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .id(PreferencesTab::Drivers.page_id())
-            .test_support()
-            .gap_3()
-            .child(muted_text(
-                "Names for the driver ids a logger records. * names every id without its own \
-                 entry. A TRACK.yml or a recording's own metadata takes precedence.",
-                cx,
-            ))
-            .child(self.drivers.clone())
-    }
-
-    fn render_tracks(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let overrides = self
-            .app
-            .preferences
-            .read(cx)
-            .config()
-            .tracks
-            .iter()
-            .filter(|(_, track)| !track.corner_zones().is_empty())
-            .map(|(key, track)| (key.clone(), track_title(key), track.corner_zones().len()))
-            .collect::<Vec<_>>();
-        let theme = cx.theme();
-        let rows = overrides.into_iter().map(|(key, name, count)| {
-            let reset_key = key.clone();
-            let reset_name = name.clone();
-            let noun = if count == 1 { "corner" } else { "corners" };
-            h_flex()
-                .id(ElementId::Name(format!("prefs-track-{key}").into()))
-                .test_support()
-                .aria_label(name.clone())
-                .gap_2()
-                .py_1()
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_sm()
-                        .truncate()
-                        .child(name.clone()),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(format!("{count} edited {noun}")),
-                )
-                .child(
-                    Button::new(ElementId::Name(format!("prefs-reset-corners-{key}").into()))
-                        .small()
-                        .outline()
-                        .label("Reset…")
-                        .accessibility_label(format!("Reset the corners of {name}…"))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.confirm_reset_corners(
-                                reset_key.clone(),
-                                reset_name.clone(),
-                                window,
-                                cx,
-                            )
-                        })),
-                )
-        });
-        let rows = rows.collect::<Vec<_>>();
-        let empty = rows.is_empty();
-        let attribution = omatrack_core::track::ATTRIBUTION.replace('\n', "\n\n");
-        v_flex()
-            .id(PreferencesTab::Tracks.page_id())
-            .test_support()
-            .gap_3()
-            .child(section_title("Corner edits"))
-            .children(rows)
-            .when(empty, |this| {
-                this.child(muted_text(
-                    "No edited corners. Every track uses its Track Atlas corners.",
-                    cx,
-                ))
-            })
-            .child(section_title("Track Atlas"))
-            .child(DescriptionList::new().columns(1).item(
-                "Revision",
-                SharedString::from(omatrack_core::track::atlas_revision()),
-                1,
-            ))
-            .child(
-                div()
-                    .id("atlas-attribution")
-                    .test_support()
-                    .aria_label("Track Atlas attribution")
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child(TextView::markdown("atlas-attribution-text", attribution)),
-            )
-    }
-
-    fn render_appearance(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let status = ThemeStatus::global(cx).cloned();
-        let (theme_name, source, location) = match &status {
-            Some(status) => match status.origin() {
-                ThemeOrigin::Omarchy(path) => (
-                    status.name().clone(),
-                    SharedString::from("Omarchy"),
-                    Some(SharedString::from(path.display().to_string())),
-                ),
-                ThemeOrigin::BuiltIn => (status.label(), SharedString::from("Built in"), None),
-            },
-            None => (
-                SharedString::from("Default"),
-                SharedString::from("Built in"),
-                None,
-            ),
-        };
-        let mut list = DescriptionList::new()
-            .columns(1)
-            .item("Theme", theme_name, 1)
-            .item("Source", source, 1);
-        if let Some(location) = location {
-            list = list.item("Folder", location, 1);
-        }
-        v_flex()
-            .id(PreferencesTab::Appearance.page_id())
-            .test_support()
-            .gap_3()
-            .child(list)
-            .child(muted_text(
-                "Omarchy themes are followed automatically: switching the Omarchy theme \
-                 restyles Omatrack at once. Without an Omarchy theme the built-in dark theme \
-                 applies.",
-                cx,
-            ))
-    }
-
-    fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let preferences = self.app.preferences.read(cx);
         let path = preferences.paths().config_file().display().to_string();
         let error = preferences.last_error().map(SharedString::from);
-        let theme = cx.theme();
-        v_flex()
+        let footer = v_flex()
+            .id("preferences-saved-to")
+            .test_support()
+            .w_full()
             .gap_1()
-            .pt_3()
-            .border_t_1()
-            .border_color(theme.border)
             .text_xs()
             .text_color(theme.muted_foreground)
-            .child("Changes are saved automatically to")
+            .child("Changes save automatically to")
             .child(
                 div()
                     .font_family(theme.mono_font_family.clone())
-                    .truncate()
+                    .text_color(theme.foreground)
+                    .line_clamp(3)
                     .child(path),
             )
             .when_some(error, |this, error| {
@@ -807,78 +411,112 @@ impl PreferencesView {
                         .text_color(theme.danger)
                         .child(error),
                 )
-            })
+            });
+        div()
+            .id("preferences-nav")
+            .test_support()
+            .aria_label("Preferences sections")
+            .key_context(PREFERENCES_NAV_CONTEXT)
+            .track_focus(&self.nav_focus)
+            .on_action(cx.listener(|this, _: &PrevPreferencesSection, window, cx| {
+                this.step_section(-1, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &NextPreferencesSection, window, cx| {
+                this.step_section(1, window, cx)
+            }))
+            .h_full()
+            .flex_none()
+            .child(
+                Sidebar::new("preferences-sections")
+                    .w(rems(NAV_WIDTH))
+                    .collapsible(false)
+                    .child(SidebarMenu::new().children(items))
+                    .footer(footer),
+            )
+            .into_any_element()
+    }
+
+    fn render_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        match self.section {
+            PreferencesSection::Library => self.render_library(cx),
+            PreferencesSection::Traces => self.render_traces(cx),
+            PreferencesSection::Video => self.render_video(cx),
+            PreferencesSection::Drivers => self.render_drivers(cx),
+            PreferencesSection::Tracks => self.render_tracks(cx),
+            PreferencesSection::Appearance => self.render_appearance(cx),
+        }
     }
 }
 
 impl Render for PreferencesView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let page = self.render_page(cx);
-        let tabs = self.render_tabs(window, cx).into_any_element();
-        v_flex()
+        let nav = self.render_nav(window, cx);
+        h_flex()
             .id("preferences")
             .test_support()
-            .key_context("Preferences")
-            .gap_4()
-            .pt_1()
-            .pb_4()
-            .child(tabs)
-            .child(page)
-            .child(self.render_footer(cx))
+            .key_context(PREFERENCES_CONTEXT)
+            .size_full()
+            .items_start()
+            .bg(cx.theme().background)
+            .child(nav)
+            .child(
+                div()
+                    .id("preferences-content")
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .overflow_y_scrollbar()
+                    .child(
+                        v_flex()
+                            .w_full()
+                            .max_w(rems(CONTENT_MAX_WIDTH))
+                            .mx_auto()
+                            .px_10()
+                            .pt_8()
+                            .pb_12()
+                            .child(page),
+                    ),
+            )
     }
 }
 
-fn section_title(title: &'static str) -> impl IntoElement {
-    div().text_sm().font_semibold().child(title)
-}
-
-fn muted_text(text: &'static str, cx: &App) -> impl IntoElement {
-    div()
-        .text_sm()
-        .text_color(cx.theme().muted_foreground)
-        .child(text)
-}
-
-/// A `tracks.<key>` key as a name: the Track Atlas name when the key
-/// resolves, else the key with spaces.
-fn track_title(key: &str) -> SharedString {
-    let spaced = key.replace('_', " ");
-    omatrack_core::track::find_track(&spaced)
-        .or_else(|| omatrack_core::track::find_track(key))
-        .map(|track| SharedString::from(track.name.to_string()))
-        .unwrap_or_else(|| spaced.into())
-}
-
-/// Drop the corner edits of `tracks.<key>`. When the primary lap is on
-/// that track the session drops its override too (and re-analyses).
-fn reset_corners(app: &AppState, key: &str, cx: &mut App) {
-    let primary_track = app
-        .session
-        .read(cx)
-        .primary()
-        .and_then(|slot| slot.track_key())
-        .map(|track| track_key(track));
-    if primary_track.as_deref() == Some(key) {
-        app.session
-            .update(cx, |session, cx| session.set_corner_override(None, cx));
-    } else {
-        let key = key.to_string();
-        app.preferences.update(cx, |preferences, cx| {
-            preferences.update(cx, |config| config.set_track_corners(&key, None));
-        });
-    }
-}
-
-/// Open the preferences sheet on the right of `window`.
-pub fn open(window: &mut Window, cx: &mut App) -> Option<Entity<PreferencesView>> {
-    let app = AppState::try_global(cx)?.clone();
-    let view = cx.new(|cx| PreferencesView::new(app, window, cx));
-    let body = view.clone();
-    window.open_sheet(cx, move |sheet, window, _| {
-        sheet
-            .title("Preferences")
-            .size(window.rem_size() * 36.)
-            .child(body.clone())
-    });
-    Some(view)
+/// The title bar while Preferences are open: the screen's name, and Done
+/// (Escape) back to the workspace.
+pub(crate) fn title_bar(
+    on_done: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    window: &Window,
+    cx: &App,
+) -> impl IntoElement {
+    let theme = cx.theme();
+    TitleBar::new().child(
+        h_flex()
+            .w_full()
+            .gap_3()
+            .pr_2()
+            .child(
+                div()
+                    .id("preferences-title")
+                    .test_support()
+                    .aria_label("Preferences")
+                    .text_sm()
+                    .font_semibold()
+                    .text_color(theme.foreground)
+                    .child("Preferences"),
+            )
+            .child(div().flex_1())
+            .child(
+                Button::new("preferences-done")
+                    .small()
+                    .primary()
+                    .label("Done")
+                    .children(Kbd::binding_for_action(
+                        &ClosePreferences,
+                        Some(PREFERENCES_CONTEXT),
+                        window,
+                    ))
+                    .accessibility_label("Done: back to the workspace")
+                    .on_click(on_done),
+            ),
+    )
 }
