@@ -93,6 +93,7 @@ fn move_to(cx: &mut TestAppContext, window: AnyWindowHandle, at: Point<gpui_kit:
 
 struct Session {
     items: Arc<[LapStripItem]>,
+    role: LapRole,
     primary: Option<i32>,
     reference: Option<i32>,
     requests: Vec<LapSelect>,
@@ -103,6 +104,7 @@ impl Render for Session {
         let this = cx.entity().downgrade();
         div().size_full().p_4().child(
             LapStrip::new("lap-strip", self.items.clone())
+                .role(self.role)
                 .primary(self.primary)
                 .reference(self.reference)
                 .primary_playhead(Some(0.4))
@@ -133,11 +135,16 @@ fn session_items() -> Arc<[LapStripItem]> {
 }
 
 fn open_strip(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Session>) {
+    open_strip_as(cx, LapRole::Primary)
+}
+
+fn open_strip_as(cx: &mut TestAppContext, role: LapRole) -> (AnyWindowHandle, Entity<Session>) {
     init(cx);
     let mut view = None;
     let handle = cx.open_window(size(px(1000.), px(120.)), |window, cx| {
         let session = cx.new(|_| Session {
             items: session_items(),
+            role,
             primary: Some(1),
             reference: None,
             requests: Vec::new(),
@@ -207,10 +214,7 @@ fn lap_strip_click_selects_primary_and_alt_click_reference(cx: &mut TestAppConte
     release(cx, window, centre, true);
     cx.update(|cx| {
         let session = session.read(cx);
-        assert_eq!(
-            session.requests.last(),
-            Some(&LapSelect::new(6, LapRole::Reference))
-        );
+        assert_eq!(session.requests.last(), Some(&LapSelect::compare(6)));
         assert_eq!(session.reference, Some(6));
         assert_eq!(
             session.primary,
@@ -222,6 +226,63 @@ fn lap_strip_click_selects_primary_and_alt_click_reference(cx: &mut TestAppConte
         assert_eq!(window.find(cell(6)).label(), Some("L3 1:15.020, reference"));
     })
     .unwrap();
+}
+
+fn right_click(cx: &mut TestAppContext, window: AnyWindowHandle, at: Point<gpui_kit::Pixels>) {
+    dispatch(
+        cx,
+        window,
+        MouseDownEvent {
+            button: MouseButton::Right,
+            position: at,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        }
+        .to_platform_input(),
+    );
+    dispatch(
+        cx,
+        window,
+        MouseUpEvent {
+            button: MouseButton::Right,
+            position: at,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        }
+        .to_platform_input(),
+    );
+}
+
+#[gpui_kit::test]
+fn a_reference_strip_clicks_for_its_role_and_right_click_compares(cx: &mut TestAppContext) {
+    let (window, session) = open_strip_as(cx, LapRole::Reference);
+    // A plain click asks for the strip's own role.
+    cx.update_window(window, |_, window, cx| window.click(cell(2), cx))
+        .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let session = session.read(cx);
+        assert_eq!(
+            session.requests,
+            vec![LapSelect::new(2, LapRole::Reference)]
+        );
+        assert!(!session.requests[0].secondary);
+    });
+
+    // A right click compares against the lap, whatever the strip's role.
+    let centre = cx
+        .update_window(window, |_, window, _| {
+            window.find(cell(6)).bounds().center()
+        })
+        .unwrap();
+    right_click(cx, window, centre);
+    cx.update(|cx| {
+        let session = session.read(cx);
+        assert_eq!(session.requests.last(), Some(&LapSelect::compare(6)));
+        assert!(session.requests.last().unwrap().secondary);
+        assert_eq!(session.requests.len(), 2, "one request per right click");
+    });
 }
 
 // ---- video HUD --------------------------------------------------------------

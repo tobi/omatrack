@@ -15,8 +15,9 @@
 //!
 //! Selection is controlled: the owner passes the current primary and
 //! reference lap ids and receives requests through [`LapStrip::on_select`].
-//! A plain click (or Enter / Space) asks for the primary role, Alt+click
-//! for the reference role.
+//! A plain click (or Enter / Space) asks for the strip's own role
+//! ([`LapStrip::role`], primary by default); a right click or Alt+click
+//! asks for the reference role.
 //!
 //! Layout: [`lap_strip_layout`] owns the pixel budget. The row is a custom
 //! element that resolves its width, runs the layout and places the cell
@@ -249,13 +250,30 @@ impl From<&LapStripCell> for LapStripItem {
 #[non_exhaustive]
 pub struct LapSelect {
     pub lap_id: i32,
-    /// [`LapRole::Reference`] with Alt held, else [`LapRole::Primary`].
+    /// [`LapRole::Reference`] for a right click or Alt+click, else the
+    /// strip's own role.
     pub role: LapRole,
+    /// A right click or Alt+click ("compare against this lap"), not the
+    /// plain activation.
+    pub secondary: bool,
 }
 
 impl LapSelect {
     pub fn new(lap_id: i32, role: LapRole) -> Self {
-        Self { lap_id, role }
+        Self {
+            lap_id,
+            role,
+            secondary: false,
+        }
+    }
+
+    /// The request of a right click or Alt+click: the reference role.
+    pub fn compare(lap_id: i32) -> Self {
+        Self {
+            lap_id,
+            role: LapRole::Reference,
+            secondary: true,
+        }
     }
 }
 
@@ -266,6 +284,7 @@ type SelectHandler = Rc<dyn Fn(&LapSelect, &mut Window, &mut App)>;
 pub struct LapStrip {
     id: ElementId,
     items: Arc<[LapStripItem]>,
+    role: LapRole,
     primary: Option<i32>,
     reference: Option<i32>,
     primary_playhead: Option<f64>,
@@ -280,12 +299,20 @@ impl LapStrip {
         Self {
             id: id.into(),
             items: items.into(),
+            role: LapRole::Primary,
             primary: None,
             reference: None,
             primary_playhead: None,
             reference_playhead: None,
             on_select: None,
         }
+    }
+
+    /// The role a plain click (or Enter / Space) asks for: the role this
+    /// strip's recording plays. Primary by default.
+    pub fn role(mut self, role: LapRole) -> Self {
+        self.role = role;
+        self
     }
 
     /// The primary lap of this session, if it is one of these laps.
@@ -313,9 +340,11 @@ impl LapStrip {
         self
     }
 
-    /// Requested selection: a plain click asks for the primary role,
-    /// Alt+click for the reference role. Runs after the click; the owner
-    /// updates its model and renders the strip again.
+    /// Requested selection: a plain click asks for the strip's role, a
+    /// right click or Alt+click for the reference role. Runs after the
+    /// click; the owner updates its model and renders the strip again (a
+    /// request for the lap a role already holds is the owner's to
+    /// interpret, e.g. as "back to the lap start").
     pub fn on_select(
         mut self,
         handler: impl Fn(&LapSelect, &mut Window, &mut App) + 'static,
@@ -355,6 +384,7 @@ impl RenderOnce for LapStrip {
             .when(!empty, |el| {
                 el.child(StripCellsElement {
                     items: self.items,
+                    role: self.role,
                     primary: self.primary,
                     reference: self.reference,
                     primary_playhead: self.primary_playhead,
@@ -368,6 +398,7 @@ impl RenderOnce for LapStrip {
 /// The custom element that places the cell buttons at their computed spans.
 struct StripCellsElement {
     items: Arc<[LapStripItem]>,
+    role: LapRole,
     primary: Option<i32>,
     reference: Option<i32>,
     primary_playhead: Option<f64>,
@@ -506,8 +537,9 @@ impl StripCellsElement {
         }
 
         let lap_id = item.lap_id;
+        let row_role = self.role;
         let on_select = self.on_select.clone();
-        let button = Button::new(("lap-strip-cell", lap_id as u32))
+        let mut button = Button::new(("lap-strip-cell", lap_id as u32))
             .xsmall()
             .rounded(ButtonRounded::Small)
             .map(|b| {
@@ -560,16 +592,27 @@ impl StripCellsElement {
                         .bg(playhead_color),
                 )
             })
-            .when_some(on_select, |b, handler| {
+            .when_some(on_select.clone(), |b, handler| {
                 b.on_click(move |event: &ClickEvent, window, cx| {
-                    let role = if event.modifiers().alt {
-                        LapRole::Reference
+                    let request = if event.modifiers().alt {
+                        LapSelect::compare(lap_id)
                     } else {
-                        LapRole::Primary
+                        LapSelect::new(lap_id, row_role)
                     };
-                    handler(&LapSelect::new(lap_id, role), window, cx);
+                    handler(&request, window, cx);
                 })
             });
+        // A right click compares against the lap (the Qt filmstrip's
+        // "set comparison").
+        if let Some(handler) = on_select {
+            button
+                .interactivity()
+                .on_aux_click(move |event: &ClickEvent, window, cx| {
+                    if event.is_right_click() {
+                        handler(&LapSelect::compare(lap_id), window, cx);
+                    }
+                });
+        }
         button.into_any_element()
     }
 }
