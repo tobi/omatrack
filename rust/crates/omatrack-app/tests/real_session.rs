@@ -180,3 +180,72 @@ async fn real_requests_made_during_an_analysis_win(cx: &mut TestAppContext) {
     settle(handle, &session, cx).await;
     assert_eq!(running_jobs(&test, cx), Vec::<String>::new());
 }
+
+/// Another lap of the recording a role holds reuses its parsed file, and a
+/// swap while one role is still loading moves the loaded lap as it is
+/// instead of reading it from disk again.
+#[gpui_kit::test]
+#[ignore]
+async fn real_loaded_recordings_are_reused_across_lap_steps_and_swaps(cx: &mut TestAppContext) {
+    use std::sync::Arc;
+
+    let (_sandbox, test, run4, run1) = scanned(cx).await;
+    let handle: AnyWindowHandle = test.window.into();
+    let session = test.app.session.clone();
+    let run1_best = run1.best_lap_id.unwrap();
+    let run4_best = run4.best_lap_id.unwrap();
+    session.update(cx, |session, cx| {
+        session.set_primary(run1.id.clone().into(), run1_best, cx)
+    });
+    settle(handle, &session, cx).await;
+    let loaded_primary = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            session
+                .read(cx)
+                .primary()
+                .and_then(|slot| slot.loaded())
+                .cloned()
+                .expect("the primary is loaded")
+        })
+    };
+    let best = loaded_primary(cx);
+
+    // [ : the neighbour lap comes from the same parsed recording.
+    session.update(cx, |session, cx| session.prev_lap(cx));
+    settle(handle, &session, cx).await;
+    let neighbour = loaded_primary(cx);
+    assert_ne!(neighbour.lap_id(), best.lap_id());
+    assert!(
+        Arc::ptr_eq(neighbour.recording(), best.recording()),
+        "the recording was not parsed again"
+    );
+
+    // X while the reference is still loading: the loaded primary becomes
+    // the reference untouched; only the pending lap reloads.
+    session.update(cx, |session, cx| {
+        session.set_reference(run4.id.clone().into(), run4_best, cx);
+        session.swap(cx);
+    });
+    cx.update(|cx| {
+        let session = session.read(cx);
+        let reference = session
+            .reference()
+            .unwrap()
+            .loaded()
+            .expect("moved, not reloading");
+        assert!(Arc::ptr_eq(reference.unified(), neighbour.unified()));
+        assert!(session.primary().unwrap().is_loading());
+    });
+    settle(handle, &session, cx).await;
+    cx.update(|cx| {
+        let session = session.read(cx);
+        let analysis = session.analysis().unwrap();
+        assert_eq!(analysis.primary().lap_id(), run4_best);
+        assert_eq!(analysis.reference().unwrap().lap_id(), neighbour.lap_id());
+        assert!(Arc::ptr_eq(
+            analysis.reference().unwrap().unified(),
+            neighbour.unified()
+        ));
+    });
+    assert_eq!(running_jobs(&test, cx), Vec::<String>::new());
+}

@@ -77,6 +77,9 @@ pub enum RoleState {
 pub struct RoleSlot {
     lap_ref: LapRef,
     info: LapInfo,
+    /// The key of the lap's track in `tracks.<key>` (Track Atlas slug, else
+    /// the recording's own track name); `None` when the track is unknown.
+    track_key: Option<SharedString>,
     state: RoleState,
 }
 
@@ -86,6 +89,11 @@ impl RoleSlot {
     }
     pub fn info(&self) -> &LapInfo {
         &self.info
+    }
+    /// The track identity per-track preferences (corner overrides) are
+    /// stored under; `None` when the recording names no track.
+    pub fn track_key(&self) -> Option<&SharedString> {
+        self.track_key.as_ref()
     }
     pub fn state(&self) -> &RoleState {
         &self.state
@@ -269,6 +277,7 @@ impl Session {
                 RoleSlot {
                     lap_ref,
                     info,
+                    track_key: None,
                     state: RoleState::Failed(message.clone()),
                 },
             );
@@ -279,23 +288,37 @@ impl Session {
         };
         let info = lap_info(&source, lap_ref.lap);
         let label = format!("Loading {} · {}", info.label, info.title);
+        let metadata = &source.node.metadata;
+        let track_key = metadata
+            .track_slug()
+            .or(metadata.track_name())
+            .map(|key| SharedString::from(key.to_string()));
+        // The recording this role held, if it was parsed: a load of another
+        // lap of it reuses the parsed file instead of reading it again.
+        let previous = self
+            .slot(role)
+            .and_then(RoleSlot::loaded)
+            .map(|lap| lap.recording().clone());
         self.put_slot(
             role,
             RoleSlot {
                 lap_ref: lap_ref.clone(),
                 info,
+                track_key,
                 state: RoleState::Loading,
             },
         );
         self.emit_changed(role, cx);
         cx.notify();
 
-        // Two roles on one recording share the parsed file.
+        // Two roles on one recording, or two laps of it in turn, share the
+        // parsed file.
         let shared = [&self.primary, &self.reference]
             .into_iter()
             .flatten()
             .filter_map(RoleSlot::loaded)
             .map(|lap| lap.recording().clone())
+            .chain(previous)
             .find(|recording| Path::new(recording.path()) == source.file.path());
 
         let cancel = Arc::new(AtomicBool::new(false));
@@ -389,9 +412,10 @@ impl Session {
         }
     }
 
-    /// Exchange the roles. Pending loads are cancelled and restarted in
-    /// their new roles; the manual offset inverts. Cursor and viewport are
-    /// not touched: the playhead never moves on a swap.
+    /// Exchange the roles. A loaded lap moves to its new role as it is;
+    /// pending (or failed) loads are cancelled and restarted in their new
+    /// roles. The manual offset inverts. Cursor and viewport are not
+    /// touched: the playhead never moves on a swap.
     pub fn swap(&mut self, cx: &mut Context<Self>) {
         let (Some(primary), Some(reference)) = (self.primary.clone(), self.reference.clone())
         else {
@@ -412,12 +436,28 @@ impl Session {
             }
             self.primary = None;
             self.reference = None;
+            self.cancel_analysis();
             let offset = -self.manual_offset;
-            self.set_lap(Role::Primary, reference.lap_ref, cx);
-            self.set_lap(Role::Reference, primary.lap_ref, cx);
+            let (loaded, unloaded): (Vec<_>, Vec<_>) =
+                [(Role::Primary, reference), (Role::Reference, primary)]
+                    .into_iter()
+                    .partition(|(_, slot)| slot.loaded().is_some());
+            // The loaded lap first: the restarted load of the other role
+            // reuses its parsed recording when both share one.
+            for (role, slot) in loaded {
+                self.put_slot(role, slot);
+                if role == Role::Primary {
+                    self.corner_override = self.stored_corner_override(cx);
+                }
+                self.emit_changed(role, cx);
+            }
+            for (role, slot) in unloaded {
+                self.set_lap(role, slot.lap_ref, cx);
+            }
             // Same pair, other way round: keep the tuning, inverted.
             self.manual_offset = offset;
             cx.emit(SessionEvent::Swapped);
+            cx.notify();
             return;
         }
         self.primary = Some(reference);
@@ -517,12 +557,16 @@ impl Session {
     }
 
     /// Replace the user's corner zones for the primary's track (`None`
-    /// returns to Track Atlas). Persisted under `tracks.<track>.corners`.
+    /// returns to Track Atlas). Persisted under `tracks.<track>.corners`,
+    /// keyed by [`RoleSlot::track_key`]. Does nothing when the primary's
+    /// track is unknown: zones of one unnamed track must never apply to
+    /// every other unnamed one.
     pub fn set_corner_override(&mut self, zones: Option<Vec<CornerZone>>, cx: &mut Context<Self>) {
         let Some(track) = self
             .primary
             .as_ref()
-            .map(|slot| slot.info.track.to_string())
+            .and_then(|slot| slot.track_key.as_ref())
+            .map(SharedString::to_string)
         else {
             return;
         };
@@ -537,8 +581,8 @@ impl Session {
     }
 
     fn stored_corner_override(&self, cx: &Context<Self>) -> Option<Vec<CornerZone>> {
-        let track = self.primary.as_ref()?.info.track.to_string();
-        self.preferences.read(cx).config().track_corners(&track)
+        let track = self.primary.as_ref()?.track_key.as_ref()?;
+        self.preferences.read(cx).config().track_corners(track)
     }
 
     /// The current analysis when nothing is rebuilding it and it was built
