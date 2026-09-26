@@ -180,11 +180,61 @@ pub enum GestureCursor {
     ResizeRow,
 }
 
+/// Which part of a corner zone a pointer grabs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CornerDrag {
+pub enum CornerPart {
+    /// The zone's start edge.
     Start,
+    /// The zone's end edge.
     End,
+    /// Inside the zone, away from both edges.
     Body,
+}
+
+/// A corner zone under the pointer: which zone (index into
+/// [`InteractionContext::corners`]), which part, and for a body grab the
+/// lap-fraction distance from the zone start to the pointer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct CornerHit {
+    pub index: usize,
+    pub part: CornerPart,
+    pub grab: f64,
+}
+
+/// Grab distance of the focused corner's edges, logical pixels.
+pub const FOCUSED_CORNER_EDGE_TOLERANCE: f64 = 8.0;
+
+/// The corner edge or body under logical `x`, preferring the focused
+/// corner's grips (within [`FOCUSED_CORNER_EDGE_TOLERANCE`]), then any
+/// corner edge within [`CORNER_EDGE_TOLERANCE`] or body, in zone order.
+///
+/// The trace stack's corner editing and the corner ruler share this test so
+/// a grip grabs at the same distance everywhere.
+pub fn hit_corner(x: f64, ctx: &InteractionContext) -> Option<CornerHit> {
+    let fraction = ctx.fraction_for_x(x);
+    let test = |index: usize, tolerance: f64| -> Option<CornerHit> {
+        let corner = ctx.corners.get(index)?;
+        let x1 = ctx.x_for_fraction(corner.start);
+        let x2 = ctx.x_for_fraction(corner.end);
+        let hit = |part, grab| CornerHit { index, part, grab };
+        if (x - x1).abs() <= tolerance {
+            return Some(hit(CornerPart::Start, 0.0));
+        }
+        if (x - x2).abs() <= tolerance {
+            return Some(hit(CornerPart::End, 0.0));
+        }
+        if corner.start <= fraction && fraction <= corner.end {
+            return Some(hit(CornerPart::Body, fraction - corner.start));
+        }
+        None
+    };
+    if let Some(focused) = ctx.focused_corner
+        && let Some(hit) = test(focused, FOCUSED_CORNER_EDGE_TOLERANCE)
+    {
+        return Some(hit);
+    }
+    (0..ctx.corners.len()).find_map(|index| test(index, CORNER_EDGE_TOLERANCE))
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -200,7 +250,7 @@ enum Gesture {
     },
     DraggingCorner {
         index: usize,
-        drag: CornerDrag,
+        drag: CornerPart,
         grab: f64,
     },
     ResizingLanes {
@@ -252,7 +302,7 @@ impl Interaction {
             Gesture::Selecting { .. } => GestureCursor::Crosshair,
             Gesture::Panning { .. } => GestureCursor::Grabbing,
             Gesture::DraggingCorner {
-                drag: CornerDrag::Body,
+                drag: CornerPart::Body,
                 ..
             } => GestureCursor::Grabbing,
             Gesture::DraggingCorner { .. } => GestureCursor::ResizeColumn,
@@ -266,30 +316,9 @@ impl Interaction {
         self.hovered_divider = None;
     }
 
-    /// Corner edge or body under `x`, preferring the focused corner's grips.
-    fn corner_at(&self, x: f64, ctx: &InteractionContext) -> Option<(usize, CornerDrag, f64)> {
-        let fraction = ctx.fraction_for_x(x);
-        let test = |index: usize, tolerance: f64| -> Option<(usize, CornerDrag, f64)> {
-            let corner = ctx.corners.get(index)?;
-            let x1 = ctx.x_for_fraction(corner.start);
-            let x2 = ctx.x_for_fraction(corner.end);
-            if (x - x1).abs() <= tolerance {
-                return Some((index, CornerDrag::Start, 0.0));
-            }
-            if (x - x2).abs() <= tolerance {
-                return Some((index, CornerDrag::End, 0.0));
-            }
-            if corner.start <= fraction && fraction <= corner.end {
-                return Some((index, CornerDrag::Body, fraction - corner.start));
-            }
-            None
-        };
-        if let Some(focused) = ctx.focused_corner
-            && let Some(hit) = test(focused, 8.0)
-        {
-            return Some(hit);
-        }
-        (0..ctx.corners.len()).find_map(|index| test(index, CORNER_EDGE_TOLERANCE))
+    /// Corner edge or body under `x` (see [`hit_corner`]).
+    fn corner_at(&self, x: f64, ctx: &InteractionContext) -> Option<(usize, CornerPart, f64)> {
+        hit_corner(x, ctx).map(|hit| (hit.index, hit.part, hit.grab))
     }
 
     /// Lane divider under `y` in resize mode (the last lane has none).
@@ -402,9 +431,9 @@ impl Interaction {
             Gesture::DraggingCorner { index, drag, grab } => {
                 if let Some(corner) = ctx.corners.get(*index) {
                     let (start, end) = match drag {
-                        CornerDrag::Start => (fraction.clamp(0.0, corner.end), corner.end),
-                        CornerDrag::End => (corner.start, fraction.clamp(corner.start, 1.0)),
-                        CornerDrag::Body => {
+                        CornerPart::Start => (fraction.clamp(0.0, corner.end), corner.end),
+                        CornerPart::End => (corner.start, fraction.clamp(corner.start, 1.0)),
+                        CornerPart::Body => {
                             let width = corner.end - corner.start;
                             let start = (fraction - grab).clamp(0.0, 1.0 - width);
                             (start, start + width)

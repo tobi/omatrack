@@ -23,6 +23,11 @@
 //!   zones and the pointer surface.
 //! - [`axis`]: the shared x-axis row.
 //! - [`stack`]: [`TraceStack`], the composed workspace view.
+//! - [`corner_ruler`]: [`CornerRuler`], corner bands and complex brackets
+//!   on the shared viewport, with click-to-focus and edge editing.
+//! - [`track_map`]: [`TrackMap`], the atlas centerline and both GPS laps,
+//!   the primary coloured by the delta's slope, with cursor dots.
+//! - [`damper_strip`]: [`DamperStrip`], the manual damper alignment tool.
 //! - [`synthetic`]: deterministic laps for tests and `examples/trace_bench`.
 //!
 //! # Rendering contract (docs/TRACE_RENDERING.md)
@@ -88,8 +93,11 @@
 //! of page-faulting fresh mappings. Each fill chunk carries the same pinned
 //! vertical extent, so the gradient stays continuous across chunks.
 pub mod axis;
+pub mod corner_ruler;
+pub mod damper_strip;
 pub mod decimate;
 pub mod interaction;
+mod label;
 pub mod lanes;
 pub mod layout;
 pub mod mesh;
@@ -101,7 +109,10 @@ pub mod stack;
 pub mod state;
 pub mod static_layer;
 pub mod synthetic;
+pub mod track_map;
 
+pub use corner_ruler::{CornerRuler, CornerRulerEvent};
+pub use damper_strip::{DamperStrip, DamperStripData, DamperStripEvent};
 pub use scale::{Viewport, XAxis};
 pub use scene::{
     ComplexBand, CornerBand, FractionMap, LaneKind, LaneSeries, LaneStyle, LaneStyles, Readout,
@@ -110,3 +121,4 @@ pub use scene::{
 pub use stack::{TraceEvent, TraceStack};
 pub use state::{CursorState, Selection, ViewportState};
 pub use static_layer::{StaticStats, TraceStaticView};
+pub use track_map::{GeoPoint, GpsTrack, MapCorner, TrackMap, TrackMapData, TrackMapEvent};
