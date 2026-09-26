@@ -13,8 +13,8 @@ use gpui_kit::{
     size,
 };
 use omatrack_ui::{
-    HUD_INSET, HudPosition, HudVariant, LapRole, LapSelect, LapStrip, LapStripItem, VideoHud,
-    lap_strip_layout, theme,
+    HUD_INSET, HudPosition, LapRole, LapSelect, LapStrip, LapStripItem, VideoHud, lap_strip_layout,
+    theme,
 };
 
 fn init(cx: &mut TestAppContext) {
@@ -309,7 +309,6 @@ impl Render for VideoPane {
                         .delta(Some(-0.123))
                         .gap(self.gap)
                         .position(self.position)
-                        .variant(HudVariant::Compact)
                         .on_moved(move |position, _, cx| {
                             _ = this.update(cx, |this, cx| {
                                 this.moves.push(*position);

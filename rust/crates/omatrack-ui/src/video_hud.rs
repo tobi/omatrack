@@ -17,7 +17,7 @@
 //! draws nothing at all rather than a misleading empty bar.
 //!
 //! Sizes use rem-based helpers so the HUD follows the application zoom; the
-//! card has a fixed rem size per variant so the available space is exact
+//! card has a fixed rem size so the available space is exact
 //! without measuring the card. Colours are theme tokens: the popover
 //! surface, `success`/`danger` for gain/loss (always with an explicit sign),
 //! `warning` for the reference role.
@@ -98,23 +98,12 @@ impl Default for HudPosition {
     }
 }
 
-/// Docked (compact) or fullscreen presentation.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum HudVariant {
-    #[default]
-    Compact,
-    Fullscreen,
-}
-
-impl HudVariant {
-    /// Card width and height in rem, with and without the gap bar.
-    fn card_size(self, gap: bool) -> (Rems, Rems) {
-        match (self, gap) {
-            (HudVariant::Compact, false) => (rems(16.), rems(2.25)),
-            (HudVariant::Compact, true) => (rems(16.), rems(3.5)),
-            (HudVariant::Fullscreen, false) => (rems(21.), rems(3.25)),
-            (HudVariant::Fullscreen, true) => (rems(21.), rems(4.75)),
-        }
+/// Card width and height, with and without the gap bar.
+fn card_size(gap: bool) -> (Rems, Rems) {
+    if gap {
+        (rems(16.), rems(3.5))
+    } else {
+        (rems(16.), rems(2.25))
     }
 }
 
@@ -173,7 +162,6 @@ pub struct VideoHud {
     approximate: bool,
     gap: Option<f64>,
     position: HudPosition,
-    variant: HudVariant,
     on_moved: Option<MovedHandler>,
 }
 
@@ -189,7 +177,6 @@ impl VideoHud {
             approximate: false,
             gap: None,
             position: HudPosition::DEFAULT,
-            variant: HudVariant::Compact,
             on_moved: None,
         }
     }
@@ -228,11 +215,6 @@ impl VideoHud {
     /// Normalized placement (controlled).
     pub fn position(mut self, position: HudPosition) -> Self {
         self.position = position;
-        self
-    }
-
-    pub fn variant(mut self, variant: HudVariant) -> Self {
-        self.variant = variant;
         self
     }
 
@@ -277,8 +259,7 @@ impl RenderOnce for VideoHud {
             (state.grab.is_some(), state.live, state.track.clone())
         };
         let position = live.unwrap_or(self.position);
-        let (card_width, card_height) = self.variant.card_size(self.gap.is_some());
-        let fullscreen = self.variant == HudVariant::Fullscreen;
+        let (card_width, card_height) = card_size(self.gap.is_some());
         let spoken = self.spoken();
         let card_id = self.part("card");
         let gap_id = self.part("gap");
@@ -293,26 +274,8 @@ impl RenderOnce for VideoHud {
         // One row, `236 km/h │ Gear 6 │ Δ +0.123 s`, baseline-aligned; the
         // values use tabular figures so they do not jitter while the video plays.
         let caption = |text: &'static str| div().text_xs().text_color(muted).child(text);
-        let value = |text: SharedString| {
-            div()
-                .numeric()
-                .font_semibold()
-                .map(|d| {
-                    if fullscreen {
-                        d.text_2xl()
-                    } else {
-                        d.text_lg()
-                    }
-                })
-                .child(text)
-        };
-        let divider = || {
-            div()
-                .flex_shrink_0()
-                .w_px()
-                .map(|d| if fullscreen { d.h_6() } else { d.h_4() })
-                .bg(border)
-        };
+        let value = |text: SharedString| div().numeric().font_semibold().text_lg().child(text);
+        let divider = || div().flex_shrink_0().w_px().h_4().bg(border);
         let speed = h_flex()
             .flex_shrink_0()
             .items_baseline()
@@ -336,14 +299,12 @@ impl RenderOnce for VideoHud {
             .gap_1()
             .child(caption("Δ"))
             .child(
-                div()
-                    .map(|d| if fullscreen { d.text_lg() } else { d.text_sm() })
-                    .child(
-                        DeltaText::new(self.delta)
-                            .decimals(if self.approximate { 2 } else { 3 })
-                            .approximate(self.approximate)
-                            .unit("s"),
-                    ),
+                div().text_sm().child(
+                    DeltaText::new(self.delta)
+                        .decimals(if self.approximate { 2 } else { 3 })
+                        .approximate(self.approximate)
+                        .unit("s"),
+                ),
             );
 
         let gap_bar = self.gap.map(|gap| {
@@ -421,7 +382,7 @@ impl RenderOnce for VideoHud {
             .top(relative(position.y))
             .w(card_width)
             .h(card_height)
-            .map(|d| if fullscreen { d.px_4() } else { d.px_2p5() })
+            .px_2p5()
             .gap_1()
             .justify_center()
             .overflow_hidden()
