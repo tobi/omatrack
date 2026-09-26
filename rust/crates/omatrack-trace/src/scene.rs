@@ -131,6 +131,18 @@ pub fn nice_ceiling(value: f64) -> f64 {
     10.0 * decade
 }
 
+/// The factor a channel's samples are multiplied by for display: `%`
+/// channels stored as a `0..=1` fraction (throttle, driver throttle,
+/// clutch) read as percent. `max` is the largest sample (or range bound).
+/// The one rule for every readout (lane legends, inspector).
+pub fn display_scale(unit: &str, max: f64) -> f64 {
+    if unit == "%" && max <= 1.5 {
+        100.0
+    } else {
+        1.0
+    }
+}
+
 /// One channel of the stack.
 #[derive(Clone)]
 #[non_exhaustive]
@@ -175,6 +187,11 @@ impl LaneSeries {
     pub fn with_unit(mut self, unit: impl Into<SharedString>) -> Self {
         self.unit = unit.into();
         self
+    }
+
+    /// See [`display_scale`].
+    pub fn display_scale(&self) -> f64 {
+        display_scale(&self.unit, self.y_range.max)
     }
 
     /// Set the reference and re-derive an auto range over both laps.

@@ -808,11 +808,7 @@ struct ReadoutText {
 
 impl ReadoutText {
     fn new(lane: &LaneSeries, readout: &Readout) -> Self {
-        let scale = if lane.unit.as_ref() == "%" && lane.y_range.max <= 1.5 {
-            100.0
-        } else {
-            1.0
-        };
+        let scale = lane.display_scale();
         let span = lane.y_range.span() * scale;
         let decimals = if lane.kind == LaneKind::Step {
             0

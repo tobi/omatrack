@@ -45,6 +45,8 @@ pub struct InspectorChannel {
     primary: Arc<[f64]>,
     reference: Option<Arc<[f64]>>,
     decimals: usize,
+    /// Display factor of the samples ([`omatrack_trace::scene::display_scale`]).
+    scale: f64,
     delta: DeltaKind,
     /// Sampled at the nearest sample instead of interpolated (gear).
     stepped: bool,
@@ -70,9 +72,9 @@ impl InspectorChannel {
     fn value(&self, values: &[f64], fraction: f64) -> f64 {
         if self.stepped && values.len() > 1 {
             let ix = (fraction.clamp(0.0, 1.0) * (values.len() - 1) as f64).round() as usize;
-            return values[ix];
+            return values[ix] * self.scale;
         }
-        value_at_fraction(values, fraction)
+        value_at_fraction(values, fraction) * self.scale
     }
 }
 
@@ -104,7 +106,15 @@ fn channels(analysis: &Analysis) -> Vec<InspectorChannel> {
                         .and_then(|g| g.channel(&channel.key))
                         .map(|c| c.values.clone())
                 });
+                let max = channel
+                    .values
+                    .iter()
+                    .chain(paired.iter().flat_map(|values| values.iter()))
+                    .copied()
+                    .filter(|v| v.is_finite())
+                    .fold(f64::NEG_INFINITY, f64::max);
                 InspectorChannel {
+                    scale: omatrack_trace::scene::display_scale(&channel.unit, max),
                     key: channel.key.clone().into(),
                     title: channel.title.clone().into(),
                     unit: channel.unit.clone().into(),
@@ -495,4 +505,30 @@ impl ElementIdFor {
 /// rebuild it by name). Called once from [`crate::panels::init`].
 pub fn init(cx: &mut App) {
     crate::panels::register(PanelKind::Inspector, cx);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fraction_pedals_read_as_percent_like_the_lane_legend() {
+        let values: Arc<[f64]> = Arc::from(vec![0.0, 0.99, 1.0]);
+        let channel = InspectorChannel {
+            key: "throttle".into(),
+            title: "Throttle".into(),
+            unit: "%".into(),
+            primary: values.clone(),
+            reference: None,
+            decimals: decimals("throttle", "%"),
+            scale: omatrack_trace::scene::display_scale("%", 1.0),
+            delta: DeltaKind::Neutral,
+            stepped: false,
+            has_data: true,
+        };
+        let value = channel.value(&values, 0.5);
+        assert_eq!(format_value(Some(value), channel.decimals).as_ref(), "99");
+        assert_eq!(omatrack_trace::scene::display_scale("km/h", 1.0), 1.0);
+        assert_eq!(omatrack_trace::scene::display_scale("%", 100.0), 1.0);
+    }
 }
