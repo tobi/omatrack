@@ -6,7 +6,8 @@
 //! - Headless UI integration tests with a mock clock and without libmpv: the
 //!   cursor follows the clock through the video panel's display-frame pull,
 //!   sync leaves the static trace layer alone, keys 1-5 compose, F/Escape
-//!   zoom and restore the dock, the countdown and continuous adoption.
+//!   open and close the fullscreen stage (controls auto-hide, telemetry
+//!   band, drag end persisted), the countdown and continuous adoption.
 //! - `real_*` (ignored; `OMATRACK_FIXTURES`): Run4's and Run1's fastest laps
 //!   through libmpv with a null audio output. The recordings are read-only.
 
@@ -618,7 +619,7 @@ fn an_explicit_cursor_jump_seeks_the_video(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn keys_compose_layouts_and_f_escape_zoom_and_restore_the_dock(cx: &mut TestAppContext) {
+fn keys_compose_layouts_and_f_escape_open_and_close_the_stage(cx: &mut TestAppContext) {
     let mock = mock(cx, 2);
     let video = mock.video();
     let workspace = mock.test.workspace.clone();
@@ -651,30 +652,262 @@ fn keys_compose_layouts_and_f_escape_zoom_and_restore_the_dock(cx: &mut TestAppC
     })
     .unwrap();
 
-    // F zooms the video's dock group and goes fullscreen; Escape restores.
+    // F shows the video-only stage over the whole window; Escape restores
+    // the workspace with its dock layout and focus unchanged.
+    let dock = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            let area = workspace.read(cx).dock_area().read(cx);
+            serde_json::to_value(area.dump(cx)).unwrap()
+        })
+    };
+    select_pair(&mock, cx);
+    let layout_before = dock(cx);
     cx.update_window(mock.handle, |_, window, cx| {
+        window.render_frame(cx);
         assert!(!window.is_fullscreen());
+        assert!(window.try_find("workspace-dock").is_some());
         window.press("f", cx);
     })
     .unwrap();
     cx.run_until_parked();
     cx.update_window(mock.handle, |_, window, cx| {
+        window.render_frame(cx);
         let workspace = workspace.read(cx);
         assert!(workspace.is_video_fullscreen());
-        assert!(workspace.dock_area().read(cx).is_zoomed());
+        assert!(
+            !workspace.dock_area().read(cx).is_zoomed(),
+            "the stage never zooms the dock"
+        );
+        // Best effort: the test window accepts it.
         assert!(window.is_fullscreen());
+        for chrome in ["workspace-dock", "theme-status"] {
+            assert!(window.try_find(chrome).is_none(), "{chrome} is hidden");
+        }
+        assert!(window.try_find("video-fullscreen").is_some());
+        assert!(window.try_find("video-panel").is_none());
+        // The role labels of the pair head the stage.
+        assert!(window.try_find("video-delta").is_some());
+        // The filmstrip rides on the stage, above the controls.
+        let lane = window.find("video-filmstrip-lane").bounds();
+        let controls = window.find("video-stage-controls").bounds();
+        assert!(
+            lane.bottom() <= controls.top(),
+            "{lane:?} above {controls:?}"
+        );
+        // The picture is aspect-fit inside the stage.
+        let stage = window.find("video-fullscreen").bounds();
+        let pane = window.find("primary-video-pane").bounds();
+        assert!(stage.contains(&pane.origin) && pane.bottom() <= lane.top());
+        let video = workspace.panels().focus_handle(PanelKind::Video, cx);
+        assert!(video.is_focused(window), "the stage holds the focus");
     })
     .unwrap();
+    assert_eq!(dock(cx), layout_before);
     cx.update_window(mock.handle, |_, window, cx| window.press("escape", cx))
         .unwrap();
     cx.run_until_parked();
     cx.update_window(mock.handle, |_, window, cx| {
+        window.render_frame(cx);
         let workspace = workspace.read(cx);
         assert!(!workspace.is_video_fullscreen());
         assert!(!workspace.dock_area().read(cx).is_zoomed());
         assert!(!window.is_fullscreen());
+        assert!(window.try_find("workspace-dock").is_some());
+        assert!(window.try_find("video-fullscreen").is_none());
+        assert!(window.try_find("filmstrip").is_some());
+        let traces = workspace.panels().focus_handle(PanelKind::Traces, cx);
+        assert!(traces.is_focused(window), "focus returns to the traces");
     })
     .unwrap();
+    assert_eq!(dock(cx), layout_before, "the dock layout is unchanged");
+}
+
+/// Give the session a pair from the synthetic library (whose files do
+/// not exist: the rows and labels are there, the video stays the mock's).
+fn select_pair(mock: &Mock, cx: &mut TestAppContext) {
+    let snapshot = common::load_synthetic_library(&mock.test, cx);
+    let sessions: Vec<_> = snapshot.sessions().collect();
+    let (primary, reference) = (sessions[0].id.clone(), sessions[1].id.clone());
+    let session = mock.test.app.session.clone();
+    cx.update(|cx| {
+        session.update(cx, |session, cx| {
+            session.set_primary(primary.into(), 3, cx);
+            session.set_reference(reference.into(), 3, cx);
+        })
+    });
+    cx.run_until_parked();
+}
+
+/// Enter the fullscreen stage on a mock workspace, as F does.
+fn enter_stage(
+    mock: &Mock,
+    cx: &mut TestAppContext,
+) -> Entity<omatrack_app::panels::video::VideoPanel> {
+    cx.update_window(mock.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("f", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(mock.handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    cx.update(|cx| mock.test.workspace.read(cx).panels().video.clone())
+}
+
+#[gpui_kit::test]
+fn the_stage_controls_hide_after_two_idle_seconds_and_come_back_on_input(cx: &mut TestAppContext) {
+    use omatrack_app::panels::video::CONTROLS_HIDE_AFTER;
+    let mock = mock(cx, 2);
+    let panel = enter_stage(&mock, cx);
+    let visible = |cx: &mut TestAppContext| cx.update(|cx| panel.read(cx).controls_visible());
+    assert!(visible(cx), "the controls show on entering");
+    cx.executor()
+        .advance_clock(CONTROLS_HIDE_AFTER - Duration::from_millis(200));
+    cx.run_until_parked();
+    assert!(visible(cx), "not before the idle time");
+    cx.executor().advance_clock(Duration::from_millis(400));
+    cx.run_until_parked();
+    assert!(!visible(cx), "hidden after two idle seconds");
+    cx.update_window(mock.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("video-stage-controls").is_none());
+    })
+    .unwrap();
+
+    // Pointer motion reveals them and restarts the timer.
+    pointer(
+        cx,
+        mock.handle,
+        MouseMoveEvent {
+            position: point(px(400.), px(300.)),
+            pressed_button: None,
+            modifiers: Modifiers::default(),
+        }
+        .to_platform_input(),
+    );
+    assert!(visible(cx), "pointer motion reveals the controls");
+    cx.executor()
+        .advance_clock(CONTROLS_HIDE_AFTER + Duration::from_millis(100));
+    cx.run_until_parked();
+    assert!(!visible(cx));
+
+    // So does a key (here 2: a layout change, which the stage also applies).
+    cx.update_window(mock.handle, |_, window, cx| window.press("m", cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert!(visible(cx), "a keypress reveals the controls");
+    cx.update_window(mock.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("video-stage-controls").is_some());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_telemetry_band_shows_only_on_the_stage_and_its_drag_end_persists(cx: &mut TestAppContext) {
+    let mock = mock(cx, 2);
+    // Docked: the slim HUD card, never the band.
+    cx.update_window(mock.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("video-hud-card").is_some());
+        assert!(window.try_find("video-telemetry-hud").is_none());
+    })
+    .unwrap();
+    let panel = enter_stage(&mock, cx);
+    cx.update_window(mock.handle, |_, window, _| {
+        assert!(window.try_find("video-hud-card").is_none());
+        let band = window.find("video-telemetry-hud");
+        assert_eq!(band.label(), Some("Telemetry overlay"));
+        // The band keeps the Qt 1000:210 proportion.
+        let bounds = band.bounds();
+        let ratio = bounds.size.height / bounds.size.width;
+        assert!((ratio - 0.21).abs() < 0.01, "{ratio}");
+        // One video without GPS: no gap bar.
+        assert!(window.try_find("video-telemetry-gap").is_none());
+        // Without a session pair there is nothing to label or compare.
+        assert!(window.try_find("video-delta-bar").is_none());
+    })
+    .unwrap();
+
+    // The HUD toggle hides and restores the band.
+    cx.update_window(mock.handle, |_, window, cx| {
+        window.click("video-stage-hud", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(!cx.update(|cx| panel.read(cx).is_hud_shown()));
+    cx.update_window(mock.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("video-telemetry-hud").is_none());
+        window.click("video-stage-hud", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    // Dragging the band writes `video.hud_position` once, at drag end.
+    let (band, stage) = cx
+        .update_window(mock.handle, |_, window, cx| {
+            window.render_frame(cx);
+            (
+                window.find("video-telemetry-hud").bounds(),
+                window.find("video-fullscreen").bounds(),
+            )
+        })
+        .unwrap();
+    assert_eq!(cx.update(|cx| mock.video().read(cx).hud_position(cx)), None);
+    let grab = band.center();
+    let target = point(stage.center().x, stage.top() + band.size.height);
+    pointer(
+        cx,
+        mock.handle,
+        MouseDownEvent {
+            button: MouseButton::Left,
+            position: grab,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        }
+        .to_platform_input(),
+    );
+    for at in [grab + point(px(0.), px(-20.)), target] {
+        pointer(
+            cx,
+            mock.handle,
+            MouseMoveEvent {
+                position: at,
+                pressed_button: Some(MouseButton::Left),
+                modifiers: Modifiers::default(),
+            }
+            .to_platform_input(),
+        );
+    }
+    assert_eq!(
+        cx.update(|cx| mock.video().read(cx).hud_position(cx)),
+        None,
+        "nothing is written while dragging"
+    );
+    let moved = cx
+        .update_window(mock.handle, |_, window, _| {
+            window.find("video-telemetry-hud").bounds()
+        })
+        .unwrap();
+    assert!(moved.top() < band.top(), "the band follows the pointer");
+    pointer(
+        cx,
+        mock.handle,
+        MouseUpEvent {
+            button: MouseButton::Left,
+            position: target,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        }
+        .to_platform_input(),
+    );
+    let (x, y) = cx
+        .update(|cx| mock.video().read(cx).hud_position(cx))
+        .expect("the drag end is persisted");
+    assert!((x - 0.5).abs() < 0.05, "{x}");
+    assert!(y < 0.3, "moved up: {y}");
 }
 
 #[gpui_kit::test]

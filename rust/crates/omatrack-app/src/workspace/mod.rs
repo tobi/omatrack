@@ -57,7 +57,9 @@ pub struct Workspace {
     palette: Palette,
     layout_origin: LayoutOrigin,
     layout_save: Option<Task<()>>,
-    video_fullscreen: bool,
+    /// The fullscreen video stage, shown over the whole window in place of
+    /// every chrome while open.
+    stage: Option<VideoStage>,
     focused_corner: Option<usize>,
     /// The viewport before the first corner focus; Escape returns to it.
     pre_focus_viewport: Option<Viewport>,
@@ -70,6 +72,13 @@ pub struct Workspace {
     /// The Preferences screen, shown in place of the dock area while open.
     preferences: Option<PreferencesScreen>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// The open fullscreen video stage: the focus to return to on exit and
+/// whether the stage put the window into fullscreen (and so takes it out).
+struct VideoStage {
+    restore: Option<FocusHandle>,
+    window_fullscreen: bool,
 }
 
 /// An open Preferences screen and the focus to return to on close.
@@ -176,7 +185,7 @@ impl Workspace {
             palette: Palette::default(),
             layout_origin,
             layout_save: None,
-            video_fullscreen: false,
+            stage: None,
             focused_corner: None,
             pre_focus_viewport: None,
             pre_focus_cursor: None,
@@ -221,8 +230,9 @@ impl Workspace {
         self.focused_corner
     }
 
+    /// Whether the fullscreen video stage is showing.
     pub fn is_video_fullscreen(&self) -> bool {
-        self.video_fullscreen
+        self.stage.is_some()
     }
 
     fn on_session_event(
@@ -396,9 +406,13 @@ impl Workspace {
     }
 
     fn focus_panel(&mut self, kind: PanelKind, window: &mut Window, cx: &mut Context<Self>) {
-        // A panel is behind the Preferences screen: leave it for the panel.
+        // A panel is behind the Preferences screen or the video stage:
+        // leave them for the panel.
         if self.preferences.take().is_some() {
             cx.notify();
+        }
+        if self.stage.is_some() {
+            self.exit_video_fullscreen(window, cx);
         }
         let handle = self.panels.handle(kind);
         let id = handle.panel_id(cx);
@@ -532,31 +546,61 @@ impl Workspace {
         });
     }
 
+    /// Show the video-only stage over the whole window: the title bar,
+    /// filmstrip row, docks and status bar give way to the pictures on
+    /// black. The dock layout is not touched (the video panel renders on the
+    /// stage instead of in its dock), and the window enters fullscreen as a
+    /// best effort (a headless or tiling session may refuse).
     fn toggle_video_fullscreen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.video_fullscreen {
+        if self.stage.is_some() {
             self.exit_video_fullscreen(window, cx);
             return;
         }
-        let Some(group) = self.panels.video.read(cx).group() else {
-            return;
+        if self.preferences.is_some() {
+            self.close_preferences(window, cx);
+        }
+        let restore = if window.has_active_dialog(cx) {
+            None
+        } else {
+            window.focused(cx)
         };
-        let node = group.read(cx).node();
-        self.dock_area
-            .update(cx, |area, cx| area.set_zoomed_in(node, window, cx));
-        self.video_fullscreen = self.dock_area.read(cx).is_zoomed();
-        if self.video_fullscreen && !window.is_fullscreen() {
+        let window_fullscreen = !window.is_fullscreen();
+        if window_fullscreen {
             window.toggle_fullscreen();
         }
+        self.stage = Some(VideoStage {
+            restore,
+            window_fullscreen,
+        });
+        let filmstrip = self.filmstrip.clone();
+        self.panels
+            .video
+            .update(cx, |video, cx| video.set_stage(Some(filmstrip), window, cx));
+        let handle = self.panels.focus_handle(PanelKind::Video, cx);
+        window.focus(&handle, cx);
         cx.notify();
     }
 
+    /// Leave the stage: the chrome returns with its dock layout as it was,
+    /// focus goes back to where it was (the video panel when unknown), and
+    /// the window leaves fullscreen if the stage put it there.
     fn exit_video_fullscreen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.dock_area
-            .update(cx, |area, cx| area.set_zoomed_out(window, cx));
-        if window.is_fullscreen() {
+        let Some(stage) = self.stage.take() else {
+            if window.is_fullscreen() {
+                window.toggle_fullscreen();
+            }
+            return;
+        };
+        self.panels
+            .video
+            .update(cx, |video, cx| video.set_stage(None, window, cx));
+        if stage.window_fullscreen && window.is_fullscreen() {
             window.toggle_fullscreen();
         }
-        self.video_fullscreen = false;
+        let restore = stage
+            .restore
+            .unwrap_or_else(|| self.panels.focus_handle(PanelKind::Video, cx));
+        window.focus(&restore, cx);
         cx.notify();
     }
 
@@ -664,7 +708,7 @@ impl Workspace {
         .on_action(cx.listener(|this, _: &ExitFullscreen, window, cx| {
             if this.preferences.is_some() {
                 this.close_preferences(window, cx);
-            } else if this.video_fullscreen || window.is_fullscreen() {
+            } else if this.stage.is_some() || window.is_fullscreen() {
                 this.exit_video_fullscreen(window, cx);
             } else if !this.unfocus_corner(cx) {
                 cx.propagate();
@@ -796,26 +840,40 @@ impl Render for Workspace {
             .text_color(cx.theme().foreground);
         // Preferences replace the dock area and status bar; both entities
         // stay alive (and untouched) behind the screen.
-        let root = match &self.preferences {
-            Some(screen) => root
-                .child(crate::preferences::title_bar(
-                    cx.listener(|this, _, window, cx| this.close_preferences(window, cx)),
-                    window,
-                    cx,
-                ))
-                .child(div().flex_1().min_h_0().child(screen.view.clone())),
-            None => root
-                .child(self.render_header(window, cx))
-                .child(self.filmstrip.clone())
-                .child(
-                    div()
-                        .id("workspace-dock")
-                        .test_support()
-                        .flex_1()
-                        .min_h_0()
-                        .child(self.dock_area.clone()),
-                )
-                .child(self.status.clone()),
+        // The video stage replaces every chrome, the Preferences screen the
+        // dock area and status bar; the entities behind stay alive and
+        // untouched.
+        let root = if self.stage.is_some() {
+            root.bg(gpui_kit::black()).child(
+                div()
+                    .id("workspace-stage")
+                    .test_support()
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.panels.video.clone()),
+            )
+        } else {
+            match &self.preferences {
+                Some(screen) => root
+                    .child(crate::preferences::title_bar(
+                        cx.listener(|this, _, window, cx| this.close_preferences(window, cx)),
+                        window,
+                        cx,
+                    ))
+                    .child(div().flex_1().min_h_0().child(screen.view.clone())),
+                None => root
+                    .child(self.render_header(window, cx))
+                    .child(self.filmstrip.clone())
+                    .child(
+                        div()
+                            .id("workspace-dock")
+                            .test_support()
+                            .flex_1()
+                            .min_h_0()
+                            .child(self.dock_area.clone()),
+                    )
+                    .child(self.status.clone()),
+            }
         };
         root.children(sheets)
             .children(dialogs)

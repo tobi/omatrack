@@ -159,6 +159,9 @@ pub struct Filmstrip {
     playhead: Option<f64>,
     reference_playhead: Option<f64>,
     swap_icon: Icon,
+    /// Shown as the lane over fullscreen video: a translucent black card
+    /// instead of the full-width bar with its border.
+    on_stage: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -188,11 +191,34 @@ impl Filmstrip {
             playhead: None,
             reference_playhead: None,
             swap_icon,
+            on_stage: false,
             _subscriptions: subscriptions,
         };
         filmstrip.rebuild(cx);
         filmstrip.follow_cursor(cx);
         filmstrip
+    }
+
+    /// Present the strip as the fullscreen lane (`true`) or the full-width
+    /// bar below the title bar.
+    pub fn set_on_stage(&mut self, on_stage: bool, cx: &mut Context<Self>) {
+        if self.on_stage != on_stage {
+            self.on_stage = on_stage;
+            cx.notify();
+        }
+    }
+
+    pub fn is_on_stage(&self) -> bool {
+        self.on_stage
+    }
+
+    /// The strip's height in rem: one 1.5 rem row per recording, 0.25 rem
+    /// apart, 0.25 rem padding above and below; 0 without rows.
+    pub fn height_rems(&self) -> f32 {
+        match self.rows.len() {
+            0 => 0.,
+            rows => rows as f32 * 1.5 + (rows - 1) as f32 * 0.25 + 0.5,
+        }
     }
 
     /// The rows on screen, primary recording first.
@@ -442,9 +468,16 @@ impl Render for Filmstrip {
             .gap_2()
             .px_2()
             .py_1()
-            .border_b_1()
-            .border_color(theme.border)
-            .bg(theme.background)
+            .map(|this| {
+                if self.on_stage {
+                    this.rounded(theme.radius_lg)
+                        .bg(gpui_kit::black().opacity(0.72))
+                } else {
+                    this.border_b_1()
+                        .border_color(theme.border)
+                        .bg(theme.background)
+                }
+            })
             .child(
                 v_flex()
                     .w_64()

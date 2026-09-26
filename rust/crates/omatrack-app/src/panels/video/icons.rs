@@ -12,7 +12,16 @@ use gpui_kit::component::Icon;
 
 gpui_kit::assets::icon_assets!(
     VideoIconAssets,
-    [Volume2, VolumeX, Columns2, PictureInPicture2, Square]
+    [
+        Volume2,
+        VolumeX,
+        Columns2,
+        PictureInPicture2,
+        Square,
+        Maximize2,
+        Minimize2,
+        Gauge
+    ]
 );
 
 /// The bar's icons.
@@ -23,6 +32,9 @@ pub struct VideoIcons {
     pub split: Icon,
     pub inset: Icon,
     pub single: Icon,
+    pub fullscreen: Icon,
+    pub exit_fullscreen: Icon,
+    pub hud: Icon,
 }
 
 impl VideoIcons {
@@ -33,6 +45,9 @@ impl VideoIcons {
             split: icon(IconName::Columns2),
             inset: icon(IconName::PictureInPicture2),
             single: icon(IconName::Square),
+            fullscreen: icon(IconName::Maximize2),
+            exit_fullscreen: icon(IconName::Minimize2),
+            hud: icon(IconName::Gauge),
         }
     }
 }
@@ -64,6 +79,9 @@ mod tests {
             IconName::Columns2,
             IconName::PictureInPicture2,
             IconName::Square,
+            IconName::Maximize2,
+            IconName::Minimize2,
+            IconName::Gauge,
         ] {
             let bytes = VideoIconAssets.load(&name.path()).unwrap().unwrap();
             assert!(bytes.starts_with(b"<svg"), "{name:?}");

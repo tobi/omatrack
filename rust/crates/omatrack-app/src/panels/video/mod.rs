@@ -14,15 +14,24 @@
 //! the reference sync state (with what it means in its tooltip), identity
 //! checks and a missing reference video.
 //!
-//! `F` zooms this panel's dock group and makes the window fullscreen;
-//! Escape restores both (the workspace routes those). Nothing enters
-//! fullscreen on its own.
+//! `F` (or the bar's fullscreen button) puts this panel on the fullscreen
+//! stage: the workspace renders it alone over the whole window (no title
+//! bar, docks or status bar; the dock layout is untouched behind it) and
+//! calls [`VideoPanel::set_stage`]. On the stage the videos are composed on
+//! black per [`stage`], the lap filmstrip (the workspace's one entity)
+//! runs in a lane at the bottom, the broadcast telemetry band and the live
+//! delta bar ride over the pictures ([`overlay`]), and the transport
+//! controls float at the bottom, hiding [`CONTROLS_HIDE_AFTER`] after the
+//! last pointer motion or key press. Escape leaves (the workspace routes
+//! it). Nothing enters fullscreen on its own.
 
+mod clock;
 mod icons;
 pub mod overlay;
+pub mod stage;
 
 use omatrack_ui::TypeScale as _;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
@@ -39,26 +48,35 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Action, AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    Action, AnyElement, App, AppContext as _, Context, CursorHideMode, Entity, EventEmitter,
+    FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render,
     Role as AccessRole, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
-    TestSupportExt as _, WeakEntity, Window, div, relative,
+    Task, TestSupportExt as _, WeakEntity, Window, div, px, relative,
 };
 use mpv_player::{VideoView, VideoViewEvent};
 use omatrack_core::playback::{ReferencePlayback, SyncState};
 use omatrack_ui::LapRole;
 
 use crate::actions::{
-    ComposeLayout1, ComposeLayout2, ComposeLayout3, ComposeLayout4, ComposeLayout5, Role,
-    ToggleContinuous, ToggleMute, TogglePlay, ToggleSlowMotion,
+    ComposeLayout1, ComposeLayout2, ComposeLayout3, ComposeLayout4, ComposeLayout5, ExitFullscreen,
+    Role, SeekBack, SeekForward, ToggleContinuous, ToggleMute, TogglePlay, ToggleSlowMotion,
+    ToggleVideoFullscreen,
 };
 use crate::commands::{self, CommandCategory, CommandSpec};
 use crate::keymap::WORKSPACE_CONTEXT;
 use crate::panels::{PanelKind, empty_state, panel_body};
 use crate::state::{AppState, ComposeLayout, RoleState, VideoAvailability, VideoEvent};
+use crate::workspace::Filmstrip;
 
+use clock::LapClock;
 use icons::VideoIcons;
-use overlay::{VideoOverlay, lap_caption};
+use overlay::{StageOverlay, VideoOverlay, lap_caption};
+
+/// The fullscreen controls hide this long after the last pointer motion or
+/// key press (the Qt stage's 1.8 s, rounded up).
+pub const CONTROLS_HIDE_AFTER: Duration = Duration::from_millis(2000);
+/// Height of the fullscreen controls, rem.
+const CONTROLS_REMS: f32 = 2.75;
 
 gpui_kit::actions!(
     omatrack,
@@ -133,12 +151,34 @@ pub struct VideoPanel {
     active: bool,
     /// A display-frame pull is scheduled.
     pumping: bool,
+    /// Presented on the fullscreen stage.
+    stage: Option<Stage>,
+    clock: Entity<LapClock>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// The fullscreen stage's presentation state.
+struct Stage {
+    /// The workspace's filmstrip, shown in the bottom lane.
+    filmstrip: Entity<Filmstrip>,
+    /// The floating controls are shown.
+    controls: bool,
+    /// The pointer is over the controls (they stay while it is).
+    hovered: bool,
+    /// Hides the controls after [`CONTROLS_HIDE_AFTER`]; replaced (so
+    /// cancelled) by every reveal.
+    hide: Option<Task<()>>,
+    /// The telemetry band is shown.
+    hud: bool,
+    /// The cursor-hide policy to restore on leaving.
+    cursor_mode: CursorHideMode,
+    _keys: Subscription,
 }
 
 impl VideoPanel {
     pub fn new(app: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let overlay = cx.new(|cx| VideoOverlay::new(app.clone(), cx));
+        let clock = cx.new(|cx| LapClock::new(app.clone(), cx));
         let subscriptions = vec![
             cx.subscribe_in(&app.video, window, |this, _, event, window, cx| {
                 this.on_video_event(event, window, cx);
@@ -166,6 +206,8 @@ impl VideoPanel {
             group: None,
             active: true,
             pumping: false,
+            stage: None,
+            clock,
             _subscriptions: subscriptions,
         };
         panel.sync_views(window, cx);
@@ -196,6 +238,112 @@ impl VideoPanel {
     /// Whether a display-frame pull is scheduled.
     pub fn is_pulling(&self) -> bool {
         self.pumping
+    }
+
+    /// Present the panel on the fullscreen stage with `filmstrip` in its
+    /// bottom lane (`Some`), or back in its dock (`None`). The workspace
+    /// calls this; it owns the switch and the focus.
+    pub fn set_stage(
+        &mut self,
+        filmstrip: Option<Entity<Filmstrip>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match filmstrip {
+            Some(filmstrip) => {
+                if self.stage.is_some() {
+                    return;
+                }
+                filmstrip.update(cx, |strip, cx| strip.set_on_stage(true, cx));
+                // Keys (Space, arrows, 1-5) hide the pointer until it moves.
+                let cursor_mode = cx.cursor_hide_mode();
+                cx.set_cursor_hide_mode(CursorHideMode::OnTypingAndAction);
+                self.stage = Some(Stage {
+                    filmstrip,
+                    controls: true,
+                    hovered: false,
+                    hide: None,
+                    hud: true,
+                    cursor_mode,
+                    // Any keystroke (after its action ran) brings hidden
+                    // controls back; key-down listeners never see bound keys.
+                    _keys: cx.observe_keystrokes(|this, _, _, cx| this.reveal_controls(cx)),
+                });
+                self.reveal_controls(cx);
+            }
+            None => {
+                let Some(stage) = self.stage.take() else {
+                    return;
+                };
+                stage
+                    .filmstrip
+                    .update(cx, |strip, cx| strip.set_on_stage(false, cx));
+                cx.set_cursor_hide_mode(stage.cursor_mode);
+                self.overlay
+                    .update(cx, |overlay, cx| overlay.set_stage(None, cx));
+            }
+        }
+        self.sync_letterbox(cx);
+        self.ensure_pull(window, cx);
+        cx.notify();
+    }
+
+    /// Whether the panel is on the fullscreen stage.
+    pub fn is_on_stage(&self) -> bool {
+        self.stage.is_some()
+    }
+
+    /// Whether the stage's floating controls are shown (false off stage).
+    pub fn controls_visible(&self) -> bool {
+        self.stage.as_ref().is_some_and(|stage| stage.controls)
+    }
+
+    /// Whether the stage shows the telemetry band.
+    pub fn is_hud_shown(&self) -> bool {
+        self.stage.as_ref().is_some_and(|stage| stage.hud)
+    }
+
+    /// Show or hide the stage's telemetry band.
+    pub fn toggle_hud(&mut self, cx: &mut Context<Self>) {
+        if let Some(stage) = self.stage.as_mut() {
+            stage.hud = !stage.hud;
+            cx.notify();
+        }
+    }
+
+    /// Show the stage controls and restart their hide timer.
+    pub fn reveal_controls(&mut self, cx: &mut Context<Self>) {
+        let Some(stage) = self.stage.as_mut() else {
+            return;
+        };
+        if !stage.controls {
+            stage.controls = true;
+            cx.notify();
+        }
+        stage.hide = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(CONTROLS_HIDE_AFTER).await;
+            let _ = this.update(cx, |this, cx| {
+                if let Some(stage) = this.stage.as_mut()
+                    && stage.controls
+                    && !stage.hovered
+                {
+                    stage.controls = false;
+                    stage.hide = None;
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    fn set_controls_hovered(&mut self, hovered: bool, cx: &mut Context<Self>) {
+        let Some(stage) = self.stage.as_mut() else {
+            return;
+        };
+        stage.hovered = hovered;
+        if !hovered {
+            // Leaving the controls starts the countdown to hiding them.
+            self.reveal_controls(cx);
+        }
     }
 
     fn on_video_event(&mut self, event: &VideoEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -243,7 +391,11 @@ impl VideoPanel {
             let video = self.app.video.read(cx);
             (video.frame_source(), video.reference_frame_source())
         };
-        let letterbox = cx.theme().background;
+        let letterbox = if self.stage.is_some() {
+            gpui_kit::black()
+        } else {
+            cx.theme().background
+        };
         for (role, source) in [(Role::Primary, primary), (Role::Reference, reference)] {
             let id = match role {
                 Role::Primary => "primary-video",
@@ -292,7 +444,11 @@ impl VideoPanel {
     }
 
     fn sync_letterbox(&mut self, cx: &mut Context<Self>) {
-        let letterbox = cx.theme().background;
+        let letterbox = if self.stage.is_some() {
+            gpui_kit::black()
+        } else {
+            cx.theme().background
+        };
         for view in [&self.primary_view, &self.reference_view]
             .into_iter()
             .flatten()
@@ -303,18 +459,12 @@ impl VideoPanel {
 
     // ── transport bar ───────────────────────────────────────────────
 
-    fn render_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Play/pause (cancels a running countdown).
+    fn render_play(&self, cx: &mut Context<Self>) -> Button {
         let video = self.app.video.read(cx);
-        let muted = video.is_muted(cx);
         let playing = video.is_playing();
         let counting = video.countdown().is_some();
-        let slow = video.is_slow_motion();
-        let continuous = video.is_continuous(cx);
         let can_play = video.clock(Role::Primary).is_some();
-        let dual = video.is_dual();
-        let layout = video.layout().effective(dual);
-        let theme = cx.theme();
-
         let play_label = if counting {
             "Cancel the countdown"
         } else if playing {
@@ -322,7 +472,7 @@ impl VideoPanel {
         } else {
             "Play"
         };
-        let play = Button::new("video-play")
+        Button::new("video-play")
             .ghost()
             .xsmall()
             .icon(if playing {
@@ -335,10 +485,13 @@ impl VideoPanel {
             .tooltip_with_action(play_label, &TogglePlay, Some(WORKSPACE_CONTEXT))
             .on_click(cx.listener(|this, _, _, cx| {
                 this.app.video.update(cx, |video, cx| video.toggle_play(cx));
-            }));
+            }))
+    }
 
+    fn render_mute(&self, cx: &mut Context<Self>) -> Button {
+        let muted = self.app.video.read(cx).is_muted(cx);
         let mute_label = if muted { "Unmute" } else { "Mute" };
-        let mute = Button::new("video-mute")
+        Button::new("video-mute")
             .ghost()
             .xsmall()
             .icon(if muted {
@@ -350,10 +503,13 @@ impl VideoPanel {
             .tooltip_with_action(mute_label, &ToggleMute, Some(WORKSPACE_CONTEXT))
             .on_click(cx.listener(|this, _, _, cx| {
                 this.app.video.update(cx, |video, cx| video.toggle_mute(cx));
-            }));
+            }))
+    }
 
-        // The clock rate: the selected segment is the one playing.
-        let rate = ButtonGroup::new("video-rate")
+    /// The clock rate: the selected segment is the one playing.
+    fn render_rate(&self, cx: &mut Context<Self>) -> ButtonGroup {
+        let slow = self.app.video.read(cx).is_slow_motion();
+        ButtonGroup::new("video-rate")
             .xsmall()
             .outline()
             .child(
@@ -387,9 +543,13 @@ impl VideoPanel {
                         .video
                         .update(cx, |video, cx| video.toggle_slow_motion(cx));
                 }
-            }));
+            }))
+    }
 
-        let mode = ButtonGroup::new("video-playback-mode")
+    /// Lap-end behaviour: pause and count in, or play through.
+    fn render_mode(&self, cx: &mut Context<Self>) -> ButtonGroup {
+        let continuous = self.app.video.read(cx).is_continuous(cx);
+        ButtonGroup::new("video-playback-mode")
             .xsmall()
             .outline()
             .child(
@@ -421,7 +581,52 @@ impl VideoPanel {
                         .video
                         .update(cx, |video, cx| video.toggle_continuous(cx));
                 }
-            }));
+            }))
+    }
+
+    /// Enter (docked) or leave (on stage) the fullscreen stage.
+    fn render_fullscreen_button(&self) -> Button {
+        let on_stage = self.stage.is_some();
+        let (id, label, icon) = if on_stage {
+            (
+                "video-exit-fullscreen",
+                "Leave fullscreen",
+                self.icons.exit_fullscreen.clone(),
+            )
+        } else {
+            (
+                "video-enter-fullscreen",
+                "Fullscreen",
+                self.icons.fullscreen.clone(),
+            )
+        };
+        let button = Button::new(id)
+            .ghost()
+            .xsmall()
+            .icon(icon)
+            .accessibility_label(label);
+        if on_stage {
+            button
+                .label("Exit")
+                .tooltip_with_action(label, &ExitFullscreen, Some(WORKSPACE_CONTEXT))
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(ExitFullscreen), cx))
+        } else {
+            button
+                .tooltip_with_action(label, &ToggleVideoFullscreen, Some(WORKSPACE_CONTEXT))
+                .on_click(|_, window, cx| {
+                    window.dispatch_action(Box::new(ToggleVideoFullscreen), cx)
+                })
+        }
+    }
+
+    fn render_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let dual = self.app.video.read(cx).is_dual();
+        let layout = self.app.video.read(cx).layout().effective(dual);
+        let play = self.render_play(cx);
+        let mute = self.render_mute(cx);
+        let rate = self.render_rate(cx);
+        let mode = self.render_mode(cx);
+        let theme = cx.theme();
 
         let layout_icon: Icon = match layout {
             ComposeLayout::Split => self.icons.split.clone(),
@@ -503,6 +708,8 @@ impl VideoPanel {
             .child(compose)
             .child(div().flex_1().min_w_2())
             .child(self.render_status(cx))
+            .child(divider())
+            .child(self.render_fullscreen_button())
     }
 
     /// The right end of the bar: sync, identity and availability chips.
@@ -915,6 +1122,248 @@ impl VideoPanel {
     }
 }
 
+impl VideoPanel {
+    // ── fullscreen stage ────────────────────────────────────────────
+
+    /// The whole-window stage: pictures composed on black, the telemetry
+    /// layer, the countdown, the filmstrip lane and the floating controls.
+    fn render_fullscreen(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let Some(stage) = self.stage.as_ref() else {
+            return div().into_any_element();
+        };
+        let viewport = window.viewport_size();
+        let (width, height) = (viewport.width.as_f32(), viewport.height.as_f32());
+        let rem = window.rem_size().as_f32();
+        let filmstrip = stage.filmstrip.clone();
+        let (controls, hud) = (stage.controls, stage.hud);
+        let strip = filmstrip.read(cx).height_rems() * rem;
+        let controls_height = CONTROLS_REMS * rem;
+        let layout = {
+            let video = self.app.video.read(cx);
+            video.layout().effective(video.is_dual())
+        };
+        let aspects = (
+            self.picture_aspect(Role::Primary, cx),
+            self.picture_aspect(Role::Reference, cx),
+        );
+        let aspect = |role: Role| match role {
+            Role::Primary => aspects.0,
+            Role::Reference => aspects.1,
+        };
+        let reserved =
+            stage::reserved_height(layout, width, height, aspect, strip, controls_height);
+        let panes = stage::compose(layout, width, height - reserved, aspect);
+        let lane_bottom = controls_height + stage::LANE_MARGIN;
+        let bottom_inset = if strip > 0. {
+            strip + controls_height + 2. * stage::LANE_MARGIN
+        } else {
+            controls_height + stage::LANE_MARGIN
+        };
+        let pictures_top = panes
+            .iter()
+            .map(|pane| pane.rect.y)
+            .fold(f32::INFINITY, f32::min);
+        let overlay_stage = StageOverlay {
+            bottom_inset,
+            pictures_top: if pictures_top.is_finite() {
+                pictures_top
+            } else {
+                0.
+            },
+            hud,
+        };
+        self.overlay
+            .update(cx, |overlay, cx| overlay.set_stage(Some(overlay_stage), cx));
+
+        let label = SharedString::from(format!("Fullscreen video, {}", layout.label()));
+        let panes = panes
+            .into_iter()
+            .map(|pane| self.render_stage_pane(pane, cx))
+            .collect::<Vec<_>>();
+        let controls_bar = controls.then(|| self.render_stage_controls(cx));
+        div()
+            .id("video-fullscreen")
+            .role(AccessRole::Group)
+            .aria_label(label)
+            .test_support()
+            .track_focus(&self.focus_handle)
+            .relative()
+            .size_full()
+            .overflow_hidden()
+            .bg(gpui_kit::black())
+            .on_mouse_move(cx.listener(|this, _, _, cx| this.reveal_controls(cx)))
+            .children(panes)
+            .child(self.overlay.clone())
+            .children(overlay::countdown(&self.app, window, cx))
+            .when(strip > 0., |this| {
+                this.child(
+                    div()
+                        .id("video-filmstrip-lane")
+                        .test_support()
+                        .absolute()
+                        .left(px(stage::LANE_MARGIN))
+                        .right(px(stage::LANE_MARGIN))
+                        .bottom(px(lane_bottom))
+                        .child(filmstrip),
+                )
+            })
+            .children(controls_bar)
+            .into_any_element()
+    }
+
+    /// One picture on the stage, at its computed place; an inset is framed
+    /// and carries a compact caption.
+    fn render_stage_pane(&self, pane: stage::Pane, cx: &App) -> AnyElement {
+        let view = match pane.role {
+            Role::Primary => self.primary_view.clone(),
+            Role::Reference => self.reference_view.clone(),
+        };
+        let id = match pane.role {
+            Role::Primary => "primary-video-pane",
+            Role::Reference => "reference-video-pane",
+        };
+        let theme = cx.theme();
+        let rect = pane.rect;
+        div()
+            .id(id)
+            .test_support()
+            .absolute()
+            .left(px(rect.x))
+            .top(px(rect.y))
+            .w(px(rect.w))
+            .h(px(rect.h))
+            .overflow_hidden()
+            .when(pane.inset, |this| {
+                this.border_1()
+                    .border_color(theme.border)
+                    .rounded(theme.radius)
+                    .shadow_lg()
+            })
+            .when_some(view, |this, view| this.child(view))
+            .when(pane.inset, |this| {
+                this.children(self.render_caption(pane.role, true, cx))
+            })
+            .into_any_element()
+    }
+
+    /// The floating transport controls: play, ±2 s, layouts 1-5, rate,
+    /// lap-end mode, HUD and mute, the lap clock and Exit.
+    fn render_stage_controls(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let dual = self.app.video.read(cx).is_dual();
+        let current = self.app.video.read(cx).layout().effective(dual);
+        let hud = self.is_hud_shown();
+        let play = self.render_play(cx);
+        let mute = self.render_mute(cx);
+        let rate = self.render_rate(cx);
+        let mode = self.render_mode(cx);
+        let exit = self.render_fullscreen_button();
+        let seek = |id: &'static str, label: &'static str, spoken: &'static str, back: bool| {
+            let button = Button::new(id)
+                .ghost()
+                .xsmall()
+                .label(label)
+                .accessibility_label(spoken);
+            if back {
+                button
+                    .tooltip_with_action(spoken, &SeekBack, Some(WORKSPACE_CONTEXT))
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(SeekBack), cx))
+            } else {
+                button
+                    .tooltip_with_action(spoken, &SeekForward, Some(WORKSPACE_CONTEXT))
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(SeekForward), cx))
+            }
+        };
+        let layouts = dual.then(|| {
+            let mut group = ButtonGroup::new("video-stage-layouts").xsmall().outline();
+            for layout in ComposeLayout::ALL {
+                let selected = layout == current;
+                let spoken = SharedString::from(format!("{} ({})", layout.label(), layout.key()));
+                group = group.child(
+                    Button::new(SharedString::from(format!(
+                        "video-stage-layout-{}",
+                        layout.key()
+                    )))
+                    .label(layout.key())
+                    .selected(selected)
+                    .when(selected, |button| button.primary())
+                    .accessibility_label(spoken.clone())
+                    .tooltip_with_action(
+                        spoken,
+                        layout_action(layout).as_ref(),
+                        Some(WORKSPACE_CONTEXT),
+                    ),
+                );
+            }
+            group.on_click(cx.listener(|this, selected: &Vec<usize>, _, cx| {
+                if let Some(layout) = selected.first().and_then(|ix| ComposeLayout::ALL.get(*ix)) {
+                    let layout = *layout;
+                    this.app
+                        .video
+                        .update(cx, |video, cx| video.set_layout(layout, cx));
+                }
+            }))
+        });
+        let hud_label = if hud {
+            "Hide the telemetry overlay"
+        } else {
+            "Show the telemetry overlay"
+        };
+        let hud_button = Button::new("video-stage-hud")
+            .ghost()
+            .xsmall()
+            .icon(self.icons.hud.clone())
+            .label("HUD")
+            .selected(hud)
+            .accessibility_label(hud_label)
+            .tooltip(hud_label)
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_hud(cx)));
+        let theme = cx.theme();
+        let divider = || Separator::vertical().h_4().mx_1();
+        h_flex()
+            .id("video-stage-controls")
+            .role(AccessRole::Toolbar)
+            .aria_label("Playback")
+            .test_support()
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .h(gpui_kit::rems(CONTROLS_REMS))
+            .items_center()
+            .gap_1()
+            .px_3()
+            .border_t_1()
+            .border_color(theme.border.opacity(0.6))
+            .bg(gpui_kit::black().opacity(0.72))
+            .text_color(theme.foreground)
+            .text_label()
+            .on_hover(
+                cx.listener(|this, hovered: &bool, _, cx| this.set_controls_hovered(*hovered, cx)),
+            )
+            .child(play)
+            .child(seek("video-seek-back", "−2 s", "Back 2 seconds", true))
+            .child(seek(
+                "video-seek-forward",
+                "+2 s",
+                "Forward 2 seconds",
+                false,
+            ))
+            .child(divider())
+            .children(layouts.map(|group| div().flex_shrink_0().child(group)))
+            .when(dual, |this| this.child(divider()))
+            .child(rate)
+            .child(mode)
+            .child(divider())
+            .child(hud_button)
+            .child(mute)
+            .child(div().flex_1().min_w_2())
+            .child(self.clock.clone())
+            .child(divider())
+            .child(exit)
+            .into_any_element()
+    }
+}
+
 /// The reference sync indicator, sentence case except established acronyms.
 fn sync_label(state: SyncState) -> &'static str {
     match state {
@@ -1015,6 +1464,9 @@ impl Focusable for VideoPanel {
 
 impl Render for VideoPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.stage.is_some() {
+            return self.render_fullscreen(window, cx);
+        }
         let shows_video = {
             let video = self.app.video.read(cx);
             self.primary_view.is_some() || video.clock(Role::Primary).is_some()
@@ -1031,6 +1483,7 @@ impl Render for VideoPanel {
             .size_full()
             .child(self.render_bar(cx))
             .child(div().flex_1().min_h_0().child(content))
+            .into_any_element()
     }
 }
 
