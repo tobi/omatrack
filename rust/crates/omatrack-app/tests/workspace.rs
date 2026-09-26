@@ -150,18 +150,31 @@ fn a_corrupt_layout_falls_back_to_the_default(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn a_layout_from_another_version_is_replaced(cx: &mut TestAppContext) {
+    // Version 2 hid the map behind the inspector; its saved layouts reset
+    // to the stacked default and say so.
+    assert_eq!(omatrack_app::LAYOUT_VERSION, 3);
     let sandbox = common::Sandbox::new();
     sandbox.write_config(
-        "workspace:\n  layout:\n    version: 1\n    center: {panel_name: StackPanel, children: [], info: {stack: {sizes: [], axis: 0}}}\n",
+        "workspace:\n  layout:\n    version: 2\n    center: {panel_name: StackPanel, children: [], info: {stack: {sizes: [], axis: 0}}}\n",
     );
     let test = common::start(cx, sandbox.options());
     cx.update(|cx| {
         assert!(matches!(
             test.workspace.read(cx).layout_origin(),
-            LayoutOrigin::Replaced(_)
+            LayoutOrigin::Replaced(reason) if reason.contains("another version")
         ));
     });
     holds_every_panel(&test, cx);
+    cx.update_window(test.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.find("notification").visible(),
+            "the reset is announced"
+        );
+        assert!(window.find("map-panel").visible());
+        assert!(window.find("inspector-panel").visible());
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]
