@@ -9,6 +9,7 @@ use gpui_kit::component::{
     button::{Button, ButtonGroup, ButtonVariants as _},
     h_flex,
     menu::DropdownMenu as _,
+    tooltip::Tooltip,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -149,6 +150,9 @@ impl TracesPanel {
                 .label(label)
                 .selected(mode == view_mode)
                 .toggled(mode == view_mode)
+                .when(mode == view_mode, |button| {
+                    button.custom(crate::panels::selected_segment(cx))
+                })
                 .tooltip_with_action(
                     tooltip,
                     action.as_ref(),
@@ -196,26 +200,39 @@ impl TracesPanel {
                     .menu("Channel settings…", Box::new(ShowChannels))
             });
 
+        // Lap colours | Channel colours: both states named, the current one
+        // filled; a click on the other segment toggles.
         let colour_keys = keys.clone();
-        let colours = Button::new("trace-color-mode")
+        let segment = |id: &'static str, label: &'static str, selected: bool, tooltip| {
+            Button::new(id)
+                .label(label)
+                .selected(selected)
+                .toggled(selected)
+                .when(selected, |button| {
+                    button.custom(crate::panels::selected_segment(cx))
+                })
+                .tooltip_with_action(tooltip, &ToggleTraceColorMode, Some(WORKSPACE_CONTEXT))
+        };
+        let colours = ButtonGroup::new("trace-color-mode")
             .small()
             .outline()
-            .icon(IconName::Palette)
-            .label("Channel colours")
-            .selected(channel_colours)
-            .toggled(channel_colours)
-            .accessibility_label("Channel colours")
-            .tooltip_with_action(
-                if channel_colours {
-                    "Each channel in its own hue; off shows lap colours"
-                } else {
-                    "Lap colours; on draws each channel in its own hue"
-                },
-                &ToggleTraceColorMode,
-                Some(WORKSPACE_CONTEXT),
-            )
-            .on_click(move |_, window, cx| {
-                colour_keys.dispatch_action(&ToggleTraceColorMode, window, cx)
+            .child(segment(
+                "trace-color-lap",
+                "Lap colours",
+                !channel_colours,
+                "Every lap in its role: primary and reference",
+            ))
+            .child(segment(
+                "trace-color-channel",
+                "Channel colours",
+                channel_colours,
+                "Each channel in its own hue, the reference quieter",
+            ))
+            .on_click(move |clicked: &Vec<usize>, window, cx| {
+                let wants_channel = clicked.first() == Some(&1);
+                if wants_channel != channel_colours {
+                    colour_keys.dispatch_action(&ToggleTraceColorMode, window, cx);
+                }
             });
 
         let tools_preferences = self.app.preferences.clone();
@@ -397,29 +414,46 @@ impl TracesPanel {
     pub(super) fn render_ruler_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let source = self.analysis().map(|analysis| analysis.corner_source());
-        let label: SharedString = match source {
-            Some(CornerSource::Atlas) => "Corners · Track Atlas".into(),
-            Some(CornerSource::User) => "Corners · edited".into(),
-            Some(CornerSource::Generated) => "Corners · from braking".into(),
+        // Where zones come from is said only when it is not the atlas (an
+        // edit, braking, GPS off the map); the atlas is the tooltip.
+        let (label, tooltip): (SharedString, SharedString) = match source {
+            Some(CornerSource::Atlas) => ("Corners".into(), "Corner zones from Track Atlas".into()),
             // Atlas corners placed through the reference lap; the Sync
             // menu says why.
-            Some(CornerSource::Reference) => "Corners · Track Atlas".into(),
-            Some(CornerSource::Unmatched) => "Corners · GPS off the map".into(),
-            None => "Corners".into(),
+            Some(CornerSource::Reference) => (
+                "Corners".into(),
+                "Track Atlas corner zones, placed through the reference lap".into(),
+            ),
+            Some(CornerSource::User) => (
+                "Corners · edited".into(),
+                "Your corner zones for this track, over Track Atlas".into(),
+            ),
+            Some(CornerSource::Generated) => (
+                "Corners · from braking".into(),
+                "No atlas corners for this track: zones found from braking".into(),
+            ),
+            Some(CornerSource::Unmatched) => (
+                "Corners · GPS off the map".into(),
+                "The lap's GPS does not follow the atlas outline".into(),
+            ),
+            None => ("Corners".into(), "Corner zones".into()),
         };
+        let label = self.consistency_caption(cx).unwrap_or(label);
+        let spoken = label.clone();
         row(
             "trace-ruler-row",
-            gpui_kit::component::v_flex()
+            div()
+                .id("trace-ruler-caption")
                 .w_full()
                 .min_w_0()
-                .gap_0p5()
-                .child(
-                    div()
-                        .text_caption()
-                        .text_color(theme.muted_foreground)
-                        .truncate()
-                        .child(label),
-                ),
+                .role(Role::Status)
+                .aria_label(spoken)
+                .test_support()
+                .text_caption()
+                .text_color(theme.muted_foreground)
+                .truncate()
+                .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                .child(label),
             self.ruler.clone(),
             cx,
         )

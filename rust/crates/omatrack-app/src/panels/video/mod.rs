@@ -571,6 +571,9 @@ impl VideoPanel {
                 Button::new("video-per-lap")
                     .label("Per lap")
                     .selected(!continuous)
+                    .when(!continuous, |button| {
+                        button.custom(crate::panels::selected_segment(cx))
+                    })
                     .tooltip_with_action(
                         "At the lap end, pause and count into the next lap",
                         &ToggleContinuous,
@@ -581,6 +584,9 @@ impl VideoPanel {
                 Button::new("video-continuous")
                     .label("Continuous")
                     .selected(continuous)
+                    .when(continuous, |button| {
+                        button.custom(crate::panels::selected_segment(cx))
+                    })
                     .tooltip_with_action(
                         "Play through lap ends into the next lap",
                         &ToggleContinuous,
@@ -787,6 +793,9 @@ impl VideoPanel {
                 Button::new("trace-axis-distance")
                     .label("Distance")
                     .selected(axis == XAxis::Distance)
+                    .when(axis == XAxis::Distance, |button| {
+                        button.custom(crate::panels::selected_segment(cx))
+                    })
                     .tooltip_with_action(
                         "Traces by distance",
                         &ToggleXAxis,
@@ -797,6 +806,9 @@ impl VideoPanel {
                 Button::new("trace-axis-time")
                     .label("Time")
                     .selected(axis == XAxis::Time)
+                    .when(axis == XAxis::Time, |button| {
+                        button.custom(crate::panels::selected_segment(cx))
+                    })
                     .tooltip_with_action("Traces by time", &ToggleXAxis, Some(WORKSPACE_CONTEXT)),
             )
             .on_click(move |clicked: &Vec<usize>, window, cx| {

@@ -465,13 +465,22 @@ impl Workspace {
     /// Focus corner `ix` of the analysis: centered in the left half with the
     /// 140 ms motion, its zone kept bright.
     fn focus_corner(&mut self, ix: usize, cx: &mut Context<Self>) {
-        let Some(zone) = self
-            .app
-            .session
-            .read(cx)
-            .analysis()
-            .and_then(|analysis| analysis.corners().get(ix).cloned())
-        else {
+        let frame = self.frames_corners(cx);
+        let Some((zone, apex)) = self.app.session.read(cx).analysis().and_then(|analysis| {
+            let zone = analysis.corners().get(ix).cloned()?;
+            // The primary's apex, where the corner has one inside its zone.
+            let apex = analysis
+                .row(&zone.id)
+                .filter(|row| row.primary.apex_is_local())
+                .and_then(|row| {
+                    row.markers
+                        .iter()
+                        .find(|marker| marker.kind == omatrack_core::session::MarkerKind::Apex)
+                })
+                .map(|marker| marker.fraction)
+                .filter(|fraction| fraction.is_finite());
+            Some((zone, apex))
+        }) else {
             return;
         };
         self.focused_corner = Some(ix);
@@ -479,7 +488,6 @@ impl Workspace {
             self.pre_focus_viewport = Some(self.app.viewport.read(cx).viewport());
             self.pre_focus_cursor = self.app.cursor.read(cx).fraction();
         }
-        let frame = self.frames_corners(cx);
         self.app.viewport.update(cx, |viewport, cx| {
             if frame {
                 viewport.frame_corner(zone.start, zone.end, true, cx)
@@ -488,10 +496,17 @@ impl Workspace {
             }
         });
         // The cursor moves to the corner so every readout (legends,
-        // inspector, HUD, video) describes the corner being looked at.
+        // inspector, HUD, video) describes the corner being looked at: its
+        // start in the lap view (the corner centred in the left half), its
+        // apex in the Corners view (the corner framed whole).
+        let at = if frame {
+            apex.unwrap_or(zone.start)
+        } else {
+            zone.start
+        };
         self.app.cursor.update(cx, |cursor, cx| {
             cursor.set_focus(Some(Selection::new(zone.start, zone.end)), cx);
-            cursor.set_fraction(Some(zone.start), cx);
+            cursor.set_fraction(Some(at), cx);
         });
     }
 

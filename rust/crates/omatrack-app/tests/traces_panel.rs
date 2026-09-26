@@ -1231,10 +1231,19 @@ async fn the_corners_view_frames_one_corner_and_returns_to_the_lap(cx: &mut Test
     })
     .unwrap();
 
+    // The cursor is in the corner (its apex, else its start), so the
+    // readouts describe it.
+    let in_corner = |cx: &mut TestAppContext, ix: usize| {
+        let at = cx.update(|cx| f.test.app.cursor.read(cx).fraction());
+        at.is_some_and(|at| at >= corners[ix].start && at <= corners[ix].end)
+    };
+    assert!(in_corner(cx, 0), "the cursor moves into the framed corner");
+
     // j / h step through the corners in the same framing.
     press_and_settle(cx, &f, "j");
     assert_viewport(cx, &f, framed(1), "j frames the next corner");
     assert_eq!(focused(cx), Some(corners[1].id));
+    assert!(in_corner(cx, 1), "the cursor follows the corner");
     press_and_settle(cx, &f, "h");
     assert_viewport(cx, &f, framed(0), "h frames the previous corner");
     // Fit in Corners fits the corner, not the lap.
@@ -1326,14 +1335,20 @@ async fn the_channels_menu_and_colour_mode_live_in_the_toolbar(cx: &mut TestAppC
         .and_then(|channel| channel.visible);
     assert_eq!(visible, Some(true));
 
-    // The colour toggle flips `trace.color_mode` and shows its state.
-    click_and_settle(cx, &f, "trace-color-mode");
+    // The colour segments name both modes, the current one checked; a
+    // click on the current one changes nothing.
+    click_and_settle(cx, &f, "trace-color-lap");
+    assert_ne!(f.config(cx).trace.color_mode, Some(TraceColorMode::Channel));
+    click_and_settle(cx, &f, "trace-color-channel");
     assert_eq!(f.config(cx).trace.color_mode, Some(TraceColorMode::Channel));
     cx.update_window(f.window, |_, window, cx| {
         window.render_frame(cx);
-        assert_eq!(window.find("trace-color-mode").checked(), Some(true));
+        assert_eq!(window.find("trace-color-channel").checked(), Some(true));
+        assert_eq!(window.find("trace-color-lap").checked(), Some(false));
     })
     .unwrap();
-    click_and_settle(cx, &f, "trace-color-mode");
+    click_and_settle(cx, &f, "trace-color-channel");
+    assert_eq!(f.config(cx).trace.color_mode, Some(TraceColorMode::Channel));
+    click_and_settle(cx, &f, "trace-color-lap");
     assert_eq!(f.config(cx).trace.color_mode, Some(TraceColorMode::Lap));
 }

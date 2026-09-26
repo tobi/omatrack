@@ -60,7 +60,7 @@ use crate::commands::{self, CommandCategory, CommandSpec};
 use crate::keymap::TRACE_EDIT_CONTEXT;
 use crate::panels::{PanelKind, analysis_body, simple_panel};
 use crate::state::{AppState, SessionEvent, TraceViewEvent, TraceViewMode};
-use omatrack_core::consistency::MIN_SPREAD_LAPS;
+use omatrack_core::consistency::{MIN_SPREAD_LAPS, SPREAD_MAX_GAP};
 
 pub use edit::{CornerDraft, ResizeDraft};
 pub use scene_build::{DELTA_KEY, DELTA_TITLE};
@@ -390,6 +390,31 @@ impl TracesPanel {
             )
             .into(),
         })
+    }
+
+    /// What the Consistency view's band is, for the ruler row's caption:
+    /// `Session · 4 laps within 5%`, `· approximate` when a lap's distance
+    /// is speed-fused (the band is then placed by lap share, not metres).
+    pub fn consistency_caption(&self, cx: &App) -> Option<SharedString> {
+        let trace_view = self.app.trace_view.read(cx);
+        if trace_view.mode() != TraceViewMode::Consistency {
+            return None;
+        }
+        let built = self.built.as_ref()?;
+        let consistency = trace_view
+            .spread_for(built.analysis.primary())?
+            .consistency();
+        if !consistency.is_meaningful() {
+            return None;
+        }
+        let within = ((SPREAD_MAX_GAP - 1.0) * 100.0).round();
+        let count = consistency.lap_count();
+        let approximate = if consistency.is_approximate() {
+            " · approximate"
+        } else {
+            ""
+        };
+        Some(format!("Session · {count} laps within {within}%{approximate}").into())
     }
 
     /// Lane styles from `channels.<key>`, this session's pins and a resize
