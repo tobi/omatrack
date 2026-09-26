@@ -58,7 +58,7 @@ const APEX_DOT_RADIUS: f32 = 3.5;
 const APEX_LABEL_GAP: f32 = 3.0;
 /// An apex label keeps this far from the plot's sides.
 const APEX_LABEL_INSET: f32 = 4.0;
-/// Samples of the primary across an apex label's width, to keep it clear.
+/// Samples of both laps across an apex label's width, to keep it clear.
 const APEX_LABEL_PROBES: usize = 6;
 
 /// Decimals of a value-axis figure: as many as its tick `step` needs.
@@ -896,7 +896,7 @@ impl StaticLayerElement {
             if left < previous_right + APEX_LABEL_GAP {
                 continue;
             }
-            // Clear of the primary across the label's whole width: beneath
+            // Clear of both laps across the label's whole width: beneath
             // its lowest point there, or above its highest where the lane
             // ends first.
             let (mut lowest, mut highest) = (dot_y, dot_y);
@@ -905,12 +905,21 @@ impl StaticLayerElement {
                 let fraction = self
                     .viewport
                     .fraction_for_x(probe_x as f64, 0.0, width as f64);
-                let value = value_at_fraction(&series.primary, fraction);
-                if value.is_finite() {
-                    let t = ((value - range.min) / range.span()).clamp(0.0, 1.0) as f32;
-                    let probe_y = y + 1.0 + (h - 2.0) * (1.0 - t);
-                    lowest = lowest.max(probe_y);
-                    highest = highest.min(probe_y);
+                let primary = value_at_fraction(&series.primary, fraction);
+                let reference = series.reference.as_ref().map_or(f64::NAN, |reference| {
+                    let at = self
+                        .scene
+                        .map()
+                        .map_or(fraction, |map| map.reference_fraction(fraction));
+                    value_at_fraction(reference, at)
+                });
+                for value in [primary, reference] {
+                    if value.is_finite() {
+                        let t = ((value - range.min) / range.span()).clamp(0.0, 1.0) as f32;
+                        let probe_y = y + 1.0 + (h - 2.0) * (1.0 - t);
+                        lowest = lowest.max(probe_y);
+                        highest = highest.min(probe_y);
+                    }
                 }
             }
             let below = lowest + r + APEX_LABEL_GAP;

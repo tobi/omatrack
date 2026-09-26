@@ -279,10 +279,10 @@ fn event_marks(analysis: &Analysis) -> Vec<EventMark> {
         .collect()
 }
 
-/// The short label drawn beside a primary event's tick: a note's corner
-/// (`T5`), a brake point's offset from the reference's (`+12 m`, later
-/// along the track), a shift's new gear (`↓3`). Lifts and the reference's
-/// ticks carry none.
+/// The short label drawn beside a primary event's tick: a brake point's
+/// offset from the reference's (`+12 m`, later along the track), a
+/// shift's new gear (`↓3`). Notes, lifts and the reference's ticks carry
+/// none.
 fn event_tag(
     event: &omatrack_core::events::LapEvent,
     kind: EventMarkKind,
@@ -292,13 +292,9 @@ fn event_tag(
         return None;
     }
     match kind {
-        EventMarkKind::Note => {
-            let (name, _) = event.label.split_once(':')?;
-            Some(
-                omatrack_trace::corner_ruler::short_label(name)
-                    .unwrap_or_else(|| SharedString::from(name.to_string())),
-            )
-        }
+        // A note's tick sits in its corner's column under the ruler label;
+        // the note itself is read in the Time lost card.
+        EventMarkKind::Note => None,
         EventMarkKind::BrakeOnset => {
             let offset = event.brake_offset?;
             let (text, _) =
