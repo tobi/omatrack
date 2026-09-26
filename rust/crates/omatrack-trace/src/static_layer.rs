@@ -320,7 +320,7 @@ impl Element for StaticLayerElement {
                     // Zero line where the range crosses zero: solid for Δ
                     // (it is the lane's reference: "level with the
                     // reference lap"), dashed for other channels.
-                    let range = root.y_range;
+                    let range = root.range_in(self.viewport);
                     if range.min < 0.0 && range.max > 0.0 {
                         let zy = (y + 1.0 + (h - 2.0) * (range.max / range.span()) as f32).round();
                         if root.kind == LaneKind::Delta {
@@ -344,11 +344,17 @@ impl Element for StaticLayerElement {
                         let (primary, reference) =
                             palette.channel_colors(&series.key, position == 0, &style);
                         let delta = series.kind == LaneKind::Delta;
+                        // An approximate Δ is not a gain/loss verdict.
+                        let (loss, gain) = if self.scene.approximate_delta {
+                            (palette.label, palette.label)
+                        } else {
+                            (palette.loss, palette.gain)
+                        };
                         let colors = ChannelColors {
                             primary: if delta { palette.delta_line } else { primary },
                             reference,
-                            fill_above: if delta { palette.loss } else { primary },
-                            fill_below: if delta { palette.gain } else { primary },
+                            fill_above: if delta { loss } else { primary },
+                            fill_below: if delta { gain } else { primary },
                             fill_alpha: style.fill_for(series.kind, &series.key),
                             neighbour: palette.background.blend(primary.opacity(0.5)),
                         };

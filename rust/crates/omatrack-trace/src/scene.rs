@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use gpui_kit::{Hsla, SharedString};
 
 use crate::layout::{LaneSizing, default_height_percent, lane_height_boost};
-use crate::scale::value_at_fraction;
+use crate::scale::{Viewport, value_at_fraction};
 
 /// Primary lap fraction → reference lap fraction.
 pub trait FractionMap: Send + Sync {
@@ -101,6 +101,23 @@ impl YRange {
         let padding = (max - min) * 0.06;
         Self::new(min - padding, max + padding)
     }
+}
+
+/// The smallest Δ span a lane zooms to (s), so a flat stretch does not
+/// magnify noise, and the padding around the visible Δ values.
+const DELTA_MINIMUM_SPAN: f64 = 0.02;
+const DELTA_WINDOW_PADDING: f64 = 0.08;
+
+/// First and last sample index of a uniform lap-fraction grid of `len`
+/// samples that `viewport` shows (one sample of margin each side).
+fn visible_indices(len: usize, viewport: Viewport) -> Option<(usize, usize)> {
+    let last = (len - 1) as f64;
+    let start = (viewport.start.clamp(0.0, 1.0) * last).floor();
+    let end = (viewport.end.clamp(0.0, 1.0) * last).ceil();
+    if !(start.is_finite() && end.is_finite()) || end < start {
+        return None;
+    }
+    Some((start as usize, (end as usize).min(len - 1)))
 }
 
 /// Default peak fill opacities (the fill fades to nothing at the baseline).
@@ -192,6 +209,59 @@ impl LaneSeries {
     /// See [`display_scale`].
     pub fn display_scale(&self) -> f64 {
         display_scale(&self.unit, self.y_range.max)
+    }
+
+    /// The range the lane draws in `viewport`. A Δ lane re-ranges to the
+    /// samples in view (zero included while it is near them), so its slope
+    /// inside a zoomed corner stays readable; every other lane keeps its
+    /// whole-lap range.
+    /// One pass over the visible samples, no allocation.
+    pub fn range_in(&self, viewport: Viewport) -> YRange {
+        if self.kind != LaneKind::Delta || self.primary.len() < 2 {
+            return self.y_range;
+        }
+        let Some((first, last)) = visible_indices(self.primary.len(), viewport) else {
+            return self.y_range;
+        };
+        let (mut min, mut max) = (f64::INFINITY, f64::NEG_INFINITY);
+        for value in &self.primary[first..=last] {
+            if value.is_finite() {
+                min = min.min(*value);
+                max = max.max(*value);
+            }
+        }
+        if !(max >= min) {
+            return self.y_range;
+        }
+        // Zero (level with the reference) stays in view while it is near
+        // the visible values; far from them it would flatten the slope.
+        let distance = if min > 0.0 {
+            min
+        } else if max < 0.0 {
+            -max
+        } else {
+            0.0
+        };
+        if distance <= (max - min).max(DELTA_MINIMUM_SPAN) {
+            min = min.min(0.0);
+            max = max.max(0.0);
+        }
+        let span = (max - min).max(DELTA_MINIMUM_SPAN);
+        let padding = span * DELTA_WINDOW_PADDING;
+        if max - min < DELTA_MINIMUM_SPAN {
+            // Level in view: centre the minimum span on what is there.
+            let middle = 0.5 * (min + max);
+            return YRange::new(middle - 0.5 * span - padding, middle + 0.5 * span + padding);
+        }
+        YRange::new(min - padding, max + padding)
+    }
+
+    /// How much the lane's value changes across `viewport` (a Δ lane: the
+    /// time gained or lost in view); NaN when not measurable.
+    pub fn change_in(&self, viewport: Viewport) -> f64 {
+        let start = viewport.start.clamp(0.0, 1.0);
+        let end = viewport.end.clamp(0.0, 1.0);
+        value_at_fraction(&self.primary, end) - value_at_fraction(&self.primary, start)
     }
 
     /// Set the reference and re-derive an auto range over both laps.
@@ -342,6 +412,9 @@ pub struct TraceScene {
     /// Labels of the neighbouring laps shown past the lap edges ("L8").
     pub(crate) previous_label: Option<SharedString>,
     pub(crate) next_label: Option<SharedString>,
+    /// The Δ lane is an estimate (LOW alignment confidence): readouts are
+    /// marked `≈` and the fill carries no gain/loss colour.
+    pub(crate) approximate_delta: bool,
 }
 
 impl TraceScene {
@@ -379,6 +452,17 @@ impl TraceScene {
         self.next_label = next;
         self.generation = next_generation();
         self
+    }
+
+    /// Mark the Δ lane as approximate (LOW alignment confidence).
+    pub fn with_approximate_delta(mut self, approximate: bool) -> Self {
+        self.approximate_delta = approximate;
+        self.generation = next_generation();
+        self
+    }
+
+    pub fn approximate_delta(&self) -> bool {
+        self.approximate_delta
     }
 
     /// Identity of this scene's contents: unique per construction and
@@ -562,6 +646,34 @@ impl LaneStyles {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_delta_lane_ranges_to_the_view_with_zero_in_it() {
+        // A ramp from 0 to +2 s over the lap.
+        let ramp: Arc<[f64]> = (0..=100).map(|i| i as f64 * 0.02).collect();
+        let lane = LaneSeries::new("delta", "Δt", LaneKind::Delta, ramp);
+        let whole = lane.range_in(Viewport::FULL);
+        assert!(whole.min <= 0.0 && whole.max >= 2.0, "{whole:?}");
+        // The last tenth: +1.8 .. +2.0 s fills the lane; zero is far away.
+        let tail = Viewport {
+            start: 0.9,
+            end: 1.0,
+        };
+        let range = lane.range_in(tail);
+        assert!(range.min > 1.7 && range.min <= 1.8, "{range:?}");
+        assert!(range.max >= 2.0 && range.max < 2.1, "{range:?}");
+        // Near the start zero is in view.
+        let head = lane.range_in(Viewport {
+            start: 0.05,
+            end: 0.1,
+        });
+        assert!(head.min <= 0.0 && head.max >= 0.2, "{head:?}");
+        assert!((lane.change_in(tail) - 0.2).abs() < 1e-9);
+        // Other lanes keep their whole-lap range.
+        let speed: Arc<[f64]> = (0..=100).map(|i| i as f64).collect();
+        let speed = LaneSeries::new("speed", "Speed", LaneKind::Line, speed);
+        assert_eq!(speed.range_in(tail), speed.y_range);
+    }
 
     struct Shift(f64);
     impl FractionMap for Shift {

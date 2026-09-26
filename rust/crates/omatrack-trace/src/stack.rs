@@ -645,6 +645,7 @@ impl TraceStack {
         let muted = theme.muted_foreground;
         let foreground = theme.foreground;
         let border = theme.border;
+        let viewport = self.viewport.read(cx).viewport();
         let cells = self
             .layout
             .slots
@@ -699,11 +700,19 @@ impl TraceStack {
                             .child(div().text_color(color).truncate().child(lane.title.clone()))
                     })
                     .collect();
-                // Δ states its symmetric scale: the lane's one number that
+                // Δ states the time gained or lost across the view (its
+                // range follows the view): the lane's one number that
                 // matters before a cursor exists.
+                let approximate = self.scene.approximate_delta;
                 let scale = (root.kind == LaneKind::Delta).then(|| {
-                    let bound = root.y_range.max.abs().max(root.y_range.min.abs());
-                    SharedString::from(format!("±{}", compact_number(bound)))
+                    let change = root.change_in(viewport);
+                    SharedString::from(if !change.is_finite() {
+                        "in view —".to_string()
+                    } else if approximate {
+                        format!("in view ≈{}", signed_seconds(change, 2))
+                    } else {
+                        format!("in view {}", signed_seconds(change, 3))
+                    })
                 });
                 let rows: Vec<_> = readout_at
                     .map(|fraction| {
@@ -715,7 +724,7 @@ impl TraceStack {
                                 let style = self.styles.get(&lane.key);
                                 let (primary, reference) =
                                     palette.channel_colors(&lane.key, position == 0, &style);
-                                let text = ReadoutText::new(lane, &readout);
+                                let text = ReadoutText::new(lane, &readout, approximate);
                                 label.push_str(&format!(", {}", text.spoken(lane)));
                                 readout_row(
                                     lane, text, combined, primary, reference, palette, muted,
@@ -807,7 +816,7 @@ struct ReadoutText {
 }
 
 impl ReadoutText {
-    fn new(lane: &LaneSeries, readout: &Readout) -> Self {
+    fn new(lane: &LaneSeries, readout: &Readout, approximate: bool) -> Self {
         let scale = lane.display_scale();
         let span = lane.y_range.span() * scale;
         let decimals = if lane.kind == LaneKind::Step {
@@ -830,16 +839,24 @@ impl ReadoutText {
         };
         if lane.kind == LaneKind::Delta {
             let v = readout.primary;
+            let decimals = if approximate { 2 } else { 3 };
+            let text = if !v.is_finite() {
+                "—".to_string()
+            } else if approximate {
+                format!("≈{}", signed_seconds(v, decimals))
+            } else {
+                signed_seconds(v, decimals)
+            };
             return Self {
-                primary: if v.is_finite() {
-                    format!("{:+.3}", v).into()
-                } else {
-                    "—".into()
-                },
+                primary: text.into(),
                 reference: None,
                 delta: None,
-                // Positive Δt: the primary lap is slower (loss).
-                delta_color: v.is_finite().then_some(v <= 0.0),
+                // Positive Δt: the primary lap is slower (loss). Below the
+                // display resolution, or under LOW confidence, neither.
+                delta_color: (v.is_finite()
+                    && !approximate
+                    && v.abs() >= 0.5 * 10f64.powi(-(decimals as i32)))
+                .then_some(v < 0.0),
             };
         }
         let has_reference = lane.reference.is_some();
@@ -881,6 +898,7 @@ fn readout_row(
     let value_color = match text.delta_color {
         Some(true) => palette.gain,
         Some(false) => palette.loss,
+        None if lane.kind == LaneKind::Delta => muted,
         None => primary,
     };
     h_flex()
@@ -914,14 +932,13 @@ fn readout_row(
         })
 }
 
-/// A scale bound without trailing zeros (`0.5`, `2.5`, `10`).
-fn compact_number(value: f64) -> String {
-    let text = format!("{value:.3}");
-    let text = text.trim_end_matches('0').trim_end_matches('.');
-    if text.is_empty() || text == "-" {
-        "0".to_string()
+/// Signed seconds at `decimals`; a value that rounds to zero reads
+/// `±0.000` (neither gain nor loss).
+fn signed_seconds(value: f64, decimals: usize) -> String {
+    if value.abs() < 0.5 * 10f64.powi(-(decimals as i32)) {
+        format!("±{:.*}", decimals, 0.0)
     } else {
-        text.to_string()
+        format!("{value:+.*}", decimals)
     }
 }
 

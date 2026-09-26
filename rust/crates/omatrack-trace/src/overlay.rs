@@ -289,7 +289,7 @@ impl TraceOverlay {
                     continue;
                 };
                 let readout = series.readout(cursor, map);
-                let range = series.y_range;
+                let range = series.range_in(self.viewport);
                 let y_for = |value: f64| -> f32 {
                     let t = ((value - range.min) / range.span()).clamp(0.0, 1.0);
                     slot.y as f32 + 1.0 + (slot.height as f32 - 2.0) * (1.0 - t as f32)

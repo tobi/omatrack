@@ -32,7 +32,7 @@ use gpui_kit::{
 use crate::decimate::{DecimateParams, PathPoint, PlotRect, decimate};
 use crate::mesh::{TriangleSink, fill_to_baseline, stroke};
 use crate::scale::Viewport;
-use crate::scene::{FractionMap, LaneKind, LaneSeries, LaneStyle, TraceScene};
+use crate::scene::{FractionMap, LaneKind, LaneSeries, LaneStyle, TraceScene, YRange};
 
 /// Vertices per path chunk (1024 triangles, 96 KiB). `Window::paint_path`
 /// copies a path twice (device scale, scene insert); chunks below the
@@ -182,6 +182,8 @@ pub struct BuildInput<'a> {
     series: &'a LaneSeries,
     map: Option<&'a dyn FractionMap>,
     viewport: Viewport,
+    /// The series' range in this viewport ([`LaneSeries::range_in`]).
+    y_range: YRange,
     /// Lane size in logical pixels.
     width: f32,
     height: f32,
@@ -210,6 +212,7 @@ impl<'a> BuildInput<'a> {
             series,
             map: scene.map(),
             viewport,
+            y_range: series.range_in(viewport),
             width,
             height,
             dpr: 1.0,
@@ -240,8 +243,8 @@ impl<'a> BuildInput<'a> {
         self.generation.hash(&mut hasher);
         self.series.key.hash(&mut hasher);
         self.series.kind.hash(&mut hasher);
-        self.series.y_range.min.to_bits().hash(&mut hasher);
-        self.series.y_range.max.to_bits().hash(&mut hasher);
+        self.y_range.min.to_bits().hash(&mut hasher);
+        self.y_range.max.to_bits().hash(&mut hasher);
         self.viewport.start.to_bits().hash(&mut hasher);
         self.viewport.end.to_bits().hash(&mut hasher);
         self.width.to_bits().hash(&mut hasher);
@@ -265,7 +268,7 @@ impl<'a> BuildInput<'a> {
 
     fn baseline(&self) -> f64 {
         let rect = self.rect();
-        let range = self.series.y_range;
+        let range = self.y_range;
         (rect.bottom() + range.min / range.span() * rect.height).clamp(rect.top, rect.bottom())
     }
 }
@@ -363,8 +366,8 @@ impl ChannelGeometry {
             x_start: input.viewport.start,
             x_span: input.viewport.span(),
             rect,
-            y_min: series.y_range.min,
-            y_span: series.y_range.span(),
+            y_min: input.y_range.min,
+            y_span: input.y_range.span(),
             dpr,
             clip_low: 0.0,
             clip_high: 1.0,
