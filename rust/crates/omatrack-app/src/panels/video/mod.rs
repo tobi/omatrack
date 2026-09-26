@@ -7,12 +7,14 @@
 //! the seam between two videos) and the countdown ([`overlay`]), and the
 //! display-frame pull that drives the cursor while the primary plays.
 //!
-//! The transport bar reads left to right: play/pause and mute (icon buttons,
-//! shortcut in the tooltip), the clock rate (`1×` / `0.25×`) and lap-end
-//! behaviour (`Per lap` / `Continuous`) as segmented controls, the
-//! composition menu (layouts 1-5 plus reference pacing), then status chips:
-//! the reference sync state (with what it means in its tooltip), identity
-//! checks and a missing reference video.
+//! Docked, the panel has no dock title bar; the pictures lead and one
+//! control row sits under them, serving the video and the traces below it
+//! (see [`VideoPanel::render_bar`]): round play/pause, the `0.25×` toggle,
+//! `Per lap | Continuous`, `Distance | Time`, then where the cursor is
+//! (`Cursor at 368 m, Turn 1`), chips that need attention (a degraded
+//! reference sync, identity checks, a missing reference video), and small
+//! icon buttons: mute, composition (layouts 1-5 plus reference pacing),
+//! fullscreen and the traces' tools menu.
 //!
 //! `F` (or the bar's fullscreen button) puts this panel on the fullscreen
 //! stage: the workspace renders it alone over the whole window (no title
@@ -36,7 +38,7 @@ use std::time::{Duration, Instant};
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
     StyledExt as _, Theme, WindowExt as _,
-    button::{Button, ButtonGroup, ButtonVariants as _},
+    button::{Button, ButtonCustomVariant, ButtonGroup, ButtonRounded, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent, TabGroup},
     h_flex,
     menu::DropdownMenu as _,
@@ -59,14 +61,16 @@ use omatrack_ui::LapRole;
 
 use crate::actions::{
     ComposeLayout1, ComposeLayout2, ComposeLayout3, ComposeLayout4, ComposeLayout5, ExitFullscreen,
-    Role, SeekBack, SeekForward, ToggleContinuous, ToggleMute, TogglePlay, ToggleSlowMotion,
-    ToggleVideoFullscreen,
+    ResizeLanes, Role, SeekBack, SeekForward, ToggleContinuous, ToggleCornerEdit, ToggleFit,
+    ToggleMute, TogglePlay, ToggleSlowMotion, ToggleVideoFullscreen, ToggleXAxis, ZoomIn, ZoomOut,
+    ZoomReset,
 };
 use crate::commands::{self, CommandCategory, CommandSpec};
 use crate::keymap::WORKSPACE_CONTEXT;
 use crate::panels::{PanelKind, empty_state, panel_body};
 use crate::state::{AppState, ComposeLayout, RoleState, VideoAvailability, VideoEvent};
 use crate::workspace::Filmstrip;
+use omatrack_trace::XAxis;
 
 use clock::LapClock;
 use icons::VideoIcons;
@@ -542,6 +546,8 @@ impl VideoPanel {
     /// Lap-end behaviour: pause and count in, or play through.
     fn render_mode(&self, cx: &mut Context<Self>) -> ButtonGroup {
         let continuous = self.app.video.read(cx).is_continuous(cx);
+        // Selection is neutral, like `Distance | Time`: colour is for lap
+        // roles and Δ.
         ButtonGroup::new("video-playback-mode")
             .xsmall()
             .outline()
@@ -549,7 +555,6 @@ impl VideoPanel {
                 Button::new("video-per-lap")
                     .label("Per lap")
                     .selected(!continuous)
-                    .when(!continuous, |button| button.primary())
                     .tooltip_with_action(
                         "At the lap end, pause and count into the next lap",
                         &ToggleContinuous,
@@ -560,7 +565,6 @@ impl VideoPanel {
                 Button::new("video-continuous")
                     .label("Continuous")
                     .selected(continuous)
-                    .when(continuous, |button| button.primary())
                     .tooltip_with_action(
                         "Play through lap ends into the next lap",
                         &ToggleContinuous,
@@ -612,14 +616,36 @@ impl VideoPanel {
         }
     }
 
-    fn render_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The control row under the pictures, left to right: the round
+    /// play/pause, the `0.25×` toggle, `Per lap | Continuous`, the traces'
+    /// `Distance | Time` axis, then where the cursor is, the chips that need
+    /// attention (a degraded sync, identity checks, a missing reference
+    /// video) and small icon buttons: mute, composition, fullscreen and the
+    /// traces' overflow menu (fit, lane sizing, corner editing, zoom). One
+    /// row serves the video and the traces, so the centre carries no
+    /// toolbars of its own. Every control dispatches the action of its key
+    /// and names that key in its tooltip.
+    fn render_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dual = self.app.video.read(cx).is_dual();
         let layout = self.app.video.read(cx).layout().effective(dual);
         let play = self.render_play(cx);
+        let slow = self.render_slow_toggle(cx);
+        let mode = self.render_mode(cx).small();
+        let axis = self.render_axis(cx);
         let mute = self.render_mute(cx);
-        let rate = self.render_rate(cx);
-        let mode = self.render_mode(cx);
+        let traces = self.render_traces_menu(cx);
         let theme = cx.theme();
+        // The row's one strong control: a filled disc in the foreground.
+        let play = play
+            .small()
+            .rounded(ButtonRounded::Size(window.rem_size() * 0.75))
+            .custom(
+                ButtonCustomVariant::new(cx)
+                    .color(theme.foreground)
+                    .foreground(theme.background)
+                    .hover(theme.foreground.opacity(0.85))
+                    .active(theme.foreground.opacity(0.7)),
+            );
 
         let layout_icon: Icon = match layout {
             ComposeLayout::Split => self.icons.split.clone(),
@@ -630,23 +656,17 @@ impl VideoPanel {
         };
         let focus = self.focus_handle.clone();
         let controller = self.app.video.clone();
+        let compose_label = SharedString::from(format!("Video layout: {}", layout.label()));
         let compose = Button::new("video-layout")
             .ghost()
-            .xsmall()
+            .small()
             .icon(layout_icon)
-            .label(layout_short_label(layout))
-            .dropdown_caret(true)
-            .accessibility_label(SharedString::from(format!(
-                "Video layout: {}",
-                layout.label()
-            )))
+            .accessibility_label(compose_label.clone())
             .disabled(!dual)
             .when(!dual, |this| {
                 this.tooltip("Layouts need a reference video; the primary is shown alone")
             })
-            .when(dual, |this| {
-                this.tooltip("Video layout and reference pacing")
-            })
+            .when(dual, |this| this.tooltip(compose_label))
             .dropdown_menu(move |menu, _, cx| {
                 let (current, pacing) = {
                     let video = controller.read(cx);
@@ -679,41 +699,141 @@ impl VideoPanel {
                     )
             });
 
-        let divider = || Separator::vertical().h_4().mx_0p5();
         h_flex()
             .id("video-bar")
+            .role(AccessRole::Toolbar)
+            .aria_label("Playback and traces")
+            .test_support()
             .w_full()
             .flex_shrink_0()
             .items_center()
-            .gap_1()
-            .px_1p5()
-            .py_1()
-            .border_b_1()
-            .border_color(theme.border)
+            .gap_2()
+            .px_2()
+            .py_1p5()
             .overflow_hidden()
-            .text_xs()
-            .child(play)
-            .child(mute)
-            .child(divider())
-            .child(rate)
-            .child(mode)
-            .child(divider())
-            .child(compose)
-            .child(div().flex_1().min_w_2())
-            // The Δ readout rides in the bar, never over the pictures'
-            // burned-in timers and dashboards.
-            .child(self.overlay.clone())
+            .text_label()
+            .child(div().flex_shrink_0().child(play))
+            .child(div().flex_shrink_0().child(slow))
+            .child(div().flex_shrink_0().child(mode))
+            .child(div().flex_shrink_0().child(axis))
+            // Where the cursor is: right-aligned, and the first thing to
+            // give way on a narrow window.
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .justify_end()
+                    .overflow_hidden()
+                    .child(self.overlay.clone()),
+            )
             .child(self.render_status(cx))
-            .child(divider())
-            .child(self.render_fullscreen_button())
+            .child(
+                h_flex()
+                    .flex_shrink_0()
+                    .gap_0p5()
+                    .child(mute)
+                    .child(compose)
+                    .child(self.render_fullscreen_button().small())
+                    .child(traces),
+            )
     }
 
-    /// The right end of the bar: sync, identity and availability chips.
+    /// Quarter speed on or off (the docked row's one rate control; the
+    /// fullscreen stage keeps `1× | 0.25×`).
+    fn render_slow_toggle(&self, cx: &mut Context<Self>) -> Button {
+        let slow = self.app.video.read(cx).is_slow_motion();
+        Button::new("video-slow-motion")
+            .outline()
+            .small()
+            .label("0.25×")
+            .selected(slow)
+            .toggled(slow)
+            .accessibility_label("Slow motion, quarter speed")
+            .tooltip_with_action(
+                "Slow motion, quarter speed",
+                &ToggleSlowMotion,
+                Some(WORKSPACE_CONTEXT),
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.app
+                    .video
+                    .update(cx, |video, cx| video.toggle_slow_motion(cx));
+            }))
+    }
+
+    /// The traces' x-axis (`t`): distance or time.
+    fn render_axis(&self, cx: &mut Context<Self>) -> ButtonGroup {
+        let axis = self.app.viewport.read(cx).axis();
+        let has_data = self.app.session.read(cx).analysis().is_some();
+        let keys = self.focus_handle.clone();
+        ButtonGroup::new("trace-axis")
+            .small()
+            .outline()
+            .disabled(!has_data)
+            .child(
+                Button::new("trace-axis-distance")
+                    .label("Distance")
+                    .selected(axis == XAxis::Distance)
+                    .tooltip_with_action(
+                        "Traces by distance",
+                        &ToggleXAxis,
+                        Some(WORKSPACE_CONTEXT),
+                    ),
+            )
+            .child(
+                Button::new("trace-axis-time")
+                    .label("Time")
+                    .selected(axis == XAxis::Time)
+                    .tooltip_with_action("Traces by time", &ToggleXAxis, Some(WORKSPACE_CONTEXT)),
+            )
+            .on_click(move |clicked: &Vec<usize>, window, cx| {
+                let wanted = if clicked.contains(&0) {
+                    XAxis::Distance
+                } else {
+                    XAxis::Time
+                };
+                if wanted != axis {
+                    keys.dispatch_action(&ToggleXAxis, window, cx);
+                }
+            })
+    }
+
+    /// The traces' less frequent tools, behind one icon: fit, lane sizing,
+    /// corner editing and zoom (each also on its key and in the palette).
+    fn render_traces_menu(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let has_data = self.app.session.read(cx).analysis().is_some();
+        let focus = self.focus_handle.clone();
+        let preferences = self.app.preferences.clone();
+        Button::new("trace-tools")
+            .ghost()
+            .small()
+            .icon(IconName::Ellipsis)
+            .accessibility_label("Trace tools")
+            .tooltip("Trace tools")
+            .disabled(!has_data)
+            .dropdown_menu(move |menu, _, cx| {
+                let fit = preferences.read(cx).config().trace.is_fitting_channels();
+                menu.action_context(focus.clone())
+                    .menu_with_check("Fit lanes to the height", fit, Box::new(ToggleFit))
+                    .menu("Resize lanes…", Box::new(ResizeLanes))
+                    .menu("Edit corners…", Box::new(ToggleCornerEdit))
+                    .separator()
+                    .menu("Zoom in", Box::new(ZoomIn))
+                    .menu("Zoom out", Box::new(ZoomOut))
+                    .menu("Whole lap", Box::new(ZoomReset))
+            })
+    }
+
+    /// The chips that need attention: a degraded reference sync (a healthy
+    /// one is silent; the title bar states the alignment), identity checks
+    /// and a missing reference video.
     fn render_status(&self, cx: &App) -> impl IntoElement {
         let video = self.app.video.read(cx);
         let session = self.app.session.read(cx);
         let dual = video.is_dual();
-        let sync = dual.then(|| (video.sync_state(), video.reference_playback(cx)));
+        let sync = dual
+            .then(|| (video.sync_state(), video.reference_playback(cx)))
+            .filter(|(state, _)| matches!(state, SyncState::NoMap | SyncState::Best));
         let warnings: Vec<(Role, SharedString)> = [Role::Primary, Role::Reference]
             .into_iter()
             .filter_map(|role| video.identity(role).warning().map(|w| (role, w.clone())))
@@ -756,7 +876,6 @@ impl VideoPanel {
                     sync_description(state),
                     pacing_label(pacing)
                 ));
-                let degraded = matches!(state, SyncState::NoMap | SyncState::Best);
                 this.child(
                     div()
                         .id("video-sync-state")
@@ -764,15 +883,7 @@ impl VideoPanel {
                         .aria_label(label.clone())
                         .test_support()
                         .tooltip(move |window, cx| Tooltip::new(explain.clone()).build(window, cx))
-                        .child(
-                            if degraded {
-                                Tag::warning()
-                            } else {
-                                Tag::secondary()
-                            }
-                            .small()
-                            .child(label),
-                        ),
+                        .child(Tag::warning().small().child(label)),
                 )
             })
             .when_some(reference_missing, |this, (text, explain, failed)| {
@@ -1438,6 +1549,10 @@ impl Panel for VideoPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         PanelKind::Video.title()
     }
+
+    fn title_bar(&self, _: &App) -> bool {
+        PanelKind::Video.has_title_bar()
+    }
 }
 
 impl EventEmitter<PanelEvent> for VideoPanel {}
@@ -1467,8 +1582,8 @@ impl Render for VideoPanel {
             .test_support()
             .track_focus(&self.focus_handle)
             .size_full()
-            .child(self.render_bar(cx))
             .child(div().flex_1().min_h_0().child(content))
+            .child(self.render_bar(window, cx))
             .into_any_element()
     }
 }

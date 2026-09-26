@@ -54,9 +54,9 @@ pub const FILL_OPACITY: (f64, f64) = (0.0, 1.0);
 /// Lane height range, percent of the workspace (1–100).
 pub const HEIGHT_PERCENT: (f64, f64) = (1.0, 100.0);
 
-/// The Δt lane's key and title (a lane, styled like a channel).
+/// The gap lane's key and title (a lane, styled like a channel).
 const DELTA_KEY: &str = "delta";
-const DELTA_TITLE: &str = "Δt";
+const DELTA_TITLE: &str = super::traces::DELTA_TITLE;
 
 /// Show or hide one channel's lane (palette: `Show channel Speed`).
 #[derive(Debug, Clone, PartialEq, gpui_kit::Action)]
@@ -183,7 +183,7 @@ fn toggle_title(config: &Config, entry: &ChannelEntry) -> String {
     }
 }
 
-/// The channels listed before any lap loads: the Δt lane and every standard
+/// The channels listed before any lap loads: the gap lane and every standard
 /// channel.
 fn default_entries() -> Vec<ChannelEntry> {
     std::iter::once(ChannelEntry::new(DELTA_KEY, DELTA_TITLE, "s"))

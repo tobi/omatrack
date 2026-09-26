@@ -1,15 +1,18 @@
 //! Traces: the synchronized channel lanes of the primary and reference laps.
 //!
-//! Top to bottom: a toolbar (x-axis, FIT, corner editing, lane resizing,
-//! zoom, and the range statistics of a selection), the corner ruler with
-//! complex brackets, the damper
-//! strip while manual damper alignment is in effect, then the
-//! [`TraceStack`] (pinned Δ lane, scrollable channel lanes, shared x-axis).
+//! Top to bottom, with no title bar or toolbar of its own: the corner ruler
+//! (two staggered label rows, the cursor's corner as a chip, complex
+//! brackets), the damper strip while manual damper alignment is in effect,
+//! then the [`TraceStack`] (pinned gap lane, scrollable channel lanes,
+//! shared x-axis). The range statistics of a selection float at the top
+//! right of the lanes. The axis, FIT, lane sizing, corner editing and zoom
+//! controls live in the control row under the video, on their keys and in
+//! the palette.
 //!
 //! State ownership:
 //! - the application owns the analysis (`Session`), the viewport and the
 //!   cursor (`AppState`); corner focus, zoom, axis and FIT are workspace
-//!   actions, so every entry point (keys, toolbar, palette, clicks) runs the
+//!   actions, so every entry point (keys, control row, palette, clicks) runs the
 //!   same handler in `workspace/mod.rs`;
 //! - this panel owns the scene built from the analysis (on the background
 //!   executor, latest request wins), the lane styles from `channels.<key>`,
@@ -47,7 +50,7 @@ use gpui_kit::{
 use omatrack_core::alignment::Strategy;
 use omatrack_trace::{
     CornerBand, CornerRuler, CornerRulerEvent, DamperStrip, DamperStripData, DamperStripEvent,
-    Selection, TraceEvent, TraceScene, TraceStack, XAxis,
+    Selection, TraceEvent, TraceScene, TraceStack,
 };
 
 use crate::actions::{CancelEdit, FocusCorner, ResizeLanes, SaveEdit};
@@ -57,7 +60,7 @@ use crate::panels::{PanelKind, analysis_body, simple_panel};
 use crate::state::{AppState, SessionEvent};
 
 pub use edit::{CornerDraft, ResizeDraft};
-pub use scene_build::DELTA_KEY;
+pub use scene_build::{DELTA_KEY, DELTA_TITLE};
 pub use stats::RangeStats;
 
 use scene_build::{BuiltScene, CornerLink};
@@ -123,7 +126,6 @@ pub struct TracesPanel {
     corners: Option<CornerDraft>,
     range: Option<RangeStats>,
     focused_band: Option<u32>,
-    axis: XAxis,
     /// Lane palette commands as registered (key, visible), to register again
     /// only on a change.
     lane_commands: Vec<(SharedString, bool)>,
@@ -146,13 +148,6 @@ impl TracesPanel {
             cx.observe(&app.session, |_, _, cx| cx.notify()),
             cx.observe(&app.preferences, |this, _, cx| this.restyle(cx)),
             cx.observe(&app.cursor, |this, _, cx| this.on_cursor(cx)),
-            cx.observe(&app.viewport, |this, viewport, cx| {
-                let axis = viewport.read(cx).axis();
-                if axis != this.axis {
-                    this.axis = axis;
-                    cx.notify();
-                }
-            }),
             cx.subscribe(&damper, |this, _, event, cx| {
                 if let DamperStripEvent::OffsetChanged { fraction, .. } = event {
                     let fraction = *fraction;
@@ -162,7 +157,6 @@ impl TracesPanel {
                 }
             }),
         ];
-        let axis = app.viewport.read(cx).axis();
         let mut panel = Self {
             app,
             focus_handle: cx.focus_handle().tab_stop(true),
@@ -180,7 +174,6 @@ impl TracesPanel {
             corners: None,
             range: None,
             focused_band: None,
-            axis,
             lane_commands: Vec::new(),
             menu: None,
             _subscriptions: subscriptions,
@@ -396,7 +389,15 @@ impl TracesPanel {
     fn on_cursor(&mut self, cx: &mut Context<Self>) {
         let cursor = self.app.cursor.read(cx);
         let (selection, focus) = (cursor.selection(), cursor.focus());
+        let under_cursor = cursor
+            .fraction()
+            .and_then(|fraction| corner_at(self.scene.corners(), fraction));
         let mut changed = false;
+
+        // The ruler's chip follows the cursor; it repaints only when the
+        // corner under the cursor changes.
+        self.ruler
+            .update(cx, |ruler, cx| ruler.set_cursor_corner(under_cursor, cx));
 
         let band = focus.and_then(|focus| band_for(self.scene.corners(), focus));
         if band != self.focused_band {
@@ -799,7 +800,8 @@ impl TracesPanel {
                     .flex_1()
                     .min_h_0()
                     .children(stack)
-                    .children(self.render_notes(cx)),
+                    .children(self.render_notes(cx))
+                    .children(self.render_range_stats(cx)),
             )
             .into_any_element()
     }
@@ -813,6 +815,14 @@ fn band_for(corners: &[CornerBand], focus: Selection) -> Option<u32> {
         .find(|corner| {
             (corner.start - focus.start).abs() < EPSILON && (corner.end - focus.end).abs() < EPSILON
         })
+        .map(|corner| corner.id)
+}
+
+/// The corner whose zone holds `fraction`.
+fn corner_at(corners: &[CornerBand], fraction: f64) -> Option<u32> {
+    corners
+        .iter()
+        .find(|corner| (corner.start..=corner.end).contains(&fraction))
         .map(|corner| corner.id)
 }
 
@@ -861,7 +871,6 @@ impl Render for TracesPanel {
             })
             .size_full()
             .bg(cx.theme().background)
-            .child(self.render_toolbar(cx))
             .when(editing, |this| this.child(self.render_mode_bar(cx)))
             .child(div().flex_1().min_h_0().child(self.render_body(cx)))
             .children(menu)

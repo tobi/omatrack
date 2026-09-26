@@ -25,18 +25,24 @@ use omatrack_trace::{
     ComplexBand, CornerBand, FractionMap, LaneKind, LaneSeries, LaneStyle, LaneStyles, TraceScene,
 };
 
-/// Key of the cumulative Δt lane.
+/// Key of the cumulative gap lane (the time delta to the reference).
 pub const DELTA_KEY: &str = "delta";
 
-/// Height share of the Δ lane under a lap-time-share alignment, percent.
-const TIME_SHARE_DELTA_PERCENT: f64 = 12.0;
+/// Title of the gap lane: the primary's cumulative time delta to the
+/// reference, in seconds.
+pub const DELTA_TITLE: &str = "Gap to R";
+
+/// Height share of the gap lane under a lap-time-share alignment, percent:
+/// slimmer than a verified map's, still tall enough for its legend.
+const TIME_SHARE_DELTA_PERCENT: f64 = 16.0;
 
 /// Lanes that lead the stack, in this order, when the lap has them.
 const LEADING: &[&str] = &["speed", "throttle", "brake", "gear", "steering"];
 
-/// Channels shown on a fresh install (besides Δ and RPM). The rest of a
-/// provider's channels are opt in through `channels.<key>.visible`.
-const DEFAULT_VISIBLE: &[&str] = &["speed", "throttle", "brake", "gear", "steering"];
+/// Channels shown on a fresh install (besides the gap lane): speed, the two
+/// pedals and gear. Steering, RPM and the rest of a provider's channels are
+/// opt in through `channels.<key>.visible` (the Channels panel).
+const DEFAULT_VISIBLE: &[&str] = &["speed", "throttle", "brake", "gear"];
 
 /// Never a lane: the x-axis itself, and raw GPS coordinates.
 const NOT_A_LANE: &[&str] = &["distance", "gps_lat", "gps_lon"];
@@ -98,7 +104,7 @@ pub fn build(analysis: Arc<Analysis>, neighbours: Option<Arc<Neighbours>>) -> Bu
     let mut lanes = Vec::new();
     if reference.is_some() && !analysis.delta().is_empty() {
         let delta: Arc<[f64]> = Arc::from(analysis.delta());
-        lanes.push(LaneSeries::new(DELTA_KEY, "Δt", LaneKind::Delta, delta).with_unit("s"));
+        lanes.push(LaneSeries::new(DELTA_KEY, DELTA_TITLE, LaneKind::Delta, delta).with_unit("s"));
     }
     for channel in ordered_channels(primary.overlays()) {
         let kind = if channel.key == "gear" {
@@ -259,8 +265,8 @@ fn unify_neighbours(primary: &LoadedLap) -> Neighbours {
 
 /// Lane appearance and sizing of one channel, from `channels.<key>`.
 ///
-/// Visibility: an explicit `channels.<key>.visible` wins. Otherwise Δ,
-/// the leading channels and RPM show, everything else is opt in. Δ also
+/// Visibility: an explicit `channels.<key>.visible` wins. Otherwise the gap
+/// lane, speed, throttle, brake and gear show, everything else is opt in. Δ also
 /// defaults to a pinned lane. Heights and fills come from the library's
 /// channel defaults (the same numbers the Channels panel shows).
 pub fn lane_style(config: &Config, key: &str, pinned: Option<bool>) -> LaneStyle {
@@ -268,7 +274,7 @@ pub fn lane_style(config: &Config, key: &str, pinned: Option<bool>) -> LaneStyle
     let configured = config.channels.get(key);
     let visible = configured
         .and_then(|channel| channel.visible)
-        .unwrap_or_else(|| key == DELTA_KEY || DEFAULT_VISIBLE.contains(&key) || is_rpm(key));
+        .unwrap_or_else(|| key == DELTA_KEY || DEFAULT_VISIBLE.contains(&key));
     let pinned = pinned.unwrap_or(key == DELTA_KEY);
     let sizing = LaneSizing::default()
         .visible(visible)
@@ -397,10 +403,12 @@ mod tests {
         assert!(!lane_style(&config, "gear", None).sizing.visible);
         assert!(lane_style(&config, "damper_fl", None).sizing.visible);
         assert!(!lane_style(&config, "damper_rr", None).sizing.visible);
-        assert!(lane_style(&config, "raw:Engine RPM", None).sizing.visible);
-        // Brake overlays throttle by default.
+        // Steering and RPM are opt in; brake has its own lane.
+        assert!(!lane_style(&config, "steering", None).sizing.visible);
+        assert!(!lane_style(&config, "raw:Engine RPM", None).sizing.visible);
+        assert!(lane_style(&config, "brake", None).sizing.visible);
         assert!(
-            lane_style(&config, "brake", None)
+            !lane_style(&config, "brake", None)
                 .sizing
                 .combine_with_previous
         );
@@ -411,7 +419,7 @@ mod tests {
         let config = Config::default();
         let delta = lane_style(&config, DELTA_KEY, None);
         assert!(delta.sizing.visible && delta.sizing.pinned);
-        // A first-class lane: as tall as steering, above the minimum share.
+        // A first-class lane, above the minimum share.
         assert_eq!(
             delta.sizing.height_percent,
             omatrack_trace::layout::default_height_percent(DELTA_KEY)

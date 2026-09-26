@@ -1,223 +1,69 @@
-//! The trace toolbar, the modal editors' bar, and the corner row above the
-//! lanes. (The laps are in the workspace filmstrip, above every panel.)
-//!
-//! The toolbar is kit button groups only (x-axis, lane sizing, corner
-//! editing, zoom), all the same size and variant. Every control dispatches
-//! the same workspace action as its key (from this panel's focus handle, so
-//! it runs outside the panel's own update), and shows that key in its
-//! tooltip.
+//! The chrome of the trace workspace that is not the stack: the statistics
+//! chip of a range selection, the modal editors' bar, and the corner row
+//! above the lanes. (The laps are in the workspace filmstrip, above every
+//! panel; the axis, fit, sizing, corner editing and zoom controls are in the
+//! control row under the video and on their keys.)
 
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, StyledExt as _,
-    button::{Button, ButtonGroup, ButtonVariants as _},
+    ActiveTheme as _, Disableable as _, IconName, Sizable as _, StyledExt as _,
+    button::{Button, ButtonVariants as _},
     h_flex,
-    separator::Separator,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Action, App, ClickEvent, Context, FocusHandle, InteractiveElement as _, IntoElement,
-    ParentElement as _, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
-    TestSupportExt as _, Window, div,
+    App, Context, InteractiveElement as _, IntoElement, ParentElement as _, Role, SharedString,
+    StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, div,
 };
 use omatrack_core::session::CornerSource;
-use omatrack_trace::XAxis;
 use omatrack_ui::TypeScale as _;
 
 use super::{TraceMode, TracesPanel};
-use crate::actions::{
-    CancelEdit, ResizeLanes, SaveEdit, ToggleCornerEdit, ToggleFit, ToggleXAxis, ZoomIn, ZoomOut,
-    ZoomReset,
-};
-use crate::keymap::{TRACE_EDIT_CONTEXT, WORKSPACE_CONTEXT};
-
-/// A click handler that dispatches `action` from `keys` (this panel).
-fn dispatch(
-    keys: &FocusHandle,
-    action: impl Action,
-) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
-    let keys = keys.clone();
-    move |_, window, cx| keys.dispatch_action(&action, window, cx)
-}
+use crate::actions::{CancelEdit, SaveEdit};
+use crate::keymap::TRACE_EDIT_CONTEXT;
 
 impl TracesPanel {
-    pub(super) fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The statistics of the range selection, floating at the top right of
+    /// the lanes while a range is selected, with its clear button.
+    pub(super) fn render_range_stats(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let summary = SharedString::from(self.range?.summary());
         let theme = cx.theme();
-        let has_data = !self.scene.is_empty();
-        let fit = self
-            .app
-            .preferences
-            .read(cx)
-            .config()
-            .trace
-            .is_fitting_channels();
-        let keys = &self.focus_handle;
-        let axis = self.axis;
-        let axis_keys = keys.clone();
-        let range = self.range.map(|range| SharedString::from(range.summary()));
-
-        h_flex()
-            .id("trace-toolbar")
-            .role(Role::Toolbar)
-            .aria_label("Trace tools")
-            .test_support()
-            .w_full()
-            .flex_shrink_0()
-            .gap_1()
-            .px_2()
-            .py_1()
-            .border_b_1()
-            .border_color(theme.border)
-            .child(
-                ButtonGroup::new("trace-axis")
-                    .xsmall()
-                    .outline()
-                    .disabled(!has_data)
-                    .child(
-                        Button::new("trace-axis-distance")
-                            .label("Distance")
-                            .selected(axis == XAxis::Distance)
-                            .when(axis == XAxis::Distance, |button| button.primary())
-                            .tooltip_with_action(
-                                "X-axis by distance",
-                                &ToggleXAxis,
-                                Some(WORKSPACE_CONTEXT),
-                            ),
-                    )
-                    .child(
-                        Button::new("trace-axis-time")
-                            .label("Time")
-                            .selected(axis == XAxis::Time)
-                            .when(axis == XAxis::Time, |button| button.primary())
-                            .tooltip_with_action(
-                                "X-axis by time",
-                                &ToggleXAxis,
-                                Some(WORKSPACE_CONTEXT),
-                            ),
-                    )
-                    .on_click(move |clicked, window, cx| {
-                        let wanted = if clicked.contains(&0) {
-                            XAxis::Distance
-                        } else {
-                            XAxis::Time
-                        };
-                        if wanted != axis {
-                            axis_keys.dispatch_action(&ToggleXAxis, window, cx);
-                        }
-                    }),
-            )
-            .child(
-                ButtonGroup::new("trace-lanes")
-                    .xsmall()
-                    .outline()
-                    .disabled(!has_data)
-                    .child(
-                        Button::new("trace-fit")
-                            .label("Fit")
-                            .selected(fit)
-                            .when(fit, |button| button.primary())
-                            .tooltip_with_action(
-                                "Fit every lane to the workspace height",
-                                &ToggleFit,
-                                Some(WORKSPACE_CONTEXT),
-                            )
-                            .on_click(dispatch(keys, ToggleFit)),
-                    )
-                    .child(
-                        Button::new("trace-resize")
-                            .label("Resize")
-                            .selected(self.mode == TraceMode::ResizingLanes)
-                            .when(self.mode == TraceMode::ResizingLanes, |button| {
-                                button.primary()
-                            })
-                            .tooltip_with_action(
-                                "Resize lanes",
-                                &ResizeLanes,
-                                Some(WORKSPACE_CONTEXT),
-                            )
-                            .on_click(dispatch(keys, ResizeLanes)),
-                    ),
-            )
-            .child(
-                ButtonGroup::new("trace-corners")
-                    .xsmall()
-                    .outline()
-                    .disabled(!has_data)
-                    .child(
-                        Button::new("trace-edit-corners")
-                            .label("Edit corners")
-                            .selected(self.mode == TraceMode::EditingCorners)
-                            .when(self.mode == TraceMode::EditingCorners, |button| {
-                                button.primary()
-                            })
-                            .tooltip_with_action(
-                                "Edit corner zones",
-                                &ToggleCornerEdit,
-                                Some(WORKSPACE_CONTEXT),
-                            )
-                            .on_click(dispatch(keys, ToggleCornerEdit)),
-                    ),
-            )
-            .child(Separator::vertical().h_4())
-            .child(
-                ButtonGroup::new("trace-zoom")
-                    .xsmall()
-                    .outline()
-                    .disabled(!has_data)
-                    .child(
-                        Button::new("trace-zoom-out")
-                            .icon(IconName::Minus)
-                            .accessibility_label("Zoom out")
-                            .tooltip_with_action("Zoom out", &ZoomOut, Some(WORKSPACE_CONTEXT))
-                            .on_click(dispatch(keys, ZoomOut)),
-                    )
-                    .child(
-                        Button::new("trace-zoom-reset")
-                            .icon(IconName::Maximize)
-                            .accessibility_label("Whole lap")
-                            .tooltip_with_action("Whole lap", &ZoomReset, Some(WORKSPACE_CONTEXT))
-                            .on_click(dispatch(keys, ZoomReset)),
-                    )
-                    .child(
-                        Button::new("trace-zoom-in")
-                            .icon(IconName::Plus)
-                            .accessibility_label("Zoom in")
-                            .tooltip_with_action("Zoom in", &ZoomIn, Some(WORKSPACE_CONTEXT))
-                            .on_click(dispatch(keys, ZoomIn)),
-                    ),
-            )
-            .child(div().flex_1().min_w_0())
-            .when_some(range, |el, summary| {
-                el.child(
-                    h_flex()
-                        .id("trace-range-stats")
-                        .role(Role::Status)
-                        .aria_label(SharedString::from(format!("Selection: {summary}")))
-                        .test_support()
+        Some(
+            h_flex()
+                .id("trace-range-stats")
+                .role(Role::Status)
+                .aria_label(SharedString::from(format!("Selection: {summary}")))
+                .test_support()
+                .absolute()
+                .top_1()
+                .right_2()
+                .max_w_2_3()
+                .min_w_0()
+                .gap_1()
+                .pl_2()
+                .rounded(theme.radius)
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.popover)
+                .shadow_sm()
+                .child(
+                    div()
                         .min_w_0()
-                        .gap_1()
-                        .pl_2()
-                        .rounded(theme.radius)
-                        .bg(theme.muted)
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_xs()
-                                .numeric()
-                                .text_color(theme.foreground)
-                                .child(summary),
-                        )
-                        .child(
-                            Button::new("trace-range-clear")
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::Close)
-                                .accessibility_label("Clear selection")
-                                .tooltip("Clear selection")
-                                .on_click(cx.listener(|this, _, _, cx| this.clear_selection(cx))),
-                        ),
+                        .truncate()
+                        .text_caption()
+                        .numeric()
+                        .text_color(theme.popover_foreground)
+                        .child(summary),
                 )
-            })
+                .child(
+                    Button::new("trace-range-clear")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Close)
+                        .accessibility_label("Clear selection")
+                        .tooltip("Clear selection")
+                        .on_click(cx.listener(|this, _, _, cx| this.clear_selection(cx))),
+                ),
+        )
     }
 
     /// The bar of the active editor: what it does, and its commands.

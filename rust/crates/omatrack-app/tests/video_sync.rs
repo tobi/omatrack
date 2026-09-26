@@ -898,12 +898,11 @@ fn the_transport_bar_sets_rate_and_playback_mode_and_shows_the_composition(
         cx.run_until_parked();
     };
     assert!(!slow(cx));
+    // Docked, 0.25x is one toggle (the stage keeps `1x | 0.25x`).
     click("video-slow-motion", cx);
     assert!(slow(cx), "0.25x selects slow motion");
     click("video-slow-motion", cx);
-    assert!(slow(cx), "the selected segment stays selected");
-    click("video-rate-normal", cx);
-    assert!(!slow(cx), "1x leaves slow motion");
+    assert!(!slow(cx), "0.25x again leaves slow motion");
 
     let before = continuous(cx);
     click(

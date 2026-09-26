@@ -18,7 +18,7 @@ use gpui_kit::{
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta,
     TestAppContext, Window, point, px,
 };
-use omatrack_app::actions::{Role, SelectLap};
+use omatrack_app::actions::{ResizeLanes, Role, SelectLap, ZoomReset};
 use omatrack_app::panels::TraceMode;
 use omatrack_app::panels::traces::{DELTA_KEY, ToggleLane, TracesPanel};
 use omatrack_trace::{TraceStack, Viewport};
@@ -283,16 +283,23 @@ async fn the_scene_follows_the_analysis(cx: &mut TestAppContext) {
     assert!(delta_len > 100);
     assert!(corners >= 2, "two braked corners per lap: {corners}");
     cx.update_window(f.window, |_, window, _| {
-        // Δ is pinned; brake shares the throttle lane.
-        assert!(window.find("lane-delta").label().unwrap().starts_with("Δt"));
+        // The gap lane is pinned; brake has its own lane under throttle;
+        // steering is opt in.
         assert!(
             window
-                .find("lane-throttle")
+                .find("lane-delta")
                 .label()
                 .unwrap()
-                .starts_with("Throttle / Brake")
+                .starts_with("Gap to R")
         );
-        assert!(window.try_find("lane-brake").is_none());
+        assert!(
+            window
+                .find("lane-brake")
+                .label()
+                .unwrap()
+                .starts_with("Brake")
+        );
+        assert!(window.try_find("lane-steering").is_none());
         assert!(
             window
                 .find("corner-ruler")
@@ -300,7 +307,11 @@ async fn the_scene_follows_the_analysis(cx: &mut TestAppContext) {
                 .unwrap()
                 .starts_with("Corners: ")
         );
-        assert!(window.find("trace-toolbar").visible());
+        // No toolbar of its own: the traces' controls ride in the one
+        // control row under the video.
+        assert!(window.try_find("trace-toolbar").is_none());
+        assert!(window.find("trace-axis-distance").visible());
+        assert!(window.find("trace-tools").visible());
     })
     .unwrap();
     let stack = f.stack(cx);
@@ -369,9 +380,9 @@ async fn the_wheel_zooms_the_shared_viewport(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let view = cx.update(|cx| f.test.app.viewport.read(cx).viewport());
     assert!(view.span() < 1.0 && view != Viewport::FULL, "{view:?}");
-    // The toolbar's reset returns to the whole lap, through ZoomReset.
+    // Whole lap (the tools menu, the palette, ctrl-0) is ZoomReset.
     cx.update_window(f.window, |_, window, cx| {
-        window.click("trace-zoom-reset", cx)
+        window.dispatch_action(Box::new(ZoomReset), cx)
     })
     .unwrap();
     cx.run_until_parked();
@@ -492,10 +503,13 @@ async fn h_and_j_focus_corners_in_the_left_half(cx: &mut TestAppContext) {
     );
 }
 
-/// Enter resize mode from the toolbar and drag the first divider down.
+/// Enter resize mode (the tools menu's `Resize lanes…`) and drag the
+/// first divider down.
 fn drag_first_divider(cx: &mut TestAppContext, f: &Fixture) {
-    cx.update_window(f.window, |_, window, cx| window.click("trace-resize", cx))
-        .unwrap();
+    cx.update_window(f.window, |_, window, cx| {
+        window.dispatch_action(Box::new(ResizeLanes), cx)
+    })
+    .unwrap();
     cx.run_until_parked();
     assert_eq!(
         cx.update(|cx| f.traces.read(cx).mode()),
@@ -557,7 +571,7 @@ async fn reset_heights_previews_and_saves_equal_weights(cx: &mut TestAppContext)
     .unwrap();
     cx.run_until_parked();
     let config = f.config(cx);
-    for key in ["speed", "throttle", "gear", "steering"] {
+    for key in ["speed", "throttle", "brake", "gear"] {
         assert_eq!(
             config.channels.get(key).and_then(|c| c.weight),
             Some(1.0),
@@ -614,20 +628,21 @@ async fn lanes_hide_and_show_through_the_lane_command(cx: &mut TestAppContext) {
     })
     .unwrap();
     cx.run_until_parked();
-    assert_eq!(lanes(cx), before - 1);
+    // Steering is off by default: the command shows it.
+    assert_eq!(lanes(cx), before + 1);
     assert_eq!(
         f.config(cx)
             .channels
             .get("steering")
             .and_then(|c| c.visible),
-        Some(false)
+        Some(true)
     );
     let title = cx.update(|cx| {
         cx.global::<omatrack_app::commands::CommandRegistry>()
             .get("lane-steering")
             .map(|spec| spec.title().to_string())
     });
-    assert_eq!(title.as_deref(), Some("Show Steering lane"));
+    assert_eq!(title.as_deref(), Some("Hide Steering lane"));
 }
 
 #[gpui_kit::test]
@@ -855,6 +870,122 @@ async fn a_time_share_pair_says_so_in_a_slim_delta_lane_with_the_key_on_top(
         let key = window.find("readout-key").bounds();
         assert!(ruler.contains(&key.origin), "{key:?} in {ruler:?}");
         assert!(key.bottom() <= delta.top() + px(1.));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn one_control_row_under_the_video_drives_the_traces(cx: &mut TestAppContext) {
+    use omatrack_app::panels::PanelKind;
+    use omatrack_trace::XAxis;
+
+    let f = synthetic_pair(cx).await;
+    // The centre carries no title bars: the video and the traces are the
+    // only panels of their groups.
+    assert!(!PanelKind::Video.has_title_bar() && !PanelKind::Traces.has_title_bar());
+    assert!(PanelKind::Library.has_title_bar());
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        // The row sits under the pictures and above the traces.
+        let bar = window.find("video-bar").bounds();
+        assert!(bar.top() >= window.find("video-empty").bounds().bottom() - px(1.));
+        assert!(bar.bottom() <= window.find("corner-ruler").bounds().top() + px(1.));
+        for id in [
+            "video-play",
+            "video-slow-motion",
+            "video-per-lap",
+            "trace-axis-distance",
+            "trace-axis-time",
+            "trace-tools",
+            "video-mute",
+            "video-enter-fullscreen",
+        ] {
+            let control = window.find(id).bounds();
+            assert!(
+                control.top() >= bar.top() && control.bottom() <= bar.bottom(),
+                "{id}"
+            );
+        }
+    })
+    .unwrap();
+
+    // Distance | Time is the traces' axis (`t`).
+    let axis = |cx: &mut TestAppContext| cx.update(|cx| f.test.app.viewport.read(cx).axis());
+    let start = axis(cx);
+    let other = if start == XAxis::Distance {
+        "trace-axis-time"
+    } else {
+        "trace-axis-distance"
+    };
+    cx.update_window(f.window, |_, window, cx| window.click(other, cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert_ne!(axis(cx), start);
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(other, cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_ne!(axis(cx), start, "the selected segment stays selected");
+
+    // The cursor in a corner: the row names it and the ruler's chip marks
+    // it, without rebuilding trace geometry.
+    let stack = f.stack(cx);
+    let before = cx.update(|cx| stack.read(cx).static_stats(cx));
+    let corner = cx.update(|cx| f.traces.read(cx).scene().corners()[1].clone());
+    let middle = (corner.start + corner.end) * 0.5;
+    f.test
+        .app
+        .cursor
+        .update(cx, |cursor, cx| cursor.set_fraction(Some(middle), cx));
+    cx.run_until_parked();
+    let ruler = cx.update(|cx| f.traces.read(cx).ruler().clone());
+    assert_eq!(
+        cx.update(|cx| ruler.read(cx).cursor_corner()),
+        Some(corner.id)
+    );
+    assert_eq!(
+        cx.update(|cx| ruler.read(cx).chip_corner()),
+        Some(corner.id)
+    );
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        let place = window
+            .find("video-cursor-place")
+            .label()
+            .unwrap()
+            .to_string();
+        assert!(place.starts_with("Cursor at "), "{place}");
+        assert!(
+            place.ends_with(corner.label.as_ref()),
+            "{place} / {}",
+            corner.label
+        );
+    })
+    .unwrap();
+    let after = cx.update(|cx| stack.read(cx).static_stats(cx));
+    assert_eq!(after.geometry_builds, before.geometry_builds);
+
+    // Between corners the chip goes and the row names the straight.
+    let between = cx.update(|cx| {
+        let corners = f.traces.read(cx).scene().corners().to_vec();
+        (corners[0].end + corners[1].start) * 0.5
+    });
+    f.test
+        .app
+        .cursor
+        .update(cx, |cursor, cx| cursor.set_fraction(Some(between), cx));
+    cx.run_until_parked();
+    assert_eq!(cx.update(|cx| ruler.read(cx).chip_corner()), None);
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        let place = window
+            .find("video-cursor-place")
+            .label()
+            .unwrap()
+            .to_string();
+        assert!(place.contains("straight after"), "{place}");
     })
     .unwrap();
 }

@@ -1,8 +1,9 @@
 //! What is drawn over the videos.
 //!
-//! - Docked: the Δ at the cursor, the speed difference and (when both GPS
-//!   fixes are better than 1 m) the along-track gap, inline in the video
-//!   bar, never over the pictures' burned-in timers and dashboards.
+//! - Docked: where the cursor is (`Cursor at 368 m, Turn 1`) and (when
+//!   both GPS fixes are better than 1 m) the along-track gap, at the right
+//!   end of the control row, never over the pictures' burned-in timers and
+//!   dashboards. The Δ is the Gap lane's figure in the traces below.
 //! - Fullscreen stage ([`StageOverlay`]): the broadcast telemetry band
 //!   ([`TelemetryHud`], port of the Qt `VideoTelemetryHud`), draggable over
 //!   the whole stage, and the live delta bar at the top (port of
@@ -253,72 +254,78 @@ impl VideoOverlay {
             .map(|(x, y)| (x as f32, y as f32))
     }
 
-    /// Docked: the Δ at the cursor and the speed difference, inline in the
-    /// video bar, never over the pictures (they carry burned-in timers and
-    /// dashboards; speed and gear are already in the traces).
+    /// Docked: where the cursor is, at the right end of the control row:
+    /// `Cursor at 368 m, Turn 1` (the lap time on a time axis, `straight
+    /// after T3` between corners). The Δ is the Gap lane's figure in the
+    /// traces right below, so the row never repeats it; the along-track gap
+    /// joins when both GPS fixes allow it. Nothing rides over the pictures
+    /// (they carry burned-in timers and dashboards).
     fn render_docked(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let Some(readout) = self.readout(cx).filter(|r| r.delta.is_some()) else {
+        let Some(fraction) = self.app.cursor.read(cx).fraction() else {
             return div().into_any_element();
         };
-        let approximate = self.approximate(cx);
-        let theme = cx.theme();
-        let mut spoken = match readout.delta {
-            Some(delta) if approximate => format!("Delta approximately {delta:+.2} s"),
-            Some(delta) => format!("Delta {delta:+.3} s"),
-            None => String::new(),
+        let Some(analysis) = self.app.session.read(cx).analysis().cloned() else {
+            return div().into_any_element();
         };
-        if let Some(dv) = readout.speed_delta {
-            spoken.push_str(&format!(", speed {dv:+.0} km/h"));
+        let axis = self.app.viewport.read(cx).axis();
+        let primary = analysis.primary().unified();
+        let at = match axis {
+            omatrack_trace::XAxis::Distance => {
+                lap_offset(&primary.distance, fraction).map(|metres| format!("{metres:.0} m"))
+            }
+            omatrack_trace::XAxis::Time => lap_offset(&primary.time, fraction)
+                .map(|seconds| omatrack_core::laps::format_lap_time(seconds * 1000.0)),
+        };
+        let Some(at) = at else {
+            return div().into_any_element();
+        };
+        let place = cursor_place(analysis.corners(), fraction);
+        let gap = analysis.comparison().and_then(|comparison| {
+            let reference_fraction = comparison.compare_fraction_for_primary_fraction(fraction);
+            relative_along_track_meters(
+                primary,
+                fraction,
+                comparison.reference(),
+                reference_fraction,
+                GAP_ACCURACY_M,
+            )
+        });
+        let theme = cx.theme();
+        let mut spoken = format!("Cursor at {at}");
+        if let Some(place) = &place {
+            spoken.push_str(&format!(", {place}"));
         }
-        if let Some(gap) = readout.gap {
+        if let Some(gap) = gap {
             spoken.push_str(&format!(", gap {}", omatrack_ui::format_gap(gap)));
         }
-        let caption = |text: SharedString| {
-            div()
-                .text_caption()
-                .text_color(theme.muted_foreground)
-                .child(text)
-        };
-        let speed_delta = readout.speed_delta.map(|dv| {
-            let (label, color) = if dv.abs() < 0.5 {
-                ("±0".to_string(), theme.foreground)
-            } else if dv > 0. {
-                (format!("+{dv:.0}"), theme.success)
-            } else {
-                (format!("−{:.0}", dv.abs()), theme.danger)
-            };
-            h_flex()
-                .items_baseline()
-                .gap_1()
-                .child(div().numeric().text_color(color).child(label))
-                .child(caption("km/h".into()))
-        });
-        let gap = readout.gap.map(|gap| {
-            div()
-                .numeric()
-                .text_color(theme.warning)
-                .child(omatrack_ui::format_gap(gap))
-        });
         h_flex()
-            .id("video-hud-card")
+            .id("video-cursor-place")
             .role(Role::Status)
             .aria_label(SharedString::from(spoken))
             .test_support()
-            .flex_shrink_0()
+            .min_w_0()
+            .overflow_hidden()
+            .whitespace_nowrap()
             .items_baseline()
-            .gap_2()
-            .px_2()
-            .child(caption("Δ".into()))
+            .text_label()
+            .text_color(theme.muted_foreground)
+            .child(div().flex_shrink_0().child("Cursor at\u{a0}"))
             .child(
-                div().text_label().font_semibold().child(
-                    omatrack_ui::DeltaText::new(readout.delta)
-                        .decimals(if approximate { 2 } else { 3 })
-                        .approximate(approximate)
-                        .unit("s"),
-                ),
+                div()
+                    .flex_shrink_0()
+                    .numeric()
+                    .text_color(theme.foreground)
+                    .child(SharedString::from(at)),
             )
-            .children(speed_delta)
-            .children(gap)
+            .children(place.map(|place| div().min_w_0().truncate().child(format!(", {place}"))))
+            .children(gap.map(|gap| {
+                div()
+                    .flex_shrink_0()
+                    .pl_2()
+                    .numeric()
+                    .text_color(theme.warning)
+                    .child(omatrack_ui::format_gap(gap))
+            }))
             .into_any_element()
     }
 
@@ -743,6 +750,35 @@ impl Render for VideoOverlay {
     }
 }
 
+/// How far into the lap `values` (a monotonic lap axis: distance or time)
+/// are at `fraction`, from the lap's first sample.
+fn lap_offset(values: &[f64], fraction: f64) -> Option<f64> {
+    let origin = *values.first()?;
+    let value = interpolate_fraction(values, fraction.clamp(0.0, 1.0)) - origin;
+    value.is_finite().then_some(value.max(0.0))
+}
+
+/// Where on the lap `fraction` is, by its corner zones: the zone's name
+/// inside one (`Turn 1`), else the straight after the last corner behind
+/// it (`straight after T3`; before the first corner, the lap's last one).
+/// `None` without zones.
+pub fn cursor_place(zones: &[omatrack_core::corners::CornerZone], fraction: f64) -> Option<String> {
+    if let Some(zone) = zones
+        .iter()
+        .find(|zone| zone.start <= fraction && fraction <= zone.end)
+    {
+        return Some(zone.name.clone());
+    }
+    let behind = zones
+        .iter()
+        .filter(|zone| zone.end < fraction)
+        .max_by(|a, b| a.end.total_cmp(&b.end))
+        .or_else(|| zones.iter().max_by(|a, b| a.end.total_cmp(&b.end)))?;
+    let name = omatrack_trace::corner_ruler::short_label(&behind.name)
+        .map_or_else(|| behind.name.clone(), |short| short.to_string());
+    Some(format!("straight after {name}"))
+}
+
 /// `L8 · 3/12`: the lap's label and its place among the recording's laps.
 pub fn lap_caption(label: &str, lap: Option<&omatrack_core::session::LoadedLap>) -> SharedString {
     let place = lap.and_then(|lap| {
@@ -815,5 +851,31 @@ mod tests {
             (None, None, None)
         );
         assert_eq!(single.speed, Some(180.0));
+    }
+
+    #[test]
+    fn the_cursor_place_names_the_corner_or_the_straight_behind() {
+        use omatrack_core::corners::CornerZone;
+        let zone = |name: &str, start: f64, end: f64| CornerZone {
+            id: name.to_lowercase(),
+            name: name.to_string(),
+            start,
+            end,
+            source: Default::default(),
+        };
+        let zones = [zone("Turn 1", 0.1, 0.2), zone("Turn 3", 0.4, 0.5)];
+        assert_eq!(cursor_place(&zones, 0.15).as_deref(), Some("Turn 1"));
+        assert_eq!(
+            cursor_place(&zones, 0.3).as_deref(),
+            Some("straight after T1")
+        );
+        // Before the first corner: the straight after the lap's last one.
+        assert_eq!(
+            cursor_place(&zones, 0.05).as_deref(),
+            Some("straight after T3")
+        );
+        assert_eq!(cursor_place(&[], 0.5), None);
+        assert_eq!(lap_offset(&[100.0, 200.0, 300.0], 0.5), Some(100.0));
+        assert_eq!(lap_offset(&[], 0.5), None);
     }
 }

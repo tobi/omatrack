@@ -98,6 +98,15 @@ impl PanelKind {
             Self::TimeGoes => "Time lost",
         }
     }
+
+    /// Whether the dock draws a title bar over this panel when it is alone in
+    /// its group. The video and the traces carry their own chrome (the
+    /// transport row, the corner ruler): the centre reads as one surface
+    /// headed by its content, not by tab strips. A group of several panels
+    /// still shows its tabs, so every panel stays reachable.
+    pub fn has_title_bar(self) -> bool {
+        !matches!(self, Self::Traces | Self::Video)
+    }
 }
 
 /// One entity per panel, owned by a workspace. Built only by
@@ -275,6 +284,10 @@ macro_rules! simple_panel {
                 _: &mut gpui_kit::Context<Self>,
             ) -> impl gpui_kit::IntoElement {
                 $kind.title()
+            }
+
+            fn title_bar(&self, _: &gpui_kit::App) -> bool {
+                $kind.has_title_bar()
             }
         }
 
