@@ -54,8 +54,7 @@ The exact upstream allocation in mpv v0.41.0 is
 [`video/out/gpu/video.c:1852`](https://github.com/mpv-player/mpv/blob/v0.41.0/video/out/gpu/video.c#L1852):
 `talloc_array(... lut_size * stride)`. `mp_compute_lut` populates only the filter's
 meaningful taps; padding remains uninitialized. The minimal upstream correction
-is zero-initialization, preserved locally in
-[mpv-zero-scaler-padding.patch](patches/mpv-zero-scaler-padding.patch).
+is zero-initialization of that buffer (a one-line `talloc_zero_array`).
 No upstream commit, PR, dependency publication or system library modification was
 performed for this work.
 
