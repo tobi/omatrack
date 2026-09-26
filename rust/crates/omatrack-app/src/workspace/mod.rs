@@ -259,7 +259,9 @@ impl Workspace {
                 self.place_initial_cursor(cx);
             }
             SessionEvent::PrimaryChanged => self.forget_corner_focus(cx),
-            SessionEvent::ReferenceChanged | SessionEvent::Swapped => {}
+            SessionEvent::SelectionRequested { .. }
+            | SessionEvent::ReferenceChanged
+            | SessionEvent::Swapped => {}
         }
     }
 
@@ -369,6 +371,9 @@ impl Workspace {
     /// alive behind it) and focus its section list. Already open, only the
     /// focus moves.
     pub fn open_preferences(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        if self.stage.is_some() {
+            self.exit_video_fullscreen(window, cx);
+        }
         if let Some(screen) = &self.preferences {
             screen
                 .view

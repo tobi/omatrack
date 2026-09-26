@@ -33,17 +33,21 @@ use omatrack_core::playback::{
     self, LAP_ADVANCE_INTERVAL_MS, PAUSED_ALIGNMENT_INTERVAL_MS, REFERENCE_SYNC_INTERVAL_MS,
     ReferencePlayback, SyncState,
 };
+use omatrack_core::recording::Recording;
 use omatrack_core::session::LoadedLap;
 use omatrack_library::config::HudPosition;
 use omatrack_trace::{CursorState, Selection, ViewportState};
 
 use crate::actions::Role;
 use crate::state::preferences::Preferences;
-use crate::state::session::{LapRef, RoleSlot, RoleState, Session, SessionEvent};
+use crate::state::session::{RoleSlot, RoleState, Session, SessionEvent};
 
 use crate::sync::lap_end::{self, LapAdvance, LapEnd};
 use crate::sync::pacing::{PacerCommand, PacerInput, PairMap, REFERENCE_MAX_FPS, ReferencePacer};
 use crate::sync::{IdentityStatus, LapTimeline, VideoMap};
+
+#[cfg(test)]
+mod tests;
 
 /// Seek step of the Left/Right keys, seconds.
 pub const SEEK_STEP: f64 = 2.0;
@@ -281,7 +285,7 @@ impl Deck {
 
     fn holds_lap(&self, lap: &LoadedLap) -> bool {
         self.lap.as_ref().is_some_and(|held| {
-            held.lap_id() == lap.lap_id() && held.recording().path() == lap.recording().path()
+            held.lap_id() == lap.lap_id() && Arc::ptr_eq(held.recording(), lap.recording())
         })
     }
 }
@@ -565,6 +569,11 @@ impl VideoController {
 
     fn on_session_event(&mut self, event: &SessionEvent, cx: &mut Context<'_, Self>) {
         match event {
+            SessionEvent::SelectionRequested { role } => {
+                if *role == Role::Primary {
+                    self.cancel_advance(cx);
+                }
+            }
             SessionEvent::AnalysisReady => {
                 self.rebuild_pair(cx);
                 self.force_reference_sync(cx);
@@ -575,7 +584,6 @@ impl VideoController {
                 ..
             } => {
                 self.cancel_advance(cx);
-                self.adopting = None;
                 self.reconcile(cx);
             }
             _ => self.reconcile(cx),
@@ -708,6 +716,25 @@ impl VideoController {
         if self.deck(role).holds_lap(lap) {
             return;
         }
+        let same_recording = self
+            .deck(role)
+            .lap
+            .as_ref()
+            .is_some_and(|held| Arc::ptr_eq(held.recording(), lap.recording()));
+        // Only a completed automatic transition may bind its expected
+        // next lap without cancelling the previous lap's advance.
+        if role == Role::Primary
+            && (self.advance.is_counting()
+                || self
+                    .advance
+                    .next_lap()
+                    .is_some_and(|next| next != lap.lap_id() || !same_recording)
+                || self
+                    .adopting
+                    .is_some_and(|next| next != lap.lap_id() || !same_recording))
+        {
+            self.cancel_advance(cx);
+        }
         let external = self.deck(role).external_map.clone();
         let binding = lap.video().cloned();
         let map = match (&external, &binding) {
@@ -734,8 +761,10 @@ impl VideoController {
             deck.timeline = Some(LapTimeline::new(lap, map));
             deck.lap = Some(lap.clone());
             deck.recording = Some(PathBuf::from(lap.recording().path()));
-            let keep_identity =
-                same_video && !matches!(deck.identity, IdentityStatus::None) && !deck.is_external();
+            let keep_identity = same_recording
+                && same_video
+                && !matches!(deck.identity, IdentityStatus::None)
+                && !deck.is_external();
             if external.is_some() {
                 deck.identity = IdentityStatus::External;
             } else if !keep_identity && let Some(binding) = &binding {
@@ -815,8 +844,6 @@ impl VideoController {
         let changed = had || deck.availability != availability;
         if role == Role::Primary {
             self.cancel_advance(cx);
-            self.prefetched = None;
-            self.prefetch = None;
         }
         if had {
             self.pair = None;
@@ -1051,6 +1078,7 @@ impl VideoController {
         let deck = &mut self.primary;
         deck.starting = None;
         deck.events = None;
+        deck.identity_check = None;
         deck.pending_open = None;
         deck.bound = None;
         deck.transport = Some(Transport::External(clock));
@@ -1107,7 +1135,9 @@ impl VideoController {
             return;
         };
         let recording = lap.recording().clone();
-        let lap_id = lap.lap_id();
+        // Hashes authenticate a recording/video pair, independently of
+        // which lap of that shared recording is selected when they finish.
+        let checked_recording = recording.clone();
         let checked_path = path.clone();
         let work =
             cx.background_spawn(async move { crate::sync::identity::check(&recording, &path) });
@@ -1119,7 +1149,7 @@ impl VideoController {
             let status = work.await;
             #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no deferred result; this weak entity/window handle may already be gone.")]
             let _ = this.update(cx, |this, cx| {
-                this.identity_checked(token, lap_id, &checked_path, status, explicit, cx);
+                this.identity_checked(token, &checked_recording, &checked_path, status, explicit, cx);
             });
         }));
     }
@@ -1127,7 +1157,7 @@ impl VideoController {
     fn identity_checked(
         &mut self,
         token: u64,
-        lap_id: i32,
+        recording: &Arc<Recording>,
         path: &Path,
         status: IdentityStatus,
         explicit: bool,
@@ -1137,9 +1167,11 @@ impl VideoController {
             return;
         };
         let deck = self.deck_mut(role);
-        let current = deck.lap.as_ref().is_some_and(|lap| {
-            lap.lap_id() == lap_id && lap.video().is_some_and(|binding| binding.path == path)
-        });
+        let current = !deck.is_external()
+            && deck.lap.as_ref().is_some_and(|lap| {
+                Arc::ptr_eq(lap.recording(), recording)
+                    && lap.video().is_some_and(|binding| binding.path == path)
+            });
         if !current {
             return;
         }
@@ -1452,16 +1484,8 @@ impl VideoController {
     }
 
     fn select_primary_lap(&mut self, lap: i32, cx: &mut Context<'_, Self>) {
-        let Some(session_id) = self
-            .session
-            .read(cx)
-            .primary()
-            .map(|slot| slot.lap_ref().session().clone())
-        else {
-            return;
-        };
         self.session.update(cx, |session, cx| {
-            session.set_lap(Role::Primary, LapRef::new(session_id, lap), cx);
+            session.advance_primary(lap, cx);
         });
     }
 
@@ -1541,6 +1565,9 @@ impl VideoController {
     }
 
     fn cancel_advance(&mut self, cx: &mut Context<'_, Self>) {
+        self.adopting = None;
+        self.prefetch = None;
+        self.prefetched = None;
         if self.advance != LapAdvance::Idle {
             self.advance.cancel();
             self.advance_timer = None;

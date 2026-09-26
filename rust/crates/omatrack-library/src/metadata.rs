@@ -158,15 +158,15 @@ pub fn effective_metadata(path: &Path, sources: MetadataSources<'_>) -> Effectiv
     let named = document_text(&["track", "name"]);
     let mut slug =
         document_text(&["track", "slug"]).map(|s| Sourced::new(s.value.to_lowercase(), s.layer));
-    if slug.is_none() {
-        slug = assigned_track(sources.config, path, sources.event_date)
-            .map(|value| Sourced::new(value, MetadataLayer::Preferences));
-    }
     if slug.is_none()
         && let Some(named) = &named
     {
         slug =
             track::find_track(&named.value).map(|t| Sourced::new(t.slug.to_string(), named.layer));
+    }
+    if slug.is_none() {
+        slug = assigned_track(sources.config, path, sources.event_date)
+            .map(|value| Sourced::new(value, MetadataLayer::Preferences));
     }
     if slug.is_none()
         && let Some([lat, lon]) = sources.summary.and_then(|s| s.gps)
@@ -183,18 +183,17 @@ pub fn effective_metadata(path: &Path, sources: MetadataSources<'_>) -> Effectiv
             (!folder.is_empty()).then(|| Sourced::new(folder.clone(), MetadataLayer::Inferred))
         });
 
-    // Driver: TRACK.yml mapping by id, preferences mapping, raw id.
+    // Driver: resolve mapping and name within each layer before falling
+    // through to a lower layer, then preferences mapping and raw id.
     let driver_id = sources.summary.and_then(RecordingSummary::driver_id);
-    let driver = driver_id
-        .and_then(|id| {
-            driver_name_for_id(recording_override, id)
-                .map(|name| Sourced::new(name, MetadataLayer::RecordingOverride))
-                .or_else(|| {
-                    driver_name_for_id(sources.folder, id)
-                        .map(|name| Sourced::new(name, MetadataLayer::FolderMetadata))
-                })
-        })
-        .or_else(|| document_text(&["driver", "name"]))
+    let document_driver = |document: &Mapping, layer| {
+        driver_id
+            .and_then(|id| driver_name_for_id(document, id))
+            .or_else(|| nested_text(document, &["driver", "name"]))
+            .map(|name| Sourced::new(name, layer))
+    };
+    let driver = document_driver(recording_override, MetadataLayer::RecordingOverride)
+        .or_else(|| document_driver(sources.folder, MetadataLayer::FolderMetadata))
         .or_else(|| {
             let key = driver_id_key(driver_id?);
             let mappings = &sources.config.driver_mappings;

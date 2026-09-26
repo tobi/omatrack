@@ -263,9 +263,8 @@ impl PreferencesView {
                 let SelectEvent::Confirm(Some(playback)) = event else {
                     return;
                 };
-                let key = playback.key().to_string();
-                this.app.preferences.update(cx, |preferences, cx| {
-                    preferences.update(cx, |config| config.video.reference_playback = Some(key));
+                this.app.video.update(cx, |video, cx| {
+                    video.set_reference_playback(*playback, cx);
                 });
             }),
             // The palette and other surfaces edit the same settings while

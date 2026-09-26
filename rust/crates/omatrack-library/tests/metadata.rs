@@ -315,3 +315,96 @@ fn five_layers_in_order() {
         MetadataLayer::Recording
     );
 }
+
+#[test]
+fn explicit_track_names_override_preference_assignments() {
+    let path = Path::new("/events/CT1/Run1.mp4");
+    for assignment in ["2026-09-02", "/events/CT1"] {
+        for layer in [
+            MetadataLayer::FolderMetadata,
+            MetadataLayer::RecordingOverride,
+        ] {
+            let mut config = Config::default();
+            config
+                .track_assignments
+                .insert(assignment.into(), "sebring".into());
+            let mut folder = yaml("track: {name: Road Atlanta}\n");
+            if layer == MetadataLayer::RecordingOverride {
+                config.recording_metadata.insert(
+                    path.to_string_lossy().into_owned(),
+                    std::mem::take(&mut folder),
+                );
+            }
+            let meta = effective_metadata(
+                path,
+                MetadataSources::new(&folder, &config).with_event_date(Some("2026-09-02")),
+            );
+            assert_eq!(meta.track_name(), Some("Road Atlanta"));
+            assert_eq!(
+                meta.track_slug(),
+                Some("road-atlanta"),
+                "{assignment}, {layer:?}"
+            );
+            assert_eq!(meta.track_slug.as_ref().unwrap().layer, layer);
+        }
+    }
+}
+
+#[test]
+fn recording_driver_name_overrides_folder_mappings() {
+    let path = Path::new("/events/CT1/Run1.mp4");
+    let folder = yaml("driver: {mappings: {\"12\": Folder Driver, \"*\": Folder Fallback}}\n");
+    let mut config = Config::default();
+    config.recording_metadata.insert(
+        path.to_string_lossy().into_owned(),
+        yaml("driver: {name: Correct Driver}\n"),
+    );
+    let mut summary = common::summary(&[80_000.0, 79_000.0], -1, "");
+    for id in [12.0, 2.5, 0.0] {
+        summary.driver_id = id;
+        let meta = effective_metadata(
+            path,
+            MetadataSources::new(&folder, &config).with_summary(Some(&summary)),
+        );
+        assert_eq!(meta.driver(), Some("Correct Driver"), "driver id {id}");
+        assert_eq!(meta.driver.unwrap().layer, MetadataLayer::RecordingOverride);
+    }
+}
+
+#[test]
+fn driver_mappings_and_names_resolve_within_each_layer() {
+    let path = Path::new("/events/CT1/Run1.mp4");
+    let folder = yaml("driver: {name: Folder Driver, mappings: {\"2.5\": Folder Exact}}\n");
+    let mut config = Config::default();
+    config.recording_metadata.insert(
+        path.to_string_lossy().into_owned(),
+        yaml("driver: {name: Recording Driver, mappings: {\"2.5\": Recording Exact, \"*\": Recording Fallback}}\n"),
+    );
+    config
+        .driver_mappings
+        .insert("*".into(), "Preference Driver".into());
+    let mut summary = common::summary(&[80_000.0, 79_000.0], -1, "");
+    for (id, expected) in [
+        (2.5, "Recording Exact"),
+        (12.0, "Recording Fallback"),
+        (0.0, "Recording Driver"),
+    ] {
+        summary.driver_id = id;
+        let meta = effective_metadata(
+            path,
+            MetadataSources::new(&folder, &config).with_summary(Some(&summary)),
+        );
+        assert_eq!(meta.driver(), Some(expected));
+        assert_eq!(meta.driver.unwrap().layer, MetadataLayer::RecordingOverride);
+    }
+    config.recording_metadata.clear();
+    for (id, expected) in [(2.5, "Folder Exact"), (12.0, "Folder Driver")] {
+        summary.driver_id = id;
+        let meta = effective_metadata(
+            path,
+            MetadataSources::new(&folder, &config).with_summary(Some(&summary)),
+        );
+        assert_eq!(meta.driver(), Some(expected));
+        assert_eq!(meta.driver.unwrap().layer, MetadataLayer::FolderMetadata);
+    }
+}

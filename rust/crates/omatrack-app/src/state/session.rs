@@ -112,6 +112,11 @@ impl RoleSlot {
 /// What changed in the [`Session`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionEvent {
+    /// An explicit selection request, even when the lap is already held
+    /// or loading. Playback's automatic advances do not emit this event.
+    SelectionRequested {
+        role: Role,
+    },
     PrimaryChanged,
     ReferenceChanged,
     /// A new [`Analysis`] is available (or the old one was dropped).
@@ -243,10 +248,26 @@ impl Session {
         self.set_lap(Role::Reference, LapRef::new(session, lap), cx);
     }
 
-    /// Load `lap_ref` into `role`. Selecting the lap a role already holds
-    /// does nothing; a pending load for the role is cancelled and the
-    /// pair-specific manual offset is cleared. Cursor and viewport stay.
+    /// Explicitly select `lap_ref` for `role`, cancelling playback's pending
+    /// advance when selecting the primary. A lap already held is not loaded
+    /// again; a replacement cancels the role's pending load and clears the
+    /// pair-specific manual offset. Cursor and viewport stay.
     pub fn set_lap(&mut self, role: Role, lap_ref: LapRef, cx: &mut Context<'_, Self>) {
+        cx.emit(SessionEvent::SelectionRequested { role });
+        self.load_role(role, lap_ref, cx);
+    }
+
+    /// Playback selects the next lap without cancelling its own countdown
+    /// resume or continuous adoption. It stays in the primary recording.
+    pub(crate) fn advance_primary(&mut self, lap: i32, cx: &mut Context<'_, Self>) {
+        let Some(slot) = &self.primary else {
+            return;
+        };
+        let lap_ref = LapRef::new(slot.lap_ref.session.clone(), lap);
+        self.load_role(Role::Primary, lap_ref, cx);
+    }
+
+    fn load_role(&mut self, role: Role, lap_ref: LapRef, cx: &mut Context<'_, Self>) {
         if self.slot(role).is_some_and(|slot| {
             slot.lap_ref == lap_ref && !matches!(slot.state, RoleState::Failed(_))
         }) {
@@ -427,6 +448,9 @@ impl Session {
         else {
             return;
         };
+        cx.emit(SessionEvent::SelectionRequested {
+            role: Role::Primary,
+        });
         let both_loaded = primary.loaded().is_some() && reference.loaded().is_some();
         // Only a settled analysis of exactly this pair can be swapped in
         // place; while a rebuild is in flight (new strategy, new lap, new

@@ -458,7 +458,11 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
 - **Selection**: a rescan never resets loaded laps, cursor, viewport or
   alignment. Swap (`x`) cancels pending loads, keeps cursor and viewport,
   inverts manual offset. Changing a lap clears pair tuning, keeps cursor and
-  viewport.
+  viewport. Explicit primary selection and swap cancel any countdown,
+  automatic resume or continuous adoption immediately, including a repeated
+  selection while its lap is loading (`SessionEvent::SelectionRequested`).
+  Playback advances use `Session::advance_primary` without cancelling their
+  own transition.
 - **Overlays through `Root`**; escape closes the topmost, restoring focus.
 - **Preferences** writes go through the Preferences entity: debounced, atomic,
   off-thread, flushed on quit.

@@ -424,15 +424,14 @@ fn select_lap(app: &AppState, session: &SharedString, select: LapSelect, cx: &mu
         .read(cx)
         .slot(role)
         .is_some_and(|slot| slot.lap_ref() == &lap_ref);
-    if holds {
-        if !select.secondary {
-            app.cursor
-                .update(cx, |cursor, cx| cursor.set_fraction(Some(0.0), cx));
-        }
-        return;
-    }
+    // Even a repeat click is an explicit selection: cancel a pending
+    // playback advance before applying the strip's jump-to-start behavior.
     app.session
         .update(cx, |session, cx| session.set_lap(role, lap_ref, cx));
+    if holds && !select.secondary {
+        app.cursor
+            .update(cx, |cursor, cx| cursor.set_fraction(Some(0.0), cx));
+    }
 }
 
 fn row_lap(role: LapRole, slot: &RoleSlot) -> RowLap {

@@ -273,6 +273,59 @@ fn done_and_escape_from_a_control_return_to_the_workspace(cx: &mut TestAppContex
 }
 
 #[gpui_kit::test]
+fn preferences_leave_the_video_stage_and_restore_the_original_focus(cx: &mut TestAppContext) {
+    let sandbox = common::Sandbox::new();
+    let test = start(cx, sandbox.options());
+    let traces = focus_traces(&test, cx);
+    let layout_before = cx.update(|cx| test.workspace.read(cx).dock_area().read(cx).dump(cx));
+    step(&test, cx, |window, cx| window.press("f", cx));
+    step(&test, cx, |window, cx| {
+        assert!(window.find("workspace-stage").visible());
+        window.press("ctrl-,", cx);
+    });
+    step(&test, cx, |window, cx| {
+        assert!(window.try_find("workspace-stage").is_none());
+        assert!(window.find("preferences").visible());
+        let view = test.workspace.read(cx).preferences().unwrap();
+        assert!(view.read(cx).is_nav_focused(window));
+        window.press("escape", cx);
+    });
+    step(&test, cx, |window, cx| {
+        assert!(window.find("workspace-dock").visible());
+        assert!(window.try_find("preferences").is_none());
+        assert!(window.try_find("workspace-stage").is_none());
+        assert!(traces.is_focused(window));
+        let layout_after = test.workspace.read(cx).dock_area().read(cx).dump(cx);
+        assert_eq!(
+            serde_json::to_value(&layout_before).unwrap(),
+            serde_json::to_value(&layout_after).unwrap(),
+            "leaving the stage for Preferences preserves the docks"
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn preferences_preserve_independently_entered_window_fullscreen(cx: &mut TestAppContext) {
+    let sandbox = common::Sandbox::new();
+    let test = start(cx, sandbox.options());
+    focus_traces(&test, cx);
+    step(&test, cx, |window, _| window.toggle_fullscreen());
+    for stage in [false, true] {
+        if stage {
+            step(&test, cx, |window, cx| window.press("f", cx));
+        }
+        step(&test, cx, |window, cx| window.press("ctrl-,", cx));
+        step(&test, cx, |window, cx| {
+            assert!(window.find("preferences").visible());
+            assert!(window.is_fullscreen());
+            assert!(window.try_find("workspace-stage").is_none());
+            window.press("escape", cx);
+        });
+        step(&test, cx, |window, _| assert!(window.is_fullscreen()));
+    }
+}
+
+#[gpui_kit::test]
 fn the_palette_command_opens_preferences(cx: &mut TestAppContext) {
     let sandbox = common::Sandbox::new();
     let test = start(cx, sandbox.options());
