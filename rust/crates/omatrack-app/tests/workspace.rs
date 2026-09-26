@@ -151,7 +151,7 @@ fn a_corrupt_layout_falls_back_to_the_default(cx: &mut TestAppContext) {
 fn a_layout_from_another_version_is_replaced(cx: &mut TestAppContext) {
     // Version 2 hid the map behind the inspector; its saved layouts reset
     // to the default and say so.
-    assert_eq!(omatrack_app::LAYOUT_VERSION, 5);
+    assert_eq!(omatrack_app::LAYOUT_VERSION, 6);
     let sandbox = common::Sandbox::new();
     sandbox.write_config(
         "workspace:\n  layout:\n    version: 2\n    center: {panel_name: StackPanel, children: [], info: {stack: {sizes: [], axis: 0}}}\n",

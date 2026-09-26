@@ -917,6 +917,9 @@ async fn real_run4_against_run1_fills_the_corners_table_and_the_map(cx: &mut Tes
     cx.run_until_parked();
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
         .unwrap();
+    // Corners is a tab behind Where the time goes; its table is built
+    // when it is shown.
+    show_panel(&test, PanelKind::Corners, cx);
 
     let corners = test
         .workspace
@@ -1136,8 +1139,7 @@ async fn a_pill_goes_to_the_lap_list_and_the_swap_button_swaps(cx: &mut TestAppC
     cx.update_window(scene.handle, |_, window, cx| {
         window.click("header-reference", cx);
         window.render_frame(cx);
-        let library =
-            workspace.read_with(cx, |w, cx| w.panels().focus_handle(PanelKind::Library, cx));
+        let library = workspace.read_with(cx, |w, cx| w.panels().focus_handle(PanelKind::Laps, cx));
         assert!(
             library.contains_focused(window, cx),
             "the lap list has focus"

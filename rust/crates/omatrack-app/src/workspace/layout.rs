@@ -19,28 +19,41 @@ pub const DOCK_AREA_ID: &str = "omatrack.workspace";
 /// beside it; the right dock is one tab group led by Time lost ("Where the
 /// time goes": heat map, loss table, corner card); Corners, Channels, Map
 /// and Inspector are tabs behind it.
-pub const LAYOUT_VERSION: usize = 5;
+/// 6: the docks scale with the window (the mockup's 290 / 350 px at
+/// 1440 wide) and the focus keys follow the layout left to right.
+pub const LAYOUT_VERSION: usize = 6;
 
-/// Library dock width, in rems (300 px at the default 16 px base).
-pub(crate) const LEFT_DOCK_REMS: f32 = 18.75;
-/// Inspector dock width, in rems (380 px at the default base).
-pub(crate) const RIGHT_DOCK_REMS: f32 = 23.75;
+/// Left dock (Laps sidebar) share of the window width, between
+/// [`LEFT_DOCK_MIN_REMS`] and [`LEFT_DOCK_MAX_REMS`] (288 px at 1440 wide,
+/// 360 px from 1800 wide at the default 16 px base).
+pub(crate) const LEFT_DOCK_SHARE: f32 = 0.2;
+pub(crate) const LEFT_DOCK_MIN_REMS: f32 = 18.0;
+pub(crate) const LEFT_DOCK_MAX_REMS: f32 = 22.5;
+/// Right dock (Where the time goes) share of the window width, between
+/// [`RIGHT_DOCK_MIN_REMS`] and [`RIGHT_DOCK_MAX_REMS`] (360 px at 1440
+/// wide, 440 px from 1760 wide), never above [`RIGHT_DOCK_MAX_SHARE`].
+pub(crate) const RIGHT_DOCK_SHARE: f32 = 0.25;
+pub(crate) const RIGHT_DOCK_MIN_REMS: f32 = 22.0;
+pub(crate) const RIGHT_DOCK_MAX_REMS: f32 = 27.5;
 /// Video pane height above the traces, in rems (the traces take the rest).
 pub(crate) const VIDEO_REMS: f32 = 22.5;
 
 /// Narrowest window, in rems (1440 px at the default base), whose default
-/// layout opens the Library dock too: below it the traces would get less
-/// than half the width, so the Library starts closed (ctrl-b opens it).
+/// layout opens the left dock too: below it the traces would get less
+/// than half the width, so the Laps sidebar starts closed (ctrl-b opens it).
 pub(crate) const LIBRARY_OPEN_MIN_REMS: f32 = 90.0;
 /// The right dock never takes more than this share of the window.
 pub(crate) const RIGHT_DOCK_MAX_SHARE: f32 = 0.3;
 
-/// Default dock widths for a window `width` wide: (library open, library
+/// Default dock widths for a window `width` wide: (left dock open, left
 /// width, right dock width).
 pub(crate) fn default_dock_widths(width: Pixels, rem: Pixels) -> (bool, Pixels, Pixels) {
     let library = width >= rem * LIBRARY_OPEN_MIN_REMS;
-    let right = (rem * RIGHT_DOCK_REMS).min(width * RIGHT_DOCK_MAX_SHARE);
-    (library, rem * LEFT_DOCK_REMS, right)
+    let left = (width * LEFT_DOCK_SHARE).clamp(rem * LEFT_DOCK_MIN_REMS, rem * LEFT_DOCK_MAX_REMS);
+    let right = (width * RIGHT_DOCK_SHARE)
+        .clamp(rem * RIGHT_DOCK_MIN_REMS, rem * RIGHT_DOCK_MAX_REMS)
+        .min(width * RIGHT_DOCK_MAX_SHARE);
+    (library, left, right)
 }
 
 /// How a layout came to be on screen.
@@ -254,6 +267,13 @@ mod tests {
             default_dock_widths(px(1920.), rem).0,
             "Library open at 1920"
         );
-        assert_eq!(default_dock_widths(px(1920.), rem).2, rem * RIGHT_DOCK_REMS);
+        // The mockup's proportions at 1440 wide; capped on wide windows.
+        let (_, left, right) = default_dock_widths(px(1440.), rem);
+        assert_eq!((left, right), (px(288.), px(360.)));
+        let (_, left, right) = default_dock_widths(px(1920.), rem);
+        assert_eq!(
+            (left, right),
+            (rem * LEFT_DOCK_MAX_REMS, rem * RIGHT_DOCK_MAX_REMS)
+        );
     }
 }

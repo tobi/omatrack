@@ -837,7 +837,11 @@ fn lap_info(source: &RecordingSource, lap: i32) -> LapInfo {
             .map(|row| format_lap_time(row.time_ms))
             .unwrap_or_default()
             .into(),
-        driver: node.driver.clone().map(SharedString::from),
+        // The Library and the Laps sidebar name it the same way ("Driver 1"
+        // for a bare logger id).
+        driver: crate::panels::library::driver_of(node)
+            .map(|driver| driver.name)
+            .or_else(|| node.driver.clone().map(SharedString::from)),
         title: node.title.clone().into(),
         track: node
             .metadata

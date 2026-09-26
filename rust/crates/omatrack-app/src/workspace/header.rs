@@ -321,7 +321,7 @@ impl Workspace {
                     }),
             )
             .on_click(cx.listener(|this, _, window, cx| {
-                this.focus_panel(PanelKind::Library, window, cx);
+                this.focus_panel(PanelKind::Laps, window, cx);
             }))
             .into_any_element()
     }

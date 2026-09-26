@@ -217,9 +217,9 @@ fn out_and_in_laps_wait_behind_a_counted_disclosure(cx: &mut TestAppContext) {
 fn enter_sets_the_primary_and_alt_enter_the_reference(cx: &mut TestAppContext) {
     let event = event(cx);
     let ada = event.ada.id.clone();
-    // Ctrl+5 lands on the sidebar with the cursor on the primary's lap.
+    // Ctrl+1 lands on the sidebar with the cursor on the primary's lap.
     cx.update_window(event.handle, |_, window, cx| {
-        window.press("ctrl-5", cx);
+        window.press("ctrl-1", cx);
         window.render_frame(cx);
     })
     .unwrap();

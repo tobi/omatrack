@@ -357,12 +357,12 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   section list + `GroupBox` cards, replacing the dock area and status bar
   while open; the dock stays alive behind it). Never rebuild what the kit
   has.
-- **Right dock default** (layout v5): one tab group led by **Time lost**
+- **Right dock default** (layout v6): one tab group led by **Time lost**
   (`panels::time_goes`, "Where the time goes": heat map, corners by Δt
   largest first with loss bar, s and entry-speed Δ, the corners/straights
   split, and a card for the selected corner with its speeds, entry/exit Δt
   and the `CornerCheck` notes as sentences, plus "Open … in detail" =
-  `FocusCorner` + the Corners tab); Corners, Laps, Channels, Map and
+  `FocusCorner` + the Corners tab); Corners, Channels, Map and
   Inspector are tabs behind it. The selected corner is the focused one, else
   the one under the cursor, else the largest loss. Without GPS the map is
   omitted and the table stands alone.
@@ -408,7 +408,7 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   or more corners are a quiet bracket line above the rows. Zones shade every
   lane as quiet columns (`muted` at low alpha, in the overlay); edges show
   only as grips while editing.
-- **Left dock: [Laps | Library]** (layout v5). The **Laps sidebar**
+- **Left dock: [Laps | Library]** (layout v6). The **Laps sidebar**
   (`panels::laps`, `PanelKind::Laps`) is the default left surface: the
   primary's event (its track and day in the `LibrarySnapshot`, plus the
   reference's recording when it comes from elsewhere), one group per
@@ -419,9 +419,15 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   `format_delta` (`Best` on the best); out / in / pit / partial laps wait
   behind `Show out and in laps (N)` unless they hold a role. Role laps are
   filled with the role badge; groups without a role start collapsed. The
-  Library tree is the tab beside it, reached by Ctrl+1, Ctrl+O, the palette
+  Library tree is the tab beside it, reached by Ctrl+6, the palette
   `Browse library` and the sidebar's empty state. The Laps table on the
-  right is gone (one lap list, not two).
+  right is gone (one lap list, not two). A title-bar pill click focuses
+  it (Ctrl+1).
+- **Dock proportions** (`workspace::layout::default_dock_widths`): left
+  20% of the window (18–22.5 rem), right 25% (22–27.5 rem, at most 30%):
+  the mockup's 288 / 360 px at 1440 wide, 360 / 440 px at 1920. Below
+  90 rem the left dock starts closed (ctrl-b opens it). The filmstrip row
+  stays full width above the docks at every size.
 - **gpui-omarchy was evaluated and rejected**: it disables gpui-component,
   lacks key components, and its theme conflicts with gpui-component's.
 - **State** ([entity.md](.agents/skills/gpui-kit/references/gpui/entity.md)):
@@ -579,7 +585,7 @@ palette items. See [action.md](.agents/skills/gpui-kit/references/gpui/action.md
 |---|---|
 | ctrl-k / ctrl-, / ctrl-o / ctrl-q | Palette / Preferences / Open folder / Quit |
 | ctrl-b / ctrl-j | Toggle left dock ([Laps, Library]) / right dock ([Time lost, Corners, Channels, Map, Inspector] tabs) |
-| ctrl-1 … ctrl-6 | Focus Library / Traces / Video / Corners / Laps / Map |
+| ctrl-1 … ctrl-6 | Focus, in layout order: Laps / Traces / Video / Corners / Where the time goes / Library (Channels, Map and Inspector are tabs behind Where the time goes) |
 | space; left / right | Play/pause; ±2 s |
 | m / s / p | Mute / 0.25x / continuous playback |
 | f / escape | Fullscreen video stage / exit, focus restored (escape also closes overlays) |

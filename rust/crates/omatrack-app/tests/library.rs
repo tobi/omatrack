@@ -8,11 +8,11 @@ use gpui_kit::TestAppContext;
 use gpui_kit::test::TestWindowExt as _;
 use omatrack_app::state::LapRef;
 
-/// The Library is the tab behind the Laps sidebar: Ctrl+1 brings it
+/// The Library is the tab behind the Laps sidebar: Ctrl+6 brings it
 /// forward (and focuses its tree).
 fn show_library(test: &common::TestApp, cx: &mut TestAppContext) {
     cx.update_window(test.window.into(), |_, window, cx| {
-        window.press("ctrl-1", cx)
+        window.press("ctrl-6", cx)
     })
     .unwrap();
     cx.run_until_parked();
@@ -29,7 +29,7 @@ fn arrows_and_enter_set_the_primary_and_alt_enter_the_reference(cx: &mut TestApp
     // Rows: 0 track, 1 day, 2 first recording (closed), its laps once open.
     cx.update_window(test.window.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.press("ctrl-1", cx);
+        window.press("ctrl-6", cx);
         for key in ["down", "down", "right", "down", "down"] {
             window.press(key, cx);
         }
@@ -134,7 +134,7 @@ fn double_clicking_a_lap_sets_the_primary(cx: &mut TestAppContext) {
     // double-click one of its laps.
     cx.update_window(test.window.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.press("ctrl-1", cx);
+        window.press("ctrl-6", cx);
         for key in ["down", "down", "down", "right"] {
             window.press(key, cx);
         }
@@ -231,7 +231,7 @@ fn the_footer_loads_the_selected_row_and_is_disabled_without_one(cx: &mut TestAp
 
     // A recording row: "Set primary" loads its best lap.
     cx.update_window(test.window.into(), |_, window, cx| {
-        window.press("ctrl-1", cx);
+        window.press("ctrl-6", cx);
         // Rows: 0 track, 1 day, 2 first recording.
         for key in ["down", "down"] {
             window.press(key, cx);
@@ -245,7 +245,7 @@ fn the_footer_loads_the_selected_row_and_is_disabled_without_one(cx: &mut TestAp
 
     // A lap row: "Set reference" loads that lap.
     cx.update_window(test.window.into(), |_, window, cx| {
-        window.press("ctrl-1", cx);
+        window.press("ctrl-6", cx);
         for key in ["right", "down", "down"] {
             window.press(key, cx);
         }

@@ -486,7 +486,7 @@ fn dispatch_in_library(
     cx: &mut TestAppContext,
 ) {
     step(test, cx, |window, cx| {
-        window.press("ctrl-1", cx);
+        window.press("ctrl-6", cx);
         window.dispatch_action(Box::new(action), cx);
     });
 }
@@ -500,7 +500,7 @@ fn the_recording_metadata_dialog_saves_and_shows_the_effective_value(cx: &mut Te
     let session = install(&test, snapshot_with(&recording), cx);
     let trigger = cx
         .update_window(test.window.into(), |_, window, cx| {
-            window.press("ctrl-1", cx);
+            window.press("ctrl-6", cx);
             window.focused(cx)
         })
         .unwrap();
@@ -591,7 +591,7 @@ fn ctrl_i_opens_the_metadata_of_the_selected_recording(cx: &mut TestAppContext) 
     let test = start(cx, library.sandbox.options());
     install(&test, snapshot_with(&recording), cx);
     step(&test, cx, |window, cx| {
-        window.press("ctrl-1", cx);
+        window.press("ctrl-6", cx);
         window.press("down", cx);
         window.press("down", cx);
         window.press("ctrl-i", cx);

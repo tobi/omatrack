@@ -47,7 +47,7 @@ use omatrack_trace::lanes::PathBuffer;
 use omatrack_ui::TypeScale as _;
 use omatrack_ui::{DeltaSense, LapRole, MISSING_VALUE, format_delta};
 
-use crate::actions::{FocusPanel1, Role, SelectLap, SetPrimary, SetReference};
+use crate::actions::{FocusPanel6, Role, SelectLap, SetPrimary, SetReference};
 use crate::panels::{PanelKind, SELECT_A_LAP, empty_state};
 use crate::state::{AppState, LapRef};
 
@@ -632,13 +632,32 @@ impl LapsPanel {
                     v_flex()
                         .flex_1()
                         .min_w_0()
+                        // The trend rides beside the title so the summary
+                        // keeps the full width (it never truncates at the
+                        // default dock width).
                         .child(
-                            div()
-                                .truncate()
-                                .text_title()
-                                .font_medium()
-                                .text_color(theme.sidebar_foreground)
-                                .child(group.title.clone()),
+                            h_flex()
+                                .w_full()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_title()
+                                        .font_medium()
+                                        .text_color(theme.sidebar_foreground)
+                                        .child(group.title.clone()),
+                                )
+                                .when(group.trend.len() > 1, |this| {
+                                    this.child(Trend {
+                                        values: group.trend.clone(),
+                                        best: group.trend_best,
+                                        buffers: self.trends[ix].clone(),
+                                        color: theme.muted_foreground,
+                                        mark: theme.sidebar_foreground,
+                                    })
+                                }),
                         )
                         .child(
                             div()
@@ -648,16 +667,7 @@ impl LapsPanel {
                                 .text_color(theme.muted_foreground)
                                 .child(group.summary.clone()),
                         ),
-                )
-                .when(group.trend.len() > 1, |this| {
-                    this.child(Trend {
-                        values: group.trend.clone(),
-                        best: group.trend_best,
-                        buffers: self.trends[ix].clone(),
-                        color: theme.muted_foreground,
-                        mark: theme.sidebar_foreground,
-                    })
-                }),
+                ),
         )
     }
 
@@ -884,7 +894,7 @@ impl LapsPanel {
                     .small()
                     .label("Browse library")
                     .on_click(cx.listener(|_, _, window, cx| {
-                        window.dispatch_action(Box::new(FocusPanel1), cx)
+                        window.dispatch_action(Box::new(FocusPanel6), cx)
                     })),
             )
     }

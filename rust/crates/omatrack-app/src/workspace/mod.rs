@@ -646,7 +646,7 @@ impl Workspace {
             );
         }))
         .on_action(cx.listener(|this, _: &FocusPanel1, window, cx| {
-            this.focus_panel(PanelKind::Library, window, cx)
+            this.focus_panel(PanelKind::Laps, window, cx)
         }))
         .on_action(cx.listener(|this, _: &FocusPanel2, window, cx| {
             this.focus_panel(PanelKind::Traces, window, cx)
@@ -658,10 +658,10 @@ impl Workspace {
             this.focus_panel(PanelKind::Corners, window, cx)
         }))
         .on_action(cx.listener(|this, _: &FocusPanel5, window, cx| {
-            this.focus_panel(PanelKind::Laps, window, cx)
+            this.focus_panel(PanelKind::TimeGoes, window, cx)
         }))
         .on_action(cx.listener(|this, _: &FocusPanel6, window, cx| {
-            this.focus_panel(PanelKind::Map, window, cx)
+            this.focus_panel(PanelKind::Library, window, cx)
         }))
         // Playback.
         .on_action(cx.listener(|this, _: &TogglePlay, _, cx| {

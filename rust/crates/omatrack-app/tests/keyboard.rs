@@ -90,7 +90,7 @@ fn single_keys_type_into_the_library_search(cx: &mut TestAppContext) {
 
     // The Library is the tab behind the Laps sidebar: bring it forward.
     cx.update_window(test.window.into(), |_, window, cx| {
-        window.press("ctrl-1", cx)
+        window.press("ctrl-6", cx)
     })
     .unwrap();
     cx.run_until_parked();
