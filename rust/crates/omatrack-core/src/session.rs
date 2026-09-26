@@ -17,6 +17,9 @@
 //! and checks a caller-owned cancel flag between stages, so a UI can run it
 //! on a background executor and drop stale results (latest wins).
 
+pub use crate::consistency::{Consistency, SessionLaps};
+pub use crate::events::{LapEvent, analysis_events};
+
 use crate::alignment::Strategy;
 use crate::comparison::{self, Comparison};
 use crate::corners::zones::{

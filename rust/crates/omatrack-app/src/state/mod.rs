@@ -5,6 +5,7 @@
 //! | [`Preferences`] | `omatrack.yml`, debounced atomic saves |
 //! | [`Library`] | locations, scans, the catalog snapshot, search and facets |
 //! | [`Session`] | primary/reference laps and their analysis |
+//! | [`TraceView`] | the trace view mode and the primary's session spread |
 //! | [`Jobs`] | named running work for the status bar |
 //! | [`VideoController`] | the primary mpv player |
 //! | `ViewportState` / `CursorState` | the shared trace window and cursor (omatrack-trace) |
@@ -16,6 +17,7 @@ pub mod jobs;
 pub mod library;
 pub mod preferences;
 pub mod session;
+pub mod trace_view;
 pub mod video;
 
 use std::path::PathBuf;
@@ -28,6 +30,7 @@ pub use jobs::{Job, JobHandle, JobId, Jobs};
 pub use library::{Library, LibraryEvent, RecordingSource, ScanStatus};
 pub use preferences::{Preferences, PreferencesEvent};
 pub use session::{LapInfo, LapRef, RoleSlot, RoleState, Session, SessionEvent};
+pub use trace_view::{SessionSpread, TraceView, TraceViewEvent, TraceViewMode};
 pub use video::{ComposeLayout, VideoAvailability, VideoController, VideoEvent};
 
 /// How the application state is built: where its files live, whether a
@@ -106,6 +109,7 @@ pub struct AppState {
     pub preferences: Entity<Preferences>,
     pub library: Entity<Library>,
     pub session: Entity<Session>,
+    pub trace_view: Entity<TraceView>,
     pub jobs: Entity<Jobs>,
     pub video: Entity<VideoController>,
     pub viewport: Entity<ViewportState>,
@@ -130,6 +134,8 @@ impl AppState {
         });
         let session =
             cx.new(|cx| Session::new(library.clone(), preferences.clone(), jobs.clone(), cx));
+        let trace_view =
+            cx.new(|cx| TraceView::new(session.clone(), preferences.clone(), jobs.clone(), cx));
         let video = cx.new(|cx| {
             VideoController::new(
                 preferences.clone(),
@@ -159,6 +165,7 @@ impl AppState {
             preferences,
             library,
             session,
+            trace_view,
             jobs,
             video,
             viewport,

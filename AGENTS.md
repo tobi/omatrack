@@ -136,8 +136,8 @@ file format.
 - `omatrack.yml` (`$XDG_CONFIG_HOME/omatrack/`, else `~/.config/omatrack/`) is
   the only user config store: locations, channel display, drivers, last
   selection, recents (max 6), per-track corner overrides, video/trace settings,
-  `workspace.layout`. Hand-editable, unknown keys preserved, atomic writes, never
-  written into telemetry or caches.
+  `workspace.layout`, `trace.view_mode`. Hand-editable, unknown keys preserved,
+  atomic writes, never written into telemetry or caches.
 - `TRACK.yml` in any folder: recordings inherit every one above them, merged
   root to leaf (closer wins per key). App edits are atomic and keep unrelated
   keys.
@@ -344,6 +344,35 @@ so a pin bump regenerates every cache.
   (`Cursor at 368 m, Turn 1`, `straight after T3` between corners) and the
   along-track gap when gated as above, never over the pictures.
 
+### 6.10 Session consistency and driving events
+
+- **Consistency** (`consistency::{SessionLaps::for_consistency,
+  build_consistency, Consistency}`): the `counts_for_best` laps of the
+  primary's recording within `SPREAD_MAX_GAP` (105%) of its best
+  (`spread_lap_ids`, fastest first, so one slow lap never sets the band;
+  the parsed recording
+  and the primary lap are reused), resampled onto the primary's 50 Hz grid
+  by **share of lap distance** (gear at the nearest sample, never blended),
+  per `SPREAD_CHANNELS` channel: each other lap's `Arc<[f64]>` and the
+  per-station min/max over those laps and the primary. Laps without distance
+  are left out; fewer than `MIN_SPREAD_LAPS` (2) other laps is no spread
+  and the view says so. `Consistency::is_approximate` holds when any of
+  those laps (or the primary) has speed-fused rather than native distance:
+  the band is then placed by share of an estimated distance and the view
+  says `approximate`.
+- **Events** (`events::{detect, analysis_events}`): brake onsets (brake
+  crosses `BRAKE_ONSET_BAR` after at least `BRAKE_REARM_SECONDS` below it),
+  lift-offs (throttle from above `LIFT_FROM_THROTTLE` to below
+  `LIFT_TO_THROTTLE`), up/down shifts with the new gear (held
+  `GEAR_HOLD_SECONDS`, neutral ignored; same-direction shifts within
+  `SHIFT_SEQUENCE_SECONDS` are one event at the first shift carrying the
+  final gear), for both laps (the reference's through the shared map). A
+  primary brake onset pairs with the nearest reference onset within
+  `BRAKE_PAIR_METRES` (`brake_offset`, + = the primary brakes later).
+  Each corner with notes is one event at its zone start,
+  `T5: <sentences>`; the "matched" note is not an event. Thresholds are
+  named constants; nothing here changes CLI output.
+
 ## 7. UI architecture rules (GPUI)
 
 On top of [coding-guides.md](.agents/skills/gpui-kit/references/coding-guides.md)
@@ -367,6 +396,10 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   (palette `Show …`) join the right dock as tabs when opened. The selected
   corner is the focused one, else the one under the cursor, else the
   largest loss. Without GPS the map is omitted and the table stands alone.
+  When a lap's usable fixes fall under `panels::map::MIN_GPS_COVERAGE`
+  (90%), both laps are placed on the atlas centerline by share of lap
+  distance instead of drawing broken fragments, and the Map and Time lost
+  panels say `Laps placed on the track outline (GPS dropouts)`.
   **Time loss is placed only by a map that follows the track**
   (`Comparison::places_time_loss`: GPS, pre-corner dampers, Lap distance %,
   manual dampers on a distance base): on a lap-time map the panel says
@@ -401,22 +434,55 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   re-homeable: a fullscreen surface renders the same entity
   (`Workspace::filmstrip()`), never a second strip.
 - **The centre** (video over traces) has no panel title bars
-  (`PanelKind::has_title_bar`) and **one control row**, under the
-  pictures: a filled play disc, `0.25×`, `Per lap | Continuous`,
-  `Distance | Time`, then right-aligned the cursor place and the chips that
-  need attention (a degraded sync, identity), and small icon buttons: mute,
-  video layout (and reference pacing), fullscreen and a `…` tools menu (FIT,
-  Resize lanes, Edit corners, zoom). Every control dispatches the action of
-  its key. The traces carry no toolbar; a range selection's statistics
-  float at the top right of the lanes.
-- **Corner ruler**: labels only, centred over their zones on two staggered
-  rows by corner index (T1 T3 T5 above, T2 T4 below), in the short form
-  (`T10A`, as on the map and in the tables) at every width, never
-  overlapping. The focused corner,
-  else the one under the cursor, is a filled chip. Complexes that group two
-  or more corners are a quiet bracket line above the rows. Zones shade every
-  lane as quiet columns (`muted` at low alpha, in the overlay); edges show
-  only as grips while editing.
+  (`PanelKind::has_title_bar`). The video's **control row** sits directly
+  under the pictures (they are fitted to the pane and sit on the row; the
+  default pane height, `layout::default_video_height`, holds two split
+  16:9 pictures plus the row): a filled play disc, `0.25×`,
+  `Per lap | Continuous`, `Distance | Time`, then right-aligned the cursor
+  place and the chips that need attention (a degraded sync, identity), and
+  small icon buttons: mute, video layout (and reference pacing) and
+  fullscreen. The **trace toolbar** heads the traces
+  (`panels::traces::toolbar`): `[zoom out | zoom in | fit]`, the view mode
+  `Lap | Corners | Consistency | Events` (`trace.view_mode`), `☰ Channels`
+  (lane visibility checks, `channels.<key>.visible`), the colour mode as
+  two segments `Lap colours | Channel colours` (`trace.color_mode`), and
+  right-aligned a `…` lane-tools menu
+  (FIT, Resize lanes, Edit corners). Each control has one home and
+  dispatches the action of its key. A segmented control's selected
+  segment is a clear neutral fill (`panels::selected_segment`), never a
+  role colour. A range selection's statistics float at the top right of
+  the lanes.
+- **Trace view modes** (`workspace::view_mode`): **Lap** is the whole-lap
+  view. **Corners** frames the focused corner, else the first, with its
+  approach and exit (`Viewport::frame_corner`) through the 140 ms focus
+  motion and neighbour-lap masks, the cursor at the corner's apex (else
+  its start); `h`/`j` step, fit fits the corner, a new
+  analysis keeps the same corner (by zone id); leaving it (another mode or
+  Escape) restores the viewport and cursor from before the mode.
+  **Consistency** and **Events** keep the lap framing: Consistency draws
+  the primary's session laps behind it, Events marks brake onsets, lifts,
+  shifts and corner notes (both below, `state::TraceView`). Apex callouts
+  show in Lap and Corners only; event marks only in Events. The segmented
+  control, `alt-1`..`alt-4` and the palette all set `TraceView::set_mode`,
+  the one source of the mode.
+- **Corner ruler**: labels centred over their zones, on one row where
+  every label fits there, else on two staggered rows by corner index (T1
+  T3 T5 above, T2 T4 below), in the short form (`T10A`, as on the map and
+  in the tables) at every width, never overlapping, with a thin rule under
+  each zone along the ruler's foot. The focused corner, else the one
+  under the cursor, is a filled chip (and a foreground rule). Complexes
+  that group two or more corners are a quiet bracket line above the rows.
+  The ruler row's caption is `Corners` (the source in its tooltip; said
+  aloud only when not the atlas: `edited`, `from braking`, `GPS off the
+  map`), and in Consistency what the band is (`Session · 4 laps within
+  5% · approximate`). Zones shade every lane as quiet columns
+  (`CORNER_BAND_ALPHA` of `muted`) in the static layer, beneath the
+  traces; while editing the overlay draws the draft with grips.
+- **Apex callouts** (Lap, Corners): only where the primary's apex is an
+  interior minimum (`CornerMetrics::apex_is_local`: `APEX_EDGE_MARGIN_M`
+  from both zone edges, `APEX_MIN_DROP_KMH` below the entry); a ringed
+  dot, the label clear of both laps across its width and inside the plot,
+  or left out.
 - **Left dock: [Laps | Library]** (layout v7). The **Laps sidebar**
   (`panels::laps`, `PanelKind::Laps`) is the default left surface: the
   primary's event (its track and day in the `LibrarySnapshot`, plus the
@@ -459,6 +525,23 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   alignment. Swap (`x`) cancels pending loads, keeps cursor and viewport,
   inverts manual offset. Changing a lap clears pair tuning, keeps cursor and
   viewport.
+- **Trace view mode** (`state::TraceView`, `trace.view_mode`: `lap`,
+  `corners`, `consistency`, `events`) maps to `omatrack_trace::TraceLayers`
+  (a mode switch repaints the static layer once, lane geometry kept).
+  Consistency owns the session-spread pipeline slot, started lazily on
+  entering the mode, once per primary lap (Jobs: "Loading session laps"
+  with progress); the spread attaches only to the primary lap it was built
+  on. Drawn behind each lane: a low-alpha min–max band
+  (`SPREAD_BAND_ALPHA`) and one thin quiet line per lap
+  (`SPREAD_LINE_WIDTH`, decimated at `SPREAD_LINE_COLUMNS_PER_PX`), static
+  layer, cached per scene like the lane; the reference line steps back
+  (`CONSISTENCY_REFERENCE_EMPHASIS`) so the primary leads. Events draw
+  short ticks on their lane (brake onset on Brake, lift on Throttle,
+  shifts on Gear, notes on the gap lane), the primary's at the top with a
+  small tag (brake point vs the reference's, `+12 m`; a shift's gear,
+  `↓3`), the reference's at the bottom, quieter; full labels on hover in
+  the overlay.
+  Too few laps shows a notice over the lanes, never an empty view.
 - **Overlays through `Root`**; escape closes the topmost, restoring focus.
 - **Preferences** writes go through the Preferences entity: debounced, atomic,
   off-thread, flushed on quit.
@@ -467,19 +550,47 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   (its own lane; `combine_with_previous` overlays it) and Gear. Steering,
   RPM and every other channel are opt in (Channels panel,
   `channels.<key>.visible`).
-- **Lane legends**: the chrome column is `omatrack_trace::CHROME_REMS` wide
-  (lanes, damper strip and the ruler row share it). Line 1 is title (medium)
-  + unit (muted); below it, P / R / Δ sit in fixed-width tabular columns on
-  the same spines in every lane (P in the primary role, R in the reference
-  role, Δ muted), with a P R Δ key in the ruler row; the channel column
-  (a line swatch) exists only while a lane is shared. The gap lane
-  (`Gap to R`) is the only big figure: the gap at the cursor (idle: the
-  change in view) in gain/loss, over `s at cursor, ends +2.44` (`… in view`
-  when zoomed); under LOW confidence it reads `≈` and its figure and fill
-  keep gain/loss at 60% emphasis (`APPROXIMATE_DELTA_EMPHASIS`), never
-  grey. Its FIT minimum is `GAP_LANE_MIN_HEIGHT` (1.5 lanes); the basis is
-  the Sync selector's, never a lane subtitle. A shared
-  lane's title and two rows fit `MIN_LANE_HEIGHT`. Nothing clips
+- **Lane card**: the ruler row, damper strip and lanes sit in one bordered,
+  rounded card (`trace-card`). Each lane is legend | value gutter | plot:
+  the chrome column is `omatrack_trace::CHROME_REMS` wide
+  (`LEGEND_REMS` + `GUTTER_REMS`; lanes, damper strip, ruler row and the
+  distance axis share it), lanes are split by hairlines, and the distance
+  axis under them has major and minor tick marks (`0`, `500 m`, `1 km`).
+- **Lane legends**: line 1 is title (medium) + unit (muted). A lane of
+  its own at least `TALL_LEGEND_REMS` tall shows the primary as a large
+  figure in its colour, then the reference lap's label (muted, `L8`), its
+  value and the Δ on one row beneath (`236` / `L8 237 −1`); shorter lanes
+  put the same on one row. The Δ appears only where it has a sense (speed:
+  higher is better, gain/loss coloured). Steering is signed (`+53°`); a
+  step lane (gear) omits a reference equal to the primary. A shared lane
+  gains a line swatch per channel. There is no P R Δ key. The gap lane
+  (`Gap to R`) is the gap at the cursor (idle: the change in view) in
+  gain/loss, over `ends +2.44` (`in view …` when zoomed), or
+  `at T1 +0.319` (the corner's Δt when time loss is placed) while the
+  cursor is in a corner; under LOW confidence it reads `≈` and its figure
+  and fill keep gain/loss at 60% emphasis (`APPROXIMATE_DELTA_EMPHASIS`),
+  never grey. Its FIT minimum is `GAP_LANE_MIN_HEIGHT` (1.5 lanes); the
+  basis is the Sync selector's, never a lane subtitle. A shared lane's
+  title and two rows fit `MIN_LANE_HEIGHT`. Nothing clips
+  (headless-tested).
+- **Value gutter**: round ticks right-aligned beside dotted gridlines
+  (`static_layer::value_ticks`): whole steps on step lanes, as dense as
+  `STEP_TICK_SPACING` allows (gear 2/4/6; a step lane is at least
+  `STEP_LANE_MIN_HEIGHT`, 64 px), signed on Δ (`+1.0 +0.5 0`, a solid zero
+  line = the reference; a zoomed Δ keeps at least two ticks), L/R at
+  steering's ends, fewer ticks as a lane shrinks.
+- **Colour modes** (`trace.color_mode: lap | channel`, palette
+  `Toggle lap and channel colours` = `omatrack::ToggleTraceColorMode`):
+  lap colours (default) draw every lap in its role; channel colours name
+  the channel (speed `blue`, or `cyan` when the theme's blue is the
+  primary's hue; throttle `green`, brake `red`, steering
+  `yellow`, gear foreground, others `chart_1..5`), the reference in the
+  same hue at `CHANNEL_REFERENCE_ALPHA` (40%). In every mode the reference
+  strokes at `REFERENCE_STROKE_SCALE` (0.75x) of the primary's width.
+  Legend values: in lap colours each lap's value in its role colour; in
+  channel colours the primary's in the channel hue, the reference's in
+  the foreground beside its muted lap label; Δ always gain/loss. A mode
+  change repaints the static layer once and never rebuilds geometry
   (headless-tested).
 
 ## 8. Trace rendering performance contract
@@ -499,7 +610,13 @@ Semantics carry over from [docs/TRACE_RENDERING.md](docs/TRACE_RENDERING.md).
   joins (miter limit 2, no caps), width independent of zoom. Fills are
   non-overlapping trapezoids to a transparent baseline (premultiplied MSAA
   double-blends overlaps). Order: primary area, reference outline, primary
-  outline. Delta: diverging gain/loss fill.
+  outline. Delta: diverging gain/loss fill, its line in the gain or loss
+  colour by sign. Speed has a quiet area fill (`SPEED_FILL`, 20%) fading
+  to its baseline. Gridlines are one dashed-border quad per line (a single
+  primitive per gridline, never per-dash quads). Apex callouts (a dot on
+  the primary speed and `66 −1`, apex speed and its Δ to the reference)
+  paint in the static layer from `Analysis` rows, skipping any that would
+  overlap.
 - **Forbidden:** `shape::Line`/`Area` or `PathBuilder` for traces (they skip
   NaN instead of lifting the pen; lyon u16 indices hit the **65,535-vertex
   cliff** where later lanes silently vanish). Use `omatrack_trace::mesh`
@@ -518,7 +635,9 @@ Semantics carry over from [docs/TRACE_RENDERING.md](docs/TRACE_RENDERING.md).
   (8 lanes x 2 laps, 1x–10,000x sweep, 2560 device px, dpr 2): geometry avg
   ≤ 4 ms, worst ≤ 8.33 ms, hover < 0.1 ms. Report before/after for renderer
   changes. The worst-frame target is not yet met on every run; wave 4 hardens
-  it **[plan]**.
+  it **[plan]**. The Consistency row (8 session laps + band on 7 lanes) meets
+  the average (≈2.7 ms) but its worst (cold, full lap ≈12 ms) exceeds the
+  8.33 ms target while staying under the 16.67 ms ceiling.
 
 ## 9. mpv-player contract
 
@@ -563,8 +682,11 @@ dependency.
   `theme::install`; the active families show beside it in Preferences.
 - Type ([`omatrack_ui::typography`](rust/crates/omatrack-ui/src/typography.rs)):
   one interface family. Every number is `.numeric()` (Inter `tnum`, tabular
-  figures), never the monospace family, which is kept for paths, file
-  contents and identifiers. Sizes come only from the `TypeScale` steps
+  figures), except in the trace area: legends, value gutters, the distance
+  axis and apex callouts use `.trace_numeric(cx)` / `trace_figures()` (the
+  theme's monospace family, bundled Geist Mono) for their numbers, words
+  staying in the interface family. Elsewhere the monospace family is kept
+  for paths, file contents and identifiers. Sizes come only from the `TypeScale` steps
   (caption 11 / label 12 / body 13 / title 14 / heading 16 / display 20 px
   at the default rem); painted labels use `TypeStep::size` and
   `tabular_figures()`. Regular for values, medium for row and lane names,
@@ -573,12 +695,18 @@ dependency.
 - Roles: primary = `primary` (Omarchy accent); reference = `warning`; gain =
   `success`; loss = `danger`; grid `border`/`muted`; labels
   `muted_foreground`; extra channels `chart_1..5`;
-  `channels.<key>.color`/`reference_color` override. A channel sharing a
-  lane (brake overlaid on throttle) draws its primary in its chart hue and its
-  reference in the reference role, both quieter (60% over the background).
-  Legend and inspector values always carry the lap role colour. success /
+  `channels.<key>.color`/`reference_color` override. In lap colours a
+  channel sharing a lane (brake overlaid on throttle) keeps both laps' role
+  hues, quieter (60% over the background); channel colours (section 7)
+  use `blue`/`green`/`red`/`yellow` by channel.
+  Legend and inspector values carry the lap role colour in lap colours
+  (channel colours: section 7, "Colour modes"). success /
   danger mean only Δ, never a pedal. With no Omarchy palette the built-in
   dark theme's primary is `blue-400` (its own primary is white).
+- Colour mode (`trace.color_mode`, the trace toolbar's
+  `Lap colours | Channel colours` segments and the palette): `lap` (default) draws lanes in the lap roles as
+  above; `channel` draws each channel in its own hue (section 7). Either
+  way it is a repaint over the same geometry, never a rebuild.
 - Heat ramp (`TracePalette::heat`, "less — more"): a quiet tone
   (`muted_foreground` at 28%) blended to `danger` in `HEAT_LEVELS` steps,
   losing stations spread from their 25% to their 95% quantile; gains stay
@@ -607,11 +735,16 @@ palette items. See [action.md](.agents/skills/gpui-kit/references/gpui/action.md
 | 1–5 | Split, primary+PiP, reference+PiP, primary only, reference only |
 | x / a | Swap roles / edit corners |
 | h / j | Previous / next corner (no wrap) |
+| alt-1 … alt-4 | Trace view: Lap / Corners / Consistency / Events (escape leaves Corners for the lap view) |
 | = / - / ctrl-0 (ctrl-= / ctrl--) | Zoom in / out / reset |
 | [ / ] / t | Previous / next lap / toggle Distance-Time axis |
 | up / down; enter / alt-enter (Library, Laps) | Move; set primary / reference (Laps: enter on a group or disclosure opens it) |
 | ctrl-s / escape (resize, corner edit) | Save / cancel |
 | escape; up / down (Preferences) | Back to the workspace (focus restored); previous / next section |
+
+No key: `Toggle lap and channel colours` (`ToggleTraceColorMode`, the
+trace toolbar's `Channel colours` toggle and the palette, persisted as
+`trace.color_mode`).
 
 Pointer: left-drag selects, middle-drag and horizontal scroll pan, wheel (also
 shift/ctrl) zooms about the pointer, vertical wheel scrolls overflowing lanes,

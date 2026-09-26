@@ -25,12 +25,12 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use gpui_kit::{
-    Background, Bounds, Hsla, Path, PathVertex, Pixels, Point, Window, linear_color_stop,
-    linear_gradient, point, px,
+    Background, Bounds, ContentMask, Hsla, Path, PathVertex, Pixels, Point, Window,
+    linear_color_stop, linear_gradient, point, px,
 };
 
-use crate::decimate::{DecimateParams, PathPoint, PlotRect, decimate};
-use crate::mesh::{TriangleSink, fill_to_baseline, stroke};
+use crate::decimate::{DecimateParams, PathPoint, PlotRect, decimate, device_columns};
+use crate::mesh::{BandColumn, TriangleSink, fill_band, fill_to_baseline, stroke};
 use crate::scale::Viewport;
 use crate::scene::{FractionMap, LaneKind, LaneSeries, LaneStyle, TraceScene, YRange};
 
@@ -160,7 +160,7 @@ impl TriangleSink for PathBuffer {
                 xy_position: point(px(v[0]), px(v[1])),
                 // Interior coverage: the rasterizer paints the triangle solid.
                 st_position: point(0., 1.),
-                content_mask: gpui_kit::ContentMask::default(),
+                content_mask: ContentMask::default(),
             });
         }
     }
@@ -171,6 +171,7 @@ impl TriangleSink for PathBuffer {
 pub struct Scratch {
     points: Vec<PathPoint>,
     step: Vec<PathPoint>,
+    band: Vec<BandColumn>,
 }
 
 /// Inputs that shape one channel's geometry. Never a colour.
@@ -292,6 +293,11 @@ pub struct ChannelColors {
     /// Peak alpha of the fill gradient.
     pub fill_alpha: f32,
     pub neighbour: Hsla,
+    /// The primary stroke's colour below the baseline, when it differs
+    /// from above it (the Δ line: loss above zero, gain below). The one
+    /// stroke is painted twice under complementary content masks, so the
+    /// sign split costs no geometry.
+    pub primary_below: Option<Hsla>,
 }
 
 impl ChannelColors {
@@ -305,6 +311,7 @@ impl ChannelColors {
             fill_below: primary,
             fill_alpha: 0.0,
             neighbour: reference,
+            primary_below: None,
         }
     }
 }
@@ -318,6 +325,8 @@ pub struct ChannelGeometry {
     reference: PathBuffer,
     primary: PathBuffer,
     neighbours: PathBuffer,
+    /// The baseline's y inside the lane (zero, or the range's floor).
+    baseline: f32,
 }
 
 impl ChannelGeometry {
@@ -370,6 +379,7 @@ impl ChannelGeometry {
         }
         let series = input.series;
         let rect = input.rect();
+        self.baseline = input.baseline() as f32;
         if series.primary.len() < 2 || rect.width < 2.0 {
             return;
         }
@@ -449,7 +459,7 @@ impl ChannelGeometry {
             }
             stroke(
                 stepped(&scratch.points, step, &mut scratch.step),
-                width,
+                width * REFERENCE_STROKE_SCALE,
                 &mut self.reference,
             );
         }
@@ -502,7 +512,34 @@ impl ChannelGeometry {
             );
         }
         self.reference.paint(origin, colors.reference, window);
-        self.primary.paint(origin, colors.primary, window);
+        match colors.primary_below {
+            Some(below) => {
+                // Split at the baseline: the current mask intersects, so
+                // each half stays inside its lane.
+                let split = origin.y + px(self.baseline);
+                let far = px(1e5);
+                let above = Bounds::from_corners(
+                    point(origin.x - far, split - far),
+                    point(origin.x + far, split),
+                );
+                let under = Bounds::from_corners(
+                    point(origin.x - far, split),
+                    point(origin.x + far, split + far),
+                );
+                window.with_content_mask(Some(ContentMask { bounds: above }), |window| {
+                    self.primary.paint(origin, colors.primary, window)
+                });
+                window.with_content_mask(Some(ContentMask { bounds: under }), |window| {
+                    self.primary.paint(origin, below, window)
+                });
+            }
+            None => self.primary.paint(origin, colors.primary, window),
+        }
+    }
+
+    /// The baseline's y inside the lane (logical pixels from its top).
+    pub fn baseline(&self) -> f32 {
+        self.baseline
     }
 
     /// The five paths, for benchmarks: (fill above, fill below, reference,
@@ -515,6 +552,161 @@ impl ChannelGeometry {
             &self.primary,
             &self.neighbours,
         ]
+    }
+}
+
+/// The reference lap's stroke width as a share of the primary's: the
+/// primary is the lap under study and reads first, in either colour mode.
+pub const REFERENCE_STROKE_SCALE: f64 = 0.75;
+
+/// Stroke width of one session lap line (Consistency view), logical
+/// pixels: thinner than any lane stroke, context rather than data.
+pub const SPREAD_LINE_WIDTH: f64 = 0.75;
+/// Decimation columns per logical pixel of a session lap line: coarser
+/// than a lane's device columns. A 0.75 px context line shows no
+/// sub-pixel extrema, and eight laps per lane at device resolution would
+/// multiply the frame's vertices several times over (trace_bench,
+/// Consistency row). The envelope band keeps device resolution.
+pub const SPREAD_LINE_COLUMNS_PER_PX: f64 = 0.5;
+/// Columns per logical pixel of the envelope band: a low-alpha fill with no
+/// edge stroke reads the same at logical resolution.
+pub const SPREAD_BAND_COLUMNS_PER_PX: f64 = 1.0;
+
+/// Cached geometry of one channel's session spread (the Consistency view):
+/// the min–max band and a thin line per other lap, all on the primary grid
+/// (no reference map). Keyed on the same inputs as the channel's own
+/// geometry; the scene generation covers the spread data, and a colour
+/// never enters the key.
+#[derive(Default)]
+pub struct SpreadGeometry {
+    key: Option<u64>,
+    band: PathBuffer,
+    lines: PathBuffer,
+}
+
+impl SpreadGeometry {
+    /// Rebuild when the inputs changed; true when geometry was rebuilt.
+    pub fn prepare(&mut self, input: &BuildInput<'_>, scratch: &mut Scratch) -> bool {
+        let key = input.key();
+        if self.key == Some(key) {
+            return false;
+        }
+        self.key = Some(key);
+        self.build(input, scratch);
+        true
+    }
+
+    pub fn vertex_count(&self) -> usize {
+        self.band.vertex_count() + self.lines.vertex_count()
+    }
+
+    pub fn path_count(&self) -> usize {
+        self.band.chunks().len() + self.lines.chunks().len()
+    }
+
+    /// (band, lines), for benchmarks.
+    pub fn buffers(&self) -> [&PathBuffer; 2] {
+        [&self.band, &self.lines]
+    }
+
+    fn build(&mut self, input: &BuildInput<'_>, scratch: &mut Scratch) {
+        self.band.clear();
+        self.lines.clear();
+        let series = input.series;
+        let Some(spread) = series.spread.as_deref() else {
+            return;
+        };
+        let rect = input.rect();
+        if rect.width < 2.0 || spread.min.len() < 2 || spread.min.len() != spread.max.len() {
+            return;
+        }
+        let (y_min, y_span) = (input.y_range.min, input.y_range.span());
+        let viewport = input.viewport;
+        let y_of = |value: f64| -> f64 {
+            (rect.bottom() - (value - y_min) / y_span * rect.height).clamp(rect.top, rect.bottom())
+        };
+
+        // The band: per device column, the envelope's extent across it.
+        let (min, max) = (&spread.min[..], &spread.max[..]);
+        let last = (min.len() - 1) as f64;
+        let value_at = |values: &[f64], index: f64| -> f64 {
+            let lo = index.floor() as usize;
+            let t = index - lo as f64;
+            if t < 1e-10 || lo as f64 >= last {
+                return values[lo.min(values.len() - 1)];
+            }
+            values[lo] + (values[lo + 1] - values[lo]) * t
+        };
+        let columns = device_columns(rect.width, SPREAD_BAND_COLUMNS_PER_PX);
+        let step = rect.width / columns as f64;
+        let band = &mut scratch.band;
+        band.clear();
+        band.reserve(columns + 2);
+        let mut previous: Option<f64> = None;
+        for column in 0..=columns {
+            let x = rect.left + column as f64 * step;
+            let fraction = viewport.start + (x - rect.left) / rect.width * viewport.span();
+            if !(0.0..=1.0).contains(&fraction) {
+                band.push(BandColumn::GAP);
+                previous = None;
+                continue;
+            }
+            let index = fraction * last;
+            let (mut low, mut high) = (value_at(min, index), value_at(max, index));
+            if let Some(from) = previous {
+                let first = (from.floor() as usize + 1).min(min.len());
+                let end = (index.ceil() as usize).min(min.len()).max(first);
+                for (a, b) in min[first..end].iter().zip(&max[first..end]) {
+                    low = low.min(*a);
+                    high = high.max(*b);
+                }
+            }
+            previous = Some(index);
+            if low.is_finite() && high.is_finite() {
+                band.push(BandColumn {
+                    x,
+                    top: y_of(high),
+                    bottom: y_of(low),
+                });
+            } else {
+                band.push(BandColumn::GAP);
+            }
+        }
+        fill_band(band, &mut self.band);
+
+        // One quiet line per other lap, decimated like the primary.
+        let params = DecimateParams {
+            x_start: viewport.start,
+            x_span: viewport.span(),
+            rect,
+            y_min,
+            y_span,
+            dpr: SPREAD_LINE_COLUMNS_PER_PX,
+            clip_low: 0.0,
+            clip_high: 1.0,
+        };
+        let step_kind = series.kind == LaneKind::Step;
+        for lap in &spread.laps {
+            decimate(
+                lap,
+                &|f: f64| f.clamp(0.0, 1.0),
+                &params,
+                &mut scratch.points,
+            );
+            stroke(
+                stepped(&scratch.points, step_kind, &mut scratch.step),
+                SPREAD_LINE_WIDTH,
+                &mut self.lines,
+            );
+        }
+        self.band.finish();
+        self.lines.finish();
+    }
+
+    /// Paint at `origin` (the lane's top-left corner): band, then lines.
+    pub fn paint(&self, origin: Point<Pixels>, band: Hsla, line: Hsla, window: &mut Window) {
+        self.band.paint(origin, band, window);
+        self.lines.paint(origin, line, window);
     }
 }
 
@@ -568,7 +760,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::scene::LaneSeries;
+    use crate::scene::{LaneSeries, LaneSpread};
 
     fn series(kind: LaneKind) -> LaneSeries {
         let primary: Arc<[f64]> = (0..4500)
@@ -591,6 +783,44 @@ mod tests {
             .with_dpr(2.0)
             .with_stroke_width(1.25)
             .with_fill(true)
+    }
+
+    #[test]
+    fn spread_geometry_is_a_band_and_one_line_per_lap_cached_on_inputs() {
+        let laps: Vec<Arc<[f64]>> = (0..3)
+            .map(|k| {
+                (0..4500)
+                    .map(|i| ((i as f64) * 0.01).sin() * 100.0 + k as f64 * 5.0)
+                    .collect()
+            })
+            .collect();
+        let min: Arc<[f64]> = (0..4500).map(|i| laps[0][i]).collect();
+        let max: Arc<[f64]> = (0..4500).map(|i| laps[2][i]).collect();
+        let lane = series(LaneKind::Line)
+            .with_spread(Some(Arc::new(LaneSpread::new(laps, min, max))))
+            .with_y_range(YRange::new(-120.0, 120.0));
+        let scene = scene_of(lane);
+        let mut scratch = Scratch::default();
+        let mut spread = SpreadGeometry::default();
+        assert!(spread.prepare(&input(&scene, Viewport::FULL), &mut scratch));
+        assert!(!spread.prepare(&input(&scene, Viewport::FULL), &mut scratch));
+        let [band, lines] = spread.buffers();
+        // One quad per logical column (1200 px), two triangles each.
+        assert_eq!(band.vertex_count(), 1200 * 6);
+        assert!(lines.vertex_count() > 3 * 6 * 100, "three lap lines");
+        // Every band vertex lies inside the plot.
+        for chunk in band.chunks() {
+            for v in &chunk.vertices {
+                let y = v.xy_position.y.as_f32();
+                assert!((0.0..=120.0).contains(&y), "{y}");
+            }
+        }
+        // Zooming rebuilds; a lane without a spread builds nothing.
+        assert!(spread.prepare(&input(&scene, Viewport::new(0.2, 0.3)), &mut scratch));
+        let bare = scene_of(series(LaneKind::Line));
+        let mut empty = SpreadGeometry::default();
+        empty.prepare(&input(&bare, Viewport::FULL), &mut scratch);
+        assert_eq!(empty.vertex_count(), 0);
     }
 
     #[test]

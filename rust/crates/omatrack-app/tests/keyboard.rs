@@ -108,6 +108,45 @@ fn single_keys_type_into_the_library_search(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn view_mode_keys_work_in_the_workspace_and_never_in_a_text_field(cx: &mut TestAppContext) {
+    use omatrack_library::config::TraceViewMode;
+
+    let sandbox = common::Sandbox::new();
+    let test = common::start(cx, sandbox.options());
+    select_pair(&test, cx);
+    let mode = |cx: &mut TestAppContext| {
+        cx.update(|cx| test.app.preferences.read(cx).config().trace.view_mode())
+    };
+    cx.update_window(test.window.into(), |_, window, cx| {
+        let traces = test
+            .workspace
+            .read(cx)
+            .panels()
+            .focus_handle(PanelKind::Traces, cx);
+        window.focus(&traces, cx);
+        window.render_frame(cx);
+        window.press("alt-4", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(mode(cx), TraceViewMode::Events);
+
+    cx.update_window(test.window.into(), |_, window, cx| {
+        window.press("ctrl-6", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(test.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("library-search", cx);
+        window.press("alt-1", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(mode(cx), TraceViewMode::Events, "alt-1 stays in the field");
+}
+
+#[gpui_kit::test]
 fn single_keys_type_into_the_palette(cx: &mut TestAppContext) {
     let sandbox = common::Sandbox::new();
     let test = common::start(cx, sandbox.options());

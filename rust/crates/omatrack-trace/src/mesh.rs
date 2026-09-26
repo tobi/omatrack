@@ -11,6 +11,8 @@
 //! - [`fill_to_baseline`]: non-overlapping trapezoids between the path and a
 //!   baseline, split at baseline crossings into an "above" and a "below"
 //!   sink (the delta lane colours them as gain and loss).
+//! - [`fill_band`]: one quad per column between an envelope's top and
+//!   bottom (the session spread band); a gap column breaks the band.
 //!
 //! Vertices are emitted as plain triangles into a [`TriangleSink`]; the GPUI
 //! adapter writes them straight into `Path::vertices` (u32-addressed, so the
@@ -207,9 +209,89 @@ fn emit_trapezoid(a: PathPoint, b: PathPoint, baseline: f64, sink: &mut impl Tri
     }
 }
 
+/// One column of a band: the band spans `top..=bottom` (logical pixels,
+/// `top <= bottom`) at `x`. A non-finite `top` or `bottom` lifts the band.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BandColumn {
+    pub x: f64,
+    pub top: f64,
+    pub bottom: f64,
+}
+
+impl BandColumn {
+    pub const GAP: BandColumn = BandColumn {
+        x: f64::NAN,
+        top: f64::NAN,
+        bottom: f64::NAN,
+    };
+
+    fn is_gap(&self) -> bool {
+        !(self.x.is_finite() && self.top.is_finite() && self.bottom.is_finite())
+    }
+}
+
+/// Fill between the tops and bottoms of consecutive `columns` (increasing
+/// in `x`) with one quad each: the quads share only their vertical edges,
+/// so nothing blends twice. A gap column breaks the band.
+pub fn fill_band(columns: &[BandColumn], sink: &mut impl TriangleSink) {
+    sink.reserve(columns.len() * 2);
+    for pair in columns.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        if a.is_gap() || b.is_gap() || b.x <= a.x {
+            continue;
+        }
+        let (at, ab) = (pt(a.x, a.top), pt(a.x, a.bottom));
+        let (bt, bb) = (pt(b.x, b.top), pt(b.x, b.bottom));
+        if a.bottom > a.top {
+            sink.triangle(at, bt, ab);
+        }
+        if b.bottom > b.top {
+            sink.triangle(bt, bb, ab);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn band_quads_cover_the_envelope_once() {
+        let columns: Vec<BandColumn> = (0..20)
+            .map(|i| {
+                if i == 10 {
+                    BandColumn::GAP
+                } else {
+                    let x = i as f64 * 2.0;
+                    BandColumn {
+                        x,
+                        top: 20.0 - (i % 3) as f64,
+                        bottom: 30.0 + (i % 4) as f64,
+                    }
+                }
+            })
+            .collect();
+        let mut triangles: Vec<[[f32; 2]; 3]> = Vec::new();
+        fill_band(&columns, &mut triangles);
+        // 19 pairs minus the two touching the gap, two triangles each.
+        assert_eq!(triangles.len(), 17 * 2);
+        let mut x = 0.25;
+        while x < 38.0 {
+            let mut y = 15.25;
+            while y < 36.0 {
+                let hits = triangles.iter().filter(|t| inside(t, (x, y))).count();
+                assert!(hits <= 1, "({x}, {y}) covered {hits} times");
+                y += 0.5;
+            }
+            x += 0.5;
+        }
+        // Nothing spans the gap between x = 18 and x = 22.
+        assert!(
+            triangles
+                .iter()
+                .all(|t| !(t.iter().any(|v| v[0] < 19.0) && t.iter().any(|v| v[0] > 21.0)))
+        );
+    }
 
     fn area(t: &[[f32; 2]; 3]) -> f64 {
         let [a, b, c] = *t;

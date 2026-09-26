@@ -6,6 +6,7 @@ pub mod filmstrip;
 pub mod header;
 pub mod layout;
 pub mod status;
+mod view_mode;
 
 use std::rc::Rc;
 use std::time::Duration;
@@ -20,6 +21,7 @@ use gpui_kit::{
     ParentElement as _, Pixels, Render, SharedString, Styled as _, Subscription, Task,
     TestSupportExt as _, Window, div,
 };
+use omatrack_library::config::TraceViewMode;
 use omatrack_trace::{Selection, Viewport};
 use omatrack_ui::theme::ThemeStatus;
 
@@ -30,7 +32,8 @@ use crate::actions::{
     PrevCorner, PrevLap, Rescan, ResetLayout, ResizeLanes, RevealRecording, Role, SeekBack,
     SeekForward, SelectLap, ShowChannels, ShowInspector, ShowMap, SwapRoles, ToggleContinuous,
     ToggleCornerEdit, ToggleFit, ToggleInspector, ToggleLibrary, ToggleMute, TogglePalette,
-    TogglePlay, ToggleSlowMotion, ToggleVideoFullscreen, ToggleXAxis, ZoomIn, ZoomOut, ZoomReset,
+    TogglePlay, ToggleSlowMotion, ToggleTraceColorMode, ToggleVideoFullscreen, ToggleXAxis,
+    ViewConsistency, ViewCorners, ViewEvents, ViewLap, ZoomIn, ZoomOut, ZoomReset,
 };
 use crate::commands::Palette;
 use crate::keymap::WORKSPACE_CONTEXT;
@@ -76,6 +79,11 @@ pub struct Workspace {
     pre_focus_viewport: Option<Viewport>,
     /// The cursor before the corner focus, restored with the viewport.
     pre_focus_cursor: Option<f64>,
+    /// The viewport and cursor from before the Corners view, restored when
+    /// it is left.
+    corners_return: Option<(Viewport, Option<f64>)>,
+    /// The Corners view's corner (zone id) across a lap change.
+    corners_resume: Option<String>,
     /// The default layout follows the window's width until the user
     /// toggles a dock (a restored layout is the user's and never refits).
     fit_docks: bool,
@@ -187,6 +195,8 @@ impl Workspace {
             focused_corner: None,
             pre_focus_viewport: None,
             pre_focus_cursor: None,
+            corners_return: None,
+            corners_resume: None,
             fit_docks: layout_origin_is_default,
             last_fit_width: None,
             preferences: None,
@@ -254,11 +264,16 @@ impl Workspace {
                 );
             }
             SessionEvent::AnalysisReady => {
+                let previous = self.focused_zone_id(cx).or(self.corners_resume.take());
                 self.forget_corner_focus(cx);
+                self.refit_view_mode(previous, cx);
                 self.sync_strategies(cx);
                 self.place_initial_cursor(cx);
             }
-            SessionEvent::PrimaryChanged => self.forget_corner_focus(cx),
+            SessionEvent::PrimaryChanged => {
+                self.corners_resume = self.focused_zone_id(cx);
+                self.forget_corner_focus(cx);
+            }
             SessionEvent::ReferenceChanged | SessionEvent::Swapped => {}
         }
     }
@@ -464,13 +479,22 @@ impl Workspace {
     /// Focus corner `ix` of the analysis: centered in the left half with the
     /// 140 ms motion, its zone kept bright.
     fn focus_corner(&mut self, ix: usize, cx: &mut Context<'_, Self>) {
-        let Some(zone) = self
-            .app
-            .session
-            .read(cx)
-            .analysis()
-            .and_then(|analysis| analysis.corners().get(ix).cloned())
-        else {
+        let frame = self.frames_corners(cx);
+        let Some((zone, apex)) = self.app.session.read(cx).analysis().and_then(|analysis| {
+            let zone = analysis.corners().get(ix).cloned()?;
+            // The primary's apex, where the corner has one inside its zone.
+            let apex = analysis
+                .row(&zone.id)
+                .filter(|row| row.primary.apex_is_local())
+                .and_then(|row| {
+                    row.markers
+                        .iter()
+                        .find(|marker| marker.kind == omatrack_core::session::MarkerKind::Apex)
+                })
+                .map(|marker| marker.fraction)
+                .filter(|fraction| fraction.is_finite());
+            Some((zone, apex))
+        }) else {
             return;
         };
         self.focused_corner = Some(ix);
@@ -479,13 +503,24 @@ impl Workspace {
             self.pre_focus_cursor = self.app.cursor.read(cx).fraction();
         }
         self.app.viewport.update(cx, |viewport, cx| {
-            viewport.focus(zone.start, zone.end, true, cx);
+            if frame {
+                viewport.frame_corner(zone.start, zone.end, true, cx);
+            } else {
+                viewport.focus(zone.start, zone.end, true, cx);
+            }
         });
         // The cursor moves to the corner so every readout (legends,
-        // inspector, HUD, video) describes the corner being looked at.
+        // inspector, HUD, video) describes the corner being looked at: its
+        // start in the lap view (the corner centred in the left half), its
+        // apex in the Corners view (the corner framed whole).
+        let at = if frame {
+            apex.unwrap_or(zone.start)
+        } else {
+            zone.start
+        };
         self.app.cursor.update(cx, |cursor, cx| {
             cursor.set_focus(Some(Selection::new(zone.start, zone.end)), cx);
-            cursor.set_fraction(Some(zone.start), cx);
+            cursor.set_fraction(Some(at), cx);
         });
     }
 
@@ -540,6 +575,14 @@ impl Workspace {
     }
 
     fn zoom(&mut self, factor: Option<f64>, cx: &mut Context<'_, Self>) {
+        // Fit in the Corners view is the corner's own frame.
+        if factor.is_none()
+            && self.frames_corners(cx)
+            && let Some(ix) = self.focused_corner
+        {
+            self.focus_corner(ix, cx);
+            return;
+        }
         let anchor = self.app.cursor.read(cx).fraction();
         self.app.viewport.update(cx, |viewport, cx| match factor {
             Some(factor) if factor < 1.0 => viewport.zoom_in(anchor, cx),
@@ -726,7 +769,7 @@ impl Workspace {
                 this.close_preferences(window, cx);
             } else if this.stage.is_some() || window.is_fullscreen() {
                 this.exit_video_fullscreen(window, cx);
-            } else if !this.unfocus_corner(cx) {
+            } else if !this.escape_view_mode(cx) && !this.unfocus_corner(cx) {
                 cx.propagate();
             }
         }))
@@ -809,12 +852,29 @@ impl Workspace {
                 });
             });
         }))
+        .on_action(
+            cx.listener(|this, _: &ToggleTraceColorMode, _, cx| this.toggle_trace_color_mode(cx)),
+        )
         .on_action(cx.listener(|this, _: &ResizeLanes, window, cx| {
             this.set_trace_mode(TraceMode::ResizingLanes, window, cx);
         }))
         .on_action(cx.listener(|this, _: &ToggleCornerEdit, window, cx| {
             this.set_trace_mode(TraceMode::EditingCorners, window, cx);
         }))
+        .on_action(
+            cx.listener(|this, _: &ViewLap, _, cx| this.set_view_mode(TraceViewMode::Lap, cx)),
+        )
+        .on_action(cx.listener(|this, _: &ViewCorners, _, cx| {
+            this.set_view_mode(TraceViewMode::Corners, cx)
+        }))
+        .on_action(cx.listener(|this, _: &ViewConsistency, _, cx| {
+            this.set_view_mode(TraceViewMode::Consistency, cx)
+        }))
+        .on_action(
+            cx.listener(|this, _: &ViewEvents, _, cx| {
+                this.set_view_mode(TraceViewMode::Events, cx)
+            }),
+        )
     }
 
     fn set_compose(&mut self, layout: ComposeLayout, cx: &mut Context<'_, Self>) {

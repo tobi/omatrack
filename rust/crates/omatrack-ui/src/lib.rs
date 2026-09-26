@@ -26,7 +26,7 @@ pub use readout::{
 };
 pub use role_chip::{LapRole, RoleChip};
 pub use swatch::Swatch;
-pub use typography::{TypeScale, TypeStep, tabular_figures};
+pub use typography::{TypeScale, TypeStep, tabular_figures, trace_figures};
 pub use video_hud::{
     GAP_RANGE_M, HUD_INSET, HudPosition, VideoHud, format_gap, format_gear, gap_position,
 };

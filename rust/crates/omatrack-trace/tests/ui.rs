@@ -16,7 +16,8 @@ use gpui_kit::{
 };
 use omatrack_trace::layout::{LaneSizing, MIN_LANE_HEIGHT};
 use omatrack_trace::{
-    CursorState, LaneStyle, LaneStyles, TraceEvent, TraceStack, Viewport, ViewportState, synthetic,
+    Apex, ColorMode, CursorState, EventMark, EventMarkKind, LaneStyle, LaneStyles, TraceEvent,
+    TraceLayers, TraceStack, Viewport, ViewportState, synthetic,
 };
 
 struct Fixture {
@@ -450,11 +451,7 @@ fn lane_legends_show_values_only_with_a_cursor(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
-)]
-fn legend_values_share_column_spines_and_never_clip(cx: &mut TestAppContext) {
+fn legends_read_value_then_reference_lap_and_never_clip(cx: &mut TestAppContext) {
     let f = open(cx);
     share_brake_with_throttle(cx, &f);
     // Idle: the gap lane's figure is the change across the view.
@@ -473,54 +470,160 @@ fn legend_values_share_column_spines_and_never_clip(cx: &mut TestAppContext) {
     cx.update_window(f.window, |_, window, cx| draw(window, cx))
         .unwrap();
     cx.update_window(f.window, |_, window, _| {
+        let find = |id: String| window.find(gpui_kit::ElementId::Name(id.into())).bounds();
+        let has = |id: String| {
+            window
+                .try_find(gpui_kit::ElementId::Name(id.into()))
+                .is_some()
+        };
         assert!(window.try_find("readout-delta-cursor").is_some());
-        // Primary, reference and Δ columns end on the same spine in every
-        // lane, the shared lane's second channel included.
-        for column in ["p", "r", "d"] {
-            let right = |key: &str| {
-                window
-                    .find(gpui_kit::ElementId::Name(
-                        format!("readout-{key}-{column}").into(),
-                    ))
-                    .bounds()
-                    .right()
-            };
-            let spine = right("speed");
-            for key in ["throttle", "brake", "gear", "steering"] {
-                assert_eq!(right(key), spine, "{key} {column}");
-            }
+        // Speed: the primary, then the reference lap's label, its value and
+        // the Δ on the row beneath, the Δ only where it has a sense.
+        let p = find("readout-speed-p".into());
+        let lap = find("readout-speed-lap".into());
+        let r = find("readout-speed-r".into());
+        let d = find("readout-speed-d".into());
+        assert!(
+            lap.top() >= p.bottom() - px(1.),
+            "speed: reference under the value"
+        );
+        assert!(lap.right() <= r.left() && r.right() <= d.left());
+        for key in ["throttle", "brake", "steering"] {
+            assert!(has(format!("readout-{key}-r")), "{key}");
+            assert!(!has(format!("readout-{key}-d")), "{key} has no Δ sense");
         }
-        // The gap figure and its caption sit inside the gap lane's cell,
-        // the figure the tallest text of any legend.
+        // The speed lane is tall: its value is the large figure; the gap
+        // figure is at least as large.
+        let throttle_p = find("readout-throttle-p".into());
+        assert!(p.size.height > throttle_p.size.height);
         let gap = window.find("lane-delta").bounds();
         let figure = window.find("readout-delta-cursor").bounds();
         let caption = window.find("readout-delta-context").bounds();
         assert!(gap.contains(&figure.origin) && caption.bottom() <= gap.bottom());
-        assert!(figure.size.height > window.find("readout-speed-p").bounds().size.height);
+        assert!(figure.size.height >= p.size.height);
         // Every value lies inside its lane's legend cell: nothing clips.
-        for key in ["speed", "throttle", "gear", "steering"] {
-            let cell = window
-                .find(gpui_kit::ElementId::Name(format!("lane-{key}").into()))
-                .bounds();
-            for column in ["p", "r", "d"] {
-                let value = window
-                    .find(gpui_kit::ElementId::Name(
-                        format!("readout-{key}-{column}").into(),
-                    ))
-                    .bounds();
+        for (key, lane) in [
+            ("speed", "speed"),
+            ("throttle", "throttle"),
+            ("brake", "throttle"),
+            ("gear", "gear"),
+            ("steering", "steering"),
+        ] {
+            let cell = find(format!("lane-{lane}"));
+            for column in ["p", "lap", "r", "d"] {
+                let id = format!("readout-{key}-{column}");
+                if !has(id.clone()) {
+                    continue;
+                }
+                let value = find(id);
                 assert!(value.left() >= cell.left(), "{key} {column}");
                 assert!(value.right() <= cell.right(), "{key} {column}");
+                assert!(value.bottom() <= cell.bottom() + px(0.5), "{key} {column}");
             }
         }
-        let brake = window.find("readout-brake-d").bounds();
-        let throttle = window.find("lane-throttle").bounds();
-        assert!(brake.right() <= throttle.right());
         // The shared lane's title and both readout rows fit the minimum
         // lane height, so FIT never clips a legend.
+        let brake = find("readout-brake-p".into());
+        let throttle = find("lane-throttle".into());
         let legend = f32::from(brake.bottom() - throttle.top());
         assert!(legend <= MIN_LANE_HEIGHT as f32, "{legend}");
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_gap_legend_names_the_corner_under_the_cursor(cx: &mut TestAppContext) {
+    let f = open(cx);
+    let corner = cx.update(|cx| f.stack.read(cx).scene().corners()[0].clone());
+    let middle = 0.5 * (corner.start + corner.end);
+    // With the corner's Δt from the analysis, the caption says it.
+    let scene = cx.update(|cx| {
+        let scene = f.stack.read(cx).scene();
+        let corners = scene
+            .corners()
+            .iter()
+            .map(|band| band.clone().with_delta(Some(0.319)))
+            .collect();
+        Arc::new(
+            (**scene)
+                .clone()
+                .with_corners(corners, scene.complexes().to_vec()),
+        )
+    });
+    f.stack.update(cx, |stack, cx| stack.set_scene(scene, cx));
+    f.cursor
+        .update(cx, |cursor, cx| cursor.set_fraction(Some(middle), cx));
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| draw(window, cx))
+        .unwrap();
+    cx.update_window(f.window, |_, window, _| {
+        let label = window.find("lane-delta").label().unwrap().to_string();
+        assert!(
+            label.contains(&format!("{} +0.319", corner.label)),
+            "{label}"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn colour_mode_repaints_without_rebuilding_geometry(cx: &mut TestAppContext) {
+    let f = open(cx);
+    let before = cx.update(|cx| f.stack.read(cx).static_stats(cx));
+    f.stack
+        .update(cx, |stack, cx| stack.set_color_mode(ColorMode::Channel, cx));
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| draw(window, cx))
+        .unwrap();
+    let after = cx.update(|cx| f.stack.read(cx).static_stats(cx));
+    assert_eq!(
+        cx.update(|cx| f.stack.read(cx).color_mode()),
+        ColorMode::Channel
+    );
+    assert_eq!(after.renders, before.renders + 1, "the mode repainted once");
+    assert_eq!(
+        after.geometry_builds, before.geometry_builds,
+        "geometry keyed on colour"
+    );
+    // Setting the same mode again is free.
+    f.stack
+        .update(cx, |stack, cx| stack.set_color_mode(ColorMode::Channel, cx));
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| draw(window, cx))
+        .unwrap();
+    assert_eq!(
+        cx.update(|cx| f.stack.read(cx).static_stats(cx)).renders,
+        after.renders
+    );
+}
+
+#[gpui_kit::test]
+fn apex_callouts_paint_in_the_static_layer_only(cx: &mut TestAppContext) {
+    let f = open(cx);
+    assert_eq!(cx.update(|cx| f.stack.read(cx).static_stats(cx)).apexes, 0);
+    let scene = cx.update(|cx| {
+        let scene = f.stack.read(cx).scene();
+        Arc::new((**scene).clone().with_apexes(vec![
+            Apex::new(0.3, 80.0, Some(82.0)),
+            Apex::new(0.6, 120.0, None),
+        ]))
+    });
+    f.stack.update(cx, |stack, cx| stack.set_scene(scene, cx));
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| draw(window, cx))
+        .unwrap();
+    let stats = cx.update(|cx| f.stack.read(cx).static_stats(cx));
+    assert_eq!(stats.apexes, 2);
+    // A cursor move leaves them (and the static layer) alone.
+    f.cursor
+        .update(cx, |cursor, cx| cursor.set_fraction(Some(0.31), cx));
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| draw(window, cx))
+        .unwrap();
+    assert_eq!(
+        cx.update(|cx| f.stack.read(cx).static_stats(cx)).renders,
+        stats.renders
+    );
 }
 
 #[gpui_kit::test]
@@ -782,4 +885,84 @@ fn pinning_moves_a_lane_above_the_scroll_region(cx: &mut TestAppContext) {
         assert!(delta.bounds().top() < speed.bounds().top());
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+fn view_layers_repaint_once_and_never_on_the_cursor(cx: &mut TestAppContext) {
+    let f = open(cx);
+    let events = vec![
+        EventMark::new(EventMarkKind::BrakeOnset, "brake", false, 0.30, "Brake"),
+        EventMark::new(EventMarkKind::BrakeOnset, "brake", true, 0.31, "Brake"),
+        EventMark::new(EventMarkKind::Downshift, "gear", false, 0.32, "Down to 3"),
+        EventMark::new(
+            EventMarkKind::Note,
+            "delta",
+            false,
+            0.33,
+            "T3: Braked later",
+        ),
+    ];
+    let scene =
+        Arc::new(synthetic::with_session_spread(synthetic::scene(), 4).with_events(events.clone()));
+    assert!(scene.has_spread());
+    assert_eq!(scene.events().len(), 4);
+    f.stack.update(cx, |stack, cx| stack.set_scene(scene, cx));
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| draw(window, cx))
+        .unwrap();
+    let plain = cx.update(|cx| f.stack.read(cx).static_stats(cx));
+
+    // Consistency on: one static render, the spread geometry built once
+    // and drawn behind the lanes.
+    f.stack.update(cx, |stack, cx| {
+        stack.set_layers(TraceLayers::NONE.consistency(true).events(true), cx)
+    });
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| draw(window, cx))
+        .unwrap();
+    let layered = cx.update(|cx| f.stack.read(cx).static_stats(cx));
+    assert_eq!(layered.renders, plain.renders + 1);
+    assert!(layered.geometry_builds > plain.geometry_builds);
+    assert!(
+        layered.vertices > plain.vertices,
+        "{layered:?} vs {plain:?}"
+    );
+
+    // The same layers again: nothing to do.
+    f.stack.update(cx, |stack, cx| {
+        stack.set_layers(TraceLayers::NONE.consistency(true).events(true), cx)
+    });
+    cx.run_until_parked();
+
+    // Cursor and hover over the events (their labels): overlay only.
+    f.cursor
+        .update(cx, |cursor, cx| cursor.set_fraction(Some(0.31), cx));
+    cx.run_until_parked();
+    let plot = plot_bounds(cx, f.window);
+    for fx in [0.29, 0.30, 0.31, 0.33] {
+        dispatch(
+            cx,
+            f.window,
+            MouseMoveEvent {
+                position: at(plot, fx, 0.5),
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }
+            .to_platform_input(),
+        );
+    }
+    let after = cx.update(|cx| f.stack.read(cx).static_stats(cx));
+    assert_eq!(after.renders, layered.renders, "the cursor rebuilt statics");
+    assert_eq!(after.geometry_builds, layered.geometry_builds);
+
+    // Back to the lap view: one repaint, lane geometry kept.
+    f.stack
+        .update(cx, |stack, cx| stack.set_layers(TraceLayers::NONE, cx));
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| draw(window, cx))
+        .unwrap();
+    let back = cx.update(|cx| f.stack.read(cx).static_stats(cx));
+    assert_eq!(back.renders, after.renders + 1);
+    assert_eq!(back.geometry_builds, after.geometry_builds);
+    assert_eq!(back.vertices, plain.vertices);
 }

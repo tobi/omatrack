@@ -11,7 +11,8 @@
 //!
 //! Key names follow the existing Omatrack document (`recent_files`,
 //! `driver_mappings`, `selection`, `video/*`, `trace/*`, `tracks.<key>`),
-//! plus the new `trace.x_axis` and `workspace.layout`.
+//! plus the new `trace.x_axis`, `trace.view_mode`, `trace.color_mode` and
+//! `workspace.layout`.
 
 use crate::fsutil::{scalar_text, write_atomic};
 use omatrack_core::alignment::Strategy;
@@ -350,8 +351,10 @@ impl ChannelStyle {
         ) && !key.starts_with("raw:");
         // Light pedal fills so the reference outline reads through them; the
         // Δ gain/loss fill is that lane's message. Mirrors
-        // `omatrack_trace::scene::{PEDAL_FILL, DELTA_FILL}`.
+        // `omatrack_trace::scene::{SPEED_FILL, PEDAL_FILL, DELTA_FILL}`; speed
+        // carries the gradient area under the primary line.
         let fill_opacity = match key {
+            "speed" => 0.2,
             "throttle" | "brake" | "clutch" => 0.16,
             "delta" => 0.42,
             _ => 0.0,
@@ -414,6 +417,37 @@ pub enum XAxis {
     Time,
 }
 
+/// `trace.color_mode`: what a trace's colour says. `lap` (default): the lap
+/// role, primary and reference, in every lane; `channel`: each channel its
+/// own hue (speed blue, throttle green, brake red, steering yellow), the
+/// reference the same hue, quieter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TraceColorMode {
+    #[default]
+    Lap,
+    Channel,
+}
+
+/// `trace.view_mode`: what the traces show besides the two laps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TraceViewMode {
+    /// The two laps.
+    #[default]
+    Lap,
+    /// The laps with the corner zones in focus.
+    Corners,
+    /// The primary's session laps behind it: thin lines over a min–max band.
+    Consistency,
+    /// Brake onsets, lifts, shifts and corner notes as ticks on the lanes.
+    Events,
+}
+
+impl TraceViewMode {
+    pub const ALL: [Self; 4] = [Self::Lap, Self::Corners, Self::Consistency, Self::Events];
+}
+
 /// `trace`: trace workspace settings.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -431,6 +465,18 @@ pub struct TraceConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub x_axis: Option<XAxis>,
+    #[serde(
+        default,
+        deserialize_with = "lenient",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub color_mode: Option<TraceColorMode>,
+    #[serde(
+        default,
+        deserialize_with = "lenient",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub view_mode: Option<TraceViewMode>,
     #[serde(flatten)]
     pub extra: Mapping,
 }
@@ -441,6 +487,12 @@ impl TraceConfig {
     }
     pub fn x_axis(&self) -> XAxis {
         self.x_axis.unwrap_or_default()
+    }
+    pub fn color_mode(&self) -> TraceColorMode {
+        self.color_mode.unwrap_or_default()
+    }
+    pub fn view_mode(&self) -> TraceViewMode {
+        self.view_mode.unwrap_or_default()
     }
 }
 

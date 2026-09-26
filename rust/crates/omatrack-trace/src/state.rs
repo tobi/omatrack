@@ -127,7 +127,23 @@ impl ViewportState {
     /// asks for reduced motion; an interrupted animation restarts from the
     /// currently shown viewport, never from its old endpoint.
     pub fn focus(&mut self, start: f64, end: f64, animate: bool, cx: &mut Context<'_, Self>) {
-        let target = Viewport::focus_on(start, end);
+        self.move_to(Viewport::focus_on(start, end), animate, cx);
+    }
+
+    /// Frame a corner zone with its approach and exit (the Corners view,
+    /// [`Viewport::frame_corner`]), with the same motion as [`Self::focus`].
+    pub fn frame_corner(
+        &mut self,
+        start: f64,
+        end: f64,
+        animate: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.move_to(Viewport::frame_corner(start, end), animate, cx);
+    }
+
+    /// Show `target`, easing there over 140 ms with `animate`.
+    fn move_to(&mut self, target: Viewport, animate: bool, cx: &mut Context<'_, Self>) {
         if !animate || cx.reduce_motion() || target == self.viewport {
             self.set_viewport(target, cx);
             return;

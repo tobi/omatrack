@@ -1,13 +1,15 @@
 //! Traces: the synchronized channel lanes of the primary and reference laps.
 //!
-//! Top to bottom, with no title bar or toolbar of its own: the corner ruler
-//! (two staggered label rows, the cursor's corner as a chip, complex
-//! brackets), the damper strip while manual damper alignment is in effect,
-//! then the [`TraceStack`] (pinned gap lane, scrollable channel lanes,
-//! shared x-axis). The range statistics of a selection float at the top
-//! right of the lanes. The axis, FIT, lane sizing, corner editing and zoom
-//! controls live in the control row under the video, on their keys and in
-//! the palette.
+//! Top to bottom, with no title bar: the trace toolbar (zoom out / in /
+//! fit, the view mode `Lap | Corners | Consistency | Events`, the Channels
+//! menu, the colour mode and the lane tools: FIT, resize, edit corners),
+//! the corner ruler (two staggered label rows, the cursor's corner as a
+//! chip, complex brackets), the damper strip while manual damper alignment
+//! is in effect, then the [`TraceStack`] (pinned gap lane, scrollable
+//! channel lanes, shared x-axis). The range statistics of a selection float
+//! at the top right of the lanes. Playback and the Distance | Time axis live
+//! in the control row under the video; every control has one home and its
+//! key and palette entry.
 //!
 //! State ownership:
 //! - the application owns the analysis (`Session`), the viewport and the
@@ -28,7 +30,8 @@
 //! only moves the shared cursor.
 
 mod edit;
-mod scene_build;
+mod icons;
+pub(crate) mod scene_build;
 mod stats;
 mod toolbar;
 
@@ -49,14 +52,15 @@ use gpui_kit::{
 use omatrack_core::alignment::Strategy;
 use omatrack_trace::{
     CornerBand, CornerRuler, CornerRulerEvent, DamperStrip, DamperStripData, DamperStripEvent,
-    Selection, TraceEvent, TraceScene, TraceStack,
+    Selection, TraceEvent, TraceLayers, TraceScene, TraceStack,
 };
 
 use crate::actions::{CancelEdit, FocusCorner, ResizeLanes, SaveEdit};
 use crate::commands::{self, CommandCategory, CommandSpec};
 use crate::keymap::TRACE_EDIT_CONTEXT;
 use crate::panels::{PanelKind, analysis_body, simple_panel};
-use crate::state::{AppState, SessionEvent};
+use crate::state::{AppState, SessionEvent, TraceViewEvent, TraceViewMode};
+use omatrack_core::consistency::{MIN_SPREAD_LAPS, SPREAD_MAX_GAP};
 
 pub use edit::{CornerDraft, ResizeDraft};
 pub use scene_build::{DELTA_KEY, DELTA_TITLE};
@@ -109,6 +113,7 @@ struct LaneMenu {
 pub struct TracesPanel {
     app: AppState,
     focus_handle: FocusHandle,
+    icons: icons::TraceIcons,
     mode: TraceMode,
     /// Built on the first render: the stack needs a window.
     stack: Option<Entity<TraceStack>>,
@@ -143,6 +148,10 @@ impl TracesPanel {
                     this.request_scene(cx);
                 }
             }),
+            cx.subscribe(&app.trace_view, |this, _, event, cx| match event {
+                TraceViewEvent::ModeChanged => this.apply_layers(cx),
+                TraceViewEvent::SpreadReady => this.apply_spread(cx),
+            }),
             // Loading and failure states, the primary's track.
             cx.observe(&app.session, |_, _, cx| cx.notify()),
             cx.observe(&app.preferences, |this, _, cx| this.restyle(cx)),
@@ -159,6 +168,7 @@ impl TracesPanel {
         let mut panel = Self {
             app,
             focus_handle: cx.focus_handle().tab_stop(true),
+            icons: icons::TraceIcons::new(),
             mode: TraceMode::default(),
             stack: None,
             ruler,
@@ -294,9 +304,10 @@ impl TracesPanel {
         {
             self.leave_mode(cx);
         }
-        self.scene = built
-            .as_ref()
-            .map_or_else(|| Arc::new(TraceScene::default()), |b| b.scene.clone());
+        self.scene = built.as_ref().map_or_else(
+            || Arc::new(TraceScene::default()),
+            |built| self.with_spread(built, cx),
+        );
         let damper = built
             .as_ref()
             .and_then(|built| damper_data(&built.analysis));
@@ -319,6 +330,94 @@ impl TracesPanel {
         cx.notify();
     }
 
+    /// `built`'s scene with the session spread when one lies on its
+    /// primary lap (in any mode: the layer decides what is drawn).
+    fn with_spread(&self, built: &BuiltScene, cx: &App) -> Arc<TraceScene> {
+        let trace_view = self.app.trace_view.read(cx);
+        match trace_view
+            .spread_for(built.analysis.primary())
+            .filter(|spread| spread.consistency().is_meaningful())
+        {
+            Some(spread) => Arc::new(scene_build::with_session_spread(
+                &built.scene,
+                spread.consistency(),
+            )),
+            None => built.scene.clone(),
+        }
+    }
+
+    /// A spread arrived: attach it when it lies on the lap on screen.
+    fn apply_spread(&mut self, cx: &mut Context<'_, Self>) {
+        let Some(built) = &self.built else {
+            return;
+        };
+        let scene = self.with_spread(built, cx);
+        if Arc::ptr_eq(&scene, &self.scene) {
+            cx.notify();
+            return;
+        }
+        self.scene = scene.clone();
+        if let Some(stack) = &self.stack {
+            stack.update(cx, |stack, cx| stack.set_scene(scene, cx));
+        }
+        cx.notify();
+    }
+
+    /// The static layers of the view mode (the stack repaints once).
+    fn apply_layers(&mut self, cx: &mut Context<'_, Self>) {
+        let layers = layers_for(self.app.trace_view.read(cx).mode());
+        if let Some(stack) = &self.stack {
+            stack.update(cx, |stack, cx| stack.set_layers(layers, cx));
+        }
+        cx.notify();
+    }
+
+    /// Why the Consistency view draws no session, when it does not.
+    pub fn consistency_notice(&self, cx: &App) -> Option<SharedString> {
+        let trace_view = self.app.trace_view.read(cx);
+        if trace_view.mode() != TraceViewMode::Consistency {
+            return None;
+        }
+        let built = self.built.as_ref()?;
+        if trace_view.is_loading() {
+            return Some("Loading the session's laps…".into());
+        }
+        let spread = trace_view.spread_for(built.analysis.primary())?;
+        let count = spread.consistency().lap_count();
+        (!spread.consistency().is_meaningful()).then(|| match count {
+            0 => "No other timed laps in this session to compare with".into(),
+            _ => format!(
+                "Only {count} other timed lap in this session: consistency needs {MIN_SPREAD_LAPS}"
+            )
+            .into(),
+        })
+    }
+
+    /// What the Consistency view's band is, for the ruler row's caption:
+    /// `Session · 4 laps within 5%`, `· approximate` when a lap's distance
+    /// is speed-fused (the band is then placed by lap share, not metres).
+    pub fn consistency_caption(&self, cx: &App) -> Option<SharedString> {
+        let trace_view = self.app.trace_view.read(cx);
+        if trace_view.mode() != TraceViewMode::Consistency {
+            return None;
+        }
+        let built = self.built.as_ref()?;
+        let consistency = trace_view
+            .spread_for(built.analysis.primary())?
+            .consistency();
+        if !consistency.is_meaningful() {
+            return None;
+        }
+        let within = ((SPREAD_MAX_GAP - 1.0) * 100.0).round();
+        let count = consistency.lap_count();
+        let approximate = if consistency.is_approximate() {
+            " · approximate"
+        } else {
+            ""
+        };
+        Some(format!("Session · {count} laps within {within}%{approximate}").into())
+    }
+
     /// Lane styles from `channels.<key>`, this session's pins and a resize
     /// draft; FIT from `trace.fit_channels`. Also keeps the lane commands of
     /// the palette in step.
@@ -332,6 +431,7 @@ impl TracesPanel {
             self.resize.as_ref().map(ResizeDraft::weights),
         );
         let fit = config.trace.is_fitting_channels();
+        let color_mode = scene_build::color_mode(config);
         let lanes: Vec<(SharedString, SharedString, bool)> = self
             .scene
             .lanes()
@@ -348,6 +448,7 @@ impl TracesPanel {
             stack.update(cx, |stack, cx| {
                 stack.set_lane_styles(styles, cx);
                 stack.set_fit(fit, cx);
+                stack.set_color_mode(color_mode, cx);
             });
         }
         self.register_lane_commands(&lanes, cx);
@@ -408,11 +509,12 @@ impl TracesPanel {
             if let Some(stack) = self.stack.clone() {
                 let current = stack.read(cx).focused_corner();
                 match band {
-                    // Focused elsewhere (keys, palette): the stack marks it.
-                    // The viewport is already easing there; this only
-                    // retargets it to the same place.
+                    // Focused elsewhere (keys, palette, the Corners view):
+                    // the stack marks it. The workspace already frames it
+                    // (left half, or approach and exit), so the viewport
+                    // is left alone.
                     Some(band) if current != Some(band) => {
-                        stack.update(cx, |stack, cx| stack.focus_corner(band, true, cx));
+                        stack.update(cx, |stack, cx| stack.mark_focused_corner(band, cx));
                     }
                     None if current.is_some() => {
                         stack.update(cx, TraceStack::clear_corner_focus);
@@ -653,6 +755,8 @@ impl TracesPanel {
         let scene = self.scene.clone();
         let (viewport, cursor) = (self.app.viewport.clone(), self.app.cursor.clone());
         let stack = cx.new(|cx| TraceStack::new(scene, viewport, cursor, window, cx));
+        let layers = layers_for(self.app.trace_view.read(cx).mode());
+        stack.update(cx, |stack, cx| stack.set_layers(layers, cx));
         self.view_subscriptions = vec![
             cx.subscribe_in(&stack, window, Self::on_trace_event),
             cx.subscribe_in(
@@ -774,7 +878,7 @@ impl TracesPanel {
 
     // ---- rendering ----------------------------------------------------------
 
-    fn render_body(&mut self, cx: &mut Context<'_, Self>) -> gpui_kit::AnyElement {
+    fn render_body(&mut self, window: &Window, cx: &mut Context<'_, Self>) -> gpui_kit::AnyElement {
         if self.built.is_none() || self.scene.is_empty() {
             let preparing = self.app.session.read(cx).analysis().is_some();
             if preparing {
@@ -789,9 +893,19 @@ impl TracesPanel {
             return analysis_body("traces-summary", &self.app, cx, |_| SharedString::default());
         }
         let stack = self.stack.clone();
-        v_flex()
+        let theme = cx.theme();
+        let (border, radius) = (theme.border, theme.radius_lg);
+        // The lanes sit in one bordered card: ruler row, damper strip,
+        // lanes and the distance axis.
+        let card = v_flex()
+            .id("trace-card")
+            .test_support()
             .size_full()
             .min_h_0()
+            .border_1()
+            .border_color(border)
+            .rounded(radius)
+            .overflow_hidden()
             .child(self.render_ruler_row(cx))
             .when(self.show_damper, |el| el.child(self.damper.clone()))
             .child(
@@ -801,10 +915,25 @@ impl TracesPanel {
                     .flex_1()
                     .min_h_0()
                     .children(stack)
+                    .children(self.render_consistency_notice(cx))
                     .children(self.render_range_stats(cx)),
-            )
+            );
+        // The toolbar sits above the card, on the panel's own ground.
+        v_flex()
+            .size_full()
+            .min_h_0()
+            .child(self.render_toolbar(window, cx))
+            .child(div().flex_1().min_h_0().px_2().pb_2().child(card))
             .into_any_element()
     }
+}
+
+/// The static layers each view mode draws.
+pub fn layers_for(mode: TraceViewMode) -> TraceLayers {
+    TraceLayers::NONE
+        .consistency(mode == TraceViewMode::Consistency)
+        .events(mode == TraceViewMode::Events)
+        .apexes(matches!(mode, TraceViewMode::Lap | TraceViewMode::Corners))
 }
 
 /// The band whose zone is `focus` (the workspace focuses by zone bounds).
@@ -872,7 +1001,7 @@ impl Render for TracesPanel {
             .size_full()
             .bg(cx.theme().background)
             .when(editing, |this| this.child(self.render_mode_bar(cx)))
-            .child(div().flex_1().min_h_0().child(self.render_body(cx)))
+            .child(div().flex_1().min_h_0().child(self.render_body(window, cx)))
             .children(menu)
     }
 }

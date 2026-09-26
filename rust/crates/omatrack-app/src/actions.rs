@@ -58,7 +58,13 @@ gpui_kit::actions!(
         NextLap,
         ToggleXAxis,
         ToggleFit,
+        ToggleTraceColorMode,
         ResizeLanes,
+        // Trace view modes (`trace.view_mode`).
+        ViewLap,
+        ViewCorners,
+        ViewConsistency,
+        ViewEvents,
         SaveEdit,
         CancelEdit,
         // Library rows.
@@ -111,7 +117,12 @@ impl Eq for PrevLap {}
 impl Eq for NextLap {}
 impl Eq for ToggleXAxis {}
 impl Eq for ToggleFit {}
+impl Eq for ToggleTraceColorMode {}
 impl Eq for ResizeLanes {}
+impl Eq for ViewLap {}
+impl Eq for ViewCorners {}
+impl Eq for ViewConsistency {}
+impl Eq for ViewEvents {}
 impl Eq for SaveEdit {}
 impl Eq for CancelEdit {}
 impl Eq for SetPrimary {}

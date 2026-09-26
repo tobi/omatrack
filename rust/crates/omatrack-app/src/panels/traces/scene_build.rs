@@ -15,14 +15,19 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui_kit::SharedString;
+use omatrack_core::events::{EventLap, LapEventKind};
 use omatrack_core::overlay::{OverlayChannel, OverlayGroup, STANDARD_CHANNELS, standard_values};
-use omatrack_core::session::{Analysis, LapStripKind, LoadedLap};
+use omatrack_core::session::{
+    Analysis, Consistency, LapStripKind, LoadedLap, MarkerKind, analysis_events,
+};
 use omatrack_core::{Lap, UnifiedLap};
 use omatrack_library::Config;
-use omatrack_library::config::ChannelStyle;
+use omatrack_library::config::{ChannelStyle, TraceColorMode};
 use omatrack_trace::layout::{LaneSizing, lane_height_boost};
+use omatrack_trace::scale::format_distance;
 use omatrack_trace::{
-    ComplexBand, CornerBand, FractionMap, LaneKind, LaneSeries, LaneStyle, LaneStyles, TraceScene,
+    Apex, ColorMode, ComplexBand, CornerBand, EventMark, EventMarkKind, FractionMap, LaneKind,
+    LaneSeries, LaneSpread, LaneStyle, LaneStyles, TraceScene,
 };
 
 /// Key of the cumulative gap lane (the time delta to the reference).
@@ -147,12 +152,19 @@ pub(super) fn build(analysis: Arc<Analysis>, neighbours: Option<Arc<Neighbours>>
             zone: zone.id.clone().into(),
         })
         .collect();
+    // A corner's Δt is said only where the map places time loss (on a
+    // lap-time map it would be a share of lap time, not the corner's).
+    let placed = analysis.time_loss_placed();
     let bands = analysis
         .corners()
         .iter()
         .zip(&corners)
-        .map(|(zone, link)| CornerBand::new(link.band, zone.name.clone(), zone.start, zone.end))
+        .map(|(zone, link)| {
+            let dt = analysis.row(&zone.id).map(|row| row.dt).filter(|_| placed);
+            CornerBand::new(link.band, zone.name.clone(), zone.start, zone.end).with_delta(dt)
+        })
         .collect();
+    let apexes = apexes(&analysis);
     let complexes = analysis
         .complexes()
         .iter()
@@ -173,13 +185,137 @@ pub(super) fn build(analysis: Arc<Analysis>, neighbours: Option<Arc<Neighbours>>
         neighbours.previous.as_ref().map(|lap| lap.label.clone()),
         neighbours.next.as_ref().map(|lap| lap.label.clone()),
     )
+    .with_lap_labels(Some(lap_label(primary)), reference.map(lap_label))
+    .with_apexes(apexes)
     .with_approximate_delta(crate::workspace::status::analysis_approximate(&analysis))
-    .with_time_share_delta(crate::workspace::status::analysis_time_share(&analysis));
+    .with_time_share_delta(crate::workspace::status::analysis_time_share(&analysis))
+    .with_events(event_marks(&analysis));
     BuiltScene {
         analysis,
         scene: Arc::new(scene),
         corners,
         neighbours: Some(neighbours),
+    }
+}
+
+/// The lap's short label as its lap strip names it (`L6`).
+fn lap_label(lap: &LoadedLap) -> SharedString {
+    lap.strip()
+        .iter()
+        .find(|cell| cell.lap_id == lap.lap_id())
+        .map(|cell| SharedString::from(cell.label.clone()))
+        .unwrap_or_else(|| format!("L{}", lap.lap_id()).into())
+}
+
+/// Each corner's apex for the speed lane's callouts: where the primary's
+/// apex marker sits, its apex speed and the reference's, from the
+/// analysis's corner rows. A zone whose minimum is only its edge
+/// (`CornerMetrics::apex_is_local`) gets no callout.
+fn apexes(analysis: &Analysis) -> Vec<Apex> {
+    analysis
+        .rows()
+        .iter()
+        .filter_map(|row| {
+            if !row.primary.apex_is_local() {
+                return None;
+            }
+            let marker = row
+                .markers
+                .iter()
+                .find(|marker| marker.kind == MarkerKind::Apex)?;
+            (marker.fraction.is_finite() && row.speeds.apex.is_finite()).then(|| {
+                Apex::new(
+                    marker.fraction,
+                    row.speeds.apex,
+                    row.reference_speeds.map(|speeds| speeds.apex),
+                )
+            })
+        })
+        .collect()
+}
+
+/// `scene` with the primary's session spread on every lane the spread
+/// carries (same key, same primary grid). Series are shared, not copied.
+pub(crate) fn with_session_spread(scene: &TraceScene, consistency: &Consistency) -> TraceScene {
+    scene.clone().with_spreads(|key| {
+        let channel = consistency.channel(key)?;
+        Some(Arc::new(LaneSpread::new(
+            channel
+                .laps
+                .iter()
+                .map(|(_, series)| series.clone())
+                .collect(),
+            channel.min.clone(),
+            channel.max.clone(),
+        )))
+    })
+}
+
+/// The driving events of both laps as trace marks (drawn in the Events
+/// view): `P · Brake · 1,234 m`, a note as its corner sentence.
+fn event_marks(analysis: &Analysis) -> Vec<EventMark> {
+    analysis_events(analysis)
+        .into_iter()
+        .map(|event| {
+            let reference = event.lap == EventLap::Reference;
+            let kind = match event.kind {
+                LapEventKind::BrakeOnset => EventMarkKind::BrakeOnset,
+                LapEventKind::LiftOff => EventMarkKind::LiftOff,
+                LapEventKind::Upshift => EventMarkKind::Upshift,
+                LapEventKind::Downshift => EventMarkKind::Downshift,
+                _ => EventMarkKind::Note,
+            };
+            let label = if kind == EventMarkKind::Note {
+                event.label.clone()
+            } else {
+                let role = if reference { "R" } else { "P" };
+                let at = if event.distance.is_finite() {
+                    format!(" · {}", format_distance(event.distance, 1.0))
+                } else {
+                    String::new()
+                };
+                format!("{role} · {}{at}", event.label)
+            };
+            let tag = event_tag(&event, kind, reference);
+            EventMark::new(kind, event.kind.channel(), reference, event.fraction, label)
+                .with_tag(tag)
+        })
+        .collect()
+}
+
+/// The short label drawn beside a primary event's tick: a brake point's
+/// offset from the reference's (`+12 m`, later along the track), a
+/// shift's new gear (`↓3`). Notes, lifts and the reference's ticks carry
+/// none.
+fn event_tag(
+    event: &omatrack_core::events::LapEvent,
+    kind: EventMarkKind,
+    reference: bool,
+) -> Option<SharedString> {
+    if reference {
+        return None;
+    }
+    match kind {
+        // A note's tick sits in its corner's column under the ruler label;
+        // the note itself is read in the Time lost card.
+        EventMarkKind::Note => None,
+        EventMarkKind::BrakeOnset => {
+            let offset = event.brake_offset?;
+            let (text, _) =
+                omatrack_ui::format_delta(Some(offset), 0, omatrack_ui::DeltaSense::HigherIsBetter);
+            Some(format!("{text} m").into())
+        }
+        EventMarkKind::Downshift => event.gear.map(|gear| format!("↓{gear}").into()),
+        EventMarkKind::Upshift => event.gear.map(|gear| format!("↑{gear}").into()),
+        _ => None,
+    }
+}
+
+/// `trace.color_mode` as the trace crate's colour mode.
+pub(crate) fn color_mode(config: &Config) -> ColorMode {
+    match config.trace.color_mode() {
+        TraceColorMode::Lap => ColorMode::Lap,
+        TraceColorMode::Channel => ColorMode::Channel,
     }
 }
 

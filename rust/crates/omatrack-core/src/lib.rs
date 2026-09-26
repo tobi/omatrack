@@ -15,6 +15,7 @@ pub mod cfmt;
 pub mod comparison;
 pub mod consistency;
 pub mod corners;
+pub mod events;
 pub mod laps;
 pub mod mapping;
 pub mod meta;
@@ -31,6 +32,8 @@ pub mod unify;
 pub mod video_clock;
 
 pub use comparison::Comparison;
+pub use consistency::Consistency;
+pub use events::{LapEvent, LapEventKind};
 pub use laps::{Lap, LapKind, classify_laps, fastest_lap_index, format_lap_time};
 pub use mapping::{ChannelMapping, ChannelOverrides};
 pub use recording::{OpenError, RawChannel, Recording};

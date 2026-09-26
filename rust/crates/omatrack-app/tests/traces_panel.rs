@@ -20,10 +20,11 @@ use gpui_kit::{
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta,
     TestAppContext, Window, point, px,
 };
-use omatrack_app::actions::{ResizeLanes, Role, SelectLap, ZoomReset};
+use omatrack_app::actions::{ResizeLanes, Role, SelectLap, ToggleTraceColorMode, ZoomReset};
 use omatrack_app::panels::TraceMode;
 use omatrack_app::panels::traces::{DELTA_KEY, ToggleLane, TracesPanel};
-use omatrack_trace::{TraceStack, Viewport};
+use omatrack_app::state::TraceViewMode;
+use omatrack_trace::{EventMarkKind, TraceStack, Viewport};
 
 const RATE: f64 = 50.0;
 const DURATION: f64 = 90.0;
@@ -315,9 +316,9 @@ async fn the_scene_follows_the_analysis(cx: &mut TestAppContext) {
                 .unwrap()
                 .starts_with("Corners: ")
         );
-        // No toolbar of its own: the traces' controls ride in the one
-        // control row under the video.
-        assert!(window.try_find("trace-toolbar").is_none());
+        // The trace toolbar heads the lanes; the axis rides in the video's
+        // control row.
+        assert!(window.find("trace-toolbar").visible());
         assert!(window.find("trace-axis-distance").visible());
         assert!(window.find("trace-tools").visible());
     })
@@ -868,13 +869,7 @@ async fn real_run4_against_run1_fills_the_lanes(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
-)]
-async fn a_time_share_pair_keeps_a_readable_delta_lane_with_the_key_on_top(
-    cx: &mut TestAppContext,
-) {
+async fn a_time_share_pair_keeps_a_readable_delta_lane_in_the_trace_card(cx: &mut TestAppContext) {
     // The synthetic pair carries no GPS: the map is a share of lap time.
     let f = synthetic_pair(cx).await;
     let time_share = cx.update(|cx| f.traces.read(cx).scene().time_share_delta());
@@ -895,13 +890,48 @@ async fn a_time_share_pair_keeps_a_readable_delta_lane_with_the_key_on_top(
             delta.size.height.as_f32() >= floor - 1.0,
             "the Δ lane keeps 1.5 lanes: {delta:?}"
         );
-        // The P / R / Δ column key heads the lanes, in the ruler row.
+        // One bordered card holds the ruler row above the lanes.
+        let card = window.find("trace-card").bounds();
         let ruler = window.find("trace-ruler-row").bounds();
-        let key = window.find("readout-key").bounds();
-        assert!(ruler.contains(&key.origin), "{key:?} in {ruler:?}");
-        assert!(key.bottom() <= delta.top() + px(1.));
+        assert!(card.contains(&ruler.origin) && card.contains(&delta.origin));
+        assert!(ruler.bottom() <= delta.top() + px(1.));
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+async fn the_colour_mode_toggles_persist_and_repaint_the_lanes(cx: &mut TestAppContext) {
+    use omatrack_library::config::TraceColorMode;
+    use omatrack_trace::ColorMode;
+
+    let f = synthetic_pair(cx).await;
+    let stack = f.stack(cx);
+    assert_eq!(cx.update(|cx| stack.read(cx).color_mode()), ColorMode::Lap);
+    let before = cx.update(|cx| stack.read(cx).static_stats(cx));
+    cx.update_window(f.window, |_, window, cx| {
+        window.dispatch_action(Box::new(ToggleTraceColorMode), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert_eq!(f.config(cx).trace.color_mode, Some(TraceColorMode::Channel));
+    assert_eq!(
+        cx.update(|cx| stack.read(cx).color_mode()),
+        ColorMode::Channel
+    );
+    let after = cx.update(|cx| stack.read(cx).static_stats(cx));
+    assert_eq!(
+        after.geometry_builds, before.geometry_builds,
+        "a colour change repaints, never rebuilds geometry"
+    );
+    cx.update_window(f.window, |_, window, cx| {
+        window.dispatch_action(Box::new(ToggleTraceColorMode), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(f.config(cx).trace.color_mode, Some(TraceColorMode::Lap));
+    assert_eq!(cx.update(|cx| stack.read(cx).color_mode()), ColorMode::Lap);
 }
 
 #[gpui_kit::test]
@@ -920,17 +950,24 @@ async fn one_control_row_under_the_video_drives_the_traces(cx: &mut TestAppConte
     assert!(PanelKind::Library.has_title_bar());
     cx.update_window(f.window, |_, window, cx| {
         window.render_frame(cx);
-        // The row sits under the pictures and above the traces.
+        // The row sits under the pictures and above the traces' toolbar.
         let bar = window.find("video-bar").bounds();
         assert!(bar.top() >= window.find("video-empty").bounds().bottom() - px(1.));
-        assert!(bar.bottom() <= window.find("corner-ruler").bounds().top() + px(1.));
+        let toolbar = window.find("trace-toolbar").bounds();
+        assert!(bar.bottom() <= toolbar.top() + px(1.));
+        assert!(toolbar.bottom() <= window.find("corner-ruler").bounds().top() + px(1.));
+        // Zoom, FIT, sizing and corner editing have one home: the toolbar.
+        for id in ["trace-zoom-in", "trace-tools"] {
+            let control = window.find(id).bounds();
+            assert!(!bar.intersects(&control), "{id} is not in the video row");
+            assert!(control.top() >= toolbar.top() && control.bottom() <= toolbar.bottom());
+        }
         for id in [
             "video-play",
             "video-slow-motion",
             "video-per-lap",
             "trace-axis-distance",
             "trace-axis-time",
-            "trace-tools",
             "video-mute",
             "video-enter-fullscreen",
         ] {
@@ -1022,4 +1059,324 @@ async fn one_control_row_under_the_video_drives_the_traces(cx: &mut TestAppConte
         assert!(place.contains("straight after"), "{place}");
     })
     .unwrap();
+}
+
+/// Switch the trace view mode and let the pipeline settle.
+async fn set_view_mode(cx: &mut TestAppContext, f: &Fixture, mode: TraceViewMode) {
+    let trace_view = f.test.app.trace_view.clone();
+    cx.update(|cx| trace_view.update(cx, |view, cx| view.set_mode(mode, cx)));
+    cx.run_until_parked();
+    let panel = f.traces.clone();
+    cx.wait_for(f.window, Duration::from_secs(600), move |_, cx| {
+        !trace_view.read(cx).is_loading()
+            && (mode != TraceViewMode::Consistency || panel.read(cx).scene().has_spread())
+    })
+    .await;
+    cx.update_window(f.window, |_, window, cx| draw(window, cx))
+        .unwrap();
+}
+
+#[gpui_kit::test]
+async fn consistency_loads_the_session_once_and_draws_it_behind_the_lap(cx: &mut TestAppContext) {
+    let f = synthetic_pair(cx).await;
+    let trace_view = f.test.app.trace_view.clone();
+    let stack = f.stack(cx);
+    // Lazy: the lap view loads nothing.
+    assert_eq!(cx.update(|cx| trace_view.read(cx).loads_started()), 0);
+    assert!(!cx.update(|cx| f.traces.read(cx).scene().has_spread()));
+
+    set_view_mode(cx, &f, TraceViewMode::Consistency).await;
+    assert_eq!(cx.update(|cx| trace_view.read(cx).loads_started()), 1);
+    let (spread, lanes, layers) = cx.update(|cx| {
+        let consistency = trace_view.read(cx).spread().unwrap().consistency().clone();
+        let scene = f.traces.read(cx).scene().clone();
+        let lanes: Vec<String> = scene
+            .lanes()
+            .iter()
+            .filter(|lane| lane.spread.is_some())
+            .map(|lane| lane.key.to_string())
+            .collect();
+        (consistency, lanes, stack.read(cx).layers())
+    });
+    // Four timed laps in the recording: the three besides the primary.
+    assert_eq!(spread.lap_count(), 3, "{:?}", spread.lap_ids());
+    assert!(spread.is_meaningful());
+    assert!(lanes.iter().any(|key| key == "speed"), "{lanes:?}");
+    assert!(lanes.iter().any(|key| key == "brake"), "{lanes:?}");
+    assert!(!lanes.iter().any(|key| key == DELTA_KEY));
+    assert!(layers.consistency && !layers.events);
+    assert!(
+        cx.update(|cx| f.traces.read(cx).consistency_notice(cx))
+            .is_none()
+    );
+    assert!(!cx.update(|cx| f.test.app.jobs.read(cx).is_busy()));
+    let config = f.config(cx);
+    assert_eq!(config.trace.view_mode(), TraceViewMode::Consistency);
+
+    // Leaving and re-entering the mode reuses the spread of this lap.
+    set_view_mode(cx, &f, TraceViewMode::Lap).await;
+    assert!(!cx.update(|cx| stack.read(cx).layers()).consistency);
+    set_view_mode(cx, &f, TraceViewMode::Consistency).await;
+    assert_eq!(cx.update(|cx| trace_view.read(cx).loads_started()), 1);
+
+    // The cursor never rebuilds geometry with the spread on.
+    let before = cx.update(|cx| stack.read(cx).static_stats(cx));
+    let plot = f.plot(cx);
+    for fx in [0.2, 0.35, 0.5] {
+        mouse(cx, f.window, at(plot, fx, 0.6), None);
+    }
+    let after = cx.update(|cx| stack.read(cx).static_stats(cx));
+    assert_eq!(after.geometry_builds, before.geometry_builds);
+
+    // Another primary lap: one more load, for that lap.
+    cx.update(|cx| {
+        f.test
+            .app
+            .session
+            .update(cx, |session, cx| session.next_lap(cx))
+    });
+    cx.run_until_parked();
+    let session = f.test.app.session.clone();
+    let panel = f.traces.clone();
+    let view = trace_view.clone();
+    cx.wait_for(f.window, Duration::from_secs(600), move |_, cx| {
+        let primary = session
+            .read(cx)
+            .primary()
+            .and_then(|slot| slot.loaded())
+            .cloned();
+        primary.is_some_and(|lap| view.read(cx).spread_for(&lap).is_some())
+            && panel.read(cx).scene().has_spread()
+    })
+    .await;
+    assert_eq!(cx.update(|cx| trace_view.read(cx).loads_started()), 2);
+}
+
+#[gpui_kit::test]
+async fn events_mark_both_laps_on_their_lanes(cx: &mut TestAppContext) {
+    let f = synthetic_pair(cx).await;
+    let stack = f.stack(cx);
+    let events = cx.update(|cx| f.traces.read(cx).scene().events().clone());
+    let on = |channel: &str, reference: bool| {
+        events
+            .iter()
+            .filter(|mark| mark.channel.as_ref() == channel && mark.reference == reference)
+            .count()
+    };
+    // Two braked corners per lap, each lap: onset, lift, down- and upshift.
+    for reference in [false, true] {
+        assert_eq!(on("brake", reference), 2, "brake onsets ({reference})");
+        assert_eq!(on("throttle", reference), 2, "lifts ({reference})");
+        assert!(on("gear", reference) >= 4, "shifts ({reference})");
+    }
+    assert!(events.windows(2).all(|w| w[0].fraction <= w[1].fraction));
+    let brake = events
+        .iter()
+        .find(|mark| mark.kind == EventMarkKind::BrakeOnset && !mark.reference)
+        .unwrap();
+    assert!(brake.label.starts_with("P · Brake · "), "{}", brake.label);
+    assert!(brake.label.ends_with(" m"), "{}", brake.label);
+
+    set_view_mode(cx, &f, TraceViewMode::Events).await;
+    let layers = cx.update(|cx| stack.read(cx).layers());
+    assert!(layers.events && !layers.consistency);
+    // Events need no session laps.
+    assert_eq!(
+        cx.update(|cx| f.test.app.trace_view.read(cx).loads_started()),
+        0
+    );
+}
+
+/// Click `id` in the window, let actions and motion land, draw.
+fn click_and_settle(cx: &mut TestAppContext, f: &Fixture, id: &'static str) {
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(id, cx);
+    })
+    .unwrap();
+    cx.executor().advance_clock(Duration::from_millis(400));
+    cx.run_until_parked();
+}
+
+fn press_and_settle(cx: &mut TestAppContext, f: &Fixture, key: &str) {
+    cx.update_window(f.window, |_, window, cx| window.press(key, cx))
+        .unwrap();
+    cx.executor().advance_clock(Duration::from_millis(400));
+    cx.run_until_parked();
+}
+
+fn assert_viewport(cx: &mut TestAppContext, f: &Fixture, expected: Viewport, what: &str) {
+    let view = cx.update(|cx| f.test.app.viewport.read(cx).viewport());
+    assert!(
+        (view.start - expected.start).abs() < 1e-9 && (view.end - expected.end).abs() < 1e-9,
+        "{what}: {view:?}, expected {expected:?}"
+    );
+}
+
+#[gpui_kit::test]
+async fn the_trace_toolbar_zooms_and_fits(cx: &mut TestAppContext) {
+    let f = synthetic_pair(cx).await;
+    click_and_settle(cx, &f, "trace-zoom-in");
+    let zoomed = cx.update(|cx| f.test.app.viewport.read(cx).viewport());
+    assert!(zoomed.span() < 1.0, "{zoomed:?}");
+    click_and_settle(cx, &f, "trace-zoom-out");
+    let out = cx.update(|cx| f.test.app.viewport.read(cx).viewport());
+    assert!(out.span() > zoomed.span(), "{out:?}");
+    click_and_settle(cx, &f, "trace-zoom-in");
+    click_and_settle(cx, &f, "trace-zoom-fit");
+    assert_viewport(cx, &f, Viewport::FULL, "fit is the whole lap");
+}
+
+#[gpui_kit::test]
+async fn the_corners_view_frames_one_corner_and_returns_to_the_lap(cx: &mut TestAppContext) {
+    use omatrack_library::config::TraceViewMode;
+
+    let f = synthetic_pair(cx).await;
+    let corners = cx.update(|cx| f.traces.read(cx).scene().corners().to_vec());
+    assert!(corners.len() >= 2);
+    let framed = |ix: usize| Viewport::frame_corner(corners[ix].start, corners[ix].end);
+    let focused = |cx: &mut TestAppContext| {
+        cx.update(|cx| f.traces.read(cx).ruler().read(cx).focused_corner())
+    };
+    // A zoomed lap view to come back to.
+    press_and_settle(cx, &f, "=");
+    let lap_view = cx.update(|cx| f.test.app.viewport.read(cx).viewport());
+    let lap_cursor = cx.update(|cx| f.test.app.cursor.read(cx).fraction());
+
+    // The segment enters Corners: the first corner with approach and exit.
+    click_and_settle(cx, &f, "trace-view-corners");
+    assert_eq!(
+        cx.update(|cx| f.test.app.preferences.read(cx).config().trace.view_mode()),
+        TraceViewMode::Corners
+    );
+    assert_viewport(cx, &f, framed(0), "Corners frames the first corner");
+    let view = framed(0);
+    assert!(view.start < corners[0].start && view.end > corners[0].end);
+    assert_eq!(focused(cx), Some(corners[0].id));
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("trace-view-corners").checked(), Some(true));
+    })
+    .unwrap();
+
+    // The cursor is in the corner (its apex, else its start), so the
+    // readouts describe it.
+    let in_corner = |cx: &mut TestAppContext, ix: usize| {
+        let at = cx.update(|cx| f.test.app.cursor.read(cx).fraction());
+        at.is_some_and(|at| at >= corners[ix].start && at <= corners[ix].end)
+    };
+    assert!(in_corner(cx, 0), "the cursor moves into the framed corner");
+
+    // j / h step through the corners in the same framing.
+    press_and_settle(cx, &f, "j");
+    assert_viewport(cx, &f, framed(1), "j frames the next corner");
+    assert_eq!(focused(cx), Some(corners[1].id));
+    assert!(in_corner(cx, 1), "the cursor follows the corner");
+    press_and_settle(cx, &f, "h");
+    assert_viewport(cx, &f, framed(0), "h frames the previous corner");
+    // Fit in Corners fits the corner, not the lap.
+    click_and_settle(cx, &f, "trace-zoom-in");
+    click_and_settle(cx, &f, "trace-zoom-fit");
+    assert_viewport(cx, &f, framed(0), "fit fits the corner");
+
+    // Escape leaves the mode for the view from before it.
+    press_and_settle(cx, &f, "escape");
+    assert_eq!(
+        cx.update(|cx| f.test.app.preferences.read(cx).config().trace.view_mode()),
+        TraceViewMode::Lap
+    );
+    assert_viewport(cx, &f, lap_view, "Escape returns to the lap view");
+    assert_eq!(
+        cx.update(|cx| f.test.app.cursor.read(cx).fraction()),
+        lap_cursor
+    );
+    assert_eq!(focused(cx), None);
+
+    // alt-2 / alt-1 do the same from the keyboard, and the mode persists.
+    press_and_settle(cx, &f, "alt-2");
+    assert_viewport(cx, &f, framed(0), "alt-2 enters Corners");
+    press_and_settle(cx, &f, "j");
+    press_and_settle(cx, &f, "alt-1");
+    assert_viewport(cx, &f, lap_view, "alt-1 returns to the lap view");
+    assert_eq!(f.config(cx).trace.view_mode(), TraceViewMode::Lap);
+    press_and_settle(cx, &f, "alt-3");
+    assert_eq!(
+        f.config(cx).trace.view_mode,
+        Some(TraceViewMode::Consistency)
+    );
+    // Consistency keeps the lap framing and starts the session load.
+    assert_viewport(cx, &f, lap_view, "Consistency keeps the lap view");
+    assert_eq!(
+        cx.update(|cx| f.test.app.trace_view.read(cx).loads_started()),
+        1
+    );
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("trace-view-consistency").checked(), Some(true));
+    })
+    .unwrap();
+    // The segmented control drives the same modes: Events draws its marks
+    // and no apex callouts; Lap brings the callouts back.
+    let stack = f.stack(cx);
+    click_and_settle(cx, &f, "trace-view-events");
+    let layers = cx.update(|cx| stack.read(cx).layers());
+    assert!(layers.events && !layers.consistency && !layers.apexes);
+    click_and_settle(cx, &f, "trace-view-lap");
+    let layers = cx.update(|cx| stack.read(cx).layers());
+    assert!(!layers.events && !layers.consistency && layers.apexes);
+}
+
+#[gpui_kit::test]
+async fn the_channels_menu_and_colour_mode_live_in_the_toolbar(cx: &mut TestAppContext) {
+    use omatrack_library::config::TraceColorMode;
+
+    let f = synthetic_pair(cx).await;
+    // Steering is opt in; the Channels menu checks it on.
+    let title = cx.update(|cx| {
+        f.traces
+            .read(cx)
+            .scene()
+            .lane("steering")
+            .map(|lane| lane.title.clone())
+            .expect("a steering lane")
+    });
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("lane-steering").is_none());
+        window.click("trace-channels", cx);
+        window.render_frame(cx);
+        let mut menu = window.within("popup-menu");
+        let item = (0..32usize)
+            .find(|ix| {
+                menu.try_find(*ix)
+                    .is_some_and(|item| item.label() == Some(title.as_ref()))
+            })
+            .expect("steering is listed");
+        menu.click(item, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let visible = f
+        .config(cx)
+        .channels
+        .get("steering")
+        .and_then(|channel| channel.visible);
+    assert_eq!(visible, Some(true));
+
+    // The colour segments name both modes, the current one checked; a
+    // click on the current one changes nothing.
+    click_and_settle(cx, &f, "trace-color-lap");
+    assert_ne!(f.config(cx).trace.color_mode, Some(TraceColorMode::Channel));
+    click_and_settle(cx, &f, "trace-color-channel");
+    assert_eq!(f.config(cx).trace.color_mode, Some(TraceColorMode::Channel));
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("trace-color-channel").checked(), Some(true));
+        assert_eq!(window.find("trace-color-lap").checked(), Some(false));
+    })
+    .unwrap();
+    click_and_settle(cx, &f, "trace-color-channel");
+    assert_eq!(f.config(cx).trace.color_mode, Some(TraceColorMode::Channel));
+    click_and_settle(cx, &f, "trace-color-lap");
+    assert_eq!(f.config(cx).trace.color_mode, Some(TraceColorMode::Lap));
 }

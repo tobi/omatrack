@@ -173,7 +173,9 @@ fn lane_colors(config: &Config, key: &str, theme: &Theme) -> (Hsla, Hsla) {
     let lane = LaneStyle::default_for(key)
         .with_color(user_color(style.color.as_deref()))
         .with_reference_color(user_color(style.reference_color.as_deref()));
-    TracePalette::from_theme(theme).channel_colors(key, !style.combine_with_previous, &lane)
+    TracePalette::from_theme(theme)
+        .with_mode(crate::panels::traces::scene_build::color_mode(config))
+        .channel_colors(key, !style.combine_with_previous, &lane)
 }
 
 /// The palette title of a channel's visibility command.

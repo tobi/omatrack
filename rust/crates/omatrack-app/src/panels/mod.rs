@@ -22,6 +22,7 @@ use std::sync::Arc;
 use gpui_kit::component::dock::{BasePanelView, panel_handle, register_panel};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName,
+    button::ButtonCustomVariant,
     empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle},
 };
 use gpui_kit::{
@@ -216,6 +217,25 @@ pub(crate) fn register(kind: PanelKind, cx: &mut App) {
         let app = AppState::global(cx).clone();
         WorkspacePanels::new(&app, window, cx).handle(kind)
     });
+}
+
+/// Emphasis of the selected segment's fill over the background.
+const SELECTED_SEGMENT_FILL: f32 = 0.16;
+
+/// The selected segment of an outline segmented control (`Lap | Corners`,
+/// `Per lap | Continuous`): a clear neutral fill and full-strength label,
+/// where the kit's outline selection is only a faint tint. Colour stays
+/// for the lap roles and Δ.
+pub(crate) fn selected_segment(cx: &App) -> ButtonCustomVariant {
+    let theme = cx.theme();
+    let fill = theme
+        .background
+        .blend(theme.foreground.opacity(SELECTED_SEGMENT_FILL));
+    ButtonCustomVariant::new(cx)
+        .color(theme.muted_foreground)
+        .foreground(theme.foreground)
+        .hover(fill)
+        .active(fill)
 }
 
 /// An empty or waiting state: icon, title and one explanatory sentence.

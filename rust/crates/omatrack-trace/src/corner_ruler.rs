@@ -3,8 +3,11 @@
 //! Every corner zone is a label on the shared x mapping (the application's
 //! [`ViewportState`]), centred over its zone on one of two staggered rows:
 //! corners alternate rows by index (T1 T3 T5 above, T2 T4 below), so tight
-//! neighbours never fight for one line. The zones' shading runs through the
-//! lanes (the trace overlay); the ruler itself is labels. Corner complexes
+//! neighbours never fight for one line; where every label fits on one row
+//! (few corners, or zoomed in) they share the lower row
+//! ([`place_on_one_row`]). A thin rule along the ruler's foot marks each
+//! zone under its label (the chip corner's in the foreground). The zones'
+//! shading runs through the lanes (the static layer). Corner complexes
 //! that group two or more corners are a quiet bracket line above the rows
 //! (a single-corner complex only repeats its corner and is not drawn).
 //! The chip corner, the focused one or else the one under the shared cursor,
@@ -417,6 +420,11 @@ pub(crate) struct Placement {
     pub x: f32,
 }
 
+/// A zone rule's distance above the ruler's foot, logical pixels.
+const ZONE_RULE_INSET: f32 = 2.0;
+/// Emphasis of a zone rule under an unfocused label.
+const ZONE_RULE_ALPHA: f32 = 0.45;
+
 /// Minimum clear space between two labels of one row, logical pixels.
 const LABEL_GAP: f32 = 6.0;
 
@@ -434,6 +442,30 @@ const LABEL_GAP: f32 = 6.0;
 /// chip corner (`priority >= 2`) is always placed.
 pub(crate) fn place_labels(candidates: &[LabelCandidate], width: f32) -> Vec<Option<Placement>> {
     place_in_rows(candidates, width, true)
+}
+
+/// The labels on one row, where every visible label fits there without
+/// coming within [`LABEL_GAP`] of another: a sparse ruler (few corners, or
+/// zoomed in) reads as one line. `None` when any would collide, and the
+/// ruler staggers ([`place_labels`]).
+pub(crate) fn place_on_one_row(
+    candidates: &[LabelCandidate],
+    width: f32,
+) -> Option<Vec<Option<Placement>>> {
+    let one_row: Vec<LabelCandidate> = candidates
+        .iter()
+        .map(|c| LabelCandidate {
+            row: 0,
+            priority: c.priority.min(1),
+            ..*c
+        })
+        .collect();
+    let placed = place_in_rows(&one_row, width, true);
+    let every = one_row.iter().zip(&placed).all(|(c, p)| {
+        let visible = c.full.is_finite() && c.right.min(width) > c.left.max(0.0);
+        !visible || p.is_some()
+    });
+    every.then_some(placed)
 }
 
 fn place_in_rows(candidates: &[LabelCandidate], width: f32, short: bool) -> Vec<Option<Placement>> {
@@ -780,6 +812,24 @@ impl RulerElement {
             }
         }
 
+        // A rule under each zone along the ruler's foot: where the corner
+        // runs, under its label; the chip corner's in the foreground.
+        if !self.editing {
+            let rule_y = height - ZONE_RULE_INSET;
+            for corner in self.corners.iter() {
+                let (x1, x2) = (x_for(corner.start), x_for(corner.end));
+                if x2 <= 0.0 || x1 >= width || x2 - x1 < 3.0 {
+                    continue;
+                }
+                let color = if self.chip == Some(corner.id) {
+                    self.strong
+                } else {
+                    self.label.opacity(ZONE_RULE_ALPHA)
+                };
+                rect(window, x1 + 1.0, rule_y, x2 - x1 - 2.0, 1.0, color);
+            }
+        }
+
         // Labels on two staggered rows by corner index; the chip corner
         // (focused, else under the cursor) is a filled chip in the
         // foreground with its label in the background colour.
@@ -818,7 +868,10 @@ impl RulerElement {
             });
             shaped.push((full, short));
         }
-        let placements = place_labels(&candidates, width);
+        // One row where every label fits on it, else staggered.
+        let single = place_on_one_row(&candidates, width);
+        let one_row = single.is_some();
+        let placements = single.unwrap_or_else(|| place_labels(&candidates, width));
         for ((placement, (full, short)), candidate) in
             placements.into_iter().zip(&shaped).zip(&candidates)
         {
@@ -832,7 +885,8 @@ impl RulerElement {
             let Some(line) = line else {
                 continue;
             };
-            let row_top = tiers.row_top[candidate.row as usize];
+            // A single row sits in the lower row, nearest its zone rule.
+            let row_top = tiers.row_top[if one_row { 1 } else { candidate.row as usize }];
             let top = (row_top + (tiers.row_height - text_height) * 0.5).round();
             let mut x = placement.x.round();
             if candidate.priority >= 2 {
@@ -984,6 +1038,23 @@ mod tests {
         );
         assert_eq!(placed[0], None);
         assert!(placed[1].is_some());
+    }
+
+    #[test]
+    fn a_sparse_ruler_reads_on_one_row() {
+        // Wide apart: one row.
+        let sparse = [
+            candidate(100.0, 160.0, 40.0, Some(16.0), 0),
+            candidate(300.0, 360.0, 40.0, Some(16.0), 1),
+        ];
+        let placed = place_on_one_row(&sparse, 1000.0).expect("fits on one row");
+        assert!(placed.iter().all(Option::is_some));
+        // Neighbours whose labels would touch: staggered.
+        let dense = [
+            candidate(100.0, 120.0, 40.0, Some(16.0), 0),
+            candidate(120.0, 140.0, 40.0, Some(16.0), 1),
+        ];
+        assert_eq!(place_on_one_row(&dense, 1000.0), None);
     }
 
     #[test]

@@ -39,23 +39,29 @@ use gpui_kit::component::{ActiveTheme as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::{
     AnyElement, AppContext as _, Bounds, Context, ElementId, Entity, EventEmitter, FocusHandle,
     Focusable, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Point,
-    Render, Role, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _,
+    Render, Role, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled,
     Subscription, Window, div, prelude::FluentBuilder as _, px, rems,
 };
-use omatrack_ui::{DeltaSense, TypeScale as _, format_delta, format_value};
+use omatrack_ui::{
+    DeltaSense, DeltaTrend, TypeScale as _, format_delta, format_value, trace_figures,
+};
 
-use crate::axis::TraceAxis;
+use crate::axis::{AXIS_TICK_SPACING, TraceAxis};
 use crate::interaction::{
     CornerSpan, Effect, Effects, GestureCursor, Interaction, InteractionContext, KeyModifiers,
     PointerButton, WheelDelta,
 };
-use crate::layout::{GAP_LANE_MIN_HEIGHT, LaneLayout, LaneSizing, LayoutMode, layout_lanes};
+use crate::layout::{
+    GAP_LANE_MIN_HEIGHT, LaneLayout, LaneSizing, LayoutMode, STEP_LANE_MIN_HEIGHT, layout_lanes,
+};
 use crate::overlay::TraceOverlay;
-use crate::palette::{APPROXIMATE_DELTA_EMPHASIS, TracePalette};
+use crate::palette::{APPROXIMATE_DELTA_EMPHASIS, ColorMode, TracePalette};
 use crate::scale::{Tick, Viewport, XAxis, axis_ticks};
-use crate::scene::{CornerBand, LaneKind, LaneSeries, LaneStyles, Readout, TraceScene};
+use crate::scene::{
+    CornerBand, LaneKind, LaneSeries, LaneStyles, Readout, TraceLayers, TraceScene,
+};
 use crate::state::{CursorState, Selection, ViewportState};
-use crate::static_layer::{StaticStats, TICK_SPACING, TraceStaticView};
+use crate::static_layer::{StaticStats, TraceStaticView};
 
 /// User intent reported by a [`TraceStack`].
 #[derive(Clone, Debug, PartialEq)]
@@ -100,6 +106,7 @@ pub struct TraceStack {
     resize_draft: Option<Vec<f64>>,
     editing_corners: bool,
     focused_corner: Option<u32>,
+    layers: TraceLayers,
     viewport: Entity<ViewportState>,
     cursor: Entity<CursorState>,
     static_view: Entity<TraceStaticView>,
@@ -112,6 +119,7 @@ pub struct TraceStack {
     lane_heights: Vec<f64>,
     ticks: Vec<Tick>,
     pointer_inside: bool,
+    color_mode: ColorMode,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -160,6 +168,7 @@ impl TraceStack {
             resize_draft: None,
             editing_corners: false,
             focused_corner: None,
+            layers: TraceLayers::LAP,
             viewport,
             cursor,
             static_view,
@@ -172,6 +181,7 @@ impl TraceStack {
             lane_heights: Vec::new(),
             ticks: Vec::new(),
             pointer_inside: false,
+            color_mode: ColorMode::default(),
             _subscriptions: subscriptions,
         };
         stack.relayout(cx);
@@ -200,6 +210,22 @@ impl TraceStack {
         self.relayout(cx);
         self.refresh_ticks(cx);
         cx.notify();
+    }
+
+    /// The optional layers of the trace view mode (session spread, event
+    /// ticks). Repaints the static layer once; lane geometry is kept.
+    pub fn set_layers(&mut self, layers: TraceLayers, cx: &mut Context<'_, Self>) {
+        if layers == self.layers {
+            return;
+        }
+        self.layers = layers;
+        self.static_view
+            .update(cx, |view, cx| view.set_layers(layers, cx));
+        cx.notify();
+    }
+
+    pub fn layers(&self) -> TraceLayers {
+        self.layers
     }
 
     /// Replace corner zones without touching the static layer (corner edits).
@@ -258,6 +284,10 @@ impl TraceStack {
         if self.editing_corners != editing {
             self.editing_corners = editing;
             self.interaction.cancel();
+            // The draft zones move with the pointer: the overlay draws them
+            // while the committed ones leave the static layer.
+            self.static_view
+                .update(cx, |view, cx| view.set_corner_bands(!editing, cx));
             cx.notify();
         }
     }
@@ -283,6 +313,16 @@ impl TraceStack {
             c.set_focus(Some(Selection::new(corner.start, corner.end)), cx);
         });
         cx.notify();
+    }
+
+    /// Mark a corner focused (the traces outside it dim) without moving the
+    /// viewport: for a focus the caller has already framed (the Corners
+    /// view frames with approach and exit, not in the left half).
+    pub fn mark_focused_corner(&mut self, id: u32, cx: &mut Context<'_, Self>) {
+        if self.focused_corner != Some(id) && self.corners.iter().any(|c| c.id == id) {
+            self.focused_corner = Some(id);
+            cx.notify();
+        }
     }
 
     pub fn clear_corner_focus(&mut self, cx: &mut Context<'_, Self>) {
@@ -376,6 +416,9 @@ impl TraceStack {
                 if lane.kind == LaneKind::Delta {
                     sizing.min_height = sizing.min_height.max(GAP_LANE_MIN_HEIGHT);
                 }
+                if lane.kind == LaneKind::Step {
+                    sizing.min_height = sizing.min_height.max(STEP_LANE_MIN_HEIGHT);
+                }
                 sizing
             })
             .collect()
@@ -435,7 +478,7 @@ impl TraceStack {
             &viewport,
             values,
             width,
-            TICK_SPACING,
+            AXIS_TICK_SPACING,
             &mut self.ticks,
         );
     }
@@ -671,9 +714,11 @@ impl TraceStack {
         &self,
         readout_at: Option<f64>,
         palette: &TracePalette,
+        rem: f32,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         let theme = cx.theme();
+        let mono = theme.mono_font_family.clone();
         let pinned_height = self.layout.pinned_height as f32;
         let map = self.scene.map.as_deref();
         let muted = theme.muted_foreground;
@@ -681,7 +726,12 @@ impl TraceStack {
         let border = theme.border;
         let viewport = self.viewport.read(cx).viewport();
         let approximate = self.scene.approximate_delta;
-        let shared = self.has_shared_lane();
+        let lap_label: SharedString = self
+            .scene
+            .reference_label()
+            .cloned()
+            .unwrap_or_else(|| "R".into());
+        let tall_min = rem * TALL_LEGEND_REMS;
         let cells = self
             .layout
             .slots
@@ -709,7 +759,7 @@ impl TraceStack {
                     }
                 }
                 let unit: SharedString = units.join(" / ").into();
-                let combined = channels.len() > 1;
+                let shared = channels.len() > 1;
                 let mut label = if unit.is_empty() {
                     title
                 } else {
@@ -721,7 +771,7 @@ impl TraceStack {
                     .iter()
                     .enumerate()
                     .map(|(position, lane)| {
-                        let color = if position == 0 {
+                        let color = if position == 0 || !shared {
                             foreground
                         } else {
                             let style = self.styles.get(&lane.key);
@@ -738,10 +788,12 @@ impl TraceStack {
                     .collect();
                 let mut rows: Vec<AnyElement> = Vec::new();
                 let is_gap = root.kind == LaneKind::Delta;
+                let tall = !shared && height >= tall_min;
                 if is_gap {
                     // The gap lane's legend is one big figure: the gap at the
-                    // cursor (idle: the change across the view), then where
-                    // it ends (the lap, or the view when zoomed).
+                    // cursor (idle: the change across the view), then the
+                    // corner under the cursor and its Δt, or where the gap
+                    // ends (the lap, or the view when zoomed).
                     if self.scene.time_share_delta {
                         label.push_str(", share of lap time, not station aligned");
                     }
@@ -749,50 +801,72 @@ impl TraceStack {
                     let change = root.change_in(viewport);
                     let (view_text, _) = delta_seconds(change, approximate);
                     let _ = write!(label, ", in view {view_text}");
-                    let figure = if let Some(fraction) = readout_at {
-                        let readout = root.readout(fraction, map);
-                        let (text, trend) = delta_seconds(readout.primary, approximate);
-                        let _ = write!(label, ", at cursor {text}");
-                        let context = if zoomed {
-                            format!("s at cursor, {view_text} in view")
-                        } else {
-                            let (end, _) =
-                                delta_seconds(root.change_in(Viewport::FULL), approximate);
-                            format!("s at cursor, ends {end}")
-                        };
-                        ("cursor", text, trend, context)
-                    } else {
-                        let (text, trend) = delta_seconds(change, approximate);
-                        let context = if zoomed {
-                            "s in view"
-                        } else {
-                            "s over the lap"
-                        };
-                        ("view", text, trend, context.to_string())
+                    let (column, text, trend, context) = match readout_at {
+                        Some(fraction) => {
+                            let readout = root.readout(fraction, map);
+                            let (text, trend) = delta_seconds(readout.primary, approximate);
+                            let _ = write!(label, ", at cursor {text}");
+                            let context = match self.corner_at(fraction) {
+                                Some(corner) => {
+                                    let delta =
+                                        corner.delta.map(|dt| delta_seconds(dt, approximate));
+                                    if let Some((dt, _)) = &delta {
+                                        let _ = write!(label, ", {} {dt}", corner.label);
+                                    }
+                                    GapContext::Corner(corner.label.clone(), delta)
+                                }
+                                None if zoomed => {
+                                    GapContext::Plain("in view", Some(view_text.clone()))
+                                }
+                                None => {
+                                    let (end, _) =
+                                        delta_seconds(root.change_in(Viewport::FULL), approximate);
+                                    GapContext::Plain("ends", Some(end))
+                                }
+                            };
+                            ("cursor", text, trend, context)
+                        }
+                        None => {
+                            let (text, trend) = delta_seconds(change, approximate);
+                            let context = if zoomed { "in view" } else { "over the lap" };
+                            ("view", text, trend, GapContext::Plain(context, None))
+                        }
                     };
                     rows.push(
-                        gap_figure(&root.key, figure, approximate, palette, muted)
-                            .into_any_element(),
+                        gap_figure(
+                            &root.key,
+                            (column, text, trend, context),
+                            approximate,
+                            palette,
+                            muted,
+                            &mono,
+                        )
+                        .into_any_element(),
                     );
                 } else if let Some(fraction) = readout_at {
-                    for (position, lane) in channels.iter().enumerate() {
+                    for lane in &channels {
                         let readout = lane.readout(fraction, map);
                         let style = self.styles.get(&lane.key);
-                        let (hue, reference) =
-                            palette.channel_colors(&lane.key, position == 0, &style);
-                        // Values carry the lap role; a shared channel's hue
-                        // only names it (its label and line), so its figures
-                        // stay as legible as the root's.
-                        let roles = if position == 0 {
-                            (hue, reference)
-                        } else {
-                            (palette.primary, palette.reference)
-                        };
-                        let text = ReadoutText::new(lane, &readout);
+                        // Values carry the lap colour of the mode: the
+                        // primary role (or the channel's hue), the
+                        // reference plainly beside its lap label.
+                        let primary = palette.channel_colors(&lane.key, true, &style).0;
+                        let reference = palette.reference_value(&lane.key, true, &style);
+                        let swatch =
+                            shared.then(|| palette.channel_colors(&lane.key, false, &style).0);
+                        let text = ReadoutText::new(lane, &readout, palette, muted);
                         let _ = write!(label, ", {}", text.spoken(lane));
                         rows.push(
-                            readout_row(lane, text, shared.then_some(combined), hue, roles, muted)
-                                .into_any_element(),
+                            readout_rows(
+                                lane,
+                                text,
+                                tall,
+                                swatch,
+                                (primary, reference, muted),
+                                &lap_label,
+                                &mono,
+                            )
+                            .into_any_element(),
                         );
                     }
                 }
@@ -804,6 +878,7 @@ impl TraceStack {
                 } else {
                     top - pinned_height
                 };
+                let roomy = is_gap || tall;
                 let cell = div()
                     .id(id)
                     .role(Role::Group)
@@ -815,8 +890,9 @@ impl TraceStack {
                     .top(px(top))
                     .h(px(height))
                     .overflow_hidden()
-                    .px_2()
-                    .pt_px()
+                    .px_3()
+                    .when(roomy, |el| el.pt_1p5())
+                    .when(!roomy, |el| el.pt_px())
                     .text_label()
                     .line_height(rems(LEGEND_LINE_REMS))
                     .when(ix > 0, |el| el.border_t_1().border_color(border))
@@ -826,12 +902,18 @@ impl TraceStack {
                             .min_w_0()
                             .items_baseline()
                             .child(h_flex().gap_1().min_w_0().font_medium().children(names))
-                            // The gap lane says its unit under the figure.
-                            .when(!unit.is_empty() && !is_gap, |el| {
-                                el.child(div().text_color(muted).flex_shrink_0().child(unit))
+                            .when(!unit.is_empty(), |el| {
+                                el.child(
+                                    div()
+                                        .text_caption()
+                                        .font_family(mono.clone())
+                                        .text_color(muted)
+                                        .flex_shrink_0()
+                                        .child(unit),
+                                )
                             }),
                     )
-                    .child(v_flex().numeric().children(rows));
+                    .child(v_flex().children(rows));
                 Some((slot.pinned, cell.into_any_element()))
             });
         let (pinned, scrolled): (Vec<_>, Vec<_>) = cells.partition(|(pinned, _)| *pinned);
@@ -862,99 +944,81 @@ impl TraceStack {
             )
     }
 
-    /// Whether any visible lane holds two channels: only then do readout
-    /// rows carry the channel column (a line swatch naming each row).
-    fn has_shared_lane(&self) -> bool {
-        self.layout
-            .slots
+    /// The corner zone under a primary lap fraction.
+    fn corner_at(&self, fraction: f64) -> Option<&CornerBand> {
+        self.corners
             .iter()
-            .any(|slot| slot.channels().nth(1).is_some())
+            .find(|c| (c.start..=c.end).contains(&fraction))
     }
 
-    /// The header of the readout columns, for the row above the lanes (the
-    /// host places it; the corner ruler's chrome cell in Omatrack): which
-    /// column is the primary lap, the reference and their difference, on
-    /// the same spines as every lane's values. Colour is never the only cue.
-    pub fn column_key(&self, cx: &gpui_kit::App) -> AnyElement {
-        let theme = cx.theme();
-        let has_reference = self.scene.lanes.iter().any(|lane| lane.reference.is_some());
-        let show = !self.scene.is_empty();
-        let shared = self.has_shared_lane();
-        let key = |text: &'static str, color: Hsla| value_cell().text_color(color).child(text);
-        div()
-            .id("readout-key")
-            .test_support()
-            .flex()
-            .items_center()
-            .text_caption()
-            .font_medium()
-            .when(show, |el| {
-                el.child(
-                    readout_grid()
-                        .when(shared, |el| el.child(label_cell()))
-                        .child(key("P", theme.primary))
-                        .when(has_reference, |el| {
-                            el.child(key("R", theme.warning))
-                                .child(key("Δ", theme.muted_foreground))
-                        }),
-                )
-            })
-            .into_any_element()
+    /// Repaint the lanes in `mode` (lap or channel colours). Geometry never
+    /// keys on colour: the static layer repaints from its cached paths.
+    pub fn set_color_mode(&mut self, mode: ColorMode, cx: &mut Context<'_, Self>) {
+        if self.color_mode != mode {
+            self.color_mode = mode;
+            self.static_view
+                .update(cx, |view, cx| view.set_color_mode(mode, cx));
+            cx.notify();
+        }
+    }
+
+    pub fn color_mode(&self) -> ColorMode {
+        self.color_mode
     }
 }
 
-/// Line height of a lane legend, rems: dense (1.17 of the label step), so a
-/// shared lane's title and two readout rows fit a
+/// Line height of a lane legend's text rows, rems: dense (1.17 of the
+/// label step), so a shared lane's title and two readout rows fit a
 /// [`MIN_LANE_HEIGHT`](crate::layout::MIN_LANE_HEIGHT) lane.
 const LEGEND_LINE_REMS: f32 = 0.875;
+/// Width of the lane legend column, rems: a title and unit, the primary
+/// value in the display step and `L12 −180 −12` in label-size numerals,
+/// with the cell's inset, so legends never clip.
+pub const LEGEND_REMS: f32 = 10.5;
+/// Width of the value-axis gutter between the legends and the plot, rems:
+/// `+1.0` or `250` in caption numerals, right-aligned against the plot.
+pub const GUTTER_REMS: f32 = 3.0;
+/// Width of the lane chrome column: the legends and the value-axis gutter,
+/// rems. Rows above the lanes (the corner ruler's, the damper strip) inset
+/// their plots by it.
+pub const CHROME_REMS: f32 = LEGEND_REMS + GUTTER_REMS;
+/// Lanes at least this tall, rems, show the primary value large with the
+/// reference beneath; shorter or shared lanes put both on one row.
+const TALL_LEGEND_REMS: f32 = 4.0;
+/// Line height of a legend's large figures (the display step), rems.
+const FIGURE_LINE_REMS: f32 = 1.375;
+/// Width of a shared lane's line swatch, rems.
+const SWATCH_REMS: f32 = 0.75;
 
-/// Width of a readout row's channel column, rems (a shared lane's line
-/// swatch).
-const LABEL_CELL_REMS: f32 = 1.75;
-/// Minimum width of a readout value column, rems: `-180.0` in tabular
-/// label-size figures. A longer value widens its cell rather than clip.
-const VALUE_CELL_REMS: f32 = 2.5;
-/// Width of the lane chrome column, rems: the readout grid (a channel
-/// column, three value columns and their gaps) plus the cell's inset, so
-/// legends never clip.
-pub const CHROME_REMS: f32 = 12.0;
-/// Gap between readout columns, rems (`gap_1p5`).
-const GAP_REMS: f32 = 0.375;
-/// Line height of the gap lane's figure (the display step), rems.
-const GAP_FIGURE_LINE_REMS: f32 = 1.375;
-
-/// One row of the readout grid: the channel column then the value columns,
-/// on the same spines in every lane.
-fn readout_grid() -> gpui_kit::Div {
-    h_flex()
-        .gap(rems(GAP_REMS))
-        .flex_shrink_0()
-        .whitespace_nowrap()
+/// Which direction of a channel's difference is better, where one is.
+/// Only channels with a sense carry a Δ in the legend.
+fn delta_sense(key: &str) -> Option<DeltaSense> {
+    match key {
+        "speed" => Some(DeltaSense::HigherIsBetter),
+        _ => None,
+    }
 }
 
-fn label_cell() -> gpui_kit::Div {
-    div()
-        .w(rems(LABEL_CELL_REMS))
-        .flex_shrink_0()
-        .overflow_hidden()
+/// A signed legend value (steering: `+53°`, `0°` at centre).
+fn signed_value(value: f64, decimals: usize) -> SharedString {
+    let (text, trend) = format_delta(Some(value), decimals, DeltaSense::default());
+    if trend == DeltaTrend::Even {
+        format_value(Some(0.0), decimals)
+    } else {
+        text
+    }
 }
 
-fn value_cell() -> gpui_kit::Div {
-    div()
-        .min_w(rems(VALUE_CELL_REMS))
-        .flex_shrink_0()
-        .text_right()
-}
-
-/// Formatted P/R/Δ values of one channel at the cursor.
+/// Formatted values of one channel at the cursor.
 struct ReadoutText {
     primary: SharedString,
     reference: Option<SharedString>,
-    delta: Option<SharedString>,
+    /// The difference and its colour (gain/loss), for channels with a sense.
+    delta: Option<(SharedString, Hsla)>,
 }
 
 impl ReadoutText {
-    fn new(lane: &LaneSeries, readout: &Readout) -> Self {
+    fn new(lane: &LaneSeries, readout: &Readout, palette: &TracePalette, muted: Hsla) -> Self {
         let scale = lane.display_scale();
         let span = lane.y_range.span() * scale;
         let decimals = if lane.kind == LaneKind::Step || span >= 100.0 {
@@ -964,15 +1028,36 @@ impl ReadoutText {
         } else {
             2
         };
-        let value = |v: f64| format_value(Some(v * scale), decimals);
-        let has_reference = lane.reference.is_some();
+        let steering = lane.key.as_ref() == "steering";
+        let value = |v: f64| {
+            if steering && v.is_finite() {
+                let text = signed_value(v * scale, decimals);
+                SharedString::from(format!("{text}°"))
+            } else {
+                format_value(Some(v * scale), decimals)
+            }
+        };
+        let primary = value(readout.primary);
+        let reference = lane
+            .reference
+            .is_some()
+            .then(|| value(readout.reference))
+            // A held value equal on both laps (gear) says it once.
+            .filter(|reference| lane.kind != LaneKind::Step || *reference != primary);
+        let delta = reference.as_ref().and_then(|_| {
+            let sense = delta_sense(&lane.key)?;
+            let (text, trend) = format_delta(Some(readout.delta * scale), decimals, sense);
+            let color = match trend {
+                DeltaTrend::Gain => palette.gain,
+                DeltaTrend::Loss => palette.loss,
+                DeltaTrend::Even => muted,
+            };
+            Some((text, color))
+        });
         Self {
-            primary: value(readout.primary),
-            reference: has_reference.then(|| value(readout.reference)),
-            // The sense only colours; the legend's Δ column stays muted.
-            delta: has_reference.then(|| {
-                format_delta(Some(readout.delta * scale), decimals, DeltaSense::default()).0
-            }),
+            primary,
+            reference,
+            delta,
         }
     }
 
@@ -985,96 +1070,149 @@ impl ReadoutText {
         if let Some(reference) = &self.reference {
             let _ = write!(text, " reference {reference}");
         }
-        if let Some(delta) = &self.delta {
+        if let Some((delta, _)) = &self.delta {
             let _ = write!(text, " delta {delta}");
         }
         text
     }
 }
 
-/// A channel's values at the cursor: its name in the channel hue, primary
-/// and reference in their lap roles, their difference muted.
-fn readout_row(
+/// A channel's values at the cursor, in the trace numerals: the primary
+/// (large on a tall lane, else leading the row), then the reference lap's
+/// label, its value and the difference (`L6 82 −3`).
+fn readout_rows(
     lane: &LaneSeries,
     text: ReadoutText,
-    // `None` without any shared lane (no channel column); else whether this
-    // row's lane is shared (its row shows the channel's line).
-    combined: Option<bool>,
-    hue: Hsla,
-    (primary, reference): (Hsla, Hsla),
-    muted: Hsla,
+    tall: bool,
+    // A shared lane's row starts with its channel's line.
+    swatch: Option<Hsla>,
+    (primary, reference, muted): (Hsla, Hsla, Hsla),
+    lap_label: &SharedString,
+    mono: &SharedString,
 ) -> impl IntoElement {
+    let id = |column: &str| ElementId::Name(format!("readout-{}-{column}", lane.key).into());
     let cell = |column: &str, value: SharedString, color: Hsla| {
-        value_cell()
-            .id(ElementId::Name(
-                format!("readout-{}-{column}", lane.key).into(),
-            ))
+        div()
+            .id(id(column))
             .test_support()
+            .flex_shrink_0()
             .text_color(color)
             .child(value)
     };
-    readout_grid()
-        // A shared lane marks each row with its channel's line (the title
-        // names it in the same hue), never a clipped abbreviation.
-        .when_some(combined, |el, combined| {
-            el.child(
-                label_cell()
-                    .h(rems(LEGEND_LINE_REMS))
-                    .flex()
-                    .items_center()
-                    .when(combined, |el| {
-                        el.child(div().w(rems(0.875)).h(px(2.)).rounded_sm().bg(hue))
-                    }),
-            )
-        })
-        .child(cell("p", text.primary, primary))
-        .when_some(text.reference, |el, value| {
-            el.child(cell("r", value, reference))
-        })
-        .when_some(text.delta, |el, value| el.child(cell("d", value, muted)))
+    let reference_row = text.reference.map(|value| {
+        h_flex()
+            .gap_1p5()
+            .min_w_0()
+            .child(cell("lap", lap_label.clone(), muted))
+            .child(cell("r", value, reference))
+            .when_some(text.delta, |el, (delta, color)| {
+                el.child(cell("d", delta, color))
+            })
+    });
+    let figure = cell("p", text.primary, primary);
+    let body = if tall {
+        v_flex()
+            .child(figure.text_display().line_height(rems(FIGURE_LINE_REMS)))
+            .children(reference_row)
+    } else {
+        v_flex().child(
+            h_flex()
+                .gap_2()
+                .min_w_0()
+                .when_some(swatch, |el, hue| {
+                    el.child(
+                        div()
+                            .w(rems(SWATCH_REMS))
+                            .h(px(2.))
+                            .rounded_sm()
+                            .flex_shrink_0()
+                            .bg(hue),
+                    )
+                })
+                .child(figure)
+                .children(reference_row),
+        )
+    };
+    numerals(body.whitespace_nowrap(), mono)
+}
+
+/// What the gap lane says under its figure.
+enum GapContext {
+    /// Words and a figure: `ends +2.440`, `in view −0.310` (at the
+    /// cursor), `over the lap`, `in view` (idle).
+    Plain(&'static str, Option<SharedString>),
+    /// The corner under the cursor and its Δt, where the map places time
+    /// loss.
+    Corner(SharedString, Option<(SharedString, Option<bool>)>),
 }
 
 /// The gap lane's figure: the gap in seconds as the legend's one large
 /// number, gain or loss coloured (at reduced emphasis when approximate),
-/// over a caption saying what it measures and where the gap ends.
+/// over a caption saying what it measures: the corner under the cursor and
+/// its Δt, or where the gap ends.
 fn gap_figure(
     key: &str,
-    (column, value, trend, context): (&str, SharedString, Option<bool>, String),
+    (column, value, trend, context): (&str, SharedString, Option<bool>, GapContext),
     approximate: bool,
     palette: &TracePalette,
     muted: Hsla,
+    mono: &SharedString,
 ) -> impl IntoElement {
     let emphasis = if approximate {
         APPROXIMATE_DELTA_EMPHASIS
     } else {
         1.0
     };
-    let color = match trend {
+    let tone = |trend: Option<bool>| match trend {
         Some(true) => palette.gain.opacity(emphasis),
         Some(false) => palette.loss.opacity(emphasis),
         None => muted,
     };
+    let caption = h_flex()
+        .id(ElementId::Name(format!("readout-{key}-context").into()))
+        .test_support()
+        .gap_1()
+        .min_w_0()
+        .text_caption()
+        .text_color(muted);
+    let caption = match context {
+        GapContext::Plain(words, figure) => caption
+            .child(div().flex_shrink_0().child(words))
+            .when_some(figure, |el, figure| {
+                el.child(numerals(div().flex_shrink_0().child(figure), mono))
+            }),
+        GapContext::Corner(name, delta) => caption
+            .child(div().flex_shrink_0().child("at"))
+            .child(div().min_w_0().truncate().child(name))
+            .when_some(delta, |el, (dt, trend)| {
+                el.child(numerals(
+                    div().flex_shrink_0().text_color(tone(trend)).child(dt),
+                    mono,
+                ))
+            }),
+    };
     v_flex()
         .min_w_0()
-        .child(
+        .whitespace_nowrap()
+        .child(numerals(
             div()
                 .id(ElementId::Name(format!("readout-{key}-{column}").into()))
                 .test_support()
                 .text_display()
-                .line_height(rems(GAP_FIGURE_LINE_REMS))
-                .font_medium()
-                .text_color(color)
+                .line_height(rems(FIGURE_LINE_REMS))
+                .text_color(tone(trend))
                 .child(value),
-        )
-        .child(
-            div()
-                .id(ElementId::Name(format!("readout-{key}-context").into()))
-                .test_support()
-                .text_caption()
-                .text_color(muted)
-                .truncate()
-                .child(SharedString::from(context)),
-        )
+            mono,
+        ))
+        .child(caption)
+}
+
+/// Text in the trace numerals: the monospace family with
+/// [`trace_figures`] (the legend's words stay in the interface family).
+fn numerals<E: Styled>(element: E, mono: &SharedString) -> E {
+    element
+        .font_family(mono.clone())
+        .font_features(trace_figures())
 }
 
 /// A time delta for the gap lane: signed seconds (`≈` and two decimals under
@@ -1130,8 +1268,9 @@ impl Render for TraceStack {
     )]
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let palette = TracePalette::from_theme(theme);
-        let (background, border, muted) = (theme.background, theme.border, theme.muted_foreground);
+        let palette = TracePalette::from_theme(theme).with_mode(self.color_mode);
+        let rem = window.rem_size().as_f32();
+        let (border, muted) = (theme.border, theme.muted_foreground);
         // Keyboard focus shows on the axis row's upper edge: a hairline in
         // the ring colour, which no ancestor clip can hide.
         let focus_edge = if self.focus_handle.is_focused(window) {
@@ -1164,6 +1303,7 @@ impl Render for TraceStack {
             selection,
             focus,
             editing_corners: self.editing_corners,
+            layers: self.layers,
             palette,
             gesture: if empty {
                 GestureCursor::Default
@@ -1187,16 +1327,12 @@ impl Render for TraceStack {
             .role(Role::Figure)
             .aria_label("Traces")
             .test_support()
-            .relative()
-            .flex_1()
-            .min_w_0()
-            .h_full()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .right_0()
+            .left(rems(GUTTER_REMS))
             .overflow_hidden()
-            .child(
-                self.static_view
-                    .clone()
-                    .cached(StyleRefinement::default().size_full()),
-            )
             .child(overlay)
             .when_some(previous_label, |el, label| {
                 el.child(
@@ -1235,6 +1371,20 @@ impl Render for TraceStack {
                         .child("Select a lap to see its traces"),
                 )
             });
+        // The static layer spans the value-axis gutter and the plot; the
+        // overlay and the pointer surface cover the plot only.
+        let lanes = div()
+            .relative()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .overflow_hidden()
+            .child(
+                self.static_view
+                    .clone()
+                    .cached(StyleRefinement::default().size_full()),
+            )
+            .child(plot);
 
         v_flex()
             .id("trace-stack")
@@ -1242,7 +1392,6 @@ impl Render for TraceStack {
             .track_focus(&self.focus_handle)
             .size_full()
             .min_h_0()
-            .bg(background)
             .child(
                 h_flex()
                     .flex_1()
@@ -1250,31 +1399,74 @@ impl Render for TraceStack {
                     .items_stretch()
                     .child(
                         div()
-                            .w(rems(CHROME_REMS))
+                            .w(rems(LEGEND_REMS))
                             .flex_shrink_0()
-                            .child(self.render_chrome(readout_at, &palette, cx)),
+                            .child(self.render_chrome(readout_at, &palette, rem, cx)),
                     )
-                    .child(plot),
+                    .child(lanes),
             )
             .child(
                 h_flex()
-                    .h_5()
+                    .h_6()
                     .flex_shrink_0()
                     .items_stretch()
                     .border_t_1()
                     .border_color(focus_edge)
                     .child(
                         div()
-                            .w(rems(CHROME_REMS))
+                            .w(rems(LEGEND_REMS))
                             .flex_shrink_0()
                             .border_r_1()
                             .border_color(border),
                     )
+                    .child(div().w(rems(GUTTER_REMS)).flex_shrink_0())
                     .child(div().flex_1().min_w_0().child(TraceAxis::new(
                         &self.ticks,
                         &viewport,
                         width,
                     ))),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui_kit::TestAppContext;
+    use gpui_kit::component::Theme;
+
+    fn lane(key: &str, kind: LaneKind, unit: &str, primary: f64, reference: f64) -> LaneSeries {
+        LaneSeries::new(key, key, kind, vec![primary; 4].into())
+            .with_unit(unit)
+            .with_reference(Some(vec![reference; 4].into()))
+            .with_y_range(crate::scene::YRange::new(-200.0, 300.0))
+    }
+
+    #[gpui_kit::test]
+    fn legend_values_follow_each_channel(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let palette = cx.update(|cx| TracePalette::from_theme(Theme::global(cx)));
+        let muted = palette.label;
+        let text =
+            |lane: &LaneSeries| ReadoutText::new(lane, &lane.readout(0.5, None), &palette, muted);
+        // Speed: value, reference and a Δ in the loss colour when slower.
+        let speed = text(&lane("speed", LaneKind::Line, "km/h", 79.0, 82.0));
+        assert_eq!(speed.primary.as_ref(), "79");
+        assert_eq!(speed.reference.as_deref(), Some("82"));
+        let (delta, color) = speed.delta.unwrap();
+        assert_eq!(delta.as_ref(), "\u{2212}3");
+        assert_eq!(color, palette.loss);
+        // Steering is signed, in degrees, with no Δ.
+        let steering = text(&lane("steering", LaneKind::Line, "°", 53.0, 53.0));
+        assert_eq!(steering.primary.as_ref(), "+53°");
+        assert!(steering.delta.is_none());
+        let centre = text(&lane("steering", LaneKind::Line, "°", 0.2, -0.2));
+        assert_eq!(centre.primary.as_ref(), "0°");
+        // Gear says an equal reference once.
+        let gear = text(&lane("gear", LaneKind::Step, "", 2.0, 2.0));
+        assert_eq!(gear.primary.as_ref(), "2");
+        assert!(gear.reference.is_none());
+        let shifted = text(&lane("gear", LaneKind::Step, "", 2.0, 3.0));
+        assert_eq!(shifted.reference.as_deref(), Some("3"));
     }
 }

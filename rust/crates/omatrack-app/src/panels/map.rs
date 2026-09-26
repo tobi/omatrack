@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, Styled as _, Subscription, TestSupportExt as _,
@@ -58,6 +59,76 @@ fn stationed_track(track: &GpsTrack, map: &dyn FractionMap, samples: usize) -> O
     gps_track(&latitude, &longitude)
 }
 
+/// The share of usable fixes a lap's GPS needs to be drawn as itself;
+/// below it the dropouts leave broken fragments off the track, so both laps
+/// are placed on the atlas outline instead (and the panels say so).
+/// Said wherever a map draws laps placed on the outline.
+pub(crate) const OUTLINE_NOTE: &str = "Laps placed on the track outline (GPS dropouts)";
+
+pub(crate) const MIN_GPS_COVERAGE: f64 = 0.9;
+
+/// The share of samples with a usable fix.
+fn coverage(latitude: &[f64], longitude: &[f64]) -> f64 {
+    if latitude.is_empty() {
+        return 0.0;
+    }
+    let usable = latitude
+        .iter()
+        .zip(longitude)
+        .filter(|(lat, lon)| GeoPoint::new(**lon, **lat).is_valid())
+        .count();
+    usable as f64 / latitude.len() as f64
+}
+
+/// A lap placed on the atlas `centerline`: sample `i` sits at the
+/// centerline point at its share of lap distance (`distance[i] / total`,
+/// else its share of the samples), interpolated along the centerline's
+/// cumulative metres.
+fn centerline_track(centerline: &[GeoPoint], distance: &[f64], samples: usize) -> Option<GpsTrack> {
+    if centerline.len() < 2 || samples < 2 {
+        return None;
+    }
+    let mut cumulative = Vec::with_capacity(centerline.len());
+    let mut total_m = 0.0;
+    cumulative.push(0.0);
+    for pair in centerline.windows(2) {
+        let lat = (pair[0].lat + pair[1].lat).to_radians() * 0.5;
+        let dx = (pair[1].lon - pair[0].lon).to_radians() * lat.cos();
+        let dy = (pair[1].lat - pair[0].lat).to_radians();
+        total_m += dx.hypot(dy) * 6_371_000.0;
+        cumulative.push(total_m);
+    }
+    if total_m <= 0.0 {
+        return None;
+    }
+    let lap_total = distance
+        .last()
+        .copied()
+        .filter(|d| d.is_finite() && *d > 0.0 && distance.len() == samples);
+    let last = (samples - 1) as f64;
+    let (latitude, longitude): (Vec<f64>, Vec<f64>) = (0..samples)
+        .map(|i| {
+            let share = match lap_total {
+                Some(total) if distance[i].is_finite() => distance[i] / total,
+                _ => i as f64 / last,
+            };
+            let target = share.clamp(0.0, 1.0) * total_m;
+            let k = cumulative
+                .partition_point(|m| *m <= target)
+                .clamp(1, centerline.len() - 1);
+            let span = cumulative[k] - cumulative[k - 1];
+            let t = if span > 0.0 {
+                (target - cumulative[k - 1]) / span
+            } else {
+                0.0
+            };
+            let (a, b) = (centerline[k - 1], centerline[k]);
+            (a.lat + (b.lat - a.lat) * t, a.lon + (b.lon - a.lon) * t)
+        })
+        .unzip();
+    gps_track(&latitude, &longitude)
+}
+
 /// Everything the map draws for an analysis.
 pub fn map_data(analysis: &Analysis) -> TrackMapData {
     // Under a LOW-confidence alignment the gain/loss colouring would claim a
@@ -73,22 +144,6 @@ pub fn map_data(analysis: &Analysis) -> TrackMapData {
 pub(crate) fn map_layers(analysis: &Analysis) -> TrackMapData {
     let primary = analysis.primary();
     let unified = primary.unified();
-    let reference_track = analysis
-        .reference()
-        .and_then(|lap| gps_track(&lap.unified().gps_lat, &lap.unified().gps_lon));
-    let primary_track = if analysis.corner_source() == CornerSource::Reference {
-        // The primary's own GPS misses the circuit (the core carried the
-        // reference's corners over for the same reason): place the primary
-        // where the reference was at the same station, through the one map.
-        reference_track
-            .as_ref()
-            .zip(analysis.comparison())
-            .and_then(|(track, comparison)| {
-                stationed_track(track, comparison.as_ref(), unified.len())
-            })
-    } else {
-        gps_track(&unified.gps_lat, &unified.gps_lon)
-    };
     let centerline: Vec<GeoPoint> = primary
         .layout()
         .map(|layout| {
@@ -100,6 +155,41 @@ pub(crate) fn map_layers(analysis: &Analysis) -> TrackMapData {
                 .collect()
         })
         .unwrap_or_default();
+    let reference = analysis.reference().map(|lap| lap.unified());
+    let reference_coverage = reference.map(|lap| coverage(&lap.gps_lat, &lap.gps_lon));
+    let stationed = analysis.corner_source() == CornerSource::Reference;
+    // A stationed primary is drawn from the reference's fixes.
+    let primary_coverage = if stationed {
+        reference_coverage.unwrap_or(0.0)
+    } else {
+        coverage(&unified.gps_lat, &unified.gps_lon)
+    };
+    let broken = primary_coverage < MIN_GPS_COVERAGE
+        || reference_coverage.is_some_and(|c| c < MIN_GPS_COVERAGE);
+    let on_outline = broken && centerline.len() >= 2;
+    let (primary_track, reference_track) = if on_outline {
+        (
+            centerline_track(&centerline, &unified.distance, unified.len()),
+            reference.and_then(|lap| centerline_track(&centerline, &lap.distance, lap.len())),
+        )
+    } else {
+        let reference_track = reference.and_then(|lap| gps_track(&lap.gps_lat, &lap.gps_lon));
+        let primary_track = if stationed {
+            // The primary's own GPS misses the circuit (the core carried the
+            // reference's corners over for the same reason): place the
+            // primary where the reference was at the same station, through
+            // the one map.
+            reference_track
+                .as_ref()
+                .zip(analysis.comparison())
+                .and_then(|(track, comparison)| {
+                    stationed_track(track, comparison.as_ref(), unified.len())
+                })
+        } else {
+            gps_track(&unified.gps_lat, &unified.gps_lon)
+        };
+        (primary_track, reference_track)
+    };
     let corners = primary_track
         .as_ref()
         .map(|track| {
@@ -124,6 +214,7 @@ pub(crate) fn map_layers(analysis: &Analysis) -> TrackMapData {
         .with_reference(reference_track)
         .with_map(map)
         .with_corners(corners)
+        .with_outline_placement(on_outline)
 }
 
 /// The map's id of the corner at `ix` in lap order.
@@ -226,7 +317,7 @@ impl MapPanel {
             .update(cx, |map, cx| map.set_focused_corner(id, cx));
     }
 
-    fn render_legend(analysis: &Analysis, cx: &App) -> impl IntoElement {
+    fn render_legend(&self, analysis: &Analysis, cx: &App) -> impl IntoElement {
         let theme = cx.theme();
         let entry = |color, label: &'static str| {
             h_flex()
@@ -241,6 +332,7 @@ impl MapPanel {
         let comparing = analysis.reference().is_some() && !analysis.delta().is_empty();
         let approximate = crate::workspace::status::analysis_approximate(analysis);
         let shaded = comparing && !approximate;
+        let on_outline = self.map.read(cx).data().is_on_outline();
         v_flex()
             .flex_shrink_0()
             .gap_1()
@@ -251,6 +343,15 @@ impl MapPanel {
             .text_xs()
             .text_color(theme.muted_foreground)
             .child(div().truncate().child(title))
+            .when(on_outline, |this| {
+                this.child(
+                    div()
+                        .id("map-outline-note")
+                        .test_support()
+                        .truncate()
+                        .child(OUTLINE_NOTE),
+                )
+            })
             .child(
                 h_flex()
                     .flex_wrap()
@@ -323,7 +424,7 @@ impl Render for MapPanel {
         root.child(
             v_flex()
                 .size_full()
-                .child(Self::render_legend(&analysis, cx))
+                .child(self.render_legend(&analysis, cx))
                 .child(div().flex_1().min_h_0().child(self.map.clone())),
         )
         .into_any_element()
@@ -334,4 +435,40 @@ impl Render for MapPanel {
 /// rebuild it by name). Called once from [`crate::panels::init`].
 pub fn init(cx: &mut App) {
     crate::panels::register(PanelKind::Map, cx);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn coverage_counts_usable_fixes() {
+        let lat = [45.0, f64::NAN, 45.1, f64::NAN];
+        let lon = [7.0, f64::NAN, 7.1, f64::NAN];
+        assert!((coverage(&lat, &lon) - 0.5).abs() < 1e-12);
+        assert_eq!(coverage(&[], &[]), 0.0);
+    }
+
+    #[test]
+    fn centerline_track_places_samples_by_distance_share() {
+        // An L: 0.01° north, then 0.01° east (about equal metres near 1°N).
+        let centerline = [
+            GeoPoint::new(1.0, 1.0),
+            GeoPoint::new(1.0, 1.01),
+            GeoPoint::new(1.01, 1.01),
+        ];
+        let distance = [0.0, 250.0, 500.0, 750.0, 1000.0];
+        let track = centerline_track(&centerline, &distance, distance.len()).unwrap();
+        assert_eq!(track.len(), 5);
+        let start = track.position_at(0.0).unwrap();
+        let middle = track.position_at(0.5).unwrap();
+        let end = track.position_at(1.0).unwrap();
+        assert!((start.lat - 1.0).abs() < 1e-9 && (start.lon - 1.0).abs() < 1e-9);
+        assert!((middle.lat - 1.01).abs() < 1e-5 && (middle.lon - 1.0).abs() < 1e-5);
+        assert!((end.lat - 1.01).abs() < 1e-9 && (end.lon - 1.01).abs() < 1e-9);
+        // Without distance, the share of samples places them.
+        let by_index = centerline_track(&centerline, &[], 3).unwrap();
+        assert!((by_index.position_at(0.5).unwrap().lat - 1.01).abs() < 1e-5);
+        assert!(centerline_track(&centerline[..1], &distance, 5).is_none());
+    }
 }

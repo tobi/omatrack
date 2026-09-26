@@ -137,6 +137,8 @@ fn visible_indices(len: usize, viewport: Viewport) -> Option<(usize, usize)> {
 pub const PEDAL_FILL: f32 = 0.16;
 pub const AREA_FILL: f32 = 0.16;
 pub const DELTA_FILL: f32 = 0.42;
+/// The speed lane's gradient area under the primary line.
+pub const SPEED_FILL: f32 = 0.2;
 
 /// Headroom of a symmetric range above its largest magnitude.
 const SYMMETRIC_HEADROOM: f64 = 1.08;
@@ -190,6 +192,129 @@ pub struct LaneSeries {
     /// the lap (focused corner near start/finish).
     pub previous: Option<Arc<[f64]>>,
     pub next: Option<Arc<[f64]>>,
+    /// The session spread of this channel (Consistency view), on the
+    /// primary grid.
+    pub spread: Option<Arc<LaneSpread>>,
+}
+
+/// Other laps of the primary's session on the primary's 50 Hz grid, and
+/// their per-sample envelope: drawn as thin quiet lines behind the primary
+/// over a low-alpha min–max band (the Consistency view).
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct LaneSpread {
+    /// One series per other lap, primary grid, fastest first.
+    pub laps: Vec<Arc<[f64]>>,
+    /// Envelope per primary sample (NaN lifts the band).
+    pub min: Arc<[f64]>,
+    pub max: Arc<[f64]>,
+}
+
+impl LaneSpread {
+    pub fn new(laps: Vec<Arc<[f64]>>, min: Arc<[f64]>, max: Arc<[f64]>) -> Self {
+        Self { laps, min, max }
+    }
+}
+
+/// What a trace event marks ([`EventMark`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EventMarkKind {
+    BrakeOnset,
+    LiftOff,
+    Upshift,
+    Downshift,
+    Note,
+}
+
+/// One driving event on the traces (the Events view): a tick on its lane
+/// with a label on hover.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct EventMark {
+    pub kind: EventMarkKind,
+    /// Lane channel key the mark sits on (`brake`, `throttle`, `gear`,
+    /// `delta`).
+    pub channel: SharedString,
+    /// On the reference lap (drawn quieter).
+    pub reference: bool,
+    /// Primary lap fraction.
+    pub fraction: f64,
+    /// Hover label (`Brake · 1,234 m`).
+    pub label: SharedString,
+    /// Short label drawn beside the tick when it fits (`T5`, `↓3`,
+    /// `+12 m`); the hover label carries the rest.
+    pub tag: Option<SharedString>,
+}
+
+impl EventMark {
+    pub fn new(
+        kind: EventMarkKind,
+        channel: impl Into<SharedString>,
+        reference: bool,
+        fraction: f64,
+        label: impl Into<SharedString>,
+    ) -> Self {
+        Self {
+            kind,
+            channel: channel.into(),
+            reference,
+            fraction,
+            label: label.into(),
+            tag: None,
+        }
+    }
+
+    /// With a short label beside the tick (see [`Self::tag`]).
+    pub fn with_tag(mut self, tag: Option<SharedString>) -> Self {
+        self.tag = tag;
+        self
+    }
+}
+
+/// Which optional layers the static layer draws (the trace view mode).
+/// A change repaints the static layer; lane geometry is kept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct TraceLayers {
+    /// Session spread lines and band ([`LaneSeries::spread`]).
+    pub consistency: bool,
+    /// Event ticks ([`TraceScene::events`]).
+    pub events: bool,
+    /// Apex callouts on the speed lane (the Lap and Corners views).
+    pub apexes: bool,
+}
+
+impl Default for TraceLayers {
+    fn default() -> Self {
+        Self::LAP
+    }
+}
+
+impl TraceLayers {
+    /// No optional layer.
+    pub const NONE: Self = Self {
+        consistency: false,
+        events: false,
+        apexes: false,
+    };
+    /// The lap view: the two laps with their apex callouts.
+    pub const LAP: Self = Self {
+        consistency: false,
+        events: false,
+        apexes: true,
+    };
+    pub fn consistency(mut self, on: bool) -> Self {
+        self.consistency = on;
+        self
+    }
+    pub fn events(mut self, on: bool) -> Self {
+        self.events = on;
+        self
+    }
+    pub fn apexes(mut self, on: bool) -> Self {
+        self.apexes = on;
+        self
+    }
 }
 
 impl LaneSeries {
@@ -210,7 +335,15 @@ impl LaneSeries {
             y_range,
             previous: None,
             next: None,
+            spread: None,
         }
+    }
+
+    #[must_use]
+    /// The session spread of this channel (see [`LaneSpread`]).
+    pub fn with_spread(mut self, spread: Option<Arc<LaneSpread>>) -> Self {
+        self.spread = spread;
+        self
     }
 
     #[must_use]
@@ -379,6 +512,10 @@ pub struct CornerBand {
     pub label: SharedString,
     pub start: f64,
     pub end: f64,
+    /// Time lost (+) or gained through the zone, seconds, from the
+    /// analysis's corner row (the one cached delta). `None` without a
+    /// reference or when the map does not place time loss on the lap.
+    pub delta: Option<f64>,
 }
 
 impl CornerBand {
@@ -388,6 +525,35 @@ impl CornerBand {
             label: label.into(),
             start,
             end,
+            delta: None,
+        }
+    }
+
+    /// The zone's Δt (see [`Self::delta`]); non-finite values mean none.
+    pub fn with_delta(mut self, delta: Option<f64>) -> Self {
+        self.delta = delta.filter(|d| d.is_finite());
+        self
+    }
+}
+
+/// The slowest point of a corner on the speed lane: where the primary lap's
+/// speed bottoms out, its minimum and the reference's minimum through the
+/// same zone (km/h, from the analysis's corner rows).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct Apex {
+    /// Primary lap fraction of the minimum.
+    pub fraction: f64,
+    pub speed: f64,
+    pub reference_speed: Option<f64>,
+}
+
+impl Apex {
+    pub fn new(fraction: f64, speed: f64, reference_speed: Option<f64>) -> Self {
+        Self {
+            fraction,
+            speed,
+            reference_speed: reference_speed.filter(|s| s.is_finite()),
         }
     }
 }
@@ -444,6 +610,13 @@ pub struct TraceScene {
     /// The alignment is only a share of lap time: the Δ lane is a ramp of
     /// the lap-time difference, stated as such in its legend.
     pub(crate) time_share_delta: bool,
+    /// Lap labels of the two roles ("L10", "L8"), for the lane legends.
+    pub(crate) primary_label: Option<SharedString>,
+    pub(crate) reference_label: Option<SharedString>,
+    /// Corner apexes, called out on the speed lane.
+    pub(crate) apexes: Vec<Apex>,
+    /// Driving events of both laps, by fraction (the Events view).
+    pub(crate) events: Arc<[EventMark]>,
 }
 
 impl TraceScene {
@@ -509,6 +682,64 @@ impl TraceScene {
 
     pub fn time_share_delta(&self) -> bool {
         self.time_share_delta
+    }
+
+    /// Lap labels of the primary and the reference ("L10", "L8").
+    pub fn with_lap_labels(
+        mut self,
+        primary: Option<SharedString>,
+        reference: Option<SharedString>,
+    ) -> Self {
+        self.primary_label = primary;
+        self.reference_label = reference;
+        self.generation = next_generation();
+        self
+    }
+
+    /// Driving events, sorted by fraction here.
+    pub fn with_events(mut self, mut events: Vec<EventMark>) -> Self {
+        events.sort_by(|a, b| a.fraction.total_cmp(&b.fraction));
+        self.events = events.into();
+        self.generation = next_generation();
+        self
+    }
+
+    pub fn primary_label(&self) -> Option<&SharedString> {
+        self.primary_label.as_ref()
+    }
+
+    pub fn reference_label(&self) -> Option<&SharedString> {
+        self.reference_label.as_ref()
+    }
+
+    /// Corner apexes for the speed lane's callouts.
+    pub fn with_apexes(mut self, apexes: Vec<Apex>) -> Self {
+        self.apexes = apexes;
+        self.generation = next_generation();
+        self
+    }
+
+    pub fn events(&self) -> &Arc<[EventMark]> {
+        &self.events
+    }
+
+    /// Attach session spreads by lane key (`None` clears a lane's). A new
+    /// generation: the lanes' geometry is rebuilt once.
+    pub fn with_spreads(mut self, spread: impl Fn(&str) -> Option<Arc<LaneSpread>>) -> Self {
+        for lane in &mut self.lanes {
+            lane.spread = spread(&lane.key).filter(|s| s.min.len() == lane.primary.len());
+        }
+        self.generation = next_generation();
+        self
+    }
+
+    pub fn apexes(&self) -> &[Apex] {
+        &self.apexes
+    }
+
+    /// Whether any lane carries a session spread.
+    pub fn has_spread(&self) -> bool {
+        self.lanes.iter().any(|lane| lane.spread.is_some())
     }
 
     /// Identity of this scene's contents: unique per construction and
@@ -657,6 +888,7 @@ impl LaneStyle {
         self.fill_opacity.unwrap_or(match kind {
             LaneKind::Delta => DELTA_FILL,
             LaneKind::Area => AREA_FILL,
+            _ if key == "speed" => SPEED_FILL,
             _ if matches!(key, "throttle" | "brake" | "clutch") => PEDAL_FILL,
             _ => 0.0,
         })
@@ -808,6 +1040,10 @@ mod tests {
             styles.get("throttle").fill_for(LaneKind::Line, "throttle"),
             PEDAL_FILL
         );
-        assert_eq!(styles.get("speed").fill_for(LaneKind::Line, "speed"), 0.0);
+        assert_eq!(
+            styles.get("speed").fill_for(LaneKind::Line, "speed"),
+            SPEED_FILL
+        );
+        assert_eq!(styles.get("rpm").fill_for(LaneKind::Line, "rpm"), 0.0);
     }
 }
