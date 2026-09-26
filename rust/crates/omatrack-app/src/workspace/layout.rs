@@ -2,7 +2,7 @@
 //! `omatrack.yml` under `workspace.layout`.
 
 use gpui_kit::component::dock::{DockArea, DockAreaState, DockLayout, DockPlacement};
-use gpui_kit::{App, Context, Entity, Pixels, Window};
+use gpui_kit::{App, Context, Entity, Pixels, Window, px};
 
 use crate::panels::{PanelKind, WorkspacePanels, provide, withdraw};
 
@@ -39,8 +39,17 @@ pub(crate) const LEFT_DOCK_MAX_REMS: f32 = 22.5;
 pub(crate) const RIGHT_DOCK_SHARE: f32 = 0.25;
 pub(crate) const RIGHT_DOCK_MIN_REMS: f32 = 22.0;
 pub(crate) const RIGHT_DOCK_MAX_REMS: f32 = 27.5;
-/// Video pane height above the traces, in rems (the traces take the rest).
+/// Tallest default video pane above the traces, in rems (the traces take
+/// the rest); see [`default_video_height`].
 pub(crate) const VIDEO_REMS: f32 = 22.5;
+/// Shortest default video pane, in rems.
+pub(crate) const VIDEO_MIN_REMS: f32 = 12.0;
+/// The video control row under the pictures, in rems (a small control plus
+/// its padding).
+pub(crate) const VIDEO_BAR_REMS: f32 = 2.25;
+/// The onboard pictures' shape the default pane is fitted to (the panel
+/// fits the real one inside it).
+const VIDEO_ASPECT: f32 = 16.0 / 9.0;
 
 /// Narrowest window, in rems (1400 px at the default base), whose default
 /// layout opens the right dock: below it the traces would get less than
@@ -74,6 +83,23 @@ pub(crate) fn default_dock_widths(width: Pixels, rem: Pixels) -> DockWidths {
         right_open: width >= rem * RIGHT_OPEN_MIN_REMS,
         right,
     }
+}
+
+/// Default video pane height for a window `width` wide: two split 16:9
+/// pictures across the centre (the window less its open docks) plus the
+/// control row, so the pictures meet the row without a band of empty pane,
+/// between [`VIDEO_MIN_REMS`] and [`VIDEO_REMS`].
+pub(crate) fn default_video_height(width: Pixels, rem: Pixels) -> Pixels {
+    let docks = default_dock_widths(width, rem);
+    let mut centre = width;
+    if docks.left_open {
+        centre -= docks.left;
+    }
+    if docks.right_open {
+        centre -= docks.right;
+    }
+    let pictures = (centre - px(1.)) / 2. / VIDEO_ASPECT;
+    (pictures + rem * VIDEO_BAR_REMS).clamp(rem * VIDEO_MIN_REMS, rem * VIDEO_REMS)
 }
 
 /// How a layout came to be on screen.
@@ -114,14 +140,18 @@ pub(crate) fn apply_default(
     // The dock stores pixels; derive them from the rem scale so the default
     // layout follows the theme's base font.
     let rem = window.rem_size();
-    let docks = default_dock_widths(window.viewport_size().width, rem);
+    let width = window.viewport_size().width;
+    let docks = default_dock_widths(width, rem);
     let tabs = |kinds: &[PanelKind], cx: &App| {
         kinds.iter().fold(DockLayout::tabs(), |layout, kind| {
             layout.panel_view(panels.handle(*kind), cx)
         })
     };
     let center = DockLayout::v_split()
-        .child(tabs(&[PanelKind::Video], cx), Some(rem * VIDEO_REMS))
+        .child(
+            tabs(&[PanelKind::Video], cx),
+            Some(default_video_height(width, rem)),
+        )
         .child(tabs(&[PanelKind::Traces], cx), None);
     let left = tabs(&[PanelKind::Laps, PanelKind::Library], cx);
     let right = tabs(&[PanelKind::TimeGoes], cx);
@@ -257,7 +287,22 @@ pub(crate) fn reveal_dock(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui_kit::px;
+
+    #[test]
+    fn the_video_pane_holds_its_pictures_and_control_row() {
+        let rem = px(16.);
+        let at = |width: f32| default_video_height(px(width), rem);
+        // 1440 wide: 792 px of centre, two 395.5 x 222.5 pictures + the row.
+        let expected = (px(792.) - px(1.)) / 2. / VIDEO_ASPECT + rem * VIDEO_BAR_REMS;
+        assert!((at(1440.) - expected).abs() < px(0.01));
+        assert!(at(1440.) < rem * VIDEO_REMS, "no empty band at 1440");
+        // Wide windows stop at the cap; narrow ones at the floor.
+        assert_eq!(at(3840.), rem * VIDEO_REMS);
+        assert_eq!(at(400.), rem * VIDEO_MIN_REMS);
+        for width in [1280., 1440., 1920., 2560.] {
+            assert!(at(width) >= rem * VIDEO_MIN_REMS && at(width) <= rem * VIDEO_REMS);
+        }
+    }
 
     #[test]
     fn narrow_windows_close_the_right_dock_first_and_keep_laps() {
