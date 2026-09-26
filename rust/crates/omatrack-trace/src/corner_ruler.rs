@@ -1,9 +1,18 @@
 //! `CornerRuler`: the corner row above the trace lanes.
 //!
 //! Every corner zone is a band on the shared x mapping (the application's
-//! [`ViewportState`]) with its driver-facing label (`T1`, `T5`, …); corner
-//! complexes are brackets above the corners they span. The focused corner is
-//! filled with the primary role colour, a hovered corner brightens.
+//! [`ViewportState`]) with its driver-facing label; corner complexes that
+//! group two or more corners are a quiet bracket row above the corners they
+//! span (a single-corner complex only repeats its corner and is not drawn).
+//! The focused corner is filled with the primary role colour, a hovered
+//! corner brightens.
+//!
+//! Labels never overlap and are never ellipsized. The row uses one form:
+//! full names when every visible corner's name fits its band, else short
+//! forms (`Turn 10A` → `T10A`) throughout; a corner fitting neither is
+//! unlabelled, and when two labels would collide the lower-priority one is
+//! dropped. Priority: the focused corner (always labelled), then the hovered
+//! one, then wider bands ([`place_labels`]).
 //!
 //! Interaction contract:
 //!
@@ -117,6 +126,7 @@ impl CornerRuler {
             .iter()
             .map(|c| CornerSpan::new(c.start, c.end))
             .collect();
+        let complexes = grouping_complexes(&corners, complexes);
         self.corners = corners.into();
         self.complexes = complexes.into();
         if let Some((id, _)) = self.hovered
@@ -145,6 +155,7 @@ impl CornerRuler {
         &self.corners
     }
 
+    /// The complexes drawn: those grouping two or more corners.
     pub fn complexes(&self) -> &[ComplexBand] {
         &self.complexes
     }
@@ -305,6 +316,141 @@ impl CornerRuler {
         }
         text.into()
     }
+}
+
+/// Complexes that group at least two corners (by corner midpoint). The atlas
+/// also lists every lone corner as a one-member complex; drawing those would
+/// only repeat the corner row.
+fn grouping_complexes(corners: &[CornerBand], complexes: Vec<ComplexBand>) -> Vec<ComplexBand> {
+    complexes
+        .into_iter()
+        .filter(|complex| {
+            corners
+                .iter()
+                .filter(|corner| {
+                    let middle = (corner.start + corner.end) * 0.5;
+                    middle >= complex.start && middle <= complex.end
+                })
+                .nth(1)
+                .is_some()
+        })
+        .collect()
+}
+
+/// The short form of a corner label: `Turn 10A` → `T10A`, `Turn 1` → `T1`.
+/// Labels that are already short, or have no turn number, stay as they are.
+pub fn short_label(label: &str) -> Option<SharedString> {
+    let trimmed = label.trim();
+    let rest = ["turn ", "turn", "t "].iter().find_map(|prefix| {
+        trimmed
+            .get(..prefix.len())
+            .filter(|head| head.eq_ignore_ascii_case(prefix))
+            .map(|_| trimmed[prefix.len()..].trim_start())
+    })?;
+    if rest.is_empty() || !rest.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    let short = format!("T{rest}");
+    (short != trimmed).then(|| short.into())
+}
+
+/// A corner label to place: its band on screen and the widths of its full
+/// and short forms (`short` is `None` without a distinct short form).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct LabelCandidate {
+    pub left: f32,
+    pub right: f32,
+    pub full: f32,
+    pub short: Option<f32>,
+    /// Focused (always labelled) or hovered: placed first.
+    pub priority: u8,
+}
+
+/// Which form of a label was placed, and where (left edge).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum LabelForm {
+    Full,
+    Short,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Placement {
+    pub form: LabelForm,
+    pub x: f32,
+}
+
+/// How far a label may overhang each edge of its band, logical pixels. A
+/// short label (`T3`) over a narrow zone stays readable; the gap check
+/// keeps it clear of its neighbours' labels.
+const LABEL_OVERHANG: f32 = 4.0;
+/// Minimum clear space between two labels, logical pixels.
+const LABEL_GAP: f32 = 6.0;
+
+/// Collision-free label placement over a ruler `width` pixels wide.
+///
+/// One form for the whole row: full names, unless some visible corner fits
+/// only its short form, then short forms throughout (mixing `Turn 2` and
+/// `T3` side by side reads as two naming schemes). Candidates go in priority
+/// order (higher `priority`, then wider bands), centred on their visible
+/// band; a label wider than its band plus [`LABEL_OVERHANG`] a side, or one
+/// that would come within
+/// [`LABEL_GAP`] of one already placed, is dropped.
+/// A candidate with `priority >= 2` (the focused corner) is always placed,
+/// in the widest form that fits, else the short form, overhanging its band.
+pub(crate) fn place_labels(candidates: &[LabelCandidate], width: f32) -> Vec<Option<Placement>> {
+    let mut order: Vec<usize> = (0..candidates.len()).collect();
+    order.sort_by(|&a, &b| {
+        let (a, b) = (&candidates[a], &candidates[b]);
+        b.priority
+            .cmp(&a.priority)
+            .then((b.right - b.left).total_cmp(&(a.right - a.left)))
+    });
+    let room_of = |c: &LabelCandidate| c.right.min(width) - c.left.max(0.0) + 2.0 * LABEL_OVERHANG;
+    let short_row = candidates.iter().any(|c| {
+        let room = room_of(c);
+        c.right > 0.0 && c.left < width && c.full > room && c.short.is_some_and(|w| w <= room)
+    });
+    let mut placed: Vec<Option<Placement>> = vec![None; candidates.len()];
+    let mut taken: Vec<(f32, f32)> = Vec::with_capacity(candidates.len());
+    for index in order {
+        let c = &candidates[index];
+        let left = c.left.max(0.0);
+        let right = c.right.min(width);
+        if right <= left {
+            continue;
+        }
+        let room = room_of(c);
+        let centre = (left + right) * 0.5;
+        let short = c.short.map(|w| (LabelForm::Short, w));
+        let full = Some((LabelForm::Full, c.full));
+        // In a short row a corner without a short form keeps its name.
+        let forms = if short_row && short.is_some() {
+            [short, None]
+        } else {
+            [full, short]
+        };
+        let at = |w: f32| (centre - w * 0.5).clamp(0.0, (width - w).max(0.0));
+        let free = |x: f32, w: f32| {
+            taken
+                .iter()
+                .all(|&(l, r)| x + w + LABEL_GAP <= l || x >= r + LABEL_GAP)
+        };
+        let mut choice = forms
+            .iter()
+            .flatten()
+            .find(|(_, w)| *w <= room && free(at(*w), *w))
+            .copied();
+        if choice.is_none() && c.priority >= 2 {
+            let fallback = forms.iter().flatten().rfind(|(_, w)| *w <= room);
+            choice = fallback.or(forms.iter().flatten().last()).copied();
+        }
+        if let Some((form, w)) = choice {
+            let x = at(w);
+            taken.push((x, x + w));
+            placed[index] = Some(Placement { form, x });
+        }
+    }
+    placed
 }
 
 fn ruler_context<'a>(
@@ -494,68 +640,77 @@ impl RulerElement {
             }
         };
 
-        // Complex brackets: a hairline spanning the member corners with end
-        // ticks, the name above its start.
+        // Complex brackets: a dimension line spanning the member corners,
+        // end ticks and the name centred in a break of the line. Quiet: it
+        // groups, the corners below carry the content.
+        let bracket = self.label.opacity(0.45);
         for complex in self.complexes.iter() {
             let (x1, x2) = (x_for(complex.start), x_for(complex.end));
-            if x2 <= 0.0 || x1 >= width || x2 - x1 < 1.0 {
+            if x2 <= 0.0 || x1 >= width || x2 - x1 < 4.0 {
                 continue;
             }
-            let line_y = tiers.complex_top + tiers.complex_height - 2.0;
-            let color = self.label.opacity(0.7);
-            rect(window, x1, line_y, x2 - x1, 1.0, color);
-            rect(window, x1, line_y - 3.0, 1.0, 5.0, color);
-            rect(window, x2 - 1.0, line_y - 3.0, 1.0, 5.0, color);
-            let visible_left = x1.max(0.0) + 3.0;
-            let budget = x2.min(width) - visible_left - 2.0;
-            if let Some(line) = label::shape_fitted(
-                &complex.name,
+            let line_y = (tiers.complex_top + tiers.complex_height * 0.5).round();
+            let (left, right) = (x1.max(0.0), x2.min(width));
+            rect(window, x1 + 0.5, line_y - 2.0, 1.0, 5.0, bracket);
+            rect(window, x2 - 1.5, line_y - 2.0, 1.0, 5.0, bracket);
+            let line = label::shape(
+                complex.name.clone(),
                 text_size,
                 FontWeight::NORMAL,
                 self.label,
-                budget,
                 window,
-            ) {
+            );
+            let text_width = line.width().as_f32();
+            if text_width + 2.0 * LABEL_GAP <= right - left {
+                let text_left = ((left + right - text_width) * 0.5).round();
+                rect(
+                    window,
+                    x1,
+                    line_y,
+                    text_left - LABEL_GAP * 0.5 - x1,
+                    1.0,
+                    bracket,
+                );
+                let text_right = text_left + text_width + LABEL_GAP * 0.5;
+                rect(window, text_right, line_y, x2 - text_right, 1.0, bracket);
                 label::paint(
                     &line,
-                    bounds.origin + point(px(visible_left), px(tiers.complex_top)),
+                    bounds.origin + point(px(text_left), px(line_y - (text_height * 0.5).round())),
                     px(text_height),
                     window,
                     cx,
                 );
+            } else {
+                rect(window, x1, line_y, x2 - x1, 1.0, bracket);
             }
         }
 
-        // Corner bands.
+        // Corner bands: a quiet tint with a 1 px gap between neighbours so
+        // adjacent zones read as separate.
         let band_top = tiers.corner_top + 2.0;
         let band_height = (tiers.corner_height - 4.0).max(1.0);
+        let hovered_id = self.hovered.map(|(id, _)| id);
         for corner in self.corners.iter() {
             let (x1, x2) = (x_for(corner.start), x_for(corner.end));
             if x2 <= 0.0 || x1 >= width {
                 continue;
             }
             let focused = self.focused == Some(corner.id);
-            let hovered = self.hovered.map(|(id, _)| id) == Some(corner.id);
+            let hovered = hovered_id == Some(corner.id);
             let fill_color = if focused {
-                palette.primary.opacity(0.24)
+                palette.primary.opacity(0.22)
             } else if hovered {
-                palette.foreground.opacity(0.12)
+                palette.foreground.opacity(0.1)
             } else {
-                palette.foreground.opacity(0.06)
+                palette.foreground.opacity(0.045)
             };
-            rect(
-                window,
-                x1,
-                band_top,
-                (x2 - x1).max(1.0),
-                band_height,
-                fill_color,
-            );
+            let band_width = (x2 - x1 - 1.0).max(1.0);
+            rect(window, x1, band_top, band_width, band_height, fill_color);
             if focused {
                 rect(window, x1, band_top, 1.0, band_height, palette.primary);
                 rect(
                     window,
-                    x2 - 1.0,
+                    x1 + band_width - 1.0,
                     band_top,
                     1.0,
                     band_height,
@@ -584,22 +739,53 @@ impl RulerElement {
                     );
                 }
             }
-            let visible_left = x1.max(0.0) + 4.0;
-            let budget = x2.min(width) - visible_left - 3.0;
-            let (color, weight) = if focused {
-                (self.strong, FontWeight::SEMIBOLD)
-            } else if hovered || self.editing {
-                (self.strong, FontWeight::NORMAL)
+        }
+
+        // Labels: shape both forms, place without collisions, paint.
+        let style = |corner: &CornerBand| {
+            if self.focused == Some(corner.id) {
+                (self.strong, FontWeight::SEMIBOLD, 2)
+            } else if hovered_id == Some(corner.id) || self.editing {
+                (self.strong, FontWeight::NORMAL, 1)
             } else {
-                (self.label, FontWeight::NORMAL)
+                (self.label, FontWeight::NORMAL, 0)
+            }
+        };
+        let mut shaped = Vec::with_capacity(self.corners.len());
+        let mut candidates = Vec::with_capacity(self.corners.len());
+        for corner in self.corners.iter() {
+            let (x1, x2) = (x_for(corner.start), x_for(corner.end));
+            let (color, weight, priority) = style(corner);
+            let visible = x2 > 0.0 && x1 < width;
+            let full = visible
+                .then(|| label::shape(corner.label.clone(), text_size, weight, color, window));
+            let short = visible
+                .then(|| short_label(&corner.label))
+                .flatten()
+                .map(|text| label::shape(text, text_size, weight, color, window));
+            candidates.push(LabelCandidate {
+                left: x1,
+                right: x2,
+                full: full.as_ref().map_or(f32::INFINITY, |l| l.width().as_f32()),
+                short: short.as_ref().map(|l| l.width().as_f32()),
+                priority: if visible { priority } else { 0 },
+            });
+            shaped.push((full, short));
+        }
+        let top = band_top + (band_height - text_height) * 0.5;
+        for (placement, (full, short)) in place_labels(&candidates, width).into_iter().zip(&shaped)
+        {
+            let Some(placement) = placement else {
+                continue;
             };
-            if let Some(line) =
-                label::shape_fitted(&corner.label, text_size, weight, color, budget, window)
-            {
-                let top = band_top + (band_height - text_height) * 0.5;
+            let line = match placement.form {
+                LabelForm::Full => full.as_ref(),
+                LabelForm::Short => short.as_ref(),
+            };
+            if let Some(line) = line {
                 label::paint(
-                    &line,
-                    bounds.origin + point(px(visible_left), px(top)),
+                    line,
+                    bounds.origin + point(px(placement.x.round()), px(top)),
                     px(text_height),
                     window,
                     cx,
@@ -659,6 +845,114 @@ impl RulerElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn candidate(left: f32, right: f32, full: f32, short: Option<f32>) -> LabelCandidate {
+        LabelCandidate {
+            left,
+            right,
+            full,
+            short,
+            priority: 0,
+        }
+    }
+
+    #[test]
+    fn short_labels() {
+        assert_eq!(short_label("Turn 10A").as_deref(), Some("T10A"));
+        assert_eq!(short_label("turn 1").as_deref(), Some("T1"));
+        assert_eq!(short_label("T5"), None);
+        assert_eq!(short_label("Bus Stop"), None);
+        assert_eq!(short_label("Turn"), None);
+    }
+
+    #[test]
+    fn labels_use_the_short_form_when_narrow_and_never_overlap() {
+        // A wide band takes its full name; a narrow one its short form; a
+        // band too narrow for either is unlabelled.
+        let placed = place_labels(
+            &[
+                candidate(0.0, 200.0, 50.0, Some(20.0)),
+                candidate(200.0, 230.0, 50.0, Some(20.0)),
+                candidate(230.0, 240.0, 50.0, Some(20.0)),
+            ],
+            1000.0,
+        );
+        // One narrow corner turns the whole row short, centred on the band.
+        assert_eq!(
+            placed[0],
+            Some(Placement {
+                form: LabelForm::Short,
+                x: 90.0
+            })
+        );
+        assert_eq!(placed[1].map(|p| p.form), Some(LabelForm::Short));
+        assert_eq!(placed[2], None);
+        // Every name fits: full names throughout.
+        let placed = place_labels(
+            &[
+                candidate(0.0, 200.0, 50.0, Some(20.0)),
+                candidate(200.0, 300.0, 50.0, Some(20.0)),
+                candidate(300.0, 310.0, 50.0, Some(20.0)),
+            ],
+            1000.0,
+        );
+        assert_eq!(
+            placed[0],
+            Some(Placement {
+                form: LabelForm::Full,
+                x: 75.0
+            })
+        );
+        assert_eq!(placed[1].map(|p| p.form), Some(LabelForm::Full));
+        assert_eq!(placed[2], None);
+
+        // Colliding labels (overlapping zones): the wider band wins; the
+        // other is dropped.
+        let placed = place_labels(
+            &[
+                candidate(100.0, 160.0, 26.0, None),
+                candidate(120.0, 190.0, 26.0, None),
+            ],
+            1000.0,
+        );
+        assert_eq!(placed[0], None);
+        assert!(placed[1].is_some());
+    }
+
+    #[test]
+    fn the_focused_label_is_always_placed_first() {
+        let mut focused = candidate(100.0, 110.0, 50.0, Some(24.0));
+        focused.priority = 2;
+        let placed = place_labels(&[candidate(60.0, 100.0, 30.0, None), focused], 1000.0);
+        // Too narrow for either form, still labelled (short), centred.
+        let label = placed[1].unwrap();
+        assert_eq!(label.form, LabelForm::Short);
+        assert_eq!(label.x, 93.0);
+        // Its neighbour now collides and gives way.
+        assert_eq!(placed[0], None);
+        // Clamped into the ruler at the edge.
+        let mut edge = candidate(-50.0, 4.0, 50.0, Some(24.0));
+        edge.priority = 2;
+        assert_eq!(place_labels(&[edge], 1000.0)[0].unwrap().x, 0.0);
+    }
+
+    #[test]
+    fn only_grouping_complexes_are_drawn() {
+        let corners = [
+            CornerBand::new(1, "T1", 0.10, 0.20),
+            CornerBand::new(2, "T2", 0.30, 0.40),
+            CornerBand::new(3, "T3", 0.42, 0.50),
+        ];
+        let kept = grouping_complexes(
+            &corners,
+            vec![
+                ComplexBand::new("T1", 0.10, 0.20),
+                ComplexBand::new("Esses", 0.30, 0.50),
+            ],
+        );
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].name.as_ref(), "Esses");
+    }
 
     #[test]
     fn tiers_reserve_a_bracket_line_only_with_complexes() {
