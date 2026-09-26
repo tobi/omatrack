@@ -60,6 +60,7 @@ pub enum ColorMode {
 
 impl ColorMode {
     /// The other mode.
+    #[must_use]
     pub fn toggled(self) -> Self {
         match self {
             Self::Lap => Self::Channel,
@@ -184,6 +185,7 @@ impl TracePalette {
     }
 
     /// The same colours in `mode`.
+    #[must_use]
     pub fn with_mode(mut self, mode: ColorMode) -> Self {
         self.mode = mode;
         self
@@ -317,6 +319,10 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn channel_colours_give_each_channel_its_own_hue(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
         let theme = cx.update(|cx| Theme::global(cx).clone());

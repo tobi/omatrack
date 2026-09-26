@@ -87,6 +87,13 @@ pub(crate) enum TickPlace {
 /// in display units (Δ signed with its decimals, `0` bare; gear whole
 /// gears), or, for steering, the direction letters at the lane's edges.
 /// Nothing below [`VALUE_AXIS_MIN_HEIGHT`]. `out` is reused.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Axis labels intentionally round floating-point units to integer display precision."
+)]
 pub(crate) fn value_ticks(
     series: &LaneSeries,
     range: YRange,
@@ -106,15 +113,16 @@ pub(crate) fn value_ticks(
     let scale = series.display_scale();
     let span = range.span() * scale;
     let count = ((height / VALUE_TICK_SPACING).floor() as usize).clamp(2, VALUE_TICKS_MAX);
-    let mut step = nice_step(span / count as f64);
-    if series.kind == LaneKind::Step {
+    let mut step = if series.kind == LaneKind::Step {
         // Whole gears, as dense as the lane allows: 2 / 4 / 6 in a short
         // gear lane, every gear in a tall one.
-        step = [1.0, 2.0, 5.0, 10.0]
+        [1.0, 2.0, 5.0, 10.0]
             .into_iter()
             .find(|step| (span / step) as f32 * STEP_TICK_SPACING <= height)
-            .unwrap_or(10.0);
-    }
+            .unwrap_or(10.0)
+    } else {
+        nice_step(span / count as f64)
+    };
     let ticks_of = |step: f64| {
         (
             (range.min * scale / step).ceil() as i64,
@@ -346,7 +354,14 @@ pub(crate) fn event_color(palette: &TracePalette, kind: EventMarkKind, reference
 /// a full-height line, which would read as a gridline), and the primary's
 /// short tag beside its tick where it clears the previous tag. The full
 /// label shows on hover (the overlay).
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "A lane paint helper takes the frame's window and context beside the lane geometry it paints into."
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+)]
 fn paint_event_ticks(
     scene: &TraceScene,
     key: &str,
@@ -373,7 +388,7 @@ fn paint_event_ticks(
             continue;
         }
         let x = viewport
-            .x_for_fraction(mark.fraction, 0.0, width as f64)
+            .x_for_fraction(mark.fraction, 0.0, f64::from(width))
             .round() as f32;
         if x < 0.0 || x > width {
             continue;
@@ -527,16 +542,11 @@ impl Element for StaticLayerElement {
 
     #[expect(
         clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
         reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
     )]
     #[expect(
         clippy::too_many_lines,
         reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
-    )]
-    #[expect(
-        clippy::while_float,
-        reason = "The bounded pixel/sample sweep uses a fixed positive step, not floating-point equality as a stop condition."
     )]
     fn paint(
         &mut self,
@@ -837,7 +847,23 @@ impl StaticLayerElement {
     /// the reference's (`66 −1`, gain/loss coloured). A label that would
     /// run into its left neighbour's is left out; its dot stays. Returns
     /// the dots painted.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "A lane paint helper takes the frame's window and context beside the lane geometry it paints into."
+    )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "Use conventional x/y/w/h coordinate names in this geometry calculation."
+    )]
     fn paint_apexes(
         &self,
         series: &LaneSeries,
@@ -858,7 +884,7 @@ impl StaticLayerElement {
         for apex in &self.scene.apexes {
             let x = self
                 .viewport
-                .x_for_fraction(apex.fraction, 0.0, width as f64) as f32;
+                .x_for_fraction(apex.fraction, 0.0, f64::from(width)) as f32;
             if !(0.0..=width).contains(&x) {
                 continue;
             }
@@ -883,25 +909,22 @@ impl StaticLayerElement {
             );
             painted += 1;
             let speed = format_value(Some(apex.speed), 0);
-            let (text, split, tone) = match apex.reference_speed {
-                Some(reference) => {
-                    let (delta, trend) = format_delta(
-                        Some(apex.speed.round() - reference.round()),
-                        0,
-                        DeltaSense::HigherIsBetter,
-                    );
-                    let tone = match trend {
-                        DeltaTrend::Gain => palette.gain,
-                        DeltaTrend::Loss => palette.loss,
-                        DeltaTrend::Even => palette.label,
-                    };
-                    let split = speed.len() + 1;
-                    (SharedString::from(format!("{speed} {delta}")), split, tone)
-                }
-                None => {
-                    let split = speed.len();
-                    (speed, split, palette.foreground)
-                }
+            let (text, split, tone) = if let Some(reference) = apex.reference_speed {
+                let (delta, trend) = format_delta(
+                    Some(apex.speed.round() - reference.round()),
+                    0,
+                    DeltaSense::HigherIsBetter,
+                );
+                let tone = match trend {
+                    DeltaTrend::Gain => palette.gain,
+                    DeltaTrend::Loss => palette.loss,
+                    DeltaTrend::Even => palette.label,
+                };
+                let split = speed.len() + 1;
+                (SharedString::from(format!("{speed} {delta}")), split, tone)
+            } else {
+                let split = speed.len();
+                (speed, split, palette.foreground)
             };
             let line = label::shape_numerals(
                 text,
@@ -924,9 +947,9 @@ impl StaticLayerElement {
             let (mut lowest, mut highest) = (dot_y, dot_y);
             for step in 0..=APEX_LABEL_PROBES {
                 let probe_x = left + label_width * step as f32 / APEX_LABEL_PROBES as f32;
-                let fraction = self
-                    .viewport
-                    .fraction_for_x(probe_x as f64, 0.0, width as f64);
+                let fraction =
+                    self.viewport
+                        .fraction_for_x(f64::from(probe_x), 0.0, f64::from(width));
                 let primary = value_at_fraction(&series.primary, fraction);
                 let reference = series.reference.as_ref().map_or(f64::NAN, |reference| {
                     let at = self

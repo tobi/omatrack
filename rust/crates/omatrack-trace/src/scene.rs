@@ -265,6 +265,7 @@ impl EventMark {
     }
 
     /// With a short label beside the tick (see [`Self::tag`]).
+    #[must_use]
     pub fn with_tag(mut self, tag: Option<SharedString>) -> Self {
         self.tag = tag;
         self
@@ -303,14 +304,17 @@ impl TraceLayers {
         events: false,
         apexes: true,
     };
+    #[must_use]
     pub fn consistency(mut self, on: bool) -> Self {
         self.consistency = on;
         self
     }
+    #[must_use]
     pub fn events(mut self, on: bool) -> Self {
         self.events = on;
         self
     }
+    #[must_use]
     pub fn apexes(mut self, on: bool) -> Self {
         self.apexes = on;
         self
@@ -530,6 +534,7 @@ impl CornerBand {
     }
 
     /// The zone's Δt (see [`Self::delta`]); non-finite values mean none.
+    #[must_use]
     pub fn with_delta(mut self, delta: Option<f64>) -> Self {
         self.delta = delta.filter(|d| d.is_finite());
         self
@@ -685,6 +690,7 @@ impl TraceScene {
     }
 
     /// Lap labels of the primary and the reference ("L10", "L8").
+    #[must_use]
     pub fn with_lap_labels(
         mut self,
         primary: Option<SharedString>,
@@ -697,6 +703,7 @@ impl TraceScene {
     }
 
     /// Driving events, sorted by fraction here.
+    #[must_use]
     pub fn with_events(mut self, mut events: Vec<EventMark>) -> Self {
         events.sort_by(|a, b| a.fraction.total_cmp(&b.fraction));
         self.events = events.into();
@@ -713,6 +720,7 @@ impl TraceScene {
     }
 
     /// Corner apexes for the speed lane's callouts.
+    #[must_use]
     pub fn with_apexes(mut self, apexes: Vec<Apex>) -> Self {
         self.apexes = apexes;
         self.generation = next_generation();
@@ -725,6 +733,7 @@ impl TraceScene {
 
     /// Attach session spreads by lane key (`None` clears a lane's). A new
     /// generation: the lanes' geometry is rebuilt once.
+    #[must_use]
     pub fn with_spreads(mut self, spread: impl Fn(&str) -> Option<Arc<LaneSpread>>) -> Self {
         for lane in &mut self.lanes {
             lane.spread = spread(&lane.key).filter(|s| s.min.len() == lane.primary.len());

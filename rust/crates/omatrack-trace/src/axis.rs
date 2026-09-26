@@ -35,7 +35,7 @@ impl TraceAxis {
         reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
     )]
     pub fn new(ticks: &[Tick], viewport: &Viewport, width: f32) -> Self {
-        let x_of = |fraction: f64| viewport.x_for_fraction(fraction, 0.0, width as f64) as f32;
+        let x_of = |fraction: f64| viewport.x_for_fraction(fraction, 0.0, f64::from(width)) as f32;
         let placed: Vec<(f32, SharedString)> = ticks
             .iter()
             .filter_map(|tick| {

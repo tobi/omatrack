@@ -235,6 +235,10 @@ pub fn scene() -> TraceScene {
 /// `scene` with a session spread of `laps` other laps on every lane but
 /// the Δ (the Consistency view), each at its own pace and noise, already
 /// on the primary grid.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "The benchmark uses bounded synthetic sample counts, pixel projections and floating-point timing statistics."
+)]
 pub fn with_session_spread(scene: TraceScene, laps: usize) -> TraceScene {
     let others: Vec<Lap> = (0..laps)
         .map(|i| lap(PRIMARY_SAMPLES, 0.97 + 0.01 * i as f64, 101 + i as u64))

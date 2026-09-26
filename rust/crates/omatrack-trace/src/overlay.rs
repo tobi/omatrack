@@ -299,6 +299,10 @@ impl TraceOverlay {
     /// [`EVENT_HOVER_RADIUS`]), each on its own lane beside its flag, on
     /// the popover surface. Only a few labels exist at once; shaping reuses
     /// the label's `SharedString` (no formatting per frame).
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
     fn paint_event_labels(
         &self,
         bounds: Bounds<Pixels>,
@@ -306,7 +310,7 @@ impl TraceOverlay {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let width = bounds.size.width.as_f32() as f64;
+        let width = f64::from(bounds.size.width.as_f32());
         if width <= 0.0 {
             return;
         }

@@ -801,36 +801,30 @@ impl TraceStack {
                     let change = root.change_in(viewport);
                     let (view_text, _) = delta_seconds(change, approximate);
                     let _ = write!(label, ", in view {view_text}");
-                    let (column, text, trend, context) = match readout_at {
-                        Some(fraction) => {
-                            let readout = root.readout(fraction, map);
-                            let (text, trend) = delta_seconds(readout.primary, approximate);
-                            let _ = write!(label, ", at cursor {text}");
-                            let context = match self.corner_at(fraction) {
-                                Some(corner) => {
-                                    let delta =
-                                        corner.delta.map(|dt| delta_seconds(dt, approximate));
-                                    if let Some((dt, _)) = &delta {
-                                        let _ = write!(label, ", {} {dt}", corner.label);
-                                    }
-                                    GapContext::Corner(corner.label.clone(), delta)
+                    let (column, text, trend, context) = if let Some(fraction) = readout_at {
+                        let readout = root.readout(fraction, map);
+                        let (text, trend) = delta_seconds(readout.primary, approximate);
+                        let _ = write!(label, ", at cursor {text}");
+                        let context = match self.corner_at(fraction) {
+                            Some(corner) => {
+                                let delta = corner.delta.map(|dt| delta_seconds(dt, approximate));
+                                if let Some((dt, _)) = &delta {
+                                    let _ = write!(label, ", {} {dt}", corner.label);
                                 }
-                                None if zoomed => {
-                                    GapContext::Plain("in view", Some(view_text.clone()))
-                                }
-                                None => {
-                                    let (end, _) =
-                                        delta_seconds(root.change_in(Viewport::FULL), approximate);
-                                    GapContext::Plain("ends", Some(end))
-                                }
-                            };
-                            ("cursor", text, trend, context)
-                        }
-                        None => {
-                            let (text, trend) = delta_seconds(change, approximate);
-                            let context = if zoomed { "in view" } else { "over the lap" };
-                            ("view", text, trend, GapContext::Plain(context, None))
-                        }
+                                GapContext::Corner(corner.label.clone(), delta)
+                            }
+                            None if zoomed => GapContext::Plain("in view", Some(view_text.clone())),
+                            None => {
+                                let (end, _) =
+                                    delta_seconds(root.change_in(Viewport::FULL), approximate);
+                                GapContext::Plain("ends", Some(end))
+                            }
+                        };
+                        ("cursor", text, trend, context)
+                    } else {
+                        let (text, trend) = delta_seconds(change, approximate);
+                        let context = if zoomed { "in view" } else { "over the lap" };
+                        ("view", text, trend, GapContext::Plain(context, None))
                     };
                     rows.push(
                         gap_figure(
@@ -891,8 +885,8 @@ impl TraceStack {
                     .h(px(height))
                     .overflow_hidden()
                     .px_3()
-                    .when(roomy, |el| el.pt_1p5())
-                    .when(!roomy, |el| el.pt_px())
+                    .when(roomy, Styled::pt_1p5)
+                    .when(!roomy, Styled::pt_px)
                     .text_label()
                     .line_height(rems(LEGEND_LINE_REMS))
                     .when(ix > 0, |el| el.border_t_1().border_color(border))

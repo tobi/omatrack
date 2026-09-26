@@ -451,6 +451,10 @@ fn lane_legends_show_values_only_with_a_cursor(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn legends_read_value_then_reference_lap_and_never_clip(cx: &mut TestAppContext) {
     let f = open(cx);
     share_brake_with_throttle(cx, &f);
@@ -902,8 +906,7 @@ fn view_layers_repaint_once_and_never_on_the_cursor(cx: &mut TestAppContext) {
             "T3: Braked later",
         ),
     ];
-    let scene =
-        Arc::new(synthetic::with_session_spread(synthetic::scene(), 4).with_events(events.clone()));
+    let scene = Arc::new(synthetic::with_session_spread(synthetic::scene(), 4).with_events(events));
     assert!(scene.has_spread());
     assert_eq!(scene.events().len(), 4);
     f.stack.update(cx, |stack, cx| stack.set_scene(scene, cx));
@@ -915,7 +918,7 @@ fn view_layers_repaint_once_and_never_on_the_cursor(cx: &mut TestAppContext) {
     // Consistency on: one static render, the spread geometry built once
     // and drawn behind the lanes.
     f.stack.update(cx, |stack, cx| {
-        stack.set_layers(TraceLayers::NONE.consistency(true).events(true), cx)
+        stack.set_layers(TraceLayers::NONE.consistency(true).events(true), cx);
     });
     cx.run_until_parked();
     cx.update_window(f.window, |_, window, cx| draw(window, cx))
@@ -930,7 +933,7 @@ fn view_layers_repaint_once_and_never_on_the_cursor(cx: &mut TestAppContext) {
 
     // The same layers again: nothing to do.
     f.stack.update(cx, |stack, cx| {
-        stack.set_layers(TraceLayers::NONE.consistency(true).events(true), cx)
+        stack.set_layers(TraceLayers::NONE.consistency(true).events(true), cx);
     });
     cx.run_until_parked();
 

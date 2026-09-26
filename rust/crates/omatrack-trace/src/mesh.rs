@@ -219,7 +219,7 @@ pub struct BandColumn {
 }
 
 impl BandColumn {
-    pub const GAP: BandColumn = BandColumn {
+    pub const GAP: Self = Self {
         x: f64::NAN,
         top: f64::NAN,
         bottom: f64::NAN,
@@ -256,17 +256,21 @@ mod tests {
     use super::*;
 
     #[test]
+    #[expect(
+        clippy::while_float,
+        reason = "The bounded pixel/sample sweep uses a fixed positive step, not floating-point equality as a stop condition."
+    )]
     fn band_quads_cover_the_envelope_once() {
         let columns: Vec<BandColumn> = (0..20)
             .map(|i| {
                 if i == 10 {
                     BandColumn::GAP
                 } else {
-                    let x = i as f64 * 2.0;
+                    let x = f64::from(i) * 2.0;
                     BandColumn {
                         x,
-                        top: 20.0 - (i % 3) as f64,
-                        bottom: 30.0 + (i % 4) as f64,
+                        top: 20.0 - f64::from(i % 3),
+                        bottom: 30.0 + f64::from(i % 4),
                     }
                 }
             })

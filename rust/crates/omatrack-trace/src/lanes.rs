@@ -527,10 +527,10 @@ impl ChannelGeometry {
                     point(origin.x + far, split + far),
                 );
                 window.with_content_mask(Some(ContentMask { bounds: above }), |window| {
-                    self.primary.paint(origin, colors.primary, window)
+                    self.primary.paint(origin, colors.primary, window);
                 });
                 window.with_content_mask(Some(ContentMask { bounds: under }), |window| {
-                    self.primary.paint(origin, below, window)
+                    self.primary.paint(origin, below, window);
                 });
             }
             None => self.primary.paint(origin, colors.primary, window),
@@ -562,18 +562,20 @@ pub const REFERENCE_STROKE_SCALE: f64 = 0.75;
 /// Stroke width of one session lap line (Consistency view), logical
 /// pixels: thinner than any lane stroke, context rather than data.
 pub const SPREAD_LINE_WIDTH: f64 = 0.75;
-/// Decimation columns per logical pixel of a session lap line: coarser
-/// than a lane's device columns. A 0.75 px context line shows no
+/// Decimation columns per logical pixel of a session lap line.
+///
+/// Coarser than a lane's device columns: a 0.75 px context line shows no
 /// sub-pixel extrema, and eight laps per lane at device resolution would
-/// multiply the frame's vertices several times over (trace_bench,
+/// multiply the frame's vertices several times over (`trace_bench`,
 /// Consistency row). The envelope band keeps device resolution.
 pub const SPREAD_LINE_COLUMNS_PER_PX: f64 = 0.5;
 /// Columns per logical pixel of the envelope band: a low-alpha fill with no
 /// edge stroke reads the same at logical resolution.
 pub const SPREAD_BAND_COLUMNS_PER_PX: f64 = 1.0;
 
-/// Cached geometry of one channel's session spread (the Consistency view):
-/// the min–max band and a thin line per other lap, all on the primary grid
+/// Cached geometry of one channel's session spread (the Consistency view).
+///
+/// The min–max band and a thin line per other lap, all on the primary grid
 /// (no reference map). Keyed on the same inputs as the channel's own
 /// geometry; the scene generation covers the spread data, and a colour
 /// never enters the key.
@@ -609,6 +611,12 @@ impl SpreadGeometry {
         [&self.band, &self.lines]
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        reason = "Clamped lap fractions map to indices in resident sample buffers; interpolation intentionally uses f64."
+    )]
     fn build(&mut self, input: &BuildInput<'_>, scratch: &mut Scratch) {
         self.band.clear();
         self.lines.clear();
@@ -790,7 +798,7 @@ mod tests {
         let laps: Vec<Arc<[f64]>> = (0..3)
             .map(|k| {
                 (0..4500)
-                    .map(|i| ((i as f64) * 0.01).sin() * 100.0 + k as f64 * 5.0)
+                    .map(|i| (f64::from(i) * 0.01).sin() * 100.0 + f64::from(k) * 5.0)
                     .collect()
             })
             .collect();
