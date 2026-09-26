@@ -467,20 +467,40 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   (its own lane; `combine_with_previous` overlays it) and Gear. Steering,
   RPM and every other channel are opt in (Channels panel,
   `channels.<key>.visible`).
-- **Lane legends**: the chrome column is `omatrack_trace::CHROME_REMS` wide
-  (lanes, damper strip and the ruler row share it). Line 1 is title (medium)
-  + unit (muted); below it, P / R / Δ sit in fixed-width tabular columns on
-  the same spines in every lane (P in the primary role, R in the reference
-  role, Δ muted), with a P R Δ key in the ruler row; the channel column
-  (a line swatch) exists only while a lane is shared. The gap lane
-  (`Gap to R`) is the only big figure: the gap at the cursor (idle: the
-  change in view) in gain/loss, over `s at cursor, ends +2.44` (`… in view`
-  when zoomed); under LOW confidence it reads `≈` and its figure and fill
-  keep gain/loss at 60% emphasis (`APPROXIMATE_DELTA_EMPHASIS`), never
-  grey. Its FIT minimum is `GAP_LANE_MIN_HEIGHT` (1.5 lanes); the basis is
-  the Sync selector's, never a lane subtitle. A shared
-  lane's title and two rows fit `MIN_LANE_HEIGHT`. Nothing clips
+- **Lane card**: the ruler row, damper strip and lanes sit in one bordered,
+  rounded card (`trace-card`). Each lane is legend | value gutter | plot:
+  the chrome column is `omatrack_trace::CHROME_REMS` wide
+  (`LEGEND_REMS` + `GUTTER_REMS`; lanes, damper strip, ruler row and the
+  distance axis share it), lanes are split by hairlines, and the distance
+  axis under them has major and minor tick marks (`0`, `500 m`, `1 km`).
+- **Lane legends**: line 1 is title (medium) + unit (muted). A lane of
+  its own at least `TALL_LEGEND_REMS` tall shows the primary as a large
+  figure in its colour, then the reference lap's label (muted, `L8`), its
+  value and the Δ on one row beneath (`236` / `L8 237 −1`); shorter lanes
+  put the same on one row. The Δ appears only where it has a sense (speed:
+  higher is better, gain/loss coloured). Steering is signed (`+53°`); a
+  step lane (gear) omits a reference equal to the primary. A shared lane
+  gains a line swatch per channel. There is no P R Δ key. The gap lane
+  (`Gap to R`) is the gap at the cursor (idle: the change in view) in
+  gain/loss, over `ends +2.44` (`in view …` when zoomed), or
+  `at T1 +0.319` (the corner's Δt when time loss is placed) while the
+  cursor is in a corner; under LOW confidence it reads `≈` and its figure
+  and fill keep gain/loss at 60% emphasis (`APPROXIMATE_DELTA_EMPHASIS`),
+  never grey. Its FIT minimum is `GAP_LANE_MIN_HEIGHT` (1.5 lanes); the
+  basis is the Sync selector's, never a lane subtitle. A shared lane's
+  title and two rows fit `MIN_LANE_HEIGHT`. Nothing clips
   (headless-tested).
+- **Value gutter**: round ticks right-aligned beside dotted gridlines
+  (`static_layer::value_ticks`): integer steps on step lanes (gear 2/4/6),
+  signed on Δ (`+1.0 +0.5 0`, a solid zero line = the reference), L/R at
+  steering's ends, fewer ticks as a lane shrinks.
+- **Colour modes** (`trace.color_mode: lap | channel`, palette
+  `Toggle lap and channel colours` = `omatrack::ToggleTraceColorMode`):
+  lap colours (default) draw every lap in its role; channel colours name
+  the channel (speed `blue`, throttle `green`, brake `red`, steering
+  `yellow`, gear foreground, others `chart_1..5`), the reference in the
+  same hue at 50%, legend values in foreground. A mode change repaints
+  the static layer once and never rebuilds geometry (headless-tested).
 
 ## 8. Trace rendering performance contract
 
@@ -499,7 +519,13 @@ Semantics carry over from [docs/TRACE_RENDERING.md](docs/TRACE_RENDERING.md).
   joins (miter limit 2, no caps), width independent of zoom. Fills are
   non-overlapping trapezoids to a transparent baseline (premultiplied MSAA
   double-blends overlaps). Order: primary area, reference outline, primary
-  outline. Delta: diverging gain/loss fill.
+  outline. Delta: diverging gain/loss fill, its line in the gain or loss
+  colour by sign. Speed has a quiet area fill (`SPEED_FILL`, 20%) fading
+  to its baseline. Gridlines are one dashed-border quad per line (a single
+  primitive per gridline, never per-dash quads). Apex callouts (a dot on
+  the primary speed and `66 −1`, apex speed and its Δ to the reference)
+  paint in the static layer from `Analysis` rows, skipping any that would
+  overlap.
 - **Forbidden:** `shape::Line`/`Area` or `PathBuilder` for traces (they skip
   NaN instead of lifting the pen; lyon u16 indices hit the **65,535-vertex
   cliff** where later lanes silently vanish). Use `omatrack_trace::mesh`
@@ -562,8 +588,11 @@ dependency.
   `theme::install`; the active families show beside it in Preferences.
 - Type ([`omatrack_ui::typography`](rust/crates/omatrack-ui/src/typography.rs)):
   one interface family. Every number is `.numeric()` (Inter `tnum`, tabular
-  figures), never the monospace family, which is kept for paths, file
-  contents and identifiers. Sizes come only from the `TypeScale` steps
+  figures), except in the trace area: legends, value gutters, the distance
+  axis and apex callouts use `.trace_numeric(cx)` / `trace_figures()` (the
+  theme's monospace family, bundled Geist Mono) for their numbers, words
+  staying in the interface family. Elsewhere the monospace family is kept
+  for paths, file contents and identifiers. Sizes come only from the `TypeScale` steps
   (caption 11 / label 12 / body 13 / title 14 / heading 16 / display 20 px
   at the default rem); painted labels use `TypeStep::size` and
   `tabular_figures()`. Regular for values, medium for row and lane names,
@@ -572,9 +601,10 @@ dependency.
 - Roles: primary = `primary` (Omarchy accent); reference = `warning`; gain =
   `success`; loss = `danger`; grid `border`/`muted`; labels
   `muted_foreground`; extra channels `chart_1..5`;
-  `channels.<key>.color`/`reference_color` override. A channel sharing a
-  lane (brake overlaid on throttle) draws its primary in its chart hue and its
-  reference in the reference role, both quieter (60% over the background).
+  `channels.<key>.color`/`reference_color` override. In lap colours a
+  channel sharing a lane (brake overlaid on throttle) keeps both laps' role
+  hues, quieter (60% over the background); channel colours (section 7)
+  use `blue`/`green`/`red`/`yellow` by channel.
   Legend and inspector values always carry the lap role colour. success /
   danger mean only Δ, never a pedal. With no Omarchy palette the built-in
   dark theme's primary is `blue-400` (its own primary is white).
@@ -611,6 +641,9 @@ palette items. See [action.md](.agents/skills/gpui-kit/references/gpui/action.md
 | up / down; enter / alt-enter (Library, Laps) | Move; set primary / reference (Laps: enter on a group or disclosure opens it) |
 | ctrl-s / escape (resize, corner edit) | Save / cancel |
 | escape; up / down (Preferences) | Back to the workspace (focus restored); previous / next section |
+
+Palette only (no key): `Toggle lap and channel colours`
+(`ToggleTraceColorMode`, persisted as `trace.color_mode`).
 
 Pointer: left-drag selects, middle-drag and horizontal scroll pan, wheel (also
 shift/ctrl) zooms about the pointer, vertical wheel scrolls overflowing lanes,
