@@ -505,3 +505,20 @@ fn auto_generated_corners_bracket_brake_zones() {
     assert_eq!(zones[0].name, "Turn 1");
     assert!(zones[0].start < 0.20 && zones[0].end > 0.20);
 }
+
+#[test]
+fn notes_read_as_sentences_with_spaced_units() {
+    use omatrack_core::corners::checks::sentence;
+    assert_eq!(sentence("throttle 23m late"), "Throttle 23 m late.");
+    assert_eq!(
+        sentence("first downshift 120ms later than reference (8m into braking)"),
+        "First downshift 120 ms later than reference (8 m into braking)."
+    );
+    assert_eq!(
+        sentence("reference trail-brakes 0.4s longer"),
+        "Reference trail-brakes 0.4 s longer."
+    );
+    assert_eq!(sentence("2 gears lower"), "2 gears lower.");
+    assert_eq!(sentence("Closely matched."), "Closely matched.");
+    assert_eq!(sentence(""), "");
+}

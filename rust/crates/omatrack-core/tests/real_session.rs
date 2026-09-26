@@ -5,7 +5,7 @@
 use omatrack_core::consistency::SessionLaps;
 use omatrack_core::session::{CornerSource, IdentityState, LoadedLap, MarkerKind, StrategyRequest};
 use omatrack_core::{
-    Analysis, LoadOptions, Recording, fastest_lap_index, format_lap_time, load_lap,
+    Analysis, DistanceSource, LoadOptions, Recording, fastest_lap_index, format_lap_time, load_lap,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -70,6 +70,24 @@ fn real_session_pair_run4_against_run1() {
     .unwrap();
     let comparison = analysis.comparison().unwrap();
     assert!(!analysis.delta().is_empty());
+    // Neither lap's "Line Lap Distance L" is a lap distance (it restarts
+    // mid-lap: ~36% of its steps are rejected, its total is ~70% of the
+    // integrated speed), and Run4 L10's GPS drifts hundreds of metres off
+    // the track (`real_run4_lap10_gps_is_off_track`), so no GPS fix
+    // anchors: the map is lap time %, which places no time loss.
+    assert_eq!(
+        primary.unified().distance_source,
+        DistanceSource::SpeedFused
+    );
+    assert_eq!(
+        reference.unified().distance_source,
+        DistanceSource::SpeedFused
+    );
+    assert_eq!(comparison.basis(), "Lap time %");
+    assert_eq!(comparison.alignment().gps_anchors, 0);
+    assert!(!analysis.time_loss_placed());
+    assert!(analysis.loss_rate().is_empty());
+    assert!(analysis.time_split().is_none());
     // Run4 L10's GPS misses the atlas centerline (the C++ hid its corners);
     // Run1 L8's matches, so its ranges carry over through the shared map.
     assert!(
@@ -187,4 +205,45 @@ fn real_session_consistency() {
         corner.brake_point_std_dev,
         corner.brake_point_range
     );
+}
+
+/// Run4 L10's GPS track is not on the circuit: most of its fixes lie more
+/// than 100 m from every Run1 L8 fix (up to ~480 m), although it reports
+/// 6-20 m accuracy. That is the source data, not an alignment bug, and why
+/// this pair aligns on lap time.
+#[test]
+#[ignore]
+fn real_run4_lap10_gps_is_off_track() {
+    let cancel = AtomicBool::new(false);
+    let primary = fastest("Run4", &cancel);
+    let reference = fastest("Run1", &cancel);
+    assert_eq!(primary.lap_id(), 10);
+    let metres = |a: (f64, f64), b: (f64, f64)| {
+        let north = (b.0 - a.0) * 111_320.0;
+        let east = (b.1 - a.1) * 111_320.0 * a.0.to_radians().cos();
+        north.hypot(east)
+    };
+    let fixes = |lap: &omatrack_core::UnifiedLap| -> Vec<(f64, f64)> {
+        lap.gps_lat
+            .iter()
+            .zip(&lap.gps_lon)
+            .filter(|(a, b)| a.is_finite() && b.is_finite())
+            .map(|(a, b)| (*a, *b))
+            .collect()
+    };
+    let track = fixes(reference.unified());
+    let mut nearest: Vec<f64> = fixes(primary.unified())
+        .iter()
+        .step_by(25)
+        .map(|&fix| {
+            track
+                .iter()
+                .map(|&other| metres(fix, other))
+                .fold(f64::INFINITY, f64::min)
+        })
+        .collect();
+    nearest.sort_by(f64::total_cmp);
+    let median = nearest[nearest.len() / 2];
+    eprintln!("Run4 L10 GPS: median {median:.0} m off Run1 L8");
+    assert!(median > 100.0, "{median}");
 }

@@ -1257,6 +1257,7 @@ impl Analysis {
         let complex_rows = complex_rows(&complexes, &rows, &inputs);
         let time_split = comparison
             .as_deref()
+            .filter(|comparison| comparison.places_time_loss())
             .and_then(|comparison| time_split(comparison.delta(), &corners));
         Ok(Self {
             primary,
@@ -1428,8 +1429,17 @@ impl Analysis {
             .map(|c| c.loss_rate())
             .unwrap_or(&[])
     }
+    /// Whether the one delta places time loss on the lap
+    /// ([`Comparison::places_time_loss`]). When it does not (a lap-time
+    /// base), [`Self::loss_rate`] is empty and [`Self::time_split`] is
+    /// `None`: nothing may rank corners by where the delta grows.
+    pub fn time_loss_placed(&self) -> bool {
+        self.comparison
+            .as_ref()
+            .is_some_and(|c| c.places_time_loss())
+    }
     /// The final delta split into corners and straights; `None` without a
-    /// delta.
+    /// delta or when the map does not place time loss.
     pub fn time_split(&self) -> Option<TimeSplit> {
         self.time_split
     }

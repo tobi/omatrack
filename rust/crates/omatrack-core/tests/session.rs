@@ -317,30 +317,17 @@ fn pair_analysis_shares_one_comparison() {
 }
 
 #[test]
-fn the_time_split_sums_to_the_final_delta_and_the_loss_rate_is_finite() {
+fn a_lap_time_base_places_no_time_loss() {
+    // The synthetic recording has no logger distance and no GPS: the map is
+    // lap time %, whose delta spreads the lap-time gap evenly. It still
+    // feeds the delta lane, but no loss rate or corner/straight split.
     let (analysis, _) = pair(StrategyRequest::Auto, 0.0);
-    let split = analysis.time_split().expect("a delta splits");
-    let last = *analysis.delta().last().unwrap();
-    assert_eq!(split.total, last);
-    assert!((split.corners + split.straights - split.total).abs() < 1e-12);
-    // The synthetic corners do not overlap: the corner share is their sum.
-    let rows: f64 = analysis.rows().iter().map(|row| row.dt).sum();
-    assert!((split.corners - rows).abs() < 1e-9, "{split:?} vs {rows}");
-
-    let rate = analysis.loss_rate();
-    assert_eq!(rate.len(), analysis.primary().unified().len());
-    assert!(rate.iter().all(|r| r.is_finite()));
-    // Integrated over distance, the loss rate recovers the delta.
-    let distance = &analysis.primary().unified().distance;
-    let integral: f64 = distance
-        .windows(2)
-        .zip(rate.windows(2))
-        .map(|(d, r)| (d[1] - d[0]) * (r[0] + r[1]) * 0.5)
-        .sum();
-    assert!(
-        (integral - last).abs() < 0.05_f64.max(last.abs() * 0.1),
-        "{integral} vs {last}"
-    );
+    let comparison = analysis.comparison().expect("comparison");
+    assert_eq!(comparison.basis(), "Lap time %");
+    assert!(!analysis.delta().is_empty());
+    assert!(!analysis.time_loss_placed());
+    assert!(analysis.time_split().is_none());
+    assert!(analysis.loss_rate().is_empty());
 
     // A single lap has neither.
     let (single, _) = {
@@ -352,6 +339,7 @@ fn the_time_split_sums_to_the_final_delta_and_the_loss_rate_is_finite() {
             cancel,
         )
     };
+    assert!(!single.time_loss_placed());
     assert!(single.time_split().is_none());
     assert!(single.loss_rate().is_empty());
 }

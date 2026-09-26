@@ -177,6 +177,23 @@ impl Comparison {
         alignment::confidence_label(&self.alignment.basis, self.alignment.gps_anchors)
     }
 
+    /// Whether the delta says *where* on the lap time is lost: the map
+    /// follows the track (GPS or pre-corner damper anchors, or a lap
+    /// distance base). Over a lap-time base the delta is the lap-time gap
+    /// spread in proportion to elapsed time, so its slope, and any split of
+    /// it by place, only restates where the car is slow: the loss rate is
+    /// then empty and callers must not rank places by the delta.
+    pub fn places_time_loss(&self) -> bool {
+        match self.alignment.basis.as_str() {
+            alignment::BASIS_GPS_CONTINUOUS
+            | alignment::BASIS_GPS_RESYNC
+            | alignment::BASIS_DAMPERS_PRE_CORNER
+            | alignment::BASIS_LAP_DISTANCE => true,
+            alignment::BASIS_DAMPERS_MANUAL => self.alignment.distance_base,
+            _ => false,
+        }
+    }
+
     /// Change the manual damper offset. Only the delta is rebuilt: the
     /// offset is applied at lookup, like the store did.
     pub fn set_manual_offset(&mut self, offset: f64) {
@@ -234,7 +251,9 @@ impl Comparison {
             }
             delta[i] = raw - base;
         }
-        self.loss_rate = loss_rate(&delta, &primary.distance, LOSS_RATE_HALF_WINDOW_M);
+        if self.places_time_loss() {
+            self.loss_rate = loss_rate(&delta, &primary.distance, LOSS_RATE_HALF_WINDOW_M);
+        }
         self.delta = delta;
     }
 
@@ -246,7 +265,8 @@ impl Comparison {
 
     /// Time lost per metre (s/m) on the primary grid: the delta's slope over
     /// ±[`LOSS_RATE_HALF_WINDOW_M`] of lap distance ([`loss_rate`]). Finite
-    /// everywhere; empty when the delta is.
+    /// everywhere; empty when the delta is, or when the map does not place
+    /// time loss ([`Self::places_time_loss`]).
     pub fn loss_rate(&self) -> &[f64] {
         &self.loss_rate
     }
@@ -344,5 +364,69 @@ mod tests {
         let nan = [0.0, f64::NAN, 0.2, 0.3];
         let moving = [0.0, 1.0, 2.0, 3.0];
         assert!(loss_rate(&nan, &moving, 1.0).iter().all(|r| r.is_finite()));
+    }
+    /// A lap of `n` samples over `metres` at the speed profile `speed`
+    /// (km/h), with the logger's own distance when `native`.
+    fn lap(speed: impl Fn(f64) -> f64, metres: f64, native: bool) -> Arc<UnifiedLap> {
+        let n = 501;
+        let mut lap = UnifiedLap {
+            distance_source: if native {
+                crate::DistanceSource::Native
+            } else {
+                crate::DistanceSource::SpeedFused
+            },
+            ..UnifiedLap::default()
+        };
+        let mut time = 0.0;
+        for i in 0..n {
+            let share = i as f64 / (n - 1) as f64;
+            let v = speed(share);
+            if i > 0 {
+                time += metres / (n - 1) as f64 / (v / 3.6);
+            }
+            lap.time.push(time);
+            lap.distance.push(share * metres);
+            lap.speed.push(v);
+        }
+        Arc::new(lap)
+    }
+
+    #[test]
+    fn only_a_map_that_follows_the_track_places_time_loss() {
+        // The primary is slower only in the middle fifth of the lap.
+        let slow = |s: f64| {
+            if (0.4..0.6).contains(&s) {
+                100.0
+            } else {
+                150.0
+            }
+        };
+        let fast = |_: f64| 150.0;
+        let on_distance = Comparison::new(
+            lap(slow, 1000.0, true),
+            lap(fast, 1000.0, true),
+            Strategy::LapPercentage,
+            Vec::new(),
+            0.0,
+        );
+        assert_eq!(on_distance.basis(), alignment::BASIS_LAP_DISTANCE);
+        assert!(on_distance.places_time_loss());
+        let rate = on_distance.loss_rate();
+        assert_eq!(rate.len(), 501);
+        assert!(rate[100].abs() < 1e-9 && rate[250] > 0.0, "{}", rate[250]);
+
+        // Without the logger's distance the base is lap time: the delta is
+        // the lap-time gap spread evenly, which places nothing.
+        let on_time = Comparison::new(
+            lap(slow, 1000.0, false),
+            lap(fast, 1000.0, false),
+            Strategy::LapPercentage,
+            Vec::new(),
+            0.0,
+        );
+        assert_eq!(on_time.basis(), alignment::BASIS_LAP_TIME);
+        assert!(!on_time.places_time_loss());
+        assert!(on_time.loss_rate().is_empty());
+        assert!(!on_time.delta().is_empty(), "the delta itself stays");
     }
 }

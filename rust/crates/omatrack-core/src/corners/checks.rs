@@ -41,6 +41,43 @@ pub struct CornerNote {
     pub severity: NoteSeverity,
 }
 
+impl CornerNote {
+    /// The note as a sentence for the interface: a capital first letter, a
+    /// space between a number and its unit (`23m` -> `23 m`, never `3rd`)
+    /// and a full stop. Every surface prints this one form; `text` stays
+    /// the terse form the CLI prints.
+    pub fn sentence(&self) -> String {
+        sentence(&self.text)
+    }
+}
+
+/// See [`CornerNote::sentence`].
+pub fn sentence(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 4);
+    let chars: Vec<char> = text.trim().chars().collect();
+    for (ix, &ch) in chars.iter().enumerate() {
+        if ix == 0 {
+            out.extend(ch.to_uppercase());
+            continue;
+        }
+        if chars[ix - 1].is_ascii_digit() && (ch == 'm' || ch == 's') {
+            let unit_end = chars[ix..]
+                .iter()
+                .position(|c| !c.is_ascii_alphabetic())
+                .map_or(chars.len(), |len| ix + len);
+            let unit: String = chars[ix..unit_end].iter().collect();
+            if matches!(unit.as_str(), "m" | "ms" | "s") {
+                out.push(' ');
+            }
+        }
+        out.push(ch);
+    }
+    if !out.is_empty() && !out.ends_with(['.', '!', '?']) {
+        out.push('.');
+    }
+    out
+}
+
 /// Inputs to one corner's checks.
 #[derive(Debug, Clone)]
 pub struct CornerContext<'a> {
