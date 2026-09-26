@@ -648,6 +648,7 @@ impl TraceStack {
         let border = theme.border;
         let viewport = self.viewport.read(cx).viewport();
         let approximate = self.scene.approximate_delta;
+        let shared = self.has_shared_lane();
         let cells = self
             .layout
             .slots
@@ -703,30 +704,44 @@ impl TraceStack {
                     })
                     .collect();
                 let mut rows: Vec<AnyElement> = Vec::new();
-                let time_share_note = root.kind == LaneKind::Delta && self.scene.time_share_delta;
-                if root.kind == LaneKind::Delta {
-                    // Δ states the time gained or lost across the view (its
-                    // range follows the view): the lane's one number that
-                    // matters before a cursor exists.
+                let is_gap = root.kind == LaneKind::Delta;
+                let time_share_note = is_gap && self.scene.time_share_delta;
+                if is_gap {
+                    // The gap lane's legend is one big figure: the gap at the
+                    // cursor (idle: the change across the view), then where
+                    // it ends (the lap, or the view when zoomed).
                     if self.scene.time_share_delta {
                         label.push_str(", share of lap time, not station aligned");
                     }
+                    let zoomed = viewport != Viewport::FULL;
                     let change = root.change_in(viewport);
-                    let (text, trend) = delta_seconds(change, approximate);
-                    label.push_str(&format!(", in view {text}"));
-                    rows.push(
-                        summary_row(&root.key, "view", "In view", text, trend, palette, muted)
-                            .into_any_element(),
-                    );
-                    if let Some(fraction) = readout_at {
-                        let readout = root.readout(fraction, map);
-                        let (text, trend) = delta_seconds(readout.primary, approximate);
-                        label.push_str(&format!(", at cursor {text}"));
-                        rows.push(
-                            summary_row(&root.key, "cursor", "Cursor", text, trend, palette, muted)
-                                .into_any_element(),
-                        );
-                    }
+                    let (view_text, _) = delta_seconds(change, approximate);
+                    label.push_str(&format!(", in view {view_text}"));
+                    let figure = match readout_at {
+                        Some(fraction) => {
+                            let readout = root.readout(fraction, map);
+                            let (text, trend) = delta_seconds(readout.primary, approximate);
+                            label.push_str(&format!(", at cursor {text}"));
+                            let context = if zoomed {
+                                format!("s at cursor, {view_text} in view")
+                            } else {
+                                let (end, _) =
+                                    delta_seconds(root.change_in(Viewport::FULL), approximate);
+                                format!("s at cursor, ends {end}")
+                            };
+                            ("cursor", text, trend, context)
+                        }
+                        None => {
+                            let (text, trend) = delta_seconds(change, approximate);
+                            let context = if zoomed {
+                                "s in view"
+                            } else {
+                                "s over the lap"
+                            };
+                            ("view", text, trend, context.to_string())
+                        }
+                    };
+                    rows.push(gap_figure(&root.key, figure, palette, muted).into_any_element());
                 } else if let Some(fraction) = readout_at {
                     for (position, lane) in channels.iter().enumerate() {
                         let readout = lane.readout(fraction, map);
@@ -744,7 +759,8 @@ impl TraceStack {
                         let text = ReadoutText::new(lane, &readout);
                         label.push_str(&format!(", {}", text.spoken(lane)));
                         rows.push(
-                            readout_row(lane, text, combined, hue, roles, muted).into_any_element(),
+                            readout_row(lane, text, shared.then_some(combined), hue, roles, muted)
+                                .into_any_element(),
                         );
                     }
                 }
@@ -778,7 +794,8 @@ impl TraceStack {
                             .min_w_0()
                             .items_baseline()
                             .child(h_flex().gap_1().min_w_0().font_medium().children(names))
-                            .when(!unit.is_empty(), |el| {
+                            // The gap lane says its unit under the figure.
+                            .when(!unit.is_empty() && !is_gap, |el| {
                                 el.child(div().text_color(muted).flex_shrink_0().child(unit))
                             })
                             // The alignment is a share of lap time: said on
@@ -827,6 +844,15 @@ impl TraceStack {
             )
     }
 
+    /// Whether any visible lane holds two channels: only then do readout
+    /// rows carry the channel column (a line swatch naming each row).
+    fn has_shared_lane(&self) -> bool {
+        self.layout
+            .slots
+            .iter()
+            .any(|slot| slot.channels().nth(1).is_some())
+    }
+
     /// The header of the readout columns, for the row above the lanes (the
     /// host places it; the corner ruler's chrome cell in Omatrack): which
     /// column is the primary lap, the reference and their difference, on
@@ -835,6 +861,7 @@ impl TraceStack {
         let theme = cx.theme();
         let has_reference = self.scene.lanes.iter().any(|lane| lane.reference.is_some());
         let show = !self.scene.is_empty();
+        let shared = self.has_shared_lane();
         let key = |text: &'static str, color: Hsla| value_cell().text_color(color).child(text);
         div()
             .id("readout-key")
@@ -846,7 +873,7 @@ impl TraceStack {
             .when(show, |el| {
                 el.child(
                     readout_grid()
-                        .child(label_cell())
+                        .when(shared, |el| el.child(label_cell()))
                         .child(key("P", theme.primary))
                         .when(has_reference, |el| {
                             el.child(key("R", theme.warning))
@@ -875,8 +902,8 @@ const VALUE_CELL_REMS: f32 = 2.5;
 pub const CHROME_REMS: f32 = 12.0;
 /// Gap between readout columns, rems (`gap_1p5`).
 const GAP_REMS: f32 = 0.375;
-/// Width of a full readout row, rems.
-const ROW_REMS: f32 = LABEL_CELL_REMS + 3.0 * VALUE_CELL_REMS + 3.0 * GAP_REMS;
+/// Line height of the gap lane's figure (the display step), rems.
+const GAP_FIGURE_LINE_REMS: f32 = 1.375;
 
 /// One row of the readout grid: the channel column then the value columns,
 /// on the same spines in every lane.
@@ -948,7 +975,9 @@ impl ReadoutText {
 fn readout_row(
     lane: &LaneSeries,
     text: ReadoutText,
-    combined: bool,
+    // `None` without any shared lane (no channel column); else whether this
+    // row's lane is shared (its row shows the channel's line).
+    combined: Option<bool>,
     hue: Hsla,
     (primary, reference): (Hsla, Hsla),
     muted: Hsla,
@@ -965,15 +994,17 @@ fn readout_row(
     readout_grid()
         // A shared lane marks each row with its channel's line (the title
         // names it in the same hue), never a clipped abbreviation.
-        .child(
-            label_cell()
-                .h(rems(LEGEND_LINE_REMS))
-                .flex()
-                .items_center()
-                .when(combined, |el| {
-                    el.child(div().w(rems(0.875)).h(px(2.)).rounded_sm().bg(hue))
-                }),
-        )
+        .when_some(combined, |el, combined| {
+            el.child(
+                label_cell()
+                    .h(rems(LEGEND_LINE_REMS))
+                    .flex()
+                    .items_center()
+                    .when(combined, |el| {
+                        el.child(div().w(rems(0.875)).h(px(2.)).rounded_sm().bg(hue))
+                    }),
+            )
+        })
         .child(cell("p", text.primary, primary))
         .when_some(text.reference, |el, value| {
             el.child(cell("r", value, reference))
@@ -981,39 +1012,44 @@ fn readout_row(
         .when_some(text.delta, |el, value| el.child(cell("d", value, muted)))
 }
 
-/// A Δt lane figure (`In view`, `Cursor`): its name across the channel and
-/// primary columns, the value right-aligned on the Δ spine.
-fn summary_row(
+/// The gap lane's figure: the gap in seconds as the legend's one large
+/// number, gain or loss coloured (muted when approximate), over a caption
+/// saying what it measures and where the gap ends.
+fn gap_figure(
     key: &str,
-    column: &str,
-    name: &'static str,
-    value: SharedString,
-    trend: Option<bool>,
+    (column, value, trend, context): (&str, SharedString, Option<bool>, String),
     palette: &TracePalette,
     muted: Hsla,
 ) -> impl IntoElement {
     let color = match trend {
         Some(true) => palette.gain,
         Some(false) => palette.loss,
-        None => palette.foreground,
+        None => muted,
     };
-    h_flex()
-        .w(rems(ROW_REMS))
-        .flex_shrink_0()
-        .whitespace_nowrap()
-        .justify_between()
-        .items_baseline()
-        .child(div().text_caption().text_color(muted).child(name))
+    v_flex()
+        .min_w_0()
         .child(
             div()
                 .id(ElementId::Name(format!("readout-{key}-{column}").into()))
                 .test_support()
+                .text_display()
+                .line_height(rems(GAP_FIGURE_LINE_REMS))
+                .font_medium()
                 .text_color(color)
                 .child(value),
         )
+        .child(
+            div()
+                .id(ElementId::Name(format!("readout-{key}-context").into()))
+                .test_support()
+                .text_caption()
+                .text_color(muted)
+                .truncate()
+                .child(SharedString::from(context)),
+        )
 }
 
-/// A time delta for the Δt lane: signed seconds (`≈` and two decimals under
+/// A time delta for the gap lane: signed seconds (`≈` and two decimals under
 /// a LOW-confidence alignment) and its trend, `Some(true)` for a gain.
 /// Below the display resolution, or approximate, it is neither.
 fn delta_seconds(value: f64, approximate: bool) -> (SharedString, Option<bool>) {

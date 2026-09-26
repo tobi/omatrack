@@ -186,21 +186,19 @@ impl TraceOverlay {
             }
         };
 
-        // Corner zones: a quiet tint with hairline edges; stronger grips
+        // Corner zones: a quiet tint through every lane, a pixel short of
+        // the zone end so neighbours read as separate; edges only as grips
         // while editing.
         for corner in self.corners.iter() {
             let (x1, x2) = (x_for(corner.start), x_for(corner.end));
             if x2 <= 0.0 || x1 >= width {
                 continue;
             }
-            column(window, x1, x2, palette.corner_band);
-            let edge = if self.editing_corners {
-                palette.reference
-            } else {
-                palette.corner_edge
-            };
-            vline(window, x1, edge);
-            vline(window, x2, edge);
+            column(window, x1, (x2 - 1.0).max(x1 + 1.0), palette.corner_band);
+            if self.editing_corners {
+                vline(window, x1, palette.reference);
+                vline(window, x2, palette.reference);
+            }
         }
 
         // Outside a focused corner the traces recede.

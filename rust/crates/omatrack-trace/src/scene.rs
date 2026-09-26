@@ -581,7 +581,7 @@ impl Default for LaneStyle {
 
 impl LaneStyle {
     /// Omatrack defaults for a channel: [`default_height_percent`] shares,
-    /// brake overlays throttle.
+    /// one lane per channel (brake has its own lane under throttle).
     pub fn default_for(key: &str) -> Self {
         let percent = default_height_percent(key);
         // FIT multiplies the weight by the height share itself.
@@ -589,8 +589,7 @@ impl LaneStyle {
         Self {
             sizing: LaneSizing::default()
                 .with_height_percent(percent)
-                .with_weight(weight)
-                .combine_with_previous(key == "brake"),
+                .with_weight(weight),
             ..Self::default()
         }
     }
@@ -750,7 +749,7 @@ mod tests {
     #[test]
     fn default_styles() {
         let styles = LaneStyles::new();
-        assert!(styles.get("brake").sizing.combine_with_previous);
+        assert!(!styles.get("brake").sizing.combine_with_previous);
         assert_eq!(
             styles.get("speed").sizing.height_percent,
             default_height_percent("speed")

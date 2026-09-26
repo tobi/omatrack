@@ -69,6 +69,23 @@ fn open(cx: &mut TestAppContext) -> Fixture {
     }
 }
 
+/// Brake overlaid on the throttle lane (`combine_with_previous`), the
+/// opt-in shared lane.
+fn share_brake_with_throttle(cx: &mut TestAppContext, f: &Fixture) {
+    f.stack.update(cx, |stack, cx| {
+        let mut styles = stack.lane_styles().clone();
+        let mut brake = styles.get("brake");
+        brake.sizing = brake.sizing.clone().combine_with_previous(true);
+        styles.set("brake", brake);
+        stack.set_lane_styles(styles, cx);
+    });
+    for _ in 0..3 {
+        cx.update_window(f.window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        cx.run_until_parked();
+    }
+}
+
 fn plot_bounds(cx: &mut TestAppContext, window: AnyWindowHandle) -> Bounds<Pixels> {
     cx.update_window(window, |_, window, _| window.find("trace-plot").bounds())
         .unwrap()
@@ -92,17 +109,32 @@ fn dispatch(cx: &mut TestAppContext, window: AnyWindowHandle, event: gpui_kit::P
 fn lanes_render_with_labels_and_stable_ids(cx: &mut TestAppContext) {
     let f = open(cx);
     let layout_lanes = cx.update(|cx| f.stack.read(cx).layout().slots.len());
-    // 8 channels, brake shares the throttle lane.
-    assert_eq!(layout_lanes, 7);
+    // 8 channels, one lane each (brake has its own lane by default).
+    assert_eq!(layout_lanes, 8);
     cx.update_window(f.window, |_, window, _| {
         let speed = window.find("lane-speed");
         assert!(speed.visible());
         assert!(speed.label().unwrap().starts_with("Speed"));
         let throttle = window.find("lane-throttle");
-        assert!(throttle.label().unwrap().starts_with("Throttle / Brake"));
-        assert!(window.try_find("lane-brake").is_none());
+        assert!(throttle.label().unwrap().starts_with("Throttle"));
+        assert!(
+            window
+                .find("lane-brake")
+                .label()
+                .unwrap()
+                .starts_with("Brake")
+        );
         // Lanes stack top to bottom in the chrome column.
         assert!(window.find("lane-throttle").bounds().top() >= speed.bounds().bottom() - px(1.));
+    })
+    .unwrap();
+    // Opted in, brake shares the throttle lane.
+    share_brake_with_throttle(cx, &f);
+    assert_eq!(cx.update(|cx| f.stack.read(cx).layout().slots.len()), 7);
+    cx.update_window(f.window, |_, window, _| {
+        let throttle = window.find("lane-throttle");
+        assert!(throttle.label().unwrap().starts_with("Throttle / Brake"));
+        assert!(window.try_find("lane-brake").is_none());
     })
     .unwrap();
     let stats = cx.update(|cx| f.stack.read(cx).static_stats(cx));
@@ -414,11 +446,13 @@ fn lane_legends_show_values_only_with_a_cursor(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn legend_values_share_column_spines_and_never_clip(cx: &mut TestAppContext) {
     let f = open(cx);
-    // Idle: the Δt lane states the change across the view; no column key.
+    share_brake_with_throttle(cx, &f);
+    // Idle: the gap lane's figure is the change across the view.
     cx.update_window(f.window, |_, window, _| {
         let delta = window.find("lane-delta").label().unwrap().to_string();
         assert!(delta.contains("in view"), "{delta}");
         assert!(window.try_find("readout-delta-view").is_some());
+        assert!(window.try_find("readout-delta-context").is_some());
         assert!(window.try_find("readout-speed-p").is_none());
         assert!(window.try_find("readout-delta-cursor").is_none());
     })
@@ -446,9 +480,13 @@ fn legend_values_share_column_spines_and_never_clip(cx: &mut TestAppContext) {
                 assert_eq!(right(key), spine, "{key} {column}");
             }
         }
-        // The Δt figures sit on the Δ spine.
-        let d = window.find("readout-speed-d").bounds().right();
-        assert_eq!(window.find("readout-delta-view").bounds().right(), d);
+        // The gap figure and its caption sit inside the gap lane's cell,
+        // the figure the tallest text of any legend.
+        let gap = window.find("lane-delta").bounds();
+        let figure = window.find("readout-delta-cursor").bounds();
+        let caption = window.find("readout-delta-context").bounds();
+        assert!(gap.contains(&figure.origin) && caption.bottom() <= gap.bottom());
+        assert!(figure.size.height > window.find("readout-speed-p").bounds().size.height);
         // Every value lies inside its lane's legend cell: nothing clips.
         for key in ["speed", "throttle", "gear", "steering"] {
             let cell = window

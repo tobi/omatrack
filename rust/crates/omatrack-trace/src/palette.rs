@@ -56,10 +56,8 @@ pub struct TracePalette {
     pub hover: Hsla,
     /// Range selection band.
     pub selection: Hsla,
-    /// Corner zone tint.
+    /// Corner zone tint, through every lane.
     pub corner_band: Hsla,
-    /// Corner zone edges.
-    pub corner_edge: Hsla,
     /// Out-of-lap mask over neighbouring laps.
     pub mask: Hsla,
     /// Dimming outside a focused corner.
@@ -91,8 +89,9 @@ impl TracePalette {
             cursor: opaque(theme.foreground.opacity(0.7)),
             hover: theme.muted_foreground.opacity(0.9),
             selection: theme.primary.opacity(0.14),
-            corner_band: theme.foreground.opacity(0.035),
-            corner_edge: theme.muted_foreground.opacity(0.2),
+            // The muted surface token at low alpha: a zone reads as a
+            // quiet column, never as data.
+            corner_band: theme.muted.opacity(0.5),
             mask: background.opacity(0.62),
             dim: background.opacity(0.6),
             // Neutral: the Δ is neither lap; gain and loss colour its fill.

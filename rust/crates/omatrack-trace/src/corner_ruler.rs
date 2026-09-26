@@ -1,18 +1,21 @@
 //! `CornerRuler`: the corner row above the trace lanes.
 //!
-//! Every corner zone is a band on the shared x mapping (the application's
-//! [`ViewportState`]) with its driver-facing label; corner complexes that
-//! group two or more corners are a quiet bracket row above the corners they
-//! span (a single-corner complex only repeats its corner and is not drawn).
-//! The focused corner is filled with the primary role colour, a hovered
-//! corner brightens.
+//! Every corner zone is a label on the shared x mapping (the application's
+//! [`ViewportState`]), centred over its zone on one of two staggered rows:
+//! corners alternate rows by index (T1 T3 T5 above, T2 T4 below), so tight
+//! neighbours never fight for one line. The zones' shading runs through the
+//! lanes (the trace overlay); the ruler itself is labels. Corner complexes
+//! that group two or more corners are a quiet bracket line above the rows
+//! (a single-corner complex only repeats its corner and is not drawn).
+//! The chip corner, the focused one or else the one under the shared cursor,
+//! is a filled chip in the foreground; a hovered corner brightens.
 //!
-//! Labels never overlap and are never ellipsized. The row uses one form:
-//! full names when every visible corner's name fits its band, else short
-//! forms (`Turn 10A` → `T10A`) throughout; a corner fitting neither is
-//! unlabelled, and when two labels would collide the lower-priority one is
-//! dropped. Priority: the focused corner (always labelled), then the hovered
-//! one, then wider bands ([`place_labels`]).
+//! Labels never overlap and are never ellipsized. The ruler uses one form:
+//! full names when every visible label fits its row that way, else short
+//! forms (`Turn 10A` → `T10A`) throughout; when two labels of a row would
+//! collide the lower-priority one is dropped. Priority: the chip corner
+//! (always labelled), then the hovered one, then wider bands
+//! ([`place_labels`]).
 //!
 //! Interaction contract:
 //!
@@ -50,7 +53,7 @@ use gpui_kit::{
     InteractiveElement as _, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, ParentElement as _, Pixels, Render, Role, SharedString,
     StatefulInteractiveElement as _, Style, Styled as _, Subscription, WeakEntity, Window, div,
-    fill, point, prelude::FluentBuilder as _, px, relative, size,
+    fill, point, px, relative, rems, size,
 };
 
 use omatrack_ui::TypeStep;
@@ -91,6 +94,7 @@ pub struct CornerRuler {
     spans: Vec<CornerSpan>,
     complexes: Arc<[ComplexBand]>,
     focused: Option<u32>,
+    cursor_corner: Option<u32>,
     editing: bool,
     hovered: Option<(u32, CornerPart)>,
     press: Option<Press>,
@@ -109,6 +113,7 @@ impl CornerRuler {
             spans: Vec::new(),
             complexes: Arc::from(Vec::new()),
             focused: None,
+            cursor_corner: None,
             editing: false,
             hovered: None,
             press: None,
@@ -172,6 +177,26 @@ impl CornerRuler {
 
     pub fn focused_corner(&self) -> Option<u32> {
         self.focused
+    }
+
+    /// The corner under the shared cursor (controlled by the owner, which
+    /// calls this on every cursor move; it repaints only when the corner
+    /// changes). It shows as the chip unless another corner is focused.
+    pub fn set_cursor_corner(&mut self, id: Option<u32>, cx: &mut Context<Self>) {
+        if self.cursor_corner != id {
+            self.cursor_corner = id;
+            cx.notify();
+        }
+    }
+
+    pub fn cursor_corner(&self) -> Option<u32> {
+        self.cursor_corner
+    }
+
+    /// The corner drawn as the filled chip: the focused one, else the one
+    /// under the cursor.
+    pub fn chip_corner(&self) -> Option<u32> {
+        self.focused.or(self.cursor_corner)
     }
 
     /// Corner edit mode: edges become grips and drags edit zones.
@@ -356,15 +381,19 @@ pub fn short_label(label: &str) -> Option<SharedString> {
     (short != trimmed).then(|| short.into())
 }
 
-/// A corner label to place: its band on screen and the widths of its full
-/// and short forms (`short` is `None` without a distinct short form).
+/// A corner label to place: its band on screen, its label row (corners
+/// alternate between the two rows by index) and the widths of its full and
+/// short forms (`short` is `None` without a distinct short form).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LabelCandidate {
     pub left: f32,
     pub right: f32,
     pub full: f32,
     pub short: Option<f32>,
-    /// Focused (always labelled) or hovered: placed first.
+    /// 0 for the upper row, 1 for the lower.
+    pub row: u8,
+    /// The chip corner (focused or under the cursor, always labelled) is 2,
+    /// a hovered one 1: placed first.
     pub priority: u8,
 }
 
@@ -381,25 +410,39 @@ pub(crate) struct Placement {
     pub x: f32,
 }
 
-/// How far a label may overhang each edge of its band, logical pixels. A
-/// short label (`T3`) over a narrow zone stays readable; the gap check
-/// keeps it clear of its neighbours' labels.
-const LABEL_OVERHANG: f32 = 4.0;
-/// Minimum clear space between two labels, logical pixels.
+/// Minimum clear space between two labels of one row, logical pixels.
 const LABEL_GAP: f32 = 6.0;
 
-/// Collision-free label placement over a ruler `width` pixels wide.
+/// Collision-free label placement over a ruler `width` pixels wide, on two
+/// staggered rows.
 ///
-/// One form for the whole row: full names, unless some visible corner fits
-/// only its short form, then short forms throughout (mixing `Turn 2` and
-/// `T3` side by side reads as two naming schemes). Candidates go in priority
-/// order (higher `priority`, then wider bands), centred on their visible
-/// band; a label wider than its band plus [`LABEL_OVERHANG`] a side, or one
-/// that would come within
-/// [`LABEL_GAP`] of one already placed, is dropped.
-/// A candidate with `priority >= 2` (the focused corner) is always placed,
-/// in the widest form that fits, else the short form, overhanging its band.
+/// Corners alternate rows by index (T1 T3 T5 above, T2 T4 below), so a
+/// label may span its neighbours' bands: it only has to clear the labels of
+/// its own row. One form for the whole ruler: full names when every visible
+/// label fits that way, else short forms (`Turn 10A` → `T10A`) throughout
+/// (mixing `Turn 2` and `T3` reads as two naming schemes). Within a row,
+/// candidates go in priority order (higher `priority`, then wider bands),
+/// centred on their visible band and clamped into the ruler; a label that
+/// would come within [`LABEL_GAP`] of one already placed is dropped. The
+/// chip corner (`priority >= 2`) is always placed.
 pub(crate) fn place_labels(candidates: &[LabelCandidate], width: f32) -> Vec<Option<Placement>> {
+    let full = place_in_rows(candidates, width, false);
+    let dropped = |placed: &[Option<Placement>]| {
+        candidates
+            .iter()
+            .zip(placed)
+            .filter(|(c, p)| p.is_none() && c.right > 0.0 && c.left < width)
+            .count()
+    };
+    let lost = dropped(&full);
+    if lost == 0 || candidates.iter().all(|c| c.short.is_none()) {
+        return full;
+    }
+    let short = place_in_rows(candidates, width, true);
+    if dropped(&short) <= lost { short } else { full }
+}
+
+fn place_in_rows(candidates: &[LabelCandidate], width: f32, short: bool) -> Vec<Option<Placement>> {
     let mut order: Vec<usize> = (0..candidates.len()).collect();
     order.sort_by(|&a, &b| {
         let (a, b) = (&candidates[a], &candidates[b]);
@@ -407,13 +450,8 @@ pub(crate) fn place_labels(candidates: &[LabelCandidate], width: f32) -> Vec<Opt
             .cmp(&a.priority)
             .then((b.right - b.left).total_cmp(&(a.right - a.left)))
     });
-    let room_of = |c: &LabelCandidate| c.right.min(width) - c.left.max(0.0) + 2.0 * LABEL_OVERHANG;
-    let short_row = candidates.iter().any(|c| {
-        let room = room_of(c);
-        c.right > 0.0 && c.left < width && c.full > room && c.short.is_some_and(|w| w <= room)
-    });
     let mut placed: Vec<Option<Placement>> = vec![None; candidates.len()];
-    let mut taken: Vec<(f32, f32)> = Vec::with_capacity(candidates.len());
+    let mut taken: Vec<(u8, f32, f32)> = Vec::with_capacity(candidates.len());
     for index in order {
         let c = &candidates[index];
         let left = c.left.max(0.0);
@@ -421,34 +459,21 @@ pub(crate) fn place_labels(candidates: &[LabelCandidate], width: f32) -> Vec<Opt
         if right <= left {
             continue;
         }
-        let room = room_of(c);
-        let centre = (left + right) * 0.5;
-        let short = c.short.map(|w| (LabelForm::Short, w));
-        let full = Some((LabelForm::Full, c.full));
         // In a short row a corner without a short form keeps its name.
-        let forms = if short_row && short.is_some() {
-            [short, None]
-        } else {
-            [full, short]
+        let (form, w) = match c.short {
+            Some(w) if short => (LabelForm::Short, w),
+            _ => (LabelForm::Full, c.full),
         };
-        let at = |w: f32| (centre - w * 0.5).clamp(0.0, (width - w).max(0.0));
-        let free = |x: f32, w: f32| {
-            taken
-                .iter()
-                .all(|&(l, r)| x + w + LABEL_GAP <= l || x >= r + LABEL_GAP)
-        };
-        let mut choice = forms
-            .iter()
-            .flatten()
-            .find(|(_, w)| *w <= room && free(at(*w), *w))
-            .copied();
-        if choice.is_none() && c.priority >= 2 {
-            let fallback = forms.iter().flatten().rfind(|(_, w)| *w <= room);
-            choice = fallback.or(forms.iter().flatten().last()).copied();
+        if !w.is_finite() {
+            continue;
         }
-        if let Some((form, w)) = choice {
-            let x = at(w);
-            taken.push((x, x + w));
+        let x = ((left + right - w) * 0.5).clamp(0.0, (width - w).max(0.0));
+        let free = taken
+            .iter()
+            .filter(|(row, _, _)| *row == c.row)
+            .all(|&(_, l, r)| x + w + LABEL_GAP <= l || x >= r + LABEL_GAP);
+        if free || c.priority >= 2 {
+            taken.push((c.row, x, x + w));
             placed[index] = Some(Placement { form, x });
         }
     }
@@ -485,13 +510,15 @@ impl Render for CornerRuler {
             corners: self.corners.clone(),
             complexes: self.complexes.clone(),
             viewport: self.viewport.read(cx).viewport(),
-            focused: self.focused,
+            chip: self.chip_corner(),
             hovered: self.hovered,
             editing: self.editing,
             dragging: self.interaction.is_dragging(),
             palette,
             label: theme.muted_foreground,
             strong: theme.foreground,
+            chip_text: theme.background,
+            radius: theme.radius,
         };
         let has_complexes = !self.complexes.is_empty();
         div()
@@ -501,7 +528,7 @@ impl Render for CornerRuler {
             .test_support()
             .relative()
             .w_full()
-            .map(|el| if has_complexes { el.h_10() } else { el.h_6() })
+            .h(rems(ruler_height_rems(has_complexes)))
             .flex_shrink_0()
             .overflow_hidden()
             .child(element)
@@ -514,13 +541,15 @@ struct RulerElement {
     corners: Arc<[CornerBand]>,
     complexes: Arc<[ComplexBand]>,
     viewport: Viewport,
-    focused: Option<u32>,
+    chip: Option<u32>,
     hovered: Option<(u32, CornerPart)>,
     editing: bool,
     dragging: bool,
     palette: TracePalette,
     label: Hsla,
     strong: Hsla,
+    chip_text: Hsla,
+    radius: Pixels,
 }
 
 impl IntoElement for RulerElement {
@@ -530,29 +559,38 @@ impl IntoElement for RulerElement {
     }
 }
 
-/// Vertical split of the ruler: complex bracket tier above the corner tier.
+/// The ruler's height: two staggered label rows, plus a bracket line when
+/// complexes are drawn.
+pub fn ruler_height_rems(has_complexes: bool) -> f32 {
+    if has_complexes { 3.25 } else { 2.25 }
+}
+
+/// Vertical split of the ruler: complex bracket tier above the two corner
+/// label rows.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RulerTiers {
     pub complex_top: f32,
     pub complex_height: f32,
-    pub corner_top: f32,
-    pub corner_height: f32,
+    /// Top of the upper and lower label rows.
+    pub row_top: [f32; 2],
+    pub row_height: f32,
 }
 
 /// Tiers for a ruler `height` logical pixels tall. The bracket tier holds one
-/// `text_height` label line plus the bracket; without complexes the corner
-/// tier takes everything.
+/// `text_height` label line plus the bracket; without complexes the two
+/// label rows share everything.
 pub(crate) fn ruler_tiers(height: f32, text_height: f32, has_complexes: bool) -> RulerTiers {
     let complex_height = if has_complexes {
-        (text_height + 4.0).min(height * 0.5)
+        (text_height + 4.0).min(height * 0.34)
     } else {
         0.0
     };
+    let row_height = ((height - complex_height) * 0.5).max(0.0);
     RulerTiers {
         complex_top: 0.0,
         complex_height,
-        corner_top: complex_height,
-        corner_height: (height - complex_height).max(0.0),
+        row_top: [complex_height, complex_height + row_height],
+        row_height,
     }
 }
 
@@ -687,41 +725,36 @@ impl RulerElement {
             }
         }
 
-        // Corner bands: a quiet tint with a 1 px gap between neighbours so
-        // adjacent zones read as separate.
-        let band_top = tiers.corner_top + 2.0;
-        let band_height = (tiers.corner_height - 4.0).max(1.0);
+        // Hover and edit tints: a quiet column over the zone. At rest the
+        // ruler is only labels; the zones' own shading runs through the
+        // lanes below.
         let hovered_id = self.hovered.map(|(id, _)| id);
         for corner in self.corners.iter() {
             let (x1, x2) = (x_for(corner.start), x_for(corner.end));
             if x2 <= 0.0 || x1 >= width {
                 continue;
             }
-            let focused = self.focused == Some(corner.id);
             let hovered = hovered_id == Some(corner.id);
-            let fill_color = if focused {
-                palette.primary.opacity(0.22)
-            } else if hovered {
-                palette.foreground.opacity(0.1)
-            } else {
+            let tint = if hovered {
+                palette.foreground.opacity(0.08)
+            } else if self.editing {
                 palette.foreground.opacity(0.045)
+            } else {
+                continue;
             };
             let band_width = (x2 - x1 - 1.0).max(1.0);
-            rect(window, x1, band_top, band_width, band_height, fill_color);
-            if focused {
-                rect(window, x1, band_top, 1.0, band_height, palette.primary);
-                rect(
-                    window,
-                    x1 + band_width - 1.0,
-                    band_top,
-                    1.0,
-                    band_height,
-                    palette.primary,
-                );
-            }
+            rect(
+                window,
+                x1,
+                tiers.row_top[0],
+                band_width,
+                tiers.row_height * 2.0,
+                tint,
+            );
             if self.editing {
                 // Grips: full-height edges in the reference role colour with
                 // a wider handle in the middle, stronger when hovered.
+                let (top, h) = (tiers.row_top[0], tiers.row_height * 2.0);
                 for (edge_x, part) in [(x1, CornerPart::Start), (x2, CornerPart::End)] {
                     let active = self.hovered == Some((corner.id, part));
                     let color = if active {
@@ -729,12 +762,12 @@ impl RulerElement {
                     } else {
                         palette.reference.opacity(0.7)
                     };
-                    rect(window, edge_x - 0.5, band_top, 1.0, band_height, color);
-                    let handle = (band_height * 0.5).max(4.0);
+                    rect(window, edge_x - 0.5, top, 1.0, h, color);
+                    let handle = (h * 0.5).max(4.0);
                     rect(
                         window,
                         edge_x - 1.5,
-                        band_top + (band_height - handle) * 0.5,
+                        top + (h - handle) * 0.5,
                         3.0,
                         handle,
                         color,
@@ -743,10 +776,13 @@ impl RulerElement {
             }
         }
 
-        // Labels: shape both forms, place without collisions, paint.
+        // Labels on two staggered rows by corner index; the chip corner
+        // (focused, else under the cursor) is a filled chip in the
+        // foreground with its label in the background colour.
+        let chip_pad = (text_size.as_f32() * 0.5).round();
         let style = |corner: &CornerBand| {
-            if self.focused == Some(corner.id) {
-                (self.strong, FontWeight::SEMIBOLD, 2)
+            if self.chip == Some(corner.id) {
+                (self.chip_text, FontWeight::MEDIUM, 2)
             } else if hovered_id == Some(corner.id) || self.editing {
                 (self.strong, FontWeight::NORMAL, 1)
             } else {
@@ -755,10 +791,11 @@ impl RulerElement {
         };
         let mut shaped = Vec::with_capacity(self.corners.len());
         let mut candidates = Vec::with_capacity(self.corners.len());
-        for corner in self.corners.iter() {
+        for (index, corner) in self.corners.iter().enumerate() {
             let (x1, x2) = (x_for(corner.start), x_for(corner.end));
             let (color, weight, priority) = style(corner);
             let visible = x2 > 0.0 && x1 < width;
+            let pad = if priority >= 2 { 2.0 * chip_pad } else { 0.0 };
             let full = visible
                 .then(|| label::shape(corner.label.clone(), text_size, weight, color, window));
             let short = visible
@@ -768,14 +805,18 @@ impl RulerElement {
             candidates.push(LabelCandidate {
                 left: x1,
                 right: x2,
-                full: full.as_ref().map_or(f32::INFINITY, |l| l.width().as_f32()),
-                short: short.as_ref().map(|l| l.width().as_f32()),
+                full: full
+                    .as_ref()
+                    .map_or(f32::INFINITY, |l| l.width().as_f32() + pad),
+                short: short.as_ref().map(|l| l.width().as_f32() + pad),
+                row: (index % 2) as u8,
                 priority: if visible { priority } else { 0 },
             });
             shaped.push((full, short));
         }
-        let top = band_top + (band_height - text_height) * 0.5;
-        for (placement, (full, short)) in place_labels(&candidates, width).into_iter().zip(&shaped)
+        let placements = place_labels(&candidates, width);
+        for ((placement, (full, short)), candidate) in
+            placements.into_iter().zip(&shaped).zip(&candidates)
         {
             let Some(placement) = placement else {
                 continue;
@@ -784,15 +825,35 @@ impl RulerElement {
                 LabelForm::Full => full.as_ref(),
                 LabelForm::Short => short.as_ref(),
             };
-            if let Some(line) = line {
-                label::paint(
-                    line,
-                    bounds.origin + point(px(placement.x.round()), px(top)),
-                    px(text_height),
-                    window,
-                    cx,
+            let Some(line) = line else {
+                continue;
+            };
+            let row_top = tiers.row_top[candidate.row as usize];
+            let top = (row_top + (tiers.row_height - text_height) * 0.5).round();
+            let mut x = placement.x.round();
+            if candidate.priority >= 2 {
+                let chip_width = line.width().as_f32() + 2.0 * chip_pad;
+                let chip_top = row_top + 1.0;
+                let chip_height = (tiers.row_height - 2.0).max(text_height);
+                window.paint_quad(
+                    fill(
+                        Bounds::new(
+                            bounds.origin + point(px(x), px(chip_top)),
+                            size(px(chip_width), px(chip_height)),
+                        ),
+                        self.strong,
+                    )
+                    .corner_radii(self.radius.min(px(chip_height * 0.5))),
                 );
+                x += chip_pad;
             }
+            label::paint(
+                line,
+                bounds.origin + point(px(x), px(top)),
+                px(text_height),
+                window,
+                cx,
+            );
         }
     }
 
@@ -848,12 +909,13 @@ impl RulerElement {
 mod tests {
     use super::*;
 
-    fn candidate(left: f32, right: f32, full: f32, short: Option<f32>) -> LabelCandidate {
+    fn candidate(left: f32, right: f32, full: f32, short: Option<f32>, row: u8) -> LabelCandidate {
         LabelCandidate {
             left,
             right,
             full,
             short,
+            row,
             priority: 0,
         }
     }
@@ -868,52 +930,48 @@ mod tests {
     }
 
     #[test]
-    fn labels_use_the_short_form_when_narrow_and_never_overlap() {
-        // A wide band takes its full name; a narrow one its short form; a
-        // band too narrow for either is unlabelled.
+    fn staggered_rows_only_collide_within_a_row() {
+        // Three narrow neighbours: on one row the middle label would
+        // collide, staggered it clears both (they are on the other row).
         let placed = place_labels(
             &[
-                candidate(0.0, 200.0, 50.0, Some(20.0)),
-                candidate(200.0, 230.0, 50.0, Some(20.0)),
-                candidate(230.0, 240.0, 50.0, Some(20.0)),
+                candidate(100.0, 130.0, 40.0, Some(16.0), 0),
+                candidate(130.0, 160.0, 40.0, Some(16.0), 1),
+                candidate(160.0, 190.0, 40.0, Some(16.0), 0),
             ],
             1000.0,
         );
-        // One narrow corner turns the whole row short, centred on the band.
-        assert_eq!(
-            placed[0],
-            Some(Placement {
-                form: LabelForm::Short,
-                x: 90.0
-            })
-        );
-        assert_eq!(placed[1].map(|p| p.form), Some(LabelForm::Short));
-        assert_eq!(placed[2], None);
-        // Every name fits: full names throughout.
-        let placed = place_labels(
-            &[
-                candidate(0.0, 200.0, 50.0, Some(20.0)),
-                candidate(200.0, 300.0, 50.0, Some(20.0)),
-                candidate(300.0, 310.0, 50.0, Some(20.0)),
-            ],
-            1000.0,
-        );
+        // Full names fit their rows: the row keeps full names, centred.
         assert_eq!(
             placed[0],
             Some(Placement {
                 form: LabelForm::Full,
-                x: 75.0
+                x: 95.0
             })
         );
         assert_eq!(placed[1].map(|p| p.form), Some(LabelForm::Full));
-        assert_eq!(placed[2], None);
+        assert_eq!(placed[2].map(|p| p.form), Some(LabelForm::Full));
 
-        // Colliding labels (overlapping zones): the wider band wins; the
-        // other is dropped.
+        // Too tight for full names on the upper row: short forms throughout.
         let placed = place_labels(
             &[
-                candidate(100.0, 160.0, 26.0, None),
-                candidate(120.0, 190.0, 26.0, None),
+                candidate(100.0, 120.0, 40.0, Some(16.0), 0),
+                candidate(120.0, 140.0, 40.0, Some(16.0), 1),
+                candidate(140.0, 160.0, 40.0, Some(16.0), 0),
+            ],
+            1000.0,
+        );
+        assert!(
+            placed
+                .iter()
+                .all(|p| p.map(|p| p.form) == Some(LabelForm::Short))
+        );
+
+        // Same row and overlapping: the wider band wins, the other drops.
+        let placed = place_labels(
+            &[
+                candidate(100.0, 160.0, 26.0, None, 0),
+                candidate(120.0, 190.0, 26.0, None, 0),
             ],
             1000.0,
         );
@@ -922,18 +980,16 @@ mod tests {
     }
 
     #[test]
-    fn the_focused_label_is_always_placed_first() {
-        let mut focused = candidate(100.0, 110.0, 50.0, Some(24.0));
-        focused.priority = 2;
-        let placed = place_labels(&[candidate(60.0, 100.0, 30.0, None), focused], 1000.0);
-        // Too narrow for either form, still labelled (short), centred.
+    fn the_chip_label_is_always_placed_first() {
+        let mut chip = candidate(100.0, 110.0, 50.0, None, 0);
+        chip.priority = 2;
+        let placed = place_labels(&[candidate(60.0, 100.0, 30.0, None, 0), chip], 1000.0);
         let label = placed[1].unwrap();
-        assert_eq!(label.form, LabelForm::Short);
-        assert_eq!(label.x, 93.0);
-        // Its neighbour now collides and gives way.
+        assert_eq!(label.x, 80.0);
+        // Its neighbour on the same row now collides and gives way.
         assert_eq!(placed[0], None);
         // Clamped into the ruler at the edge.
-        let mut edge = candidate(-50.0, 4.0, 50.0, Some(24.0));
+        let mut edge = candidate(-50.0, 4.0, 50.0, Some(24.0), 1);
         edge.priority = 2;
         assert_eq!(place_labels(&[edge], 1000.0)[0].unwrap().x, 0.0);
     }
@@ -957,17 +1013,15 @@ mod tests {
     }
 
     #[test]
-    fn tiers_reserve_a_bracket_line_only_with_complexes() {
-        let plain = ruler_tiers(24.0, 15.0, false);
-        assert_eq!(plain.corner_top, 0.0);
-        assert_eq!(plain.corner_height, 24.0);
-        let with = ruler_tiers(40.0, 15.0, true);
-        assert_eq!(with.complex_height, 19.0);
-        assert_eq!(with.corner_top, 19.0);
-        assert_eq!(with.corner_height, 21.0);
-        // A squeezed ruler never gives brackets more than half.
-        let squeezed = ruler_tiers(20.0, 15.0, true);
-        assert_eq!(squeezed.complex_height, 10.0);
+    fn tiers_split_two_label_rows_under_an_optional_bracket_line() {
+        let plain = ruler_tiers(36.0, 15.0, false);
+        assert_eq!(plain.complex_height, 0.0);
+        assert_eq!(plain.row_top, [0.0, 18.0]);
+        assert_eq!(plain.row_height, 18.0);
+        let with = ruler_tiers(52.0, 15.0, true);
+        assert_eq!(with.complex_height, 17.68);
+        assert_eq!(with.row_top[0], with.complex_height);
+        assert!((with.row_height - 17.16).abs() < 1e-4);
     }
 
     fn ctx<'a>(spans: &'a [CornerSpan], focused: Option<usize>) -> InteractionContext<'a> {

@@ -25,10 +25,10 @@ pub const MIN_LANE_HEIGHT: f64 = 44.0;
 pub fn default_height_percent(key: &str) -> f64 {
     match key {
         "speed" => 34.0,
-        "throttle" | "brake" => 24.0,
-        "delta" => 28.0,
+        "throttle" | "brake" => 16.0,
+        "delta" => 20.0,
         "steering" => 16.0,
-        "gear" => 9.0,
+        "gear" => 12.0,
         _ if key.to_ascii_lowercase().contains("rpm") => 14.0,
         _ => 12.0,
     }
