@@ -337,6 +337,16 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   `VideoView`. Hot drawing is a custom `Element`
   ([element.md](.agents/skills/gpui-kit/references/gpui/element.md)), not a div
   tree.
+- **Window chrome, top to bottom**: the `TitleBar` (track + event/date,
+  sync selector + confidence, Commands and Preferences; no lap or driver
+  chips), the **filmstrip** (`workspace::Filmstrip`, one full-width `Entity`
+  above the docks), the `DockArea`, the `StatusBar`. The filmstrip has one
+  row per role recording (the primary's, then the reference's; two laps of
+  one recording share a row with both roles marked): a fixed gutter (role
+  marker, driver/session, selected lap time), the swap button, then
+  `LapStrip` cells. Panels carry no lap strip of their own. It is
+  re-homeable: a fullscreen surface renders the same entity
+  (`Workspace::filmstrip()`), never a second strip.
 - **gpui-omarchy was evaluated and rejected**: it disables gpui-component,
   lacks key components, and its theme conflicts with gpui-component's.
 - **State** ([entity.md](.agents/skills/gpui-kit/references/gpui/entity.md)):
@@ -496,6 +506,12 @@ double-click resets. Focusing a corner (click, `h`/`j`) centres it in the left
 half with one 140 ms OutCubic transition (retargeted on repeat), masks
 neighbour laps behind `« L8` / `L10 »` rules instead of re-framing, and shows
 notes; escape restores the pre-focus viewport.
+
+Filmstrip: a click selects that row's role's lap (cursor and viewport stay
+put); clicking the lap the role already holds moves the cursor to the lap
+start; right-click (or alt-click) sets the lap as reference. Each role's
+selected cell is filled in its role colour. Swap is `x`, the palette, or the
+button on the filmstrip gutter.
 
 ## 12. Testing and verification
 
