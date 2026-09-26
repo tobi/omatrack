@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Screenshot omatrack2 on a headless Wayland output (no display needed).
 #
-#   scripts/screenshot.sh [-o out.png] [-s 1920x1080] [-w seconds] [-k keys]...
+#   scripts/screenshot.sh [-o out.png] [-s 1920x1080] [-S scale] [-w seconds] [-k keys]...
 #
 # Runs the release binary inside `cage` (wlroots, headless backend, pixman)
 # and captures it with `grim`; both come from nixpkgs via `nix shell`, so
@@ -14,6 +14,8 @@
 # -k sends keys with `wtype` before the capture, in order, 0.6 s apart; each
 # value is passed to wtype verbatim (e.g. -k '-M ctrl -k 4 -m ctrl' -k j).
 # -w is the settle time after launch (default 10 s: scan + load + analysis).
+# -S sets the output scale (default 1); -s 3840x2160 -S 2 renders a 1920x1080
+# logical workspace at HiDPI density, the way text looks on a 4K panel.
 #
 # Needs: nix, the Wayland socket permission of a normal user session. Inside
 # an agent sandbox, run it unsandboxed (it binds a Wayland socket).
@@ -22,14 +24,16 @@ rust_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 out="$rust_dir/target/shot/shot.png"
 size=1920x1080
 wait_s=10
+scale=1
 keys=()
-while getopts "o:s:w:k:" opt; do
+while getopts "o:s:S:w:k:" opt; do
     case $opt in
     o) out="$OPTARG" ;;
     s) size="$OPTARG" ;;
+    S) scale="$OPTARG" ;;
     w) wait_s="$OPTARG" ;;
     k) keys+=("$OPTARG") ;;
-    *) sed -n '2,20p' "$0" >&2; exit 2 ;;
+    *) sed -n '2,22p' "$0" >&2; exit 2 ;;
     esac
 done
 [[ $out == /* ]] || out="$PWD/$out"
@@ -79,13 +83,13 @@ for _ in $(seq 100); do [[ -S "$work/xdg/wayland-0" ]] && break; sleep 0.1; done
 export WAYLAND_DISPLAY=wayland-0 OUT="$out"
 nix shell nixpkgs#grim nixpkgs#wlr-randr nixpkgs#wtype -c bash -c '
     set -euo pipefail
-    wlr-randr --output HEADLESS-1 --custom-mode "$1"
+    wlr-randr --output HEADLESS-1 --custom-mode "$1" --scale "$4"
     sleep "$2"
-    shift 3
+    shift 4
     for k in "$@"; do eval "wtype $k"; sleep 0.6; done
     sleep 0.5
     grim "$OUT"
-' _ "$size" "$wait_s" -- "${keys[@]}" 2>>"$work/cage.log" || { tail -20 "$work/cage.log" >&2; exit 1; }
+' _ "$size" "$wait_s" -- "$scale" "${keys[@]}" 2>>"$work/cage.log" || { tail -20 "$work/cage.log" >&2; exit 1; }
 if ! kill -0 "$cage_pid" 2>/dev/null; then
     echo "omatrack2 exited early:" >&2
     tail -20 "$work/app.log" >&2
