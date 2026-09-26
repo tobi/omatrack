@@ -8,7 +8,9 @@ use gpui_kit::component::{
     kbd::Kbd,
     searchable_list::SearchableListItem,
     select::Select,
+    separator::Separator,
     tag::Tag,
+    tooltip::Tooltip,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -33,10 +35,17 @@ pub struct SyncOption {
 
 impl SyncOption {
     pub fn automatic() -> Self {
-        Self {
-            value: None,
-            title: "Automatic".into(),
-        }
+        Self::automatic_resolved(None)
+    }
+
+    /// The automatic choice, naming the basis it resolved to
+    /// (`Auto · Lap time %`) when one is known.
+    pub fn automatic_resolved(basis: Option<SharedString>) -> Self {
+        let title = match basis {
+            Some(basis) => format!("Auto · {basis}").into(),
+            None => "Automatic".into(),
+        };
+        Self { value: None, title }
     }
 
     pub fn strategy(strategy: Strategy) -> Self {
@@ -62,6 +71,26 @@ impl SearchableListItem for SyncOption {
     fn value(&self) -> &Self::Value {
         &self.value
     }
+}
+
+/// `Lap time % · 0 anchors · LOW confidence.`, plus a caution under LOW:
+/// the sync badge's tooltip and accessible name.
+pub fn sync_summary(basis: &str, anchors: i32, confidence: &str) -> SharedString {
+    let basis = if basis.is_empty() {
+        "No alignment"
+    } else {
+        basis
+    };
+    let anchors = match anchors {
+        1 => "1 GPS anchor".to_string(),
+        n => format!("{n} GPS anchors"),
+    };
+    let caution = match confidence {
+        "LOW" => " Deltas are approximate.",
+        "NONE" => " The reference cannot be aligned.",
+        _ => "",
+    };
+    format!("{basis} · {anchors} · {confidence} confidence.{caution}").into()
 }
 
 /// `Primary lap L8 1:13.644 · TL`, for the chip's accessible name.
@@ -136,7 +165,15 @@ impl Workspace {
         });
         let analysis = session.analysis();
         let comparison = analysis.and_then(|analysis| analysis.comparison());
-        let confidence = comparison.map(|comparison| comparison.confidence());
+        let sync = comparison.map(|comparison| {
+            let confidence = comparison.confidence();
+            let summary = sync_summary(
+                comparison.basis(),
+                comparison.alignment().gps_anchors,
+                confidence,
+            );
+            (confidence, summary)
+        });
         let can_swap = primary.is_some() && reference.is_some();
         let theme = cx.theme();
 
@@ -166,51 +203,73 @@ impl Workspace {
                 .child(
                     h_flex()
                         .flex_1()
+                        .min_w_0()
                         .justify_center()
-                        .gap_1()
-                        .child(role_chip(LapRole::Primary, primary))
+                        .gap_3()
                         .child(
-                            Button::new("header-swap")
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::Replace)
-                                .disabled(!can_swap)
-                                .accessibility_label("Swap primary and reference")
-                                .tooltip_with_action(
-                                    "Swap primary and reference",
-                                    &SwapRoles,
-                                    Some(WORKSPACE_CONTEXT),
+                            h_flex()
+                                .id("header-laps")
+                                .gap_0p5()
+                                .child(role_chip(LapRole::Primary, primary))
+                                .child(
+                                    Button::new("header-swap")
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(IconName::Replace)
+                                        .disabled(!can_swap)
+                                        .accessibility_label("Swap primary and reference")
+                                        .tooltip_with_action(
+                                            "Swap primary and reference",
+                                            &SwapRoles,
+                                            Some(WORKSPACE_CONTEXT),
+                                        )
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.app
+                                                .session
+                                                .update(cx, |session, cx| session.swap(cx));
+                                        })),
                                 )
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.app.session.update(cx, |session, cx| session.swap(cx));
-                                })),
+                                .child(role_chip(LapRole::Reference, reference)),
                         )
-                        .child(role_chip(LapRole::Reference, reference))
+                        .child(Separator::vertical().h_4())
                         .child(
-                            Select::new(&self.sync_select)
-                                .id("header-sync")
-                                .xsmall()
-                                .w_40()
-                                .accessibility_label("Reference sync")
-                                .title_prefix("Sync: ")
-                                .disabled(comparison.is_none()),
-                        )
-                        .when_some(confidence, |this, confidence| {
-                            let tag = match confidence {
-                                "HIGH" => Tag::success(),
-                                "LOW" => Tag::warning(),
-                                _ => Tag::secondary(),
-                            };
-                            this.child(
-                                div()
-                                    .id("header-confidence")
-                                    .test_support()
-                                    .aria_label(SharedString::from(format!(
-                                        "Sync confidence {confidence}"
-                                    )))
-                                    .child(tag.xsmall().child(confidence)),
-                            )
-                        }),
+                            h_flex()
+                                .id("header-sync-group")
+                                .gap_1()
+                                .child(
+                                    // The select fills its parent; the box
+                                    // fixes its width so the badge sits
+                                    // right beside it.
+                                    div().w_56().child(
+                                        Select::new(&self.sync_select)
+                                            .id("header-sync")
+                                            .xsmall()
+                                            .accessibility_label("Reference sync")
+                                            .title_prefix("Sync: ")
+                                            .disabled(comparison.is_none()),
+                                    ),
+                                )
+                                .when_some(sync, |this, (confidence, summary)| {
+                                    let tag = if super::status::approximate(confidence) {
+                                        Tag::warning().outline()
+                                    } else {
+                                        Tag::secondary()
+                                    };
+                                    let tooltip = summary.clone();
+                                    this.child(
+                                        div()
+                                            .id("header-confidence")
+                                            .test_support()
+                                            .aria_label(SharedString::from(format!(
+                                                "Sync confidence: {summary}"
+                                            )))
+                                            .tooltip(move |window, cx| {
+                                                Tooltip::new(tooltip.clone()).build(window, cx)
+                                            })
+                                            .child(tag.xsmall().child(confidence)),
+                                    )
+                                }),
+                        ),
                 )
                 .child(
                     h_flex()

@@ -2,9 +2,9 @@
 //! overlay layers, and the one place every workspace action is routed to
 //! the entity that owns it.
 
-mod header;
+pub mod header;
 pub mod layout;
-mod status;
+pub mod status;
 
 use std::rc::Rc;
 use std::time::Duration;
@@ -17,7 +17,8 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, Styled as _, Subscription, Task, TestSupportExt as _, Window, div,
+    ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, TestSupportExt as _,
+    Window, div,
 };
 use omatrack_trace::{Selection, Viewport};
 use omatrack_ui::theme::ThemeStatus;
@@ -212,6 +213,7 @@ impl Workspace {
             SessionEvent::AnalysisReady => {
                 self.forget_corner_focus(cx);
                 self.sync_strategies(window, cx);
+                self.place_initial_cursor(cx);
             }
             SessionEvent::PrimaryChanged => self.forget_corner_focus(cx),
             SessionEvent::ReferenceChanged | SessionEvent::Swapped => {}
@@ -251,6 +253,19 @@ impl Workspace {
         }
     }
 
+    /// A lap on screen always has a cursor: the first analysis puts it at
+    /// the lap start, where the video and HUD already are, so the traces,
+    /// inspector and status bar agree. A cursor that exists (a lap change,
+    /// a swap, a later analysis) is never moved.
+    fn place_initial_cursor(&mut self, cx: &mut Context<Self>) {
+        let has_lap = self.app.session.read(cx).analysis().is_some();
+        if has_lap && self.app.cursor.read(cx).fraction().is_none() {
+            self.app
+                .cursor
+                .update(cx, |cursor, cx| cursor.set_fraction(Some(0.0), cx));
+        }
+    }
+
     /// Offer exactly the strategies both laps support.
     fn sync_strategies(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let session = self.app.session.read(cx);
@@ -266,7 +281,12 @@ impl Workspace {
             }
             _ => None,
         };
-        let options = std::iter::once(SyncOption::automatic())
+        let resolved = session
+            .analysis()
+            .and_then(|analysis| analysis.comparison())
+            .map(|comparison| SharedString::from(comparison.basis().to_owned()))
+            .filter(|basis| !basis.is_empty() && current.is_none());
+        let options = std::iter::once(SyncOption::automatic_resolved(resolved))
             .chain(available.into_iter().map(SyncOption::strategy))
             .collect::<Vec<_>>();
         self.sync_select.update(cx, |select, cx| {

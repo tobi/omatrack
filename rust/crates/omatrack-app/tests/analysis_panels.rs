@@ -771,3 +771,76 @@ async fn real_run4_against_run1_fills_the_corners_table_and_the_map(cx: &mut Tes
         "the map painted the GPS lap"
     );
 }
+
+#[gpui_kit::test]
+async fn the_first_analysis_puts_the_cursor_at_lap_start_for_every_readout(
+    cx: &mut TestAppContext,
+) {
+    let scene = analysed(cx).await;
+    let cursor = scene.test.app.cursor.clone();
+    assert_eq!(
+        cx.update(|cx| cursor.read(cx).fraction()),
+        Some(0.0),
+        "the cursor starts where the video and HUD are: lap start"
+    );
+    cx.update_window(scene.handle, |_, window, _| {
+        let status = window.find("status-cursor").label().unwrap().to_string();
+        let inspector = window
+            .find("inspector-position")
+            .label()
+            .unwrap()
+            .to_string();
+        assert_eq!(status, inspector, "status bar and inspector agree");
+        assert!(status.starts_with("0 m"), "{status}");
+        let speed = window.find("inspector:speed").label().unwrap().to_string();
+        assert!(!speed.ends_with('—'), "a value at lap start: {speed}");
+    })
+    .unwrap();
+
+    // Clearing the cursor reads as "No cursor" in both places.
+    cx.update(|cx| cursor.update(cx, |cursor, cx| cursor.set_fraction(None, cx)));
+    cx.run_until_parked();
+    cx.update_window(scene.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("status-cursor").label(), Some("No cursor"));
+        assert_eq!(window.find("inspector-position").label(), Some("No cursor"));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn the_sync_confidence_sits_beside_the_selector_with_its_basis(cx: &mut TestAppContext) {
+    let scene = analysed(cx).await;
+    let (basis, anchors, confidence) = cx.update(|cx| {
+        let session = scene.test.app.session.read(cx);
+        let comparison = session.analysis().unwrap().comparison().unwrap().clone();
+        (
+            comparison.basis().to_owned(),
+            comparison.alignment().gps_anchors,
+            comparison.confidence().to_owned(),
+        )
+    });
+    let expected = omatrack_app::workspace::header::sync_summary(&basis, anchors, &confidence);
+    assert!(expected.contains(basis.as_str()) && expected.contains(confidence.as_str()));
+    cx.update_window(scene.handle, |_, window, _| {
+        let select = window.find("header-sync");
+        let badge = window.find("header-confidence");
+        assert!(badge.visible());
+        assert_eq!(
+            badge.label().map(str::to_owned),
+            Some(format!("Sync confidence: {expected}"))
+        );
+        // Grouped with the selector, not floated to the far edge.
+        let gap = badge.bounds().left() - select.bounds().right();
+        assert!(
+            gap >= px(0.) && gap < px(16.),
+            "badge beside the select: {gap:?}"
+        );
+        assert_eq!(
+            window.find("status-sync").label(),
+            Some(expected.as_ref()),
+            "the status bar says the same"
+        );
+    })
+    .unwrap();
+}

@@ -5,7 +5,8 @@
 //! other cursor observers), never the workspace or the static traces.
 
 use gpui_kit::component::{
-    ActiveTheme as _, Sizable as _, Theme, h_flex, spinner::Spinner, status_bar::StatusBar,
+    ActiveTheme as _, Sizable as _, Theme, h_flex, separator::Separator, spinner::Spinner,
+    status_bar::StatusBar, tooltip::Tooltip,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -16,7 +17,7 @@ use gpui_kit::{
 use omatrack_core::format_lap_time;
 use omatrack_core::session::Analysis;
 use omatrack_trace::scale::value_at_fraction;
-use omatrack_ui::theme::ThemeStatus;
+use omatrack_ui::theme::{ThemeFonts, ThemeStatus};
 use omatrack_ui::{DeltaSense, DeltaText};
 
 use crate::state::AppState;
@@ -84,6 +85,16 @@ fn lowest(values: &[f64], from: f64, to: f64) -> Option<f64> {
         .min_by(f64::total_cmp)
 }
 
+/// Whether deltas at `confidence` read as approximate.
+pub fn approximate(confidence: &str) -> bool {
+    matches!(confidence, "LOW" | "NONE")
+}
+
+/// `Δ`, or `Δ≈` for an approximate delta.
+fn delta_mark(approximate: bool) -> &'static str {
+    if approximate { "Δ≈" } else { "Δ" }
+}
+
 fn item(id: &'static str, label: SharedString, content: impl IntoElement) -> AnyElement {
     div()
         .id(id)
@@ -107,7 +118,15 @@ impl StatusView {
                     .child("No lap loaded"),
             )];
         };
-        let fraction = cursor.readout_fraction().unwrap_or(0.0);
+        let Some(fraction) = cursor.readout_fraction() else {
+            return vec![item(
+                "status-cursor",
+                "No cursor".into(),
+                div()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("No cursor"),
+            )];
+        };
         let mono = cx.theme().mono_font_family.clone();
         let text = cursor_text(analysis, fraction);
         let mut items = vec![item(
@@ -119,12 +138,20 @@ impl StatusView {
             let delta = comparison.time_delta_at(fraction);
             let finite = delta.is_finite().then_some(delta);
             let (label, _) = omatrack_ui::format_delta(finite, 3, DeltaSense::LowerIsBetter);
+            // Under LOW sync confidence every delta is approximate (a
+            // 12–15 m turn-in error is typical), and says so.
+            let approximate = approximate(comparison.confidence());
+            let spoken = if approximate {
+                format!("Delta about {label} s")
+            } else {
+                format!("Delta {label} s")
+            };
             items.push(item(
                 "status-delta",
-                format!("Delta {label} s").into(),
+                spoken.into(),
                 h_flex()
                     .gap_1()
-                    .child("Δ")
+                    .child(delta_mark(approximate))
                     .child(DeltaText::new(finite).unit("s")),
             ));
             if let Some(selection) = cursor.selection() {
@@ -154,7 +181,8 @@ impl StatusView {
                     format!("Range delta {label} s, {speeds}").into(),
                     h_flex()
                         .gap_1()
-                        .child("Range Δ")
+                        .child("Range")
+                        .child(delta_mark(approximate))
                         .child(DeltaText::new(finite).unit("s"))
                         .child(div().text_color(cx.theme().muted_foreground).child(speeds)),
                 ));
@@ -167,21 +195,35 @@ impl StatusView {
         let session = self.app.session.read(cx);
         let comparison = session.analysis()?.comparison()?.clone();
         let anchors = comparison.alignment().gps_anchors;
+        let confidence = comparison.confidence();
         let text: SharedString = if anchors > 0 {
-            format!(
-                "{} · {anchors} anchors · {}",
-                comparison.basis(),
-                comparison.confidence()
-            )
+            format!("{} · {anchors} anchors", comparison.basis())
         } else {
-            format!("{} · {}", comparison.basis(), comparison.confidence())
+            comparison.basis().to_owned()
         }
         .into();
-        Some(item(
-            "status-sync",
-            text.clone(),
-            div().text_color(cx.theme().muted_foreground).child(text),
-        ))
+        let spoken = super::header::sync_summary(comparison.basis(), anchors, confidence);
+        Some(
+            div()
+                .id("status-sync")
+                .role(Role::Status)
+                .test_support()
+                .aria_label(spoken.clone())
+                .tooltip(move |window, cx| Tooltip::new(spoken.clone()).build(window, cx))
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .child(div().text_color(cx.theme().muted_foreground).child(text))
+                        .child(
+                            div()
+                                .when(approximate(confidence), |this| {
+                                    this.text_color(cx.theme().warning)
+                                })
+                                .child(confidence),
+                        ),
+                )
+                .into_any_element(),
+        )
     }
 
     fn render_jobs(&self, cx: &App) -> Option<AnyElement> {
@@ -207,20 +249,39 @@ impl Render for StatusView {
         let theme_label = ThemeStatus::global(cx)
             .map(ThemeStatus::label)
             .unwrap_or_default();
+        let fonts = ThemeFonts::global(cx).cloned();
+        let appearance: SharedString = match &fonts {
+            Some(fonts) => format!("{theme_label} · {}", fonts.label()).into(),
+            None => theme_label,
+        };
+        let separator = || Separator::vertical().h_3().into_any_element();
         let mut bar = StatusBar::new().text_xs();
-        for element in self.render_cursor(cx) {
+        for (ix, element) in self.render_cursor(cx).into_iter().enumerate() {
+            if ix > 0 {
+                bar = bar.left(separator());
+            }
             bar = bar.left(element);
         }
-        bar.when_some(self.render_sync(cx), |bar, sync| bar.right(sync))
-            .when_some(self.render_jobs(cx), |bar, jobs| bar.right(jobs))
-            .right(
-                div()
-                    .id("theme-status")
-                    .role(Role::Status)
-                    .test_support()
-                    .aria_label(theme_label.clone())
-                    .text_color(cx.theme().muted_foreground)
-                    .child(theme_label),
-            )
+        let mut right = Vec::new();
+        right.extend(self.render_jobs(cx));
+        right.extend(self.render_sync(cx));
+        for element in right {
+            bar = bar.right(element).right(separator());
+        }
+        bar.right(
+            div()
+                .id("theme-status")
+                .role(Role::Status)
+                .test_support()
+                .aria_label(appearance.clone())
+                .when_some(fonts, |this, fonts| {
+                    let description = fonts.description();
+                    this.tooltip(move |window, cx| {
+                        Tooltip::new(description.clone()).build(window, cx)
+                    })
+                })
+                .text_color(cx.theme().muted_foreground)
+                .child(appearance),
+        )
     }
 }

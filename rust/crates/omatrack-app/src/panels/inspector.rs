@@ -21,7 +21,7 @@ use gpui_kit::{
 };
 use omatrack_core::session::Analysis;
 use omatrack_trace::scale::value_at_fraction;
-use omatrack_ui::{DeltaSense, DeltaText, LapRole, Readout, Swatch, format_value};
+use omatrack_ui::{DeltaSense, DeltaText, LapRole, Swatch, format_value};
 
 use crate::panels::{PanelKind, analysis_body, empty_state, panel_body};
 use crate::state::AppState;
@@ -48,6 +48,9 @@ pub struct InspectorChannel {
     delta: DeltaKind,
     /// Sampled at the nearest sample instead of interpolated (gear).
     stepped: bool,
+    /// Whether the primary carries any finite sample; a channel without one
+    /// is listed muted and marked "No data" instead of a row of dashes.
+    has_data: bool,
 }
 
 impl InspectorChannel {
@@ -57,6 +60,11 @@ impl InspectorChannel {
 
     pub fn title(&self) -> &SharedString {
         &self.title
+    }
+
+    /// Whether the primary lap has any value for this channel.
+    pub fn has_data(&self) -> bool {
+        self.has_data
     }
 
     fn value(&self, values: &[f64], fraction: f64) -> f64 {
@@ -109,6 +117,7 @@ fn channels(analysis: &Analysis) -> Vec<InspectorChannel> {
                         DeltaKind::Neutral
                     },
                     stepped: channel.key == "gear",
+                    has_data: channel.values.iter().any(|v| v.is_finite()),
                 }
             })
         })
@@ -194,19 +203,18 @@ impl InspectorPanel {
         cx: &App,
     ) -> impl IntoElement {
         let theme = cx.theme();
-        let unified = analysis.primary().unified();
+        // The status bar's cursor text, so the two never disagree.
         let position: SharedString = match probe {
-            Some(probe) => {
-                let metres = value_at_fraction(&unified.distance, probe.primary);
-                let seconds = value_at_fraction(&unified.time, probe.primary);
-                format!("{} m · {}", group_thousands(metres), clock(seconds)).into()
-            }
+            Some(probe) => crate::workspace::status::cursor_text(analysis, probe.primary),
             None => "No cursor".into(),
         };
         let delta = probe
             .filter(|_| !analysis.delta().is_empty())
             .map(|probe| value_at_fraction(analysis.delta(), probe.primary));
         let has_reference = analysis.reference().is_some();
+        let approximate = analysis
+            .comparison()
+            .is_some_and(|c| crate::workspace::status::approximate(c.confidence()));
         v_flex()
             .flex_shrink_0()
             .gap_1()
@@ -234,7 +242,7 @@ impl InspectorPanel {
                                     div()
                                         .text_xs()
                                         .text_color(theme.muted_foreground)
-                                        .child("Δt"),
+                                        .child(if approximate { "Δt≈" } else { "Δt" }),
                                 )
                                 .child(DeltaText::new(delta).unit("s")),
                         )
@@ -248,6 +256,7 @@ impl InspectorPanel {
         let role = |role: LapRole| {
             h_flex()
                 .w(rems(VALUE_REMS))
+                .flex_shrink_0()
                 .justify_end()
                 .gap_1()
                 .child(Swatch::new(role.color(theme)).xsmall())
@@ -256,44 +265,23 @@ impl InspectorPanel {
         h_flex()
             .text_xs()
             .text_color(theme.muted_foreground)
+            .gap_1()
             .child(div().flex_1().min_w_0().child("Channel"))
             .child(role(LapRole::Primary))
             .when(has_reference, |this| {
-                this.child(role(LapRole::Reference))
-                    .child(div().w(rems(VALUE_REMS)).flex().justify_end().child("Δ"))
+                this.child(role(LapRole::Reference)).child(
+                    div()
+                        .w(rems(VALUE_REMS))
+                        .flex_shrink_0()
+                        .text_right()
+                        .child("Δ"),
+                )
             })
     }
 }
 
 /// Width of one value column, rems.
 const VALUE_REMS: f32 = 5.25;
-
-fn group_thousands(metres: f64) -> String {
-    if !metres.is_finite() {
-        return format_value(None, 0).to_string();
-    }
-    let digits = format!("{:.0}", metres.abs());
-    let mut out = String::new();
-    for (ix, ch) in digits.chars().enumerate() {
-        if ix > 0 && (digits.len() - ix) % 3 == 0 {
-            out.push(',');
-        }
-        out.push(ch);
-    }
-    if metres < -0.5 {
-        out.insert(0, '-');
-    }
-    out
-}
-
-fn clock(seconds: f64) -> String {
-    if !seconds.is_finite() {
-        return format_value(None, 0).to_string();
-    }
-    let seconds = seconds.max(0.0);
-    let minutes = (seconds / 60.0).floor();
-    format!("{minutes:.0}:{:06.3}", seconds - minutes * 60.0)
-}
 
 impl gpui_kit::component::dock::BasePanel for InspectorPanel {
     fn panel_name(&self) -> &'static str {
@@ -368,22 +356,31 @@ impl Render for InspectorPanel {
                             .map(|values| channel.value(values, p.reference))
                     });
                     let delta = primary.zip(reference).map(|(p, r)| p - r);
-                    let unit = (!channel.unit.is_empty()).then(|| channel.unit.clone());
+                    // Units sit beside the channel name, so the value columns
+                    // hold bare right-aligned numbers and a missing value is
+                    // a lone muted dash.
                     let value = |value: Option<f64>| {
-                        let readout = Readout::number(value, channel.decimals);
-                        h_flex()
+                        let finite = value.filter(|v| v.is_finite());
+                        div()
                             .w(rems(VALUE_REMS))
-                            .justify_end()
-                            .child(match &unit {
-                                Some(unit) => readout.unit(unit.clone()),
-                                None => readout,
+                            .flex_shrink_0()
+                            .text_right()
+                            .whitespace_nowrap()
+                            .font_family(theme.mono_font_family.clone())
+                            .when(finite.is_none(), |this| {
+                                this.text_color(theme.muted_foreground)
                             })
+                            .child(format_value(finite, channel.decimals))
                     };
-                    let spoken = SharedString::from(format!(
-                        "{}: {}",
-                        channel.title,
-                        format_value(primary, channel.decimals)
-                    ));
+                    let spoken = SharedString::from(if channel.has_data {
+                        format!(
+                            "{}: {}",
+                            channel.title,
+                            format_value(primary, channel.decimals)
+                        )
+                    } else {
+                        format!("{}: no data", channel.title)
+                    });
                     h_flex()
                         .id(ElementIdFor::channel(&channel.key))
                         .test_support()
@@ -394,12 +391,41 @@ impl Render for InspectorPanel {
                         .border_b_1()
                         .border_color(theme.border.opacity(0.5))
                         .child(
-                            div()
+                            h_flex()
                                 .flex_1()
                                 .min_w_0()
-                                .truncate()
-                                .text_color(theme.foreground)
-                                .child(channel.title.clone()),
+                                .gap_1()
+                                .items_baseline()
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_color(if channel.has_data {
+                                            theme.foreground
+                                        } else {
+                                            theme.muted_foreground
+                                        })
+                                        .child(channel.title.clone()),
+                                )
+                                .when(!channel.unit.is_empty(), |this| {
+                                    this.child(
+                                        div()
+                                            .flex_shrink_0()
+                                            .text_xs()
+                                            .text_color(theme.muted_foreground)
+                                            .child(channel.unit.clone()),
+                                    )
+                                })
+                                .when(!channel.has_data, |this| {
+                                    this.child(
+                                        div()
+                                            .flex_shrink_0()
+                                            .text_xs()
+                                            .italic()
+                                            .text_color(theme.muted_foreground)
+                                            .child("No data"),
+                                    )
+                                }),
                         )
                         .child(value(primary))
                         .when(has_reference, |this| {
@@ -421,8 +447,13 @@ impl Render for InspectorPanel {
                                     .font_family(theme.mono_font_family.clone())
                                     .into_any_element(),
                             };
-                            this.child(value(reference))
-                                .child(h_flex().w(rems(VALUE_REMS)).justify_end().child(delta))
+                            this.child(value(reference)).child(
+                                h_flex()
+                                    .w(rems(VALUE_REMS))
+                                    .flex_shrink_0()
+                                    .justify_end()
+                                    .child(delta),
+                            )
                         })
                 })
                 .collect()
@@ -464,18 +495,4 @@ impl ElementIdFor {
 /// rebuild it by name). Called once from [`crate::panels::init`].
 pub fn init(cx: &mut App) {
     crate::panels::register(PanelKind::Inspector, cx);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn positions_read_as_grouped_metres_and_a_lap_clock() {
-        assert_eq!(group_thousands(1234.4), "1,234");
-        assert_eq!(group_thousands(987.0), "987");
-        assert_eq!(group_thousands(1_234_567.0), "1,234,567");
-        assert_eq!(clock(42.31), "0:42.310");
-        assert_eq!(clock(73.644), "1:13.644");
-    }
 }

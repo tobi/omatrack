@@ -22,7 +22,8 @@ fn main_window_shows_title_dock_and_status_with_the_built_in_theme(cx: &mut Test
 
         let status = window.find("theme-status");
         assert!(status.visible());
-        assert_eq!(status.label(), Some("Built-in dark"));
+        // The theme status names the palette and the interface fonts.
+        assert_eq!(status.label(), Some("Built-in dark · Inter · Geist Mono"));
 
         // The dock area fills the space between title bar and status bar.
         let dock = window.find("workspace-dock");
@@ -42,6 +43,17 @@ fn main_window_shows_title_dock_and_status_with_the_built_in_theme(cx: &mut Test
         let library = window.find("library-panel");
         assert!(library.visible());
         assert!(library.bounds().right() <= window.find("traces-panel").bounds().left());
+
+        // The right dock stacks the tables, the map and the inspector: the
+        // map is on screen by default, not a tab behind the inspector.
+        let corners = window.find("corners-panel");
+        let map = window.find("map-panel");
+        let inspector = window.find("inspector-panel");
+        assert!(corners.visible() && map.visible() && inspector.visible());
+        assert!(map.bounds().top() >= corners.bounds().bottom());
+        assert!(inspector.bounds().top() >= map.bounds().bottom());
+        assert!(map.bounds().size.height > px(100.));
+        assert!(corners.bounds().size.height > map.bounds().size.height);
     })
     .unwrap();
 
