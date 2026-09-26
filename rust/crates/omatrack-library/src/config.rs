@@ -344,15 +344,24 @@ impl ChannelStyle {
             key,
             "delta" | "clutch" | "driver_throttle" | "gps_lat" | "gps_lon"
         ) && !key.starts_with("raw:");
+        // Light pedal fills so the reference outline reads through them; the
+        // Δ gain/loss fill is that lane's message. Mirrors
+        // `omatrack_trace::scene::{PEDAL_FILL, DELTA_FILL}`.
         let fill_opacity = match key {
-            "throttle" | "brake" | "clutch" => 0.28,
-            "delta" => 0.20,
+            "throttle" | "brake" | "clutch" => 0.16,
+            "delta" => 0.42,
             _ => 0.0,
         };
+        // Relative lane heights (FIT weights). Mirrors
+        // `omatrack_trace::layout::default_height_percent`.
         let height_percent = match key {
-            "speed" => 50.0,
-            "throttle" | "brake" => 30.0,
-            _ => 5.0,
+            "speed" => 34.0,
+            "throttle" | "brake" => 24.0,
+            "delta" => 20.0,
+            "steering" => 16.0,
+            "gear" => 9.0,
+            _ if key.to_ascii_lowercase().contains("rpm") => 14.0,
+            _ => 12.0,
         };
         Self {
             visible,
