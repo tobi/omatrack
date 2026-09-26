@@ -260,9 +260,7 @@ fn focusing_a_moved_panel_opens_its_current_dock(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn a_narrow_window_closes_the_library_so_the_traces_keep_half_the_width(
-    cx: &mut TestAppContext,
-) {
+fn a_narrow_window_closes_the_library_so_the_traces_keep_half_the_width(cx: &mut TestAppContext) {
     let sandbox = common::Sandbox::new();
     let test = common::start(cx, sandbox.options());
     let size = gpui_kit::size(gpui_kit::px(1280.), gpui_kit::px(800.));
@@ -310,6 +308,9 @@ fn a_narrow_window_closes_the_library_so_the_traces_keep_half_the_width(
     cx.run_until_parked();
     cx.update(|cx| {
         let area = test.workspace.read(cx).dock_area().read(cx);
-        assert!(area.is_dock_open(DockPlacement::Left), "the user's choice stays");
+        assert!(
+            area.is_dock_open(DockPlacement::Left),
+            "the user's choice stays"
+        );
     });
 }
