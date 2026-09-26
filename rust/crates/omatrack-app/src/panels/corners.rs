@@ -107,7 +107,7 @@ impl CornerLine {
             notes: row
                 .notes
                 .iter()
-                .map(|note| (note.severity, note.text.clone().into()))
+                .map(|note| (note.severity, note.sentence().into()))
                 .collect(),
         }
     }
