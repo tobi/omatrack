@@ -92,7 +92,7 @@ crates stay GPUI-free.
 | [omatrack-trace](rust/crates/omatrack-trace) | **[done]** decimate, scales, layout, mesh, lanes, overlay, `TraceStack`, `trace_bench`, corner ruler, track map (slope and heat modes), damper strip | Trace math and trace/map/damper elements | Session state, parsing |
 | [mpv-player](rust/crates/mpv-player) | **[done]** | libmpv 2.5 player + `VideoView` (section 9) | Any Omatrack type |
 | [omatrack-ui](rust/crates/omatrack-ui) | **[done]** theme + bundled Inter / Geist Mono, type scale (`TypeScale`, tabular figures), `RoleChip`, `Readout`, `Swatch`, `LapStrip`, `VideoHud`, `DeltaText` | Omarchy loader, domain components on tokens | What the kit provides |
-| [omatrack-app](rust/crates/omatrack-app) (bin `omatrack2`) | **[done]** shell, state, workspace, panels (incl. Where the time goes), actions, keymap, `sync` (video), `preferences`, `dialogs` (metadata, `TRACK.yml`); **[plan]** e2e | Entities, workspace, panels, palette, video sync | Analysis, format branches |
+| [omatrack-app](rust/crates/omatrack-app) (bin `omatrack2`) | **[done]** shell, state, workspace, panels (incl. the Laps sidebar and Where the time goes), actions, keymap, `sync` (video), `preferences`, `dialogs` (metadata, `TRACK.yml`); **[plan]** e2e | Entities, workspace, panels, palette, video sync | Analysis, format branches |
 
 Waves: 1 foundations **[done]**; 2 app backbone + domain components **[done]**;
 3 panels (traces, video sync, corners/laps/inspector/channels/map,
@@ -103,7 +103,7 @@ preferences/metadata/`TRACK.yml`) **[done]**; 4 integration, design review
 ### 4.2 Data flow
 
 ```text
-Location::scan -> index cache -> LibrarySnapshot (Track>Date>Session>Laps) -> Library panel
+Location::scan -> index cache -> LibrarySnapshot (Track>Date>Session>Laps) -> Library + Laps panels
 Location::open -> Recording -> mapping -> laps -> unify: UnifiedLap @ 50 Hz
   -> session::load_lap -> LoadedLap {Arc<UnifiedLap>, laps, VideoBinding, TrackLayout?,
                                      overlay groups, lap strip cells}
@@ -351,7 +351,7 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
 
 - **Kit first.** `TitleBar`; `DockArea` + `Panel`s (layout in
   `workspace.layout`, versioned, default on load error with a notification,
-  Reset layout); `Sidebar` + `Tree` library; `DataTable` for Corners and Laps;
+  Reset layout); `Sidebar` + `Tree` library; `DataTable` for Corners;
   `Command` palette in a `Dialog`; `StatusBar`; notifications (errors
   persistent, info autohide); a full-window Preferences screen (`Sidebar`
   section list + `GroupBox` cards, replacing the dock area and status bar
@@ -398,6 +398,20 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   or more corners are a quiet bracket line above the rows. Zones shade every
   lane as quiet columns (`muted` at low alpha, in the overlay); edges show
   only as grips while editing.
+- **Left dock: [Laps | Library]** (layout v5). The **Laps sidebar**
+  (`panels::laps`, `PanelKind::Laps`) is the default left surface: the
+  primary's event (its track and day in the `LibrarySnapshot`, plus the
+  reference's recording when it comes from elsewhere), one group per
+  recording in catalog order (driver name, `N timed laps, best m:ss.sss`, a
+  lap-time trend over `counts_for_best` laps with the best dotted, painted
+  through `omatrack_trace::mesh`). Timed laps list lap, time, a gap bar
+  scaled to that group's own best-to-worst spread, and the gap via
+  `format_delta` (`Best` on the best); out / in / pit / partial laps wait
+  behind `Show out and in laps (N)` unless they hold a role. Role laps are
+  filled with the role badge; groups without a role start collapsed. The
+  Library tree is the tab beside it, reached by Ctrl+1, Ctrl+O, the palette
+  `Browse library` and the sidebar's empty state. The Laps table on the
+  right is gone (one lap list, not two).
 - **gpui-omarchy was evaluated and rejected**: it disables gpui-component,
   lacks key components, and its theme conflicts with gpui-component's.
 - **State** ([entity.md](.agents/skills/gpui-kit/references/gpui/entity.md)):
@@ -554,7 +568,7 @@ palette items. See [action.md](.agents/skills/gpui-kit/references/gpui/action.md
 | Keys | Action |
 |---|---|
 | ctrl-k / ctrl-, / ctrl-o / ctrl-q | Palette / Preferences / Open folder / Quit |
-| ctrl-b / ctrl-j | Toggle library / right dock ([Time lost, Corners, Laps, Channels, Map, Inspector] tabs) |
+| ctrl-b / ctrl-j | Toggle left dock ([Laps, Library]) / right dock ([Time lost, Corners, Channels, Map, Inspector] tabs) |
 | ctrl-1 … ctrl-6 | Focus Library / Traces / Video / Corners / Laps / Map |
 | space; left / right | Play/pause; ±2 s |
 | m / s / p | Mute / 0.25x / continuous playback |
@@ -564,7 +578,7 @@ palette items. See [action.md](.agents/skills/gpui-kit/references/gpui/action.md
 | h / j | Previous / next corner (no wrap) |
 | = / - / ctrl-0 (ctrl-= / ctrl--) | Zoom in / out / reset |
 | [ / ] / t | Previous / next lap / toggle Distance-Time axis |
-| enter / alt-enter (Library) | Set primary / reference |
+| up / down; enter / alt-enter (Library, Laps) | Move; set primary / reference (Laps: enter on a group or disclosure opens it) |
 | ctrl-s / escape (resize, corner edit) | Save / cancel |
 | escape; up / down (Preferences) | Back to the workspace (focus restored); previous / next section |
 
@@ -580,6 +594,12 @@ put); clicking the lap the role already holds moves the cursor to the lap
 start; right-click (or alt-click) sets the lap as reference. Each role's
 selected cell is filled in its role colour. Swap is `x`, the palette, or the
 button on the filmstrip gutter.
+
+Laps sidebar: the same rules. A click sets the lap for its group's role
+(the reference when the group holds only the reference, else the
+primary); right-click or alt-click sets the reference. The footer names
+Enter / Alt+Enter for the lap under the keyboard cursor (a focus ring,
+shown only while the panel has focus).
 
 ## 12. Testing and verification
 
