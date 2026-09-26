@@ -15,11 +15,17 @@
 //! can say where the colors came from. Views that draw theme colors observe
 //! `Theme` with `cx.observe_global::<Theme>`.
 //!
+//! Fonts: [`install`] also registers the bundled Inter and Geist Mono and
+//! names the interface and monospace families on every theme it applies —
+//! the desktop's fontconfig choice when one is configured and installed,
+//! else the bundled pair ([`fonts`], [`ThemeFonts`]).
+//!
 //! Failure policy: a missing palette means "not on Omarchy" and restores the
 //! built-in theme; a palette that exists but cannot be parsed keeps whatever
 //! theme is showing and logs a warning, so a half-written file never flashes
 //! the application to another look.
 
+mod fonts;
 mod palette;
 mod watch;
 
@@ -30,9 +36,13 @@ use std::{
     time::Duration,
 };
 
-use gpui_kit::component::{Theme, ThemeMode, ThemeRegistry};
+use gpui_kit::component::{Theme, ThemeConfig, ThemeMode, ThemeRegistry};
 use gpui_kit::{App, Global, SharedString, Task};
 
+pub use fonts::{
+    BUNDLED_MONO_FAMILY, BUNDLED_UI_FAMILY, ConfiguredFonts, FontFamily, FontOrigin, FontSource,
+    ThemeFonts, parse_fontconfig,
+};
 pub use palette::{OmarchyPalette, ThemeLoadError};
 use watch::{PaletteWatcher, WatchedFile};
 
@@ -50,15 +60,30 @@ pub struct ThemeSource {
     /// State `current` directories, in priority order.
     state_current: Vec<PathBuf>,
     legacy_current: Option<PathBuf>,
+    fonts: FontSource,
 }
 
 impl ThemeSource {
     /// The real desktop, from `$HOME` and `$XDG_STATE_HOME`; see
     /// [`ThemeSource::system_from`].
+    /// The user's fontconfig choice ([`FontSource::system`]) picks the
+    /// fonts.
     pub fn system() -> Self {
         let home = std::env::var_os("HOME").map(PathBuf::from);
         let state_home = std::env::var_os("XDG_STATE_HOME").map(PathBuf::from);
-        Self::system_from(home, state_home)
+        Self::system_from(home, state_home).fonts(FontSource::system())
+    }
+
+    /// Where the font choice is read; bundled fonts without one (the
+    /// default).
+    pub fn fonts(mut self, fonts: FontSource) -> Self {
+        self.fonts = fonts;
+        self
+    }
+
+    /// Whether any Omarchy location is configured (else nothing is watched).
+    fn has_palette_locations(&self) -> bool {
+        !self.state_current.is_empty() || self.legacy_current.is_some()
     }
 
     /// The Omarchy locations for a given `home` and `$XDG_STATE_HOME`:
@@ -82,6 +107,7 @@ impl ThemeSource {
         Self {
             state_current,
             legacy_current: home.map(|home| home.join(".config/omarchy/current")),
+            fonts: FontSource::none(),
         }
     }
 
@@ -91,7 +117,8 @@ impl ThemeSource {
         Self::system_from(Some(home.as_ref().to_path_buf()), None)
     }
 
-    /// No palette at all: the built-in theme, and nothing is watched.
+    /// No palette at all: the built-in theme with the bundled fonts, and
+    /// nothing is watched.
     pub fn none() -> Self {
         Self::default()
     }
@@ -241,7 +268,8 @@ enum Applied {
     Palette(OmarchyPalette, PathBuf),
 }
 
-/// Apply the palette from `source` and follow it until the next `install`.
+/// Apply the palette from `source` and follow it until the next `install`;
+/// register the bundled fonts and choose the families first.
 ///
 /// Requires `gpui_kit::init` first. The first palette is read synchronously
 /// so the first frame already has the right colors; later reloads parse on
@@ -250,8 +278,9 @@ pub fn install(source: ThemeSource, cx: &mut App) {
     if cx.has_global::<ThemeWatcher>() {
         cx.remove_global::<ThemeWatcher>();
     }
+    fonts::install_fonts(&source.fonts, cx);
     // Register before reading so a change during startup is not missed.
-    let watcher = if source == ThemeSource::none() {
+    let watcher = if !source.has_palette_locations() {
         None
     } else {
         match PaletteWatcher::new(source.watched_files()) {
@@ -310,8 +339,19 @@ fn apply(previous: Option<Applied>, discovery: ThemeDiscovery, cx: &mut App) -> 
     next
 }
 
+/// `config` with the chosen font families named on it, so every theme
+/// change (and gpui-component's own font probes) keeps them.
+fn with_fonts(mut config: ThemeConfig, cx: &App) -> Rc<ThemeConfig> {
+    let fonts = ThemeFonts::global(cx)
+        .cloned()
+        .unwrap_or_else(ThemeFonts::bundled);
+    config.font_family = Some(fonts.ui().name().clone());
+    config.mono_font_family = Some(fonts.mono().name().clone());
+    Rc::new(config)
+}
+
 fn apply_palette(palette: &OmarchyPalette, dir: &Path, cx: &mut App) {
-    let config = Rc::new(palette.theme_config());
+    let config = with_fonts(palette.theme_config(), cx);
     let mode = palette.mode();
     cx.set_global(ThemeStatus {
         name: palette.name().clone(),
@@ -332,8 +372,11 @@ fn apply_palette(palette: &OmarchyPalette, dir: &Path, cx: &mut App) {
 
 fn apply_built_in(cx: &mut App) {
     let registry = ThemeRegistry::global(cx);
-    let dark = registry.default_dark_theme().clone();
-    let light = registry.default_light_theme().clone();
+    let (dark, light) = (
+        (**registry.default_dark_theme()).clone(),
+        (**registry.default_light_theme()).clone(),
+    );
+    let (dark, light) = (with_fonts(dark, cx), with_fonts(light, cx));
     cx.set_global(ThemeStatus {
         name: dark.name.clone(),
         mode: ThemeMode::Dark,

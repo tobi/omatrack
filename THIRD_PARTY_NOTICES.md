@@ -4,7 +4,8 @@ Omatrack's MIT license covers the application code and original project
 assets. The components below retain their own terms. Versions and revisions
 are those pinned in `rust/Cargo.toml` and `rust/Cargo.lock`; licenses were read
 from each crate's published manifest and license files. No third-party source
-is copied into this repository.
+is copied into this repository; the only bundled third-party assets are the
+fonts listed under [Bundled fonts](#bundled-fonts).
 
 ## Statically linked Rust crates
 
@@ -40,6 +41,25 @@ Unlicense (dual with MIT), Unicode-3.0 (ICU data crates), bzip2-1.0.6
 only in the macOS and Windows platform graphs). For the exact list of a build,
 run `cargo metadata --locked` (or a tool such as `cargo about`) in `rust/`;
 this file does not reproduce every license text.
+
+## Bundled fonts
+
+Embedded into the `omatrack2` binary from `rust/crates/omatrack-ui/assets/fonts`
+and used when the desktop configures no UI or monospace font of its own. The
+files are the upstream static builds, unmodified.
+
+- **Inter** 4.1 (`Inter-Regular`, `-Medium`, `-SemiBold`, `-Bold`) —
+  Copyright (c) 2016 The Inter Project Authors
+  (<https://github.com/rsms/inter>). SIL Open Font License 1.1; full text in
+  `rust/crates/omatrack-ui/assets/fonts/Inter-OFL.txt`.
+- **Geist Mono** 1.7.0 (`GeistMono-Regular`, `-Medium`, `-SemiBold`) —
+  Copyright 2024 The Geist Project Authors
+  (<https://github.com/vercel/geist-font>). SIL Open Font License 1.1; full
+  text in `rust/crates/omatrack-ui/assets/fonts/GeistMono-OFL.txt`.
+
+The OFL permits bundling and embedding the fonts with software; the fonts
+themselves may not be sold on their own, and the license texts travel with
+them.
 
 ## Dynamically linked system libraries
 
