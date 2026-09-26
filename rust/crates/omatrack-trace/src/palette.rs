@@ -358,4 +358,26 @@ mod tests {
         assert_eq!(ColorMode::Lap.toggled(), ColorMode::Channel);
         assert_eq!(ColorMode::Channel.toggled(), ColorMode::Lap);
     }
+
+    #[gpui_kit::test]
+    fn legend_values_follow_the_colour_mode(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let theme = cx.update(|cx| Theme::global(cx).clone());
+        let style = LaneStyle::default();
+        // Lap colours: each lap's value in its role.
+        let lap = TracePalette::from_theme(&theme);
+        assert_eq!(lap.channel_colors("speed", true, &style).0, lap.primary);
+        assert_eq!(lap.reference_value("speed", true, &style), lap.reference);
+        // Channel colours: the primary's in the channel hue, the
+        // reference's plainly in the foreground (its lap label says whose).
+        let channel = lap.clone().with_mode(ColorMode::Channel);
+        assert_eq!(
+            channel.channel_colors("brake", true, &style).0,
+            channel.channel_hue("brake")
+        );
+        assert_eq!(
+            channel.reference_value("brake", true, &style),
+            channel.foreground
+        );
+    }
 }
