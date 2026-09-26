@@ -115,12 +115,13 @@ the renderer, displayed percentages, edits and resets consume that same grouping
 The stepper accepts 1–100% of the
 visible trace area in 1% increments. Editing it switches off FIT so the chosen
 percentage is exact; configurations above 100% remain available by vertical
-scrolling. The toolbar **FIT** toggle switches between these modes, persisted as
+scrolling. The **FIT** toggle (the traces' `…` tools menu in the control row) switches between these modes, persisted as
 `trace.fit_channels` in `omatrack.yml` (default true). With manual overflow,
 unmodified vertical wheel/trackpad motion scrolls and the right-edge scrollbar
 reaches the last lane; Ctrl/Shift+wheel still zooms and horizontal motion still
-pans. The ruler and distance axis stay fixed. Brake uses Overlay by default to preserve the pedal overlay.
-Speed, pedals, and Gear default to 50%, 30%, and 5% respectively.
+pans. The ruler and distance axis stay fixed. Brake has its own lane by default;
+`channels.brake.combine_with_previous` overlays it on throttle.
+Speed, each pedal, Gear and the gap lane default to 34%, 16%, 12% and 20% (FIT weights; speed is boosted 1.35x).
 Width accepts 0.5–4 px; fill accepts 0–100%. Values are validated in C++, exposed
 as typed model roles, and saved through the existing debounced `omatrack.yml`
 writer. Raw-channel appearance persists; sidecars retain their existing
@@ -128,7 +129,7 @@ host-local settings lifetime. No new configuration file is introduced.
 
 ## Trace height editing
 
-The toolbar's **Resize** action enters a dedicated mode like corner editing.
+The tools menu's **Resize lanes…** action enters a dedicated mode like corner editing.
 Every sample-lane divider gets a visible grip and the lanes show their current
 height. Dragging beyond the next lane's minimum pushes through further
 neighbours; a lane can occupy nearly the entire pane. **Save** / Ctrl+S keeps

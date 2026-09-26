@@ -324,7 +324,7 @@ so a pin bump regenerates every cache.
   accuracy. `video.muted`, `video.hud_position` (the stage band's place,
   normalized, written at drag end) persist. Opening a video docks it; nothing
   enters fullscreen by itself.
-- **Fullscreen stage** (F or the toolbar button): the video panel renders
+- **Fullscreen stage** (F or the control row's button): the video panel renders
   over the whole window on black in place of the title bar, filmstrip row,
   docks and status bar. The dock layout is never touched (no dock zoom); the
   window enters fullscreen best effort. `stage::plan` lays one centred
@@ -339,8 +339,10 @@ so a pin bump regenerates every cache.
   dial with P/R notches, gear and speed with their deltas, gap bar gated as
   above, draggable, HUD toggle) and the delta lane (P/R labels over their own
   pictures, centred Δ as the largest figure, gain/loss coloured, muted with
-  `≈` under LOW confidence). Docked, the Δ, speed difference and gap ride
-  inline in the video bar, never over the pictures.
+  `≈` under LOW confidence). Docked, the Δ is the gap lane's figure in the
+  traces right below; the control row says only where the cursor is
+  (`Cursor at 368 m, Turn 1`, `straight after T3` between corners) and the
+  along-track gap when gated as above, never over the pictures.
 
 ## 7. UI architecture rules (GPUI)
 
@@ -380,6 +382,22 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   `LapStrip` cells. Panels carry no lap strip of their own. It is
   re-homeable: a fullscreen surface renders the same entity
   (`Workspace::filmstrip()`), never a second strip.
+- **The centre** (video over traces) has no panel title bars
+  (`PanelKind::has_title_bar`) and **one control row**, under the
+  pictures: a filled play disc, `0.25×`, `Per lap | Continuous`,
+  `Distance | Time`, then right-aligned the cursor place and the chips that
+  need attention (a degraded sync, identity), and small icon buttons: mute,
+  video layout (and reference pacing), fullscreen and a `…` tools menu (FIT,
+  Resize lanes, Edit corners, zoom). Every control dispatches the action of
+  its key. The traces carry no toolbar; a range selection's statistics
+  float at the top right of the lanes.
+- **Corner ruler**: labels only, centred over their zones on two staggered
+  rows by corner index (T1 T3 T5 above, T2 T4 below), one form throughout
+  (full names, else short forms), never overlapping. The focused corner,
+  else the one under the cursor, is a filled chip. Complexes that group two
+  or more corners are a quiet bracket line above the rows. Zones shade every
+  lane as quiet columns (`muted` at low alpha, in the overlay); edges show
+  only as grips while editing.
 - **gpui-omarchy was evaluated and rejected**: it disables gpui-component,
   lacks key components, and its theme conflicts with gpui-component's.
 - **State** ([entity.md](.agents/skills/gpui-kit/references/gpui/entity.md)):
@@ -404,12 +422,21 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
 - **Preferences** writes go through the Preferences entity: debounced, atomic,
   off-thread, flushed on quit.
 - **Primary = active lap, reference = compare lap**, fixed colours everywhere.
+- **Lanes**: by default the pinned gap lane, Speed (tall), Throttle, Brake
+  (its own lane; `combine_with_previous` overlays it) and Gear. Steering,
+  RPM and every other channel are opt in (Channels panel,
+  `channels.<key>.visible`).
 - **Lane legends**: the chrome column is `omatrack_trace::CHROME_REMS` wide
-  (lanes, damper strip and toolbar rows share it). Line 1 is title + unit;
-  below it, P / R / Δ sit in fixed-width tabular columns on the same spines
-  in every lane, with a P R Δ key in the axis row. The Δt lane states
-  `In view` and `Cursor`. A shared lane's title and two rows fit
-  `MIN_LANE_HEIGHT`. Nothing clips (headless-tested).
+  (lanes, damper strip and the ruler row share it). Line 1 is title (medium)
+  + unit (muted); below it, P / R / Δ sit in fixed-width tabular columns on
+  the same spines in every lane (P in the primary role, R in the reference
+  role, Δ muted), with a P R Δ key in the ruler row; the channel column
+  (a line swatch) exists only while a lane is shared. The gap lane
+  (`Gap to R`) is the only big figure: the gap at the cursor (idle: the
+  change in view) in gain/loss, over `s at cursor, ends +2.44` (`… in view`
+  when zoomed); under LOW confidence it reads `≈` and muted. A shared
+  lane's title and two rows fit `MIN_LANE_HEIGHT`. Nothing clips
+  (headless-tested).
 
 ## 8. Trace rendering performance contract
 
@@ -502,7 +529,7 @@ dependency.
   `success`; loss = `danger`; grid `border`/`muted`; labels
   `muted_foreground`; extra channels `chart_1..5`;
   `channels.<key>.color`/`reference_color` override. A channel sharing a
-  lane (brake under throttle) draws its primary in its chart hue and its
+  lane (brake overlaid on throttle) draws its primary in its chart hue and its
   reference in the reference role, both quieter (60% over the background).
   Legend and inspector values always carry the lap role colour. success /
   danger mean only Δ, never a pedal. With no Omarchy palette the built-in
