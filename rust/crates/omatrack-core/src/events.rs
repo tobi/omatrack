@@ -25,6 +25,14 @@ pub const LIFT_TO_THROTTLE: f64 = 0.80;
 /// A new gear counts once it has been held this long, seconds (a logger's
 /// gear channel can flicker through a shift).
 pub const GEAR_HOLD_SECONDS: f64 = 0.2;
+/// Shifts in one direction no further apart than this are one shift
+/// sequence (a braking zone's run of downshifts), reported once at its first
+/// shift with the gear it ends in, seconds.
+pub const SHIFT_SEQUENCE_SECONDS: f64 = 1.5;
+/// A primary brake onset is paired with the reference's nearest onset
+/// within this distance along the track, metres; further apart they are
+/// different brake points.
+pub const BRAKE_PAIR_METRES: f64 = 60.0;
 
 /// What happened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -77,6 +85,10 @@ pub struct LapEvent {
     pub gear: Option<i32>,
     /// The corner zone id of a note.
     pub corner: Option<String>,
+    /// A primary brake onset's distance from the reference's paired onset
+    /// (the nearest within [`BRAKE_PAIR_METRES`]), metres: + the primary
+    /// brakes later along the track. `None` unpaired or for other kinds.
+    pub brake_offset: Option<f64>,
 }
 
 /// One event of [`detect`], on its own lap's fraction axis.
@@ -153,10 +165,14 @@ pub fn detect(lap: &UnifiedLap) -> Vec<Detected> {
     }
 
     // Gear changes: a new (non-neutral) gear held for GEAR_HOLD_SECONDS,
-    // placed where it was first engaged.
+    // placed where it was first engaged; a run of shifts one way within
+    // SHIFT_SEQUENCE_SECONDS of each other is one event.
     if lap.gear.len() == count {
         let mut current: Option<i32> = None;
         let mut candidate: Option<(i32, usize)> = None;
+        // The open shift sequence: its event's index and its last shift's
+        // time.
+        let mut sequence: Option<(usize, f64)> = None;
         for (i, &gear) in lap.gear.iter().enumerate() {
             if gear <= 0 {
                 candidate = None;
@@ -178,15 +194,29 @@ pub fn detect(lap: &UnifiedLap) -> Vec<Detected> {
                 }
             };
             if time(i) - time(start) + 1e-9 >= GEAR_HOLD_SECONDS {
-                out.push(Detected {
-                    kind: if gear > held {
-                        LapEventKind::Upshift
-                    } else {
-                        LapEventKind::Downshift
-                    },
-                    fraction: fraction_of(start, count),
-                    gear: Some(gear),
-                });
+                let kind = if gear > held {
+                    LapEventKind::Upshift
+                } else {
+                    LapEventKind::Downshift
+                };
+                // A shift soon after one the same way continues its
+                // sequence: the sequence keeps its start, takes the gear.
+                match sequence {
+                    Some((ix, at))
+                        if out[ix].kind == kind && time(start) - at <= SHIFT_SEQUENCE_SECONDS =>
+                    {
+                        out[ix].gear = Some(gear);
+                        sequence = Some((ix, time(start)));
+                    }
+                    _ => {
+                        sequence = Some((out.len(), time(start)));
+                        out.push(Detected {
+                            kind,
+                            fraction: fraction_of(start, count),
+                            gear: Some(gear),
+                        });
+                    }
+                }
                 current = Some(gear);
                 candidate = None;
             }
@@ -231,6 +261,7 @@ pub fn analysis_events(analysis: &Analysis) -> Vec<LapEvent> {
             label: label(detected.kind, detected.gear),
             gear: detected.gear,
             corner: None,
+            brake_offset: None,
         });
     };
     for detected in detect(primary) {
@@ -242,25 +273,58 @@ pub fn analysis_events(analysis: &Analysis) -> Vec<LapEvent> {
             push(detected, EventLap::Reference, fraction);
         }
     }
+    pair_brake_onsets(&mut events);
+    // One note event per corner, its notes in registry order. The
+    // placeholder a corner without findings gets ("Closely matched") marks
+    // nothing.
     for row in analysis.rows() {
-        for note in &row.notes {
-            let fraction = row.zone.start;
-            if !fraction.is_finite() {
-                continue;
-            }
-            events.push(LapEvent {
-                kind: LapEventKind::Note,
-                lap: EventLap::Primary,
-                fraction,
-                distance: distance_at(fraction),
-                label: format!("{}: {}", row.zone.name, note.sentence()),
-                gear: None,
-                corner: Some(row.zone.id.clone()),
-            });
+        let fraction = row.zone.start;
+        let sentences: Vec<String> = row
+            .notes
+            .iter()
+            .filter(|note| note.id != MATCHED_NOTE)
+            .map(|note| note.sentence())
+            .collect();
+        if !fraction.is_finite() || sentences.is_empty() {
+            continue;
         }
+        events.push(LapEvent {
+            kind: LapEventKind::Note,
+            lap: EventLap::Primary,
+            fraction,
+            distance: distance_at(fraction),
+            label: format!("{}: {}", row.zone.name, sentences.join(" ")),
+            gear: None,
+            corner: Some(row.zone.id.clone()),
+            brake_offset: None,
+        });
     }
     events.sort_by(|a, b| a.fraction.total_cmp(&b.fraction));
     events
+}
+
+/// The id of the note a corner without findings carries.
+const MATCHED_NOTE: &str = "matched";
+
+/// Pair each primary brake onset with the reference's nearest one within
+/// [`BRAKE_PAIR_METRES`] and record the primary's offset from it.
+fn pair_brake_onsets(events: &mut [LapEvent]) {
+    let reference: Vec<f64> = events
+        .iter()
+        .filter(|e| e.kind == LapEventKind::BrakeOnset && e.lap == EventLap::Reference)
+        .map(|e| e.distance)
+        .filter(|d| d.is_finite())
+        .collect();
+    for event in events
+        .iter_mut()
+        .filter(|e| e.kind == LapEventKind::BrakeOnset && e.lap == EventLap::Primary)
+    {
+        event.brake_offset = reference
+            .iter()
+            .map(|d| event.distance - d)
+            .filter(|offset| offset.abs() <= BRAKE_PAIR_METRES)
+            .min_by(|a, b| a.abs().total_cmp(&b.abs()));
+    }
 }
 
 #[cfg(test)]
@@ -359,6 +423,54 @@ mod tests {
         assert_eq!(down[0].gear, Some(2));
         assert!((down[0].fraction - 600.0 / 999.0).abs() < 1e-9);
         assert_eq!(label(LapEventKind::Downshift, Some(2)), "Down to 2");
+    }
+
+    #[test]
+    fn a_run_of_downshifts_is_one_event_ending_in_its_gear() {
+        // 6 → 5 → 4 → 3 half a second apart from 5 s, then 3 → 4 at 12 s.
+        let gear = |t: f64| {
+            if t < 5.0 {
+                6
+            } else if t < 5.5 {
+                5
+            } else if t < 6.0 {
+                4
+            } else if t < 12.0 {
+                3
+            } else {
+                4
+            }
+        };
+        let events = detect(&lap(|_| 0.0, |_| 1.0, gear));
+        let down = of(&events, LapEventKind::Downshift);
+        assert_eq!(down.len(), 1, "{events:?}");
+        assert_eq!(down[0].gear, Some(3));
+        assert!((down[0].fraction - 250.0 / 999.0).abs() < 1e-9);
+        assert_eq!(of(&events, LapEventKind::Upshift).len(), 1);
+    }
+
+    #[test]
+    fn primary_brake_onsets_pair_with_the_nearest_reference_onset() {
+        let onset = |lap, distance| LapEvent {
+            kind: LapEventKind::BrakeOnset,
+            lap,
+            fraction: distance / 1000.0,
+            distance,
+            label: String::new(),
+            gear: None,
+            corner: None,
+            brake_offset: None,
+        };
+        let mut events = vec![
+            onset(EventLap::Primary, 300.0),
+            onset(EventLap::Reference, 312.0),
+            onset(EventLap::Reference, 290.0),
+            onset(EventLap::Primary, 700.0),
+        ];
+        pair_brake_onsets(&mut events);
+        assert_eq!(events[0].brake_offset, Some(10.0), "later than 290 m");
+        assert_eq!(events[3].brake_offset, None, "no reference onset near");
+        assert_eq!(events[1].brake_offset, None);
     }
 
     #[test]

@@ -210,6 +210,8 @@ fn laps_resample_onto_the_primary_by_share_of_distance() {
     .unwrap();
     assert_eq!(spread.lap_ids(), [2, 3], "the primary is not its own line");
     assert!(spread.is_meaningful());
+    // Speed-fused distance drifts: the stations are approximate.
+    assert!(spread.is_approximate());
     assert_eq!(spread.samples(), primary.len());
     let brake = spread.channel("brake").unwrap();
     assert_eq!(brake.laps.len(), 2);
@@ -242,6 +244,12 @@ fn one_other_lap_is_no_spread_and_cancel_is_honoured() {
     let cancel = AtomicBool::new(false);
     let single = consistency::build_consistency(&primary, 1, [(2, &other)], &cancel).unwrap();
     assert_eq!(single.lap_count(), 1);
+    let mut native = paced(1000, 400.0, 50.0);
+    native.distance_source = omatrack_core::unify::DistanceSource::Native;
+    let mut native_other = paced(1100, 400.0, 40.0);
+    native_other.distance_source = omatrack_core::unify::DistanceSource::Native;
+    let exact = consistency::build_consistency(&native, 1, [(2, &native_other)], &cancel).unwrap();
+    assert!(!exact.is_approximate(), "native distance on both laps");
     assert!(!single.is_meaningful());
     let mut no_distance = paced(900, 400.0, 40.0);
     no_distance.distance.iter_mut().for_each(|d| *d = 0.0);
@@ -256,12 +264,16 @@ fn one_other_lap_is_no_spread_and_cancel_is_honoured() {
 }
 
 #[test]
-fn spread_laps_are_every_timed_lap_fastest_first() {
+fn spread_laps_are_the_timed_laps_near_the_best_fastest_first() {
     let laps = vec![
         lap(1, 80_000.0, true),
         lap(2, 70_000.0, true),
         lap(3, 60_000.0, false),
-        lap(4, 75_000.0, true),
+        lap(4, 73_000.0, true),
+        lap(5, 73_400.0, true),
     ];
-    assert_eq!(consistency::spread_lap_ids(&laps), [2, 4, 1]);
+    // Within SPREAD_MAX_GAP (105%) of the best 70 s; the 80 s lap and the
+    // untimed 60 s crossing stay out.
+    assert_eq!(consistency::spread_lap_ids(&laps), [2, 4, 5]);
+    assert!(consistency::spread_lap_ids(&[]).is_empty());
 }

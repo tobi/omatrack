@@ -19,7 +19,7 @@ use crate::monotonic::{interpolate_fraction, invert_fraction};
 use crate::num::llround;
 use crate::recording::Recording;
 use crate::session::{LoadedLap, SessionError};
-use crate::unify::UnifiedLap;
+use crate::unify::{DistanceSource, UnifiedLap};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -546,10 +546,24 @@ pub const SPREAD_CHANNELS: &[&str] = &[
 /// there is no spread to speak of, only a second reference.
 pub const MIN_SPREAD_LAPS: usize = 2;
 
-/// Every representative (timed, complete, non-pit) lap of a session,
-/// fastest first: the laps a session spread is built from.
+/// Slowest lap a session spread takes, as a multiple of the session's best
+/// representative lap: a lap further off (a cool-down, a traffic lap) is
+/// another kind of lap, and its speeds would widen the band everywhere.
+pub const SPREAD_MAX_GAP: f64 = 1.05;
+
+/// Every representative (timed, complete, non-pit) lap of a session within
+/// [`SPREAD_MAX_GAP`] of its best, fastest first: the laps a session spread
+/// is built from.
 pub fn spread_lap_ids(laps: &[Lap]) -> Vec<i32> {
-    ranked(laps).into_iter().map(|lap| lap.id).collect()
+    let ranked = ranked(laps);
+    let Some(best) = ranked.first().map(|lap| lap.time_ms) else {
+        return Vec::new();
+    };
+    ranked
+        .into_iter()
+        .take_while(|lap| lap.time_ms <= best * SPREAD_MAX_GAP)
+        .map(|lap| lap.id)
+        .collect()
 }
 
 /// One channel of a [`Consistency`]: each other lap's series and the
@@ -576,6 +590,7 @@ pub struct Consistency {
     lap_ids: Vec<i32>,
     channels: BTreeMap<String, ChannelSpread>,
     samples: usize,
+    approximate: bool,
 }
 
 impl Consistency {
@@ -602,6 +617,12 @@ impl Consistency {
     /// Length of every series: the primary lap's sample count.
     pub fn samples(&self) -> usize {
         self.samples
+    }
+    /// Whether a lap of the spread (or the primary) has no native lap
+    /// distance: its stations come from speed-fused distance, which drifts
+    /// several percent per lap, so braking points smear along the band.
+    pub fn is_approximate(&self) -> bool {
+        self.approximate
     }
 }
 
@@ -656,6 +677,7 @@ pub fn build_consistency<'a>(
         samples,
         ..Consistency::default()
     };
+    result.approximate = primary.distance_source != DistanceSource::Native;
     if samples < 2 {
         return Ok(result);
     }
@@ -668,6 +690,7 @@ pub fn build_consistency<'a>(
         let Some(fractions) = distance_share_fractions(primary, lap) else {
             continue;
         };
+        result.approximate |= lap.distance_source != DistanceSource::Native;
         for (field, key) in SPREAD_CHANNELS.iter().enumerate() {
             if available(lap, key) && available(primary, key) {
                 series[field].push((id, resample(lap, key, &fractions)));
