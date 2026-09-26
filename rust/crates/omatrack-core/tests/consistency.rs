@@ -175,3 +175,93 @@ fn corner_brake_spread_reduces_like_the_store() {
     assert_eq!((empty.lap_count, empty.valid_lap_count), (1, 0));
     assert!(empty.median_brake_point.is_nan());
 }
+
+/// A lap of `count` samples over 1000 m braking over [`brake_from`,
+/// `brake_from` + 100) metres at `pressure`, at a constant pace.
+fn paced(count: usize, brake_from: f64, pressure: f64) -> UnifiedLap {
+    let mut lap = UnifiedLap::default();
+    for i in 0..count {
+        let d = 1000.0 * i as f64 / (count - 1) as f64;
+        let braking = d >= brake_from && d < brake_from + 100.0;
+        lap.time.push(i as f64 / 50.0);
+        lap.distance.push(d);
+        lap.speed.push(if braking { 100.0 } else { 200.0 });
+        lap.throttle.push(if braking { 0.0 } else { 1.0 });
+        lap.brake.push(if braking { pressure } else { 0.0 });
+        lap.gear.push(if braking { 3 } else { 5 });
+    }
+    lap
+}
+
+#[test]
+fn laps_resample_onto_the_primary_by_share_of_distance() {
+    // A slower lap (1500 samples) brakes at the primary's station: by index
+    // or time it would land half a lap later.
+    let primary = paced(1000, 400.0, 50.0);
+    let slower = paced(1500, 400.0, 30.0);
+    let later = paced(1200, 450.0, 70.0);
+    let cancel = AtomicBool::new(false);
+    let spread = consistency::build_consistency(
+        &primary,
+        1,
+        [(1, &primary), (2, &slower), (3, &later)],
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(spread.lap_ids(), [2, 3], "the primary is not its own line");
+    assert!(spread.is_meaningful());
+    assert_eq!(spread.samples(), primary.len());
+    let brake = spread.channel("brake").unwrap();
+    assert_eq!(brake.laps.len(), 2);
+    assert!(brake.laps.iter().all(|(_, s)| s.len() == primary.len()));
+    let at = |metres: f64| (metres / 1000.0 * 999.0).round() as usize;
+    let slower_series = &brake.laps[0].1;
+    assert_eq!(slower_series[at(390.0)], 0.0);
+    assert!((slower_series[at(410.0)] - 30.0).abs() < 1e-9);
+    // The envelope spans the primary and both laps, station by station.
+    assert_eq!(brake.min[at(420.0)], 0.0, "the later lap is off the brake");
+    assert!((brake.max[at(420.0)] - 50.0).abs() < 1e-9);
+    assert!((brake.max[at(480.0)] - 70.0).abs() < 1e-9);
+    assert!((brake.min[at(480.0)] - 30.0).abs() < 1e-9);
+    assert_eq!(brake.max[at(700.0)], 0.0);
+    // Gear holds the nearest sample, never a blend.
+    let gear = spread.channel("gear").unwrap();
+    assert!(
+        gear.laps
+            .iter()
+            .all(|(_, s)| s.iter().all(|g| *g == 3.0 || *g == 5.0))
+    );
+    // Channels the laps lack are left out, not drawn flat.
+    assert!(spread.channel("damper_fl").is_none());
+}
+
+#[test]
+fn one_other_lap_is_no_spread_and_cancel_is_honoured() {
+    let primary = paced(1000, 400.0, 50.0);
+    let other = paced(1100, 400.0, 40.0);
+    let cancel = AtomicBool::new(false);
+    let single = consistency::build_consistency(&primary, 1, [(2, &other)], &cancel).unwrap();
+    assert_eq!(single.lap_count(), 1);
+    assert!(!single.is_meaningful());
+    let mut no_distance = paced(900, 400.0, 40.0);
+    no_distance.distance.iter_mut().for_each(|d| *d = 0.0);
+    let skipped =
+        consistency::build_consistency(&primary, 1, [(3, &no_distance)], &cancel).unwrap();
+    assert_eq!(skipped.lap_count(), 0, "a lap without distance is left out");
+    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(
+        consistency::build_consistency(&primary, 1, [(2, &other)], &cancel),
+        Err(SessionError::Cancelled)
+    );
+}
+
+#[test]
+fn spread_laps_are_every_timed_lap_fastest_first() {
+    let laps = vec![
+        lap(1, 80_000.0, true),
+        lap(2, 70_000.0, true),
+        lap(3, 60_000.0, false),
+        lap(4, 75_000.0, true),
+    ];
+    assert_eq!(consistency::spread_lap_ids(&laps), [2, 4, 1]);
+}

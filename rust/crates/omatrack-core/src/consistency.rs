@@ -371,9 +371,31 @@ impl SessionLaps {
         reuse: &[(i32, Arc<UnifiedLap>)],
         cancel: &AtomicBool,
     ) -> Result<Self, SessionError> {
+        Self::load_with_progress(
+            recording,
+            laps,
+            lap_ids,
+            overrides,
+            reuse,
+            cancel,
+            &mut |_, _| {},
+        )
+    }
+
+    /// [`Self::load`], reporting `(done, total)` after each lap.
+    pub fn load_with_progress(
+        recording: &Recording,
+        laps: &[Lap],
+        lap_ids: &[i32],
+        overrides: &ChannelOverrides,
+        reuse: &[(i32, Arc<UnifiedLap>)],
+        cancel: &AtomicBool,
+        progress: &mut dyn FnMut(usize, usize),
+    ) -> Result<Self, SessionError> {
         let mut out = Vec::with_capacity(lap_ids.len());
-        for &id in lap_ids {
+        for (done, &id) in lap_ids.iter().enumerate() {
             cancelled(cancel)?;
+            progress(done, lap_ids.len());
             if let Some((_, unified)) = reuse.iter().find(|(reuse_id, _)| *reuse_id == id) {
                 out.push((id, unified.clone()));
                 continue;
@@ -386,7 +408,42 @@ impl SessionLaps {
                 out.push((id, Arc::new(unified)));
             }
         }
+        progress(lap_ids.len(), lap_ids.len());
         Ok(Self { laps: out })
+    }
+
+    /// Every representative lap of `primary`'s session ([`spread_lap_ids`]),
+    /// the primary reused, with `(done, total)` progress: the input of
+    /// [`Self::consistency`].
+    pub fn for_consistency(
+        primary: &LoadedLap,
+        cancel: &AtomicBool,
+        progress: &mut dyn FnMut(usize, usize),
+    ) -> Result<Self, SessionError> {
+        Self::load_with_progress(
+            primary.recording(),
+            primary.laps(),
+            &spread_lap_ids(primary.laps()),
+            primary.overrides(),
+            &[(primary.lap_id(), primary.unified().clone())],
+            cancel,
+            progress,
+        )
+    }
+
+    /// The session spread of `primary` over every loaded lap but itself
+    /// ([`build_consistency`]).
+    pub fn consistency(
+        &self,
+        primary: &LoadedLap,
+        cancel: &AtomicBool,
+    ) -> Result<Consistency, SessionError> {
+        build_consistency(
+            primary.unified(),
+            primary.lap_id(),
+            self.laps.iter().map(|(id, lap)| (*id, lap.as_ref())),
+            cancel,
+        )
     }
 
     /// The laps both analyses need for `primary`: the fastest half of its
@@ -463,4 +520,196 @@ impl SessionLaps {
         result.lap_count = ids.len();
         result
     }
+}
+
+// ── session spread on the lap-distance base ────────────────────────
+
+/// Channels a session spread carries: the normalized lane channels
+/// ([`crate::overlay::STANDARD_CHANNELS`] without the axis and GPS).
+pub const SPREAD_CHANNELS: &[&str] = &[
+    "speed",
+    "throttle",
+    "brake",
+    "gear",
+    "steering",
+    "clutch",
+    "driver_throttle",
+    "g_long",
+    "g_lat",
+    "damper_fl",
+    "damper_fr",
+    "damper_rl",
+    "damper_rr",
+];
+
+/// Fewest other timed laps a session spread is drawn from: with one lap
+/// there is no spread to speak of, only a second reference.
+pub const MIN_SPREAD_LAPS: usize = 2;
+
+/// Every representative (timed, complete, non-pit) lap of a session,
+/// fastest first: the laps a session spread is built from.
+pub fn spread_lap_ids(laps: &[Lap]) -> Vec<i32> {
+    ranked(laps).into_iter().map(|lap| lap.id).collect()
+}
+
+/// One channel of a [`Consistency`]: each other lap's series and the
+/// per-station envelope, all on the primary lap's 50 Hz grid.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct ChannelSpread {
+    /// `(lap id, samples)` of every other lap carrying the channel, fastest
+    /// first. NaN where the lap has no finite value.
+    pub laps: Vec<(i32, Arc<[f64]>)>,
+    /// Smallest and largest value per primary sample over the other laps
+    /// and the primary itself; NaN where none is finite.
+    pub min: Arc<[f64]>,
+    pub max: Arc<[f64]>,
+}
+
+/// How the primary lap sits in the driver's own session: every other
+/// representative lap resampled onto the primary's lap-distance base
+/// (share of lap distance, so every lap spans the same stations) and the
+/// min–max spread per channel. Built off the UI thread by
+/// [`build_consistency`] or [`SessionLaps::consistency`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Consistency {
+    lap_ids: Vec<i32>,
+    channels: BTreeMap<String, ChannelSpread>,
+    samples: usize,
+}
+
+impl Consistency {
+    /// The other laps that were resampled, fastest first.
+    pub fn lap_ids(&self) -> &[i32] {
+        &self.lap_ids
+    }
+    /// Number of other laps in the spread.
+    pub fn lap_count(&self) -> usize {
+        self.lap_ids.len()
+    }
+    /// Whether there are enough other laps to call it a spread
+    /// ([`MIN_SPREAD_LAPS`]).
+    pub fn is_meaningful(&self) -> bool {
+        self.lap_count() >= MIN_SPREAD_LAPS && !self.channels.is_empty()
+    }
+    /// The spread of one lane channel key ([`SPREAD_CHANNELS`]).
+    pub fn channel(&self, key: &str) -> Option<&ChannelSpread> {
+        self.channels.get(key)
+    }
+    pub fn channels(&self) -> &BTreeMap<String, ChannelSpread> {
+        &self.channels
+    }
+    /// Length of every series: the primary lap's sample count.
+    pub fn samples(&self) -> usize {
+        self.samples
+    }
+}
+
+/// Lap fraction on `lap` of each primary sample's share of lap distance.
+/// `None` when either lap has no usable distance.
+fn distance_share_fractions(primary: &UnifiedLap, lap: &UnifiedLap) -> Option<Vec<f64>> {
+    let (pd, od) = (&primary.distance, &lap.distance);
+    if pd.len() < 2 || od.len() < 2 {
+        return None;
+    }
+    let (p0, o0) = (pd[0], od[0]);
+    let primary_total = pd[pd.len() - 1] - p0;
+    let other_total = od[od.len() - 1] - o0;
+    if !(primary_total > 0.0 && other_total > 0.0) {
+        return None;
+    }
+    Some(
+        pd.iter()
+            .map(|d| {
+                let share = ((d - p0) / primary_total).clamp(0.0, 1.0);
+                invert_fraction(od, o0 + share * other_total)
+            })
+            .collect(),
+    )
+}
+
+/// `key` of `lap` sampled at each fraction (gear holds the nearest).
+fn resample(lap: &UnifiedLap, key: &str, fractions: &[f64]) -> Arc<[f64]> {
+    fractions.iter().map(|&f| sample(lap, key, f)).collect()
+}
+
+/// The primary's own samples of `key` (it sits inside its spread).
+fn own_values(lap: &UnifiedLap, key: &str) -> Vec<f64> {
+    if key == "gear" {
+        return lap.gear.iter().map(|g| f64::from(*g)).collect();
+    }
+    values(lap, key).map(<[f64]>::to_vec).unwrap_or_default()
+}
+
+/// Build the session spread of `primary` over `laps` (the laps of its
+/// session; the primary itself, if passed, is skipped by id). Each lap is
+/// mapped by share of lap distance, never by index or time, so a slower
+/// lap's braking point still lands on its station.
+pub fn build_consistency<'a>(
+    primary: &UnifiedLap,
+    primary_id: i32,
+    laps: impl IntoIterator<Item = (i32, &'a UnifiedLap)>,
+    cancel: &AtomicBool,
+) -> Result<Consistency, SessionError> {
+    let samples = primary.len();
+    let mut result = Consistency {
+        samples,
+        ..Consistency::default()
+    };
+    if samples < 2 {
+        return Ok(result);
+    }
+    let mut series: Vec<Vec<(i32, Arc<[f64]>)>> = vec![Vec::new(); SPREAD_CHANNELS.len()];
+    for (id, lap) in laps {
+        cancelled(cancel)?;
+        if id == primary_id || lap.len() < 2 {
+            continue;
+        }
+        let Some(fractions) = distance_share_fractions(primary, lap) else {
+            continue;
+        };
+        for (field, key) in SPREAD_CHANNELS.iter().enumerate() {
+            if available(lap, key) && available(primary, key) {
+                series[field].push((id, resample(lap, key, &fractions)));
+            }
+        }
+        result.lap_ids.push(id);
+    }
+    for (field, key) in SPREAD_CHANNELS.iter().enumerate() {
+        let laps = std::mem::take(&mut series[field]);
+        if laps.is_empty() {
+            continue;
+        }
+        cancelled(cancel)?;
+        let own = own_values(primary, key);
+        let mut min = vec![f64::NAN; samples];
+        let mut max = vec![f64::NAN; samples];
+        for i in 0..samples {
+            let values = laps
+                .iter()
+                .map(|(_, values)| values[i])
+                .chain(own.get(i).copied());
+            for value in values.filter(|v| v.is_finite()) {
+                min[i] = if min[i].is_nan() {
+                    value
+                } else {
+                    min[i].min(value)
+                };
+                max[i] = if max[i].is_nan() {
+                    value
+                } else {
+                    max[i].max(value)
+                };
+            }
+        }
+        result.channels.insert(
+            (*key).to_string(),
+            ChannelSpread {
+                laps,
+                min: min.into(),
+                max: max.into(),
+            },
+        );
+    }
+    Ok(result)
 }
