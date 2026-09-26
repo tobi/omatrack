@@ -184,6 +184,10 @@ fn corner_brake_spread_reduces_like_the_store() {
 
 /// A lap of `count` samples over 1000 m braking over [`brake_from`,
 /// `brake_from` + 100) metres at `pressure`, at a constant pace.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn paced(count: usize, brake_from: f64, pressure: f64) -> UnifiedLap {
     let mut lap = UnifiedLap::default();
     for i in 0..count {
@@ -200,6 +204,15 @@ fn paced(count: usize, brake_from: f64, pressure: f64) -> UnifiedLap {
 }
 
 #[test]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn laps_resample_onto_the_primary_by_share_of_distance() {
     // A slower lap (1500 samples) brakes at the primary's station: by index
     // or time it would land half a lap later.

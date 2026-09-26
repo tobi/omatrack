@@ -8,6 +8,7 @@
 //! start. Thresholds are named constants: the numbers are the product
 //! decision. Plain data, no UI.
 
+use crate::corners::checks::CornerNote;
 use crate::monotonic::interpolate_fraction;
 use crate::session::Analysis;
 use crate::unify::UnifiedLap;
@@ -101,6 +102,10 @@ pub struct Detected {
     pub gear: Option<i32>,
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Sample indices of one lap stay far below 2^52; the share is a display position."
+)]
 fn fraction_of(index: usize, count: usize) -> f64 {
     if count < 2 {
         0.0
@@ -129,7 +134,7 @@ pub fn detect(lap: &UnifiedLap) -> Vec<Detected> {
                 continue;
             }
             if brake < BRAKE_ONSET_BAR {
-                released_since.get_or_insert(time(i));
+                released_since.get_or_insert_with(|| time(i));
             } else if let Some(since) = released_since.take()
                 && time(i) - since >= BRAKE_REARM_SECONDS
             {
@@ -283,7 +288,7 @@ pub fn analysis_events(analysis: &Analysis) -> Vec<LapEvent> {
             .notes
             .iter()
             .filter(|note| note.id != MATCHED_NOTE)
-            .map(|note| note.sentence())
+            .map(CornerNote::sentence)
             .collect();
         if !fraction.is_finite() || sentences.is_empty() {
             continue;
@@ -339,7 +344,7 @@ mod tests {
     ) -> UnifiedLap {
         let mut lap = UnifiedLap::default();
         for i in 0..1000 {
-            let t = i as f64 / 50.0;
+            let t = f64::from(i) / 50.0;
             lap.time.push(t);
             lap.distance.push(t * 50.0);
             lap.speed.push(180.0);

@@ -405,6 +405,10 @@ impl SessionLaps {
     }
 
     /// [`Self::load`], reporting `(done, total)` after each lap.
+    ///
+    /// # Errors
+    /// Returns `SessionError::Cancelled` when the cancellation flag is set during the
+    /// work.
     pub fn load_with_progress(
         recording: &Recording,
         laps: &[Lap],
@@ -437,6 +441,10 @@ impl SessionLaps {
     /// Every representative lap of `primary`'s session ([`spread_lap_ids`]),
     /// the primary reused, with `(done, total)` progress: the input of
     /// [`Self::consistency`].
+    ///
+    /// # Errors
+    /// Returns `SessionError::Cancelled` when the cancellation flag is set during the
+    /// work.
     pub fn for_consistency(
         primary: &LoadedLap,
         cancel: &AtomicBool,
@@ -455,6 +463,10 @@ impl SessionLaps {
 
     /// The session spread of `primary` over every loaded lap but itself
     /// ([`build_consistency`]).
+    ///
+    /// # Errors
+    /// Returns `SessionError::Cancelled` when the cancellation flag is set during the
+    /// work.
     pub fn consistency(
         &self,
         primary: &LoadedLap,
@@ -576,9 +588,11 @@ pub const SPREAD_CHANNELS: &[&str] = &[
 /// there is no spread to speak of, only a second reference.
 pub const MIN_SPREAD_LAPS: usize = 2;
 
-/// Slowest lap a session spread takes, as a multiple of the session's best
-/// representative lap: a lap further off (a cool-down, a traffic lap) is
-/// another kind of lap, and its speeds would widen the band everywhere.
+/// Slowest lap a session spread takes, as a multiple of the session's best lap.
+///
+/// The best is its best representative lap: a lap further off (a cool-down,
+/// a traffic lap) is another kind of lap, and its speeds would widen the band
+/// everywhere.
 pub const SPREAD_MAX_GAP: f64 = 1.05;
 
 /// Every representative (timed, complete, non-pit) lap of a session within
@@ -610,10 +624,11 @@ pub struct ChannelSpread {
     pub max: Arc<[f64]>,
 }
 
-/// How the primary lap sits in the driver's own session: every other
-/// representative lap resampled onto the primary's lap-distance base
-/// (share of lap distance, so every lap spans the same stations) and the
-/// min–max spread per channel. Built off the UI thread by
+/// How the primary lap sits in the driver's own session.
+///
+/// Every other representative lap is resampled onto the primary's
+/// lap-distance base (share of lap distance, so every lap spans the same
+/// stations), with the min–max spread per channel. Built off the UI thread by
 /// [`build_consistency`] or [`SessionLaps::consistency`].
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Consistency {
@@ -692,10 +707,15 @@ fn own_values(lap: &UnifiedLap, key: &str) -> Vec<f64> {
     values(lap, key).map(<[f64]>::to_vec).unwrap_or_default()
 }
 
-/// Build the session spread of `primary` over `laps` (the laps of its
-/// session; the primary itself, if passed, is skipped by id). Each lap is
-/// mapped by share of lap distance, never by index or time, so a slower
-/// lap's braking point still lands on its station.
+/// Build the session spread of `primary` over `laps`.
+///
+/// `laps` are the laps of its session; the primary itself, if passed, is
+/// skipped by id. Each lap is mapped by share of lap distance, never by index
+/// or time, so a slower lap's braking point still lands on its station.
+///
+/// # Errors
+/// Returns `SessionError::Cancelled` when the cancellation flag is set during the
+/// work.
 pub fn build_consistency<'a>(
     primary: &UnifiedLap,
     primary_id: i32,
