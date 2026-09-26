@@ -6,7 +6,12 @@
 //! OpenType `tnum` feature ([`TypeScale::numeric`]), so digits keep one
 //! advance and columns of values align without the width and texture of a
 //! monospace face next to proportional labels. The monospace family is kept
-//! for what is genuinely code: paths, file contents, identifiers.
+//! for what is genuinely code (paths, file contents, identifiers) and for
+//! the **trace area's numerals** ([`TypeScale::trace_numeric`],
+//! [`trace_figures`]): lane legend values, value-axis ticks, the distance
+//! axis and apex callouts read as instrument figures in the theme's
+//! monospace family (bundled Geist Mono), ligatures off. Titles beside them
+//! stay in the interface family.
 //!
 //! **Scale.** Seven steps in rems, so they follow the application zoom (at
 //! the default 16 px rem: 11 / 12 / 13 / 14 / 16 / 20 / 40 px):
@@ -30,7 +35,8 @@
 
 use std::sync::{Arc, LazyLock};
 
-use gpui_kit::{FontFeatures, Pixels, Styled, Window, rems};
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::{App, FontFeatures, Pixels, Styled, Window, rems};
 
 /// One step of the type scale; see the module docs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -72,6 +78,21 @@ static TABULAR: LazyLock<FontFeatures> =
 /// clone (one shared allocation).
 pub fn tabular_figures() -> FontFeatures {
     TABULAR.clone()
+}
+
+static TRACE: LazyLock<FontFeatures> = LazyLock::new(|| {
+    FontFeatures(Arc::new(vec![
+        ("tnum".into(), 1),
+        // Never fuse `->` or `>=` in a readout.
+        ("calt".into(), 0),
+        ("liga".into(), 0),
+    ]))
+});
+
+/// OpenType features of the trace area's monospace numerals: tabular, no
+/// ligatures. Cheap to clone (one shared allocation).
+pub fn trace_figures() -> FontFeatures {
+    TRACE.clone()
 }
 
 /// The type scale on any styled element.
@@ -122,6 +143,15 @@ pub trait TypeScale: Styled + Sized {
     fn numeric(self) -> Self {
         self.font_features(tabular_figures())
     }
+
+    /// The trace area's numerals: the theme's monospace family (bundled
+    /// Geist Mono) with [`trace_figures`]. Only inside the trace area
+    /// (legends, value axes, the distance axis, callouts); everywhere else
+    /// numbers are [`Self::numeric`].
+    fn trace_numeric(self, cx: &App) -> Self {
+        self.font_family(cx.theme().mono_font_family.clone())
+            .font_features(trace_figures())
+    }
 }
 
 impl<T: Styled> TypeScale for T {}
@@ -151,5 +181,9 @@ mod tests {
         assert_eq!(features.tag_value_list(), &[("tnum".to_string(), 1)]);
         // One shared allocation, not one per call.
         assert!(Arc::ptr_eq(&features.0, &tabular_figures().0));
+        let trace = trace_figures();
+        assert!(trace.tag_value_list().contains(&("tnum".to_string(), 1)));
+        assert!(trace.tag_value_list().contains(&("liga".to_string(), 0)));
+        assert!(Arc::ptr_eq(&trace.0, &trace_figures().0));
     }
 }
