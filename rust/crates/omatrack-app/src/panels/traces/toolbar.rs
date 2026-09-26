@@ -1,16 +1,17 @@
 //! The trace toolbar, the modal editors' bar, and the lap and corner rows
 //! above the lanes.
 //!
-//! Every toolbar control dispatches the same workspace action as its key
-//! (from this panel's focus handle, so it runs outside the panel's own
-//! update), and shows that key in its tooltip.
+//! The toolbar is kit button groups only (x-axis, lane sizing, corner
+//! editing, zoom), all the same size and variant. Every control dispatches
+//! the same workspace action as its key (from this panel's focus handle, so
+//! it runs outside the panel's own update), and shows that key in its
+//! tooltip.
 
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, StyledExt as _,
     button::{Button, ButtonGroup, ButtonVariants as _},
     h_flex,
     separator::Separator,
-    switch::Switch,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -52,7 +53,6 @@ impl TracesPanel {
         let keys = &self.focus_handle;
         let axis = self.axis;
         let axis_keys = keys.clone();
-        let fit_keys = keys.clone();
         let range = self.range.map(|range| SharedString::from(range.summary()));
 
         h_flex()
@@ -104,75 +104,77 @@ impl TracesPanel {
                     }),
             )
             .child(
-                Switch::new("trace-fit")
-                    .small()
-                    .label("Fit")
-                    .checked(fit)
-                    .disabled(!has_data)
-                    .tooltip("Fit every lane to the height of the workspace")
-                    .on_change(move |checked, window, cx| {
-                        if *checked != fit {
-                            fit_keys.dispatch_action(&ToggleFit, window, cx);
-                        }
-                    }),
-            )
-            .child(Separator::vertical().h_4())
-            .child(
-                Button::new("trace-edit-corners")
-                    .ghost()
+                ButtonGroup::new("trace-lanes")
                     .xsmall()
-                    .label("Corners")
-                    .selected(self.mode == TraceMode::EditingCorners)
-                    .toggled(self.mode == TraceMode::EditingCorners)
+                    .outline()
                     .disabled(!has_data)
-                    .tooltip_with_action(
-                        "Edit corner zones",
-                        &ToggleCornerEdit,
-                        Some(WORKSPACE_CONTEXT),
+                    .child(
+                        Button::new("trace-fit")
+                            .label("Fit")
+                            .selected(fit)
+                            .tooltip_with_action(
+                                "Fit every lane to the workspace height",
+                                &ToggleFit,
+                                Some(WORKSPACE_CONTEXT),
+                            )
+                            .on_click(dispatch(keys, ToggleFit)),
                     )
-                    .on_click(dispatch(keys, ToggleCornerEdit)),
+                    .child(
+                        Button::new("trace-resize")
+                            .label("Resize")
+                            .selected(self.mode == TraceMode::ResizingLanes)
+                            .tooltip_with_action(
+                                "Resize lanes",
+                                &ResizeLanes,
+                                Some(WORKSPACE_CONTEXT),
+                            )
+                            .on_click(dispatch(keys, ResizeLanes)),
+                    ),
             )
             .child(
-                Button::new("trace-resize")
-                    .ghost()
+                ButtonGroup::new("trace-corners")
                     .xsmall()
-                    .label("Resize")
-                    .selected(self.mode == TraceMode::ResizingLanes)
-                    .toggled(self.mode == TraceMode::ResizingLanes)
+                    .outline()
                     .disabled(!has_data)
-                    .tooltip_with_action("Resize lanes", &ResizeLanes, Some(WORKSPACE_CONTEXT))
-                    .on_click(dispatch(keys, ResizeLanes)),
+                    .child(
+                        Button::new("trace-edit-corners")
+                            .label("Edit corners")
+                            .selected(self.mode == TraceMode::EditingCorners)
+                            .tooltip_with_action(
+                                "Edit corner zones",
+                                &ToggleCornerEdit,
+                                Some(WORKSPACE_CONTEXT),
+                            )
+                            .on_click(dispatch(keys, ToggleCornerEdit)),
+                    ),
             )
             .child(Separator::vertical().h_4())
             .child(
-                Button::new("trace-zoom-out")
-                    .ghost()
+                ButtonGroup::new("trace-zoom")
                     .xsmall()
-                    .icon(IconName::Minus)
-                    .accessibility_label("Zoom out")
+                    .outline()
                     .disabled(!has_data)
-                    .tooltip_with_action("Zoom out", &ZoomOut, Some(WORKSPACE_CONTEXT))
-                    .on_click(dispatch(keys, ZoomOut)),
-            )
-            .child(
-                Button::new("trace-zoom-reset")
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::Maximize)
-                    .accessibility_label("Reset zoom")
-                    .disabled(!has_data)
-                    .tooltip_with_action("Whole lap", &ZoomReset, Some(WORKSPACE_CONTEXT))
-                    .on_click(dispatch(keys, ZoomReset)),
-            )
-            .child(
-                Button::new("trace-zoom-in")
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::Plus)
-                    .accessibility_label("Zoom in")
-                    .disabled(!has_data)
-                    .tooltip_with_action("Zoom in", &ZoomIn, Some(WORKSPACE_CONTEXT))
-                    .on_click(dispatch(keys, ZoomIn)),
+                    .child(
+                        Button::new("trace-zoom-out")
+                            .icon(IconName::Minus)
+                            .accessibility_label("Zoom out")
+                            .tooltip_with_action("Zoom out", &ZoomOut, Some(WORKSPACE_CONTEXT))
+                            .on_click(dispatch(keys, ZoomOut)),
+                    )
+                    .child(
+                        Button::new("trace-zoom-reset")
+                            .icon(IconName::Maximize)
+                            .accessibility_label("Whole lap")
+                            .tooltip_with_action("Whole lap", &ZoomReset, Some(WORKSPACE_CONTEXT))
+                            .on_click(dispatch(keys, ZoomReset)),
+                    )
+                    .child(
+                        Button::new("trace-zoom-in")
+                            .icon(IconName::Plus)
+                            .accessibility_label("Zoom in")
+                            .tooltip_with_action("Zoom in", &ZoomIn, Some(WORKSPACE_CONTEXT))
+                            .on_click(dispatch(keys, ZoomIn)),
+                    ),
             )
             .child(div().flex_1().min_w_0())
             .when_some(range, |el, summary| {
