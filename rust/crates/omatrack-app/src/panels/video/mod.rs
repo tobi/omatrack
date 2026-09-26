@@ -359,6 +359,7 @@ impl VideoPanel {
                 Button::new("video-rate-normal")
                     .label("1×")
                     .selected(!slow)
+                    .when(!slow, |button| button.primary())
                     .accessibility_label("Normal speed")
                     .tooltip_with_action(
                         "Normal speed",
@@ -370,6 +371,7 @@ impl VideoPanel {
                 Button::new("video-slow-motion")
                     .label("0.25×")
                     .selected(slow)
+                    .when(slow, |button| button.primary())
                     .accessibility_label("Slow motion")
                     .tooltip_with_action(
                         "Slow motion, quarter speed",
@@ -393,6 +395,7 @@ impl VideoPanel {
                 Button::new("video-per-lap")
                     .label("Per lap")
                     .selected(!continuous)
+                    .when(!continuous, |button| button.primary())
                     .tooltip_with_action(
                         "At the lap end, pause and count into the next lap",
                         &ToggleContinuous,
@@ -403,6 +406,7 @@ impl VideoPanel {
                 Button::new("video-continuous")
                     .label("Continuous")
                     .selected(continuous)
+                    .when(continuous, |button| button.primary())
                     .tooltip_with_action(
                         "Play through lap ends into the next lap",
                         &ToggleContinuous,

@@ -193,10 +193,10 @@ impl Col {
             Self::Entry => "Entry km/h",
             Self::Min => "Min km/h",
             Self::Exit => "Exit km/h",
-            Self::Brake => "Brake Δ m",
-            Self::TurnIn => "Turn-in Δ m",
-            Self::Throttle => "Throttle Δ m",
-            Self::Consistency => "Consistency",
+            Self::Brake => "Brake Δm",
+            Self::TurnIn => "Turn-in Δm",
+            Self::Throttle => "Throttle Δm",
+            Self::Consistency => "Brake σ m",
             Self::Notes => "Notes",
         }
     }
@@ -209,8 +209,8 @@ impl Col {
             Self::Dt => 4.75,
             // The speed and a fixed-width sub-delta beside it.
             Self::Entry | Self::Min | Self::Exit => 6.75,
-            Self::Brake | Self::TurnIn | Self::Throttle => 5.75,
-            Self::Consistency => 6.0,
+            Self::Brake | Self::TurnIn | Self::Throttle => 6.5,
+            Self::Consistency => 6.25,
             Self::Notes => 3.75,
         }
     }

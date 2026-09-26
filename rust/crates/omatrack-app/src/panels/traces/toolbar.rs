@@ -76,6 +76,7 @@ impl TracesPanel {
                         Button::new("trace-axis-distance")
                             .label("Distance")
                             .selected(axis == XAxis::Distance)
+                            .when(axis == XAxis::Distance, |button| button.primary())
                             .tooltip_with_action(
                                 "X-axis by distance",
                                 &ToggleXAxis,
@@ -86,6 +87,7 @@ impl TracesPanel {
                         Button::new("trace-axis-time")
                             .label("Time")
                             .selected(axis == XAxis::Time)
+                            .when(axis == XAxis::Time, |button| button.primary())
                             .tooltip_with_action(
                                 "X-axis by time",
                                 &ToggleXAxis,
@@ -112,6 +114,7 @@ impl TracesPanel {
                         Button::new("trace-fit")
                             .label("Fit")
                             .selected(fit)
+                            .when(fit, |button| button.primary())
                             .tooltip_with_action(
                                 "Fit every lane to the workspace height",
                                 &ToggleFit,
@@ -123,6 +126,9 @@ impl TracesPanel {
                         Button::new("trace-resize")
                             .label("Resize")
                             .selected(self.mode == TraceMode::ResizingLanes)
+                            .when(self.mode == TraceMode::ResizingLanes, |button| {
+                                button.primary()
+                            })
                             .tooltip_with_action(
                                 "Resize lanes",
                                 &ResizeLanes,
@@ -140,6 +146,9 @@ impl TracesPanel {
                         Button::new("trace-edit-corners")
                             .label("Edit corners")
                             .selected(self.mode == TraceMode::EditingCorners)
+                            .when(self.mode == TraceMode::EditingCorners, |button| {
+                                button.primary()
+                            })
                             .tooltip_with_action(
                                 "Edit corner zones",
                                 &ToggleCornerEdit,
