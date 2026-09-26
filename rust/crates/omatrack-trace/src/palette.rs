@@ -8,9 +8,12 @@
 //! premultiplied blending, and an opaque stroke cannot double-blend at a
 //! folded join.
 //!
-//! Channel hues (`speed`/`throttle` success, `brake` danger, `steering`
-//! warning, others `chart_1..5`) identify a channel that shares a lane with
-//! another (throttle/brake); the lane's root channel keeps the role colours
+//! Channel hues identify a channel that shares a lane with another
+//! (throttle/brake). They come only from the chart tokens (`speed`/`throttle`
+//! `chart_2`, `brake` `chart_4`, `steering` `chart_5`, others hashed over
+//! `chart_1..5`), never from a role token: a red brake would read as Δ loss,
+//! an amber steering as the reference lap. The lane's root channel keeps the
+//! role colours
 //! so primary and reference read the same everywhere. `channels.<key>.color`
 //! and `reference_color` overrides (user data, carried by [`LaneStyle`])
 //! win over both.
@@ -96,9 +99,9 @@ impl TracePalette {
     /// Default hue of a channel key.
     pub fn channel_hue(&self, key: &str) -> Hsla {
         match key {
-            "speed" | "throttle" | "driver_throttle" => self.gain,
-            "brake" => self.loss,
-            "steering" => self.reference,
+            "speed" | "throttle" | "driver_throttle" => self.chart[1],
+            "brake" => self.chart[3],
+            "steering" => self.chart[4],
             _ => {
                 let hash = key
                     .bytes()
@@ -147,10 +150,17 @@ mod tests {
             palette.channel_colors("speed", true, &style),
             (palette.primary, palette.reference)
         );
-        assert_eq!(
-            palette.channel_colors("brake", false, &style).0,
-            palette.loss
-        );
+        // A shared-lane channel never borrows a role colour.
+        let brake = palette.channel_colors("brake", false, &style).0;
+        assert_eq!(brake, palette.chart[3]);
+        for role in [
+            palette.gain,
+            palette.loss,
+            palette.primary,
+            palette.reference,
+        ] {
+            assert_ne!(brake, role);
+        }
         // Overrides are user data and win.
         let custom_color = gpui_kit::hsla(0.5, 0.5, 0.5, 1.0);
         let custom = LaneStyle::default().with_color(Some(custom_color));
