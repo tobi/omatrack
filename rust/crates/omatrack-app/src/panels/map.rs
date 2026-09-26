@@ -68,6 +68,10 @@ pub(crate) const OUTLINE_NOTE: &str = "Laps placed on the track outline (GPS dro
 pub(crate) const MIN_GPS_COVERAGE: f64 = 0.9;
 
 /// The share of samples with a usable fix.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Sample counts of one lap stay far below 2^52; the shares are display positions."
+)]
 fn coverage(latitude: &[f64], longitude: &[f64]) -> f64 {
     if latitude.is_empty() {
         return 0.0;
@@ -84,6 +88,10 @@ fn coverage(latitude: &[f64], longitude: &[f64]) -> f64 {
 /// centerline point at its share of lap distance (`distance[i] / total`,
 /// else its share of the samples), interpolated along the centerline's
 /// cumulative metres.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Sample counts of one lap stay far below 2^52; the shares are display positions."
+)]
 fn centerline_track(centerline: &[GeoPoint], distance: &[f64], samples: usize) -> Option<GpsTrack> {
     if centerline.len() < 2 || samples < 2 {
         return None;
@@ -155,7 +163,9 @@ pub(crate) fn map_layers(analysis: &Analysis) -> TrackMapData {
                 .collect()
         })
         .unwrap_or_default();
-    let reference = analysis.reference().map(|lap| lap.unified());
+    let reference = analysis
+        .reference()
+        .map(omatrack_core::session::LoadedLap::unified);
     let reference_coverage = reference.map(|lap| coverage(&lap.gps_lat, &lap.gps_lon));
     let stationed = analysis.corner_source() == CornerSource::Reference;
     // A stationed primary is drawn from the reference's fixes.
@@ -442,6 +452,10 @@ mod tests {
     use super::*;
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn coverage_counts_usable_fixes() {
         let lat = [45.0, f64::NAN, 45.1, f64::NAN];
         let lon = [7.0, f64::NAN, 7.1, f64::NAN];

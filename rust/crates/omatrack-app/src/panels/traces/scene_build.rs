@@ -203,8 +203,10 @@ fn lap_label(lap: &LoadedLap) -> SharedString {
     lap.strip()
         .iter()
         .find(|cell| cell.lap_id == lap.lap_id())
-        .map(|cell| SharedString::from(cell.label.clone()))
-        .unwrap_or_else(|| format!("L{}", lap.lap_id()).into())
+        .map_or_else(
+            || format!("L{}", lap.lap_id()).into(),
+            |cell| SharedString::from(cell.label.clone()),
+        )
 }
 
 /// Each corner's apex for the speed lane's callouts: where the primary's
@@ -263,7 +265,7 @@ fn event_marks(analysis: &Analysis) -> Vec<EventMark> {
                 LapEventKind::LiftOff => EventMarkKind::LiftOff,
                 LapEventKind::Upshift => EventMarkKind::Upshift,
                 LapEventKind::Downshift => EventMarkKind::Downshift,
-                _ => EventMarkKind::Note,
+                LapEventKind::Note => EventMarkKind::Note,
             };
             let label = if kind == EventMarkKind::Note {
                 event.label.clone()
@@ -297,8 +299,9 @@ fn event_tag(
     }
     match kind {
         // A note's tick sits in its corner's column under the ruler label;
-        // the note itself is read in the Time lost card.
-        EventMarkKind::Note => None,
+        // the note itself is read in the Time lost card; a lift carries
+        // no tag.
+        EventMarkKind::Note | EventMarkKind::LiftOff => None,
         EventMarkKind::BrakeOnset => {
             let offset = event.brake_offset?;
             let (text, _) =
@@ -307,7 +310,6 @@ fn event_tag(
         }
         EventMarkKind::Downshift => event.gear.map(|gear| format!("↓{gear}").into()),
         EventMarkKind::Upshift => event.gear.map(|gear| format!("↑{gear}").into()),
-        _ => None,
     }
 }
 

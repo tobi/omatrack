@@ -23,7 +23,7 @@ use gpui_kit::{
 use omatrack_app::actions::{ResizeLanes, Role, SelectLap, ToggleTraceColorMode, ZoomReset};
 use omatrack_app::panels::TraceMode;
 use omatrack_app::panels::traces::{DELTA_KEY, ToggleLane, TracesPanel};
-use omatrack_app::state::TraceViewMode;
+use omatrack_app::state::{Session, TraceViewMode};
 use omatrack_trace::{EventMarkKind, TraceStack, Viewport};
 
 const RATE: f64 = 50.0;
@@ -869,6 +869,10 @@ async fn real_run4_against_run1_fills_the_lanes(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 async fn a_time_share_pair_keeps_a_readable_delta_lane_in_the_trace_card(cx: &mut TestAppContext) {
     // The synthetic pair carries no GPS: the map is a share of lap time.
     let f = synthetic_pair(cx).await;
@@ -909,7 +913,7 @@ async fn the_colour_mode_toggles_persist_and_repaint_the_lanes(cx: &mut TestAppC
     assert_eq!(cx.update(|cx| stack.read(cx).color_mode()), ColorMode::Lap);
     let before = cx.update(|cx| stack.read(cx).static_stats(cx));
     cx.update_window(f.window, |_, window, cx| {
-        window.dispatch_action(Box::new(ToggleTraceColorMode), cx)
+        window.dispatch_action(Box::new(ToggleTraceColorMode), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -926,7 +930,7 @@ async fn the_colour_mode_toggles_persist_and_repaint_the_lanes(cx: &mut TestAppC
         "a colour change repaints, never rebuilds geometry"
     );
     cx.update_window(f.window, |_, window, cx| {
-        window.dispatch_action(Box::new(ToggleTraceColorMode), cx)
+        window.dispatch_action(Box::new(ToggleTraceColorMode), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -1130,10 +1134,7 @@ async fn consistency_loads_the_session_once_and_draws_it_behind_the_lap(cx: &mut
 
     // Another primary lap: one more load, for that lap.
     cx.update(|cx| {
-        f.test
-            .app
-            .session
-            .update(cx, |session, cx| session.next_lap(cx))
+        f.test.app.session.update(cx, Session::next_lap);
     });
     cx.run_until_parked();
     let session = f.test.app.session.clone();

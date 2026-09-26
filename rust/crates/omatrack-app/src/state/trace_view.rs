@@ -188,6 +188,10 @@ impl TraceView {
         let work = cx.background_spawn(async move {
             let cancel = background_cancel;
             let laps = SessionLaps::for_consistency(&primary, &cancel, &mut |done, total| {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "Progress is best-effort: the channel is unbounded, and a closed receiver means nobody observes it."
+                )]
                 let _ = progress_tx.try_send((done, total));
             })?;
             let consistency = laps.consistency(&primary, &cancel)?;
@@ -206,6 +210,10 @@ impl TraceView {
         let task = cx.spawn(async move |this, cx| {
             let result = work.await;
             jobs.update(cx, |jobs, cx| jobs.finish(job, cx));
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "A dropped view needs no deferred result; this weak entity/window handle may already be gone."
+            )]
             let _ = this.update(cx, |this, cx| {
                 if this.loads_started != generation {
                     return;

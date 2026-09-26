@@ -71,8 +71,8 @@ impl Workspace {
         let Some(ix) = self.app.session.read(cx).analysis().and_then(|analysis| {
             let corners = analysis.corners();
             id.and_then(|id| corners.iter().position(|zone| zone.id == id))
-                .or(self.focused_corner.filter(|ix| *ix < corners.len()))
-                .or((!corners.is_empty()).then_some(0))
+                .or_else(|| self.focused_corner.filter(|ix| *ix < corners.len()))
+                .or_else(|| (!corners.is_empty()).then_some(0))
         }) else {
             return;
         };

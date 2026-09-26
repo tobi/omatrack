@@ -132,7 +132,7 @@ fn view_mode_keys_work_in_the_workspace_and_never_in_a_text_field(cx: &mut TestA
     assert_eq!(mode(cx), TraceViewMode::Events);
 
     cx.update_window(test.window.into(), |_, window, cx| {
-        window.press("ctrl-6", cx)
+        window.press("ctrl-6", cx);
     })
     .unwrap();
     cx.run_until_parked();

@@ -90,6 +90,10 @@ impl TracesPanel {
     /// aligned, the less frequent lane tools (fit lanes to the height,
     /// resize, edit corners). Every control dispatches the action of its
     /// key and names that key in its tooltip.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
     pub(super) fn render_toolbar(
         &self,
         window: &Window,

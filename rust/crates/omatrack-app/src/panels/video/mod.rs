@@ -1264,7 +1264,7 @@ impl VideoPanel {
                     window.on_next_frame(move |_, cx| cx.notify(entity));
                 }
             },
-            |_, _, _, _| {},
+            |_, (), _, _| {},
         )
         .absolute()
         .size_full();

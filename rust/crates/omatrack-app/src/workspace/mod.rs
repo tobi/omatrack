@@ -264,7 +264,9 @@ impl Workspace {
                 );
             }
             SessionEvent::AnalysisReady => {
-                let previous = self.focused_zone_id(cx).or(self.corners_resume.take());
+                let previous = self
+                    .focused_zone_id(cx)
+                    .or_else(|| self.corners_resume.take());
                 self.forget_corner_focus(cx);
                 self.refit_view_mode(previous, cx);
                 self.sync_strategies(cx);
@@ -865,16 +867,14 @@ impl Workspace {
             cx.listener(|this, _: &ViewLap, _, cx| this.set_view_mode(TraceViewMode::Lap, cx)),
         )
         .on_action(cx.listener(|this, _: &ViewCorners, _, cx| {
-            this.set_view_mode(TraceViewMode::Corners, cx)
+            this.set_view_mode(TraceViewMode::Corners, cx);
         }))
         .on_action(cx.listener(|this, _: &ViewConsistency, _, cx| {
-            this.set_view_mode(TraceViewMode::Consistency, cx)
+            this.set_view_mode(TraceViewMode::Consistency, cx);
         }))
-        .on_action(
-            cx.listener(|this, _: &ViewEvents, _, cx| {
-                this.set_view_mode(TraceViewMode::Events, cx)
-            }),
-        )
+        .on_action(cx.listener(|this, _: &ViewEvents, _, cx| {
+            this.set_view_mode(TraceViewMode::Events, cx);
+        }))
     }
 
     fn set_compose(&mut self, layout: ComposeLayout, cx: &mut Context<'_, Self>) {
