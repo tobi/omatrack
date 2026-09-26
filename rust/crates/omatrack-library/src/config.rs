@@ -356,10 +356,10 @@ impl ChannelStyle {
         // `omatrack_trace::layout::default_height_percent`.
         let height_percent = match key {
             "speed" => 34.0,
-            "throttle" | "brake" => 24.0,
-            "delta" => 28.0,
+            "throttle" | "brake" => 16.0,
+            "delta" => 20.0,
             "steering" => 16.0,
-            "gear" => 9.0,
+            "gear" => 12.0,
             _ if key.to_ascii_lowercase().contains("rpm") => 14.0,
             _ => 12.0,
         };
@@ -371,7 +371,9 @@ impl ChannelStyle {
             fill_opacity,
             height_percent,
             weight: 1.0,
-            combine_with_previous: key == "brake",
+            // Brake has its own lane: the pedals read side by side in
+            // one column, never on two scales in one lane.
+            combine_with_previous: false,
         }
     }
 

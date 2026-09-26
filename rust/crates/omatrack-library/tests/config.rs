@@ -34,7 +34,7 @@ channels:
     stroke_width: 9
     note: "hand written"
   brake:
-    combine_with_previous: false
+    combine_with_previous: true
     fill_opacity: 0.4
 trace:
   fit_channels: false
@@ -96,12 +96,13 @@ fn typed_keys_parse_leniently() {
     assert_eq!(speed.weight, 2.5);
     assert_eq!(speed.stroke_width, 4.0, "clamped");
     let brake = config.channel_style("brake");
-    assert!(!brake.combine_with_previous);
+    assert!(brake.combine_with_previous);
     assert_eq!(brake.fill_opacity, 0.4);
     let gear = config.channel_style("gear");
     assert_eq!(gear, ChannelStyle::defaults("gear"));
     assert!(!ChannelStyle::defaults("clutch").visible);
-    assert!(ChannelStyle::defaults("brake").combine_with_previous);
+    // Brake has its own lane by default; `combine_with_previous` opts in.
+    assert!(!ChannelStyle::defaults("brake").combine_with_previous);
 
     assert!(!config.trace.is_fitting_channels());
     assert_eq!(config.trace.x_axis(), XAxis::Time);
