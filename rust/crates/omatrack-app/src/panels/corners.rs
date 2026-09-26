@@ -190,9 +190,9 @@ impl Col {
             Self::Order => "#",
             Self::Corner => "Corner",
             Self::Dt => "Δt s",
-            Self::Entry => "Entry",
-            Self::Min => "Min",
-            Self::Exit => "Exit",
+            Self::Entry => "Entry km/h",
+            Self::Min => "Min km/h",
+            Self::Exit => "Exit km/h",
             Self::Brake => "Brake Δ m",
             Self::TurnIn => "Turn-in Δ m",
             Self::Throttle => "Throttle Δ m",
@@ -207,7 +207,8 @@ impl Col {
             Self::Order => 2.25,
             Self::Corner => 5.5,
             Self::Dt => 4.75,
-            Self::Entry | Self::Min | Self::Exit => 5.75,
+            // The speed and a fixed-width sub-delta beside it.
+            Self::Entry | Self::Min | Self::Exit => 6.75,
             Self::Brake | Self::TurnIn | Self::Throttle => 5.75,
             Self::Consistency => 6.0,
             Self::Notes => 3.75,
@@ -355,19 +356,30 @@ impl CornerTable {
             .child(text)
     }
 
+    /// Width of a speed cell's delta slot, rems ("+12.3" in small mono).
+    const SUB_DELTA_REMS: f32 = 2.75;
+
     fn render_speed(&self, (primary, reference): (f64, f64), cx: &App) -> Div {
         h_flex()
             .w_full()
             .justify_end()
             .gap_1()
+            .items_baseline()
             .child(Readout::number(Some(primary), 0))
             .when(reference.is_finite(), |this| {
+                // A fixed right-aligned slot, so the speeds and their deltas
+                // each line up down the column.
                 this.child(
-                    div().text_xs().child(
-                        DeltaText::new(Some(primary - reference))
-                            .decimals(1)
-                            .sense(DeltaSense::HigherIsBetter),
-                    ),
+                    h_flex()
+                        .w(rems(Self::SUB_DELTA_REMS))
+                        .flex_shrink_0()
+                        .justify_end()
+                        .text_xs()
+                        .child(
+                            DeltaText::new(Some(primary - reference))
+                                .decimals(1)
+                                .sense(DeltaSense::HigherIsBetter),
+                        ),
                 )
             })
             .text_color(cx.theme().foreground)
