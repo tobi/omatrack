@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust (Arch Linux)
+    runs-on: ubuntu-latest
+    # Ubuntu's libmpv is older than the 2.5 client API mpv-player requires.
+    container: archlinux:latest
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: System packages
+        working-directory: /
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel git pkgconf rustup mpv \
+            wayland libxkbcommon libxkbcommon-x11 libxcb \
+            vulkan-headers vulkan-icd-loader fontconfig freetype2
+
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      # real_* tests are #[ignore]d and need private fixtures; the parity
+      # baseline is local-only. Both are covered by scripts/check.sh.
+      - name: Test
+        run: cargo test --workspace --locked
