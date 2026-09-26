@@ -415,6 +415,9 @@ pub struct TraceScene {
     /// The Δ lane is an estimate (LOW alignment confidence): readouts are
     /// marked `≈` and the fill carries no gain/loss colour.
     pub(crate) approximate_delta: bool,
+    /// The alignment is only a share of lap time: the Δ lane is a ramp of
+    /// the lap-time difference, stated as such in its legend.
+    pub(crate) time_share_delta: bool,
 }
 
 impl TraceScene {
@@ -463,6 +466,17 @@ impl TraceScene {
 
     pub fn approximate_delta(&self) -> bool {
         self.approximate_delta
+    }
+
+    /// Mark the Δ lane as a lap-time-share estimate (no station alignment).
+    pub fn with_time_share_delta(mut self, time_share: bool) -> Self {
+        self.time_share_delta = time_share;
+        self.generation = next_generation();
+        self
+    }
+
+    pub fn time_share_delta(&self) -> bool {
+        self.time_share_delta
     }
 
     /// Identity of this scene's contents: unique per construction and

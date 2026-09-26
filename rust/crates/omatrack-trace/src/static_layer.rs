@@ -17,17 +17,34 @@ use std::time::Instant;
 
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::{
-    App, Bounds, ContentMask, Context, Element, ElementId, Entity, GlobalElementId, Hsla,
-    InspectorElementId, IntoElement, LayoutId, Pixels, Render, SharedString, Style, Subscription,
-    Window, fill, point, px, relative, size,
+    App, Bounds, ContentMask, Context, Element, ElementId, Entity, FontWeight, GlobalElementId,
+    Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Render, SharedString, Style,
+    Subscription, Window, fill, point, px, relative, size,
 };
 
+use crate::label;
 use crate::lanes::{BuildInput, ChannelColors, ChannelGeometry, Scratch};
 use crate::layout::LaneLayout;
 use crate::palette::TracePalette;
-use crate::scale::{Tick, Viewport, XAxis, axis_ticks};
+use crate::scale::{Tick, Viewport, XAxis, axis_ticks, nice_step};
 use crate::scene::{LaneKind, LaneStyles, TraceScene};
 use crate::state::ViewportState;
+use omatrack_ui::{TypeStep, format_value};
+
+/// Lanes shorter than this carry no value axis (two captions would crowd
+/// the trace), logical pixels.
+const VALUE_AXIS_MIN_HEIGHT: f32 = 56.0;
+
+/// Decimals of a value-axis figure: as many as its tick `step` needs.
+fn axis_decimals(kind: LaneKind, step: f64) -> usize {
+    if kind == LaneKind::Step || step >= 1.0 {
+        0
+    } else if step >= 0.1 {
+        1
+    } else {
+        2
+    }
+}
 
 /// Minimum spacing of axis ticks (and vertical grid lines), logical pixels.
 pub const TICK_SPACING: f64 = 96.0;
@@ -252,9 +269,11 @@ impl Element for StaticLayerElement {
         _: &mut (),
         _: &mut (),
         window: &mut Window,
-        _: &mut App,
+        cx: &mut App,
     ) {
         let cache = self.cache.borrow();
+        let tick_size = TypeStep::Caption.size(window);
+        let tick_height = tick_size * 1.2;
         let palette = &self.palette;
         let width = bounds.size.width.as_f32();
         let height = bounds.size.height.as_f32();
@@ -361,6 +380,40 @@ impl Element for StaticLayerElement {
                         geometry.paint(bounds.origin + point(px(0.), px(y)), &colors, window);
                         vertices += geometry.vertex_count();
                         paths += geometry.path_count();
+                    }
+                    // The value axis: two or three round values of the
+                    // lane's range, right-aligned inside the plot at their
+                    // own heights, where the lane is tall enough.
+                    if h >= VALUE_AXIS_MIN_HEIGHT && range.span() > 0.0 {
+                        let scale = root.display_scale();
+                        let span = range.span() * scale;
+                        let step = nice_step(span / 3.0);
+                        let decimals = axis_decimals(root.kind, step);
+                        let lh = tick_height.as_f32();
+                        let first = (range.min * scale / step).ceil() as i64;
+                        let last = (range.max * scale / step).floor() as i64;
+                        for n in first..=last.min(first + 4) {
+                            let value = n as f64 * step;
+                            let ty = y
+                                + 1.0
+                                + (h - 2.0) * ((range.max - value / scale) / range.span()) as f32;
+                            let top = (ty - lh * 0.5).clamp(y + 1.0, y + h - 1.0 - lh);
+                            let line = label::shape(
+                                format_value(Some(value), decimals),
+                                tick_size,
+                                FontWeight::NORMAL,
+                                palette.label,
+                                window,
+                            );
+                            let x = width - line.width.as_f32() - 6.0;
+                            label::paint(
+                                &line,
+                                bounds.origin + point(px(x), px(top)),
+                                tick_height,
+                                window,
+                                cx,
+                            );
+                        }
                     }
                     // Lane separator (owned by the lower lane).
                     if slot_ix > 0 {

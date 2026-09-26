@@ -703,10 +703,14 @@ impl TraceStack {
                     })
                     .collect();
                 let mut rows: Vec<AnyElement> = Vec::new();
+                let time_share_note = root.kind == LaneKind::Delta && self.scene.time_share_delta;
                 if root.kind == LaneKind::Delta {
                     // Δ states the time gained or lost across the view (its
                     // range follows the view): the lane's one number that
                     // matters before a cursor exists.
+                    if self.scene.time_share_delta {
+                        label.push_str(", share of lap time, not station aligned");
+                    }
                     let change = root.change_in(viewport);
                     let (text, trend) = delta_seconds(change, approximate);
                     label.push_str(&format!(", in view {text}"));
@@ -776,6 +780,20 @@ impl TraceStack {
                             .child(h_flex().gap_1().min_w_0().font_medium().children(names))
                             .when(!unit.is_empty(), |el| {
                                 el.child(div().text_color(muted).flex_shrink_0().child(unit))
+                            })
+                            // The alignment is a share of lap time: said on
+                            // the title row, where it costs no line.
+                            .when(time_share_note, |el| {
+                                el.child(
+                                    div()
+                                        .id("delta-time-share")
+                                        .test_support()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_caption()
+                                        .text_color(muted)
+                                        .child("· share of lap time"),
+                                )
                             }),
                     )
                     .child(v_flex().numeric().children(rows));
@@ -809,37 +827,34 @@ impl TraceStack {
             )
     }
 
-    /// The key under the readout columns, in the axis row's chrome cell:
-    /// which column is the primary lap, the reference and their difference.
-    /// Shown only while readouts are (colour is never the only cue).
-    fn render_column_key(
-        &self,
-        readout_at: Option<f64>,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    /// The header of the readout columns, for the row above the lanes (the
+    /// host places it; the corner ruler's chrome cell in Omatrack): which
+    /// column is the primary lap, the reference and their difference, on
+    /// the same spines as every lane's values. Colour is never the only cue.
+    pub fn column_key(&self, cx: &gpui_kit::App) -> AnyElement {
         let theme = cx.theme();
         let has_reference = self.scene.lanes.iter().any(|lane| lane.reference.is_some());
-        let show = readout_at.is_some() && !self.scene.is_empty();
+        let show = !self.scene.is_empty();
         let key = |text: &'static str, color: Hsla| value_cell().text_color(color).child(text);
         div()
             .id("readout-key")
             .test_support()
-            .size_full()
-            .px_2()
             .flex()
             .items_center()
             .text_caption()
+            .font_medium()
             .when(show, |el| {
                 el.child(
                     readout_grid()
                         .child(label_cell())
-                        .child(key("P", theme.muted_foreground))
+                        .child(key("P", theme.primary))
                         .when(has_reference, |el| {
-                            el.child(key("R", theme.muted_foreground))
+                            el.child(key("R", theme.warning))
                                 .child(key("Δ", theme.muted_foreground))
                         }),
                 )
             })
+            .into_any_element()
     }
 }
 
@@ -848,7 +863,8 @@ impl TraceStack {
 /// [`MIN_LANE_HEIGHT`](crate::layout::MIN_LANE_HEIGHT) lane.
 const LEGEND_LINE_REMS: f32 = 0.875;
 
-/// Width of a readout row's channel column, rems (`Thr`, `Bra`).
+/// Width of a readout row's channel column, rems (a shared lane's line
+/// swatch).
 const LABEL_CELL_REMS: f32 = 1.75;
 /// Minimum width of a readout value column, rems: `-180.0` in tabular
 /// label-size figures. A longer value widens its cell rather than clip.
@@ -947,14 +963,15 @@ fn readout_row(
             .child(value)
     };
     readout_grid()
+        // A shared lane marks each row with its channel's line (the title
+        // names it in the same hue), never a clipped abbreviation.
         .child(
             label_cell()
-                .text_caption()
-                .text_color(hue)
+                .h(rems(LEGEND_LINE_REMS))
+                .flex()
+                .items_center()
                 .when(combined, |el| {
-                    el.child(SharedString::from(
-                        lane.title.chars().take(3).collect::<String>(),
-                    ))
+                    el.child(div().w(rems(0.875)).h(px(2.)).rounded_sm().bg(hue))
                 }),
         )
         .child(cell("p", text.primary, primary))
@@ -1175,8 +1192,7 @@ impl Render for TraceStack {
                             .w(rems(CHROME_REMS))
                             .flex_shrink_0()
                             .border_r_1()
-                            .border_color(border)
-                            .child(self.render_column_key(readout_at, cx)),
+                            .border_color(border),
                     )
                     .child(div().flex_1().min_w_0().child(TraceAxis::new(
                         &self.ticks,

@@ -471,8 +471,6 @@ fn legend_values_share_column_spines_and_never_clip(cx: &mut TestAppContext) {
         // lane height, so FIT never clips a legend.
         let legend = f32::from(brake.bottom() - throttle.top());
         assert!(legend <= MIN_LANE_HEIGHT as f32, "{legend}");
-        // The key under the columns names them.
-        assert!(window.try_find("readout-key").is_some());
     })
     .unwrap();
 }
