@@ -2,18 +2,25 @@
 //!
 //! A sidebar-styled panel: search, track/year/driver facets and Rescan above
 //! a keyboard-navigable tree. Enter or a double-click loads a lap as the
-//! primary; Alt+Enter or the context menu loads it as the reference. The
-//! context menu also opens a recording's metadata (Ctrl+I on the selected
-//! row) and, inside a library folder, the folder's `TRACK.yml`.
+//! primary; Alt+Enter or the context menu loads it as the reference (the
+//! footer shows both commands with their keys). The context menu also opens
+//! a recording's metadata (Ctrl+I on the selected row) and, inside a library
+//! folder, the folder's `TRACK.yml`.
+//!
+//! Rows share right-aligned columns: a lap's time and a recording's best sit
+//! in one mono column, the gap to the best (or a count) in the one after it.
+//! Cells never wrap: the tree is a uniform list, so every row keeps one
+//! fixed height.
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, IndexPath, Sizable as _, StyledExt as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, IndexPath, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
+    kbd::Kbd,
     list::ListItem,
     searchable_list::SearchableListItem,
     select::{Select, SelectEvent, SelectState},
@@ -24,13 +31,14 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, TestSupportExt as _, Window, div,
-    rems,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Rems, Render, RenderOnce,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, TestSupportExt as _,
+    Window, div, rems,
 };
 use omatrack_core::format_lap_time;
-use omatrack_library::{Config, LibrarySnapshot, SessionNode};
+use omatrack_library::track_yml::driver_id_key;
+use omatrack_library::{Config, LibrarySnapshot, MetadataLayer, SessionNode};
 use omatrack_ui::{DeltaSense, LapRole, Swatch, format_delta};
 
 use crate::actions::{
@@ -41,11 +49,27 @@ use crate::keymap::{LIBRARY_CONTEXT, WORKSPACE_CONTEXT};
 use crate::panels::{PanelKind, empty_state};
 use crate::state::{AppState, LibraryEvent, ScanStatus, SessionEvent};
 
+/// The time column: fits `11:49.212` in the mono face at `text_sm`.
+const TIME_COLUMN: Rems = Rems(4.75);
+/// The trailing column: the gap to the best (`+12.345`), the Best tag, a
+/// recording's lap count or a folder's recording count.
+const TRAIL_COLUMN: Rems = Rems(3.5);
+/// The lane before a row's label: a folder's chevron, a lap's role marker.
+/// One width, so a lap's label lines up under its recording's title.
+const LEAD_LANE: Rems = Rems(1.25);
+/// Indent per tree level, and the inset of the top level.
+const INDENT_STEP: f32 = 0.625;
+const INDENT_BASE: f32 = 0.25;
+
 /// One facet choice; `None` is "all".
 #[derive(Debug, Clone, PartialEq)]
 pub struct FacetOption {
     value: Option<String>,
+    /// The menu row and the accessible value: `All tracks`, `Road Atlanta (3)`.
     title: SharedString,
+    /// The trigger: the facet's name while unfiltered, else the value.
+    short: SharedString,
+    all: bool,
 }
 
 impl SearchableListItem for FacetOption {
@@ -55,14 +79,81 @@ impl SearchableListItem for FacetOption {
         self.title.clone()
     }
 
+    fn display_title(&self) -> Option<AnyElement> {
+        Some(
+            FacetTrigger {
+                text: self.short.clone(),
+                muted: self.all,
+            }
+            .into_any_element(),
+        )
+    }
+
     fn value(&self) -> &Self::Value {
         &self.value
     }
 }
 
+/// A facet's trigger text: muted like a placeholder while it filters
+/// nothing, so an active filter reads at a glance.
+#[derive(IntoElement)]
+struct FacetTrigger {
+    text: SharedString,
+    muted: bool,
+}
+
+impl RenderOnce for FacetTrigger {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        div()
+            .truncate()
+            .when(self.muted, |this| {
+                this.text_color(cx.theme().muted_foreground)
+            })
+            .child(self.text)
+    }
+}
+
 type FacetSelect = Entity<SelectState<Vec<FacetOption>>>;
 
-/// What a tree row shows (presentation snapshot, rebuilt with the tree).
+/// The three library facets.
+#[derive(Debug, Clone, Copy)]
+enum Facet {
+    Track,
+    Year,
+    Driver,
+}
+
+impl Facet {
+    fn name(self) -> &'static str {
+        match self {
+            Facet::Track => "Track",
+            Facet::Year => "Year",
+            Facet::Driver => "Driver",
+        }
+    }
+
+    fn all(self) -> &'static str {
+        match self {
+            Facet::Track => "All tracks",
+            Facet::Year => "All years",
+            Facet::Driver => "All drivers",
+        }
+    }
+
+    /// The unfiltered choice: `All tracks` in the menu, `Track` (muted) on
+    /// the trigger, so three facets fit a narrow sidebar.
+    fn all_option(self) -> FacetOption {
+        FacetOption {
+            value: None,
+            title: self.all().into(),
+            short: self.name().into(),
+            all: true,
+        }
+    }
+}
+
+/// What a tree row shows (presentation snapshot, rebuilt with the tree;
+/// every string is formatted here, never per frame).
 #[derive(Debug, Clone)]
 enum Row {
     Track {
@@ -74,19 +165,42 @@ enum Row {
         recordings: usize,
     },
     Session {
+        /// The session name, else the driver, else the file name.
         title: SharedString,
+        /// The driver beside a session name.
+        driver: Option<Driver>,
         best: Option<SharedString>,
         laps: usize,
+        /// Roles held by this recording's laps (marked while collapsed).
+        roles: Vec<LapRole>,
     },
     Lap {
         session: SharedString,
         lap: i32,
-        label: SharedString,
+        /// `L8`; `None` for an incomplete lap when the complete laps are
+        /// numbered in sequence rather than by the recording (its number
+        /// would then read as another lap's).
+        number: Option<SharedString>,
+        /// `Out`, `In`, `Pit`, `Frag` for an interval that is not a counted
+        /// flying lap.
+        kind: Option<SharedString>,
         time: SharedString,
-        delta_to_best: Option<f64>,
+        /// Counts for best: its time is a comparable lap time.
+        counts: bool,
+        /// The gap to the recording's best (`+0.911`).
+        delta: Option<SharedString>,
         best: bool,
         role: Option<LapRole>,
     },
+}
+
+/// A driver as the library shows them.
+#[derive(Debug, Clone, PartialEq)]
+struct Driver {
+    name: SharedString,
+    /// Only the logger's driver id is known (no metadata layer names it):
+    /// shown as `Driver 1` and set apart from real names.
+    unnamed: bool,
 }
 
 impl Row {
@@ -96,6 +210,65 @@ impl Row {
             _ => None,
         }
     }
+}
+
+/// A recording's driver: the resolved name, or for a bare logger id
+/// `Driver 1` flagged unnamed (never a made-up name).
+fn driver_of(node: &SessionNode) -> Option<Driver> {
+    let sourced = node.metadata.driver.as_ref()?;
+    match node.summary.driver_id() {
+        Some(id) if sourced.layer == MetadataLayer::Recording => Some(Driver {
+            name: format!("Driver {}", driver_id_key(id)).into(),
+            unnamed: true,
+        }),
+        _ => Some(Driver {
+            name: sourced.value.clone().into(),
+            unnamed: false,
+        }),
+    }
+}
+
+/// The title and driver a recording row shows.
+fn session_heading(node: &SessionNode) -> (SharedString, Option<Driver>) {
+    let driver = driver_of(node);
+    match (&node.session_name, driver) {
+        (Some(session), driver) => (session.clone().into(), driver),
+        (None, Some(driver)) if !driver.unnamed => (driver.name, None),
+        // Only a driver id: the file names the recording.
+        (None, Some(driver)) => (node.file_name().into(), Some(driver)),
+        (None, None) => (node.title.clone().into(), None),
+    }
+}
+
+fn plural(count: usize, one: &str, many: &str) -> String {
+    format!("{count} {}", if count == 1 { one } else { many })
+}
+
+/// A lap row's accessible name: `L8, 1:13.644, best lap, reference`.
+fn lap_spoken(
+    number: Option<&str>,
+    kind: Option<&str>,
+    time: &str,
+    delta: Option<&str>,
+    best: bool,
+    role: Option<LapRole>,
+) -> String {
+    let name = match (number, kind) {
+        (Some(number), Some(kind)) => format!("{number} {kind}"),
+        (Some(one), None) | (None, Some(one)) => one.to_string(),
+        (None, None) => String::new(),
+    };
+    [
+        Some(name),
+        Some(time.to_string()),
+        delta.map(|delta| format!("{delta} to best")),
+        best.then(|| "best lap".to_string()),
+        role.map(|role| role.label().to_lowercase()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(", ")
 }
 
 /// Rows by tree item id, plus the session each id belongs to.
@@ -121,23 +294,22 @@ pub struct LibraryPanel {
     /// Folders the user opened or closed, against their default.
     opened: HashSet<SharedString>,
     closed: HashSet<SharedString>,
+    /// Recordings the last scan could not read (the notification autohides;
+    /// the panel keeps saying so until the next scan).
+    unreadable: usize,
     _subscriptions: Vec<Subscription>,
 }
 
 impl LibraryPanel {
     pub fn new(app: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let search = cx
-            .new(|cx| InputState::new(window, cx).placeholder("Search tracks, drivers, sessions"));
-        let facet = |label: &str, window: &mut Window, cx: &mut Context<Self>| {
-            let options = vec![FacetOption {
-                value: None,
-                title: label.to_string().into(),
-            }];
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search library"));
+        let facet = |facet: Facet, window: &mut Window, cx: &mut Context<Self>| {
+            let options = vec![facet.all_option()];
             cx.new(|cx| SelectState::new(options, Some(IndexPath::default()), window, cx))
         };
-        let track_facet = facet("All tracks", window, cx);
-        let year_facet = facet("All years", window, cx);
-        let driver_facet = facet("All drivers", window, cx);
+        let track_facet = facet(Facet::Track, window, cx);
+        let year_facet = facet(Facet::Year, window, cx);
+        let driver_facet = facet(Facet::Driver, window, cx);
         let tree = cx.new(|cx| TreeState::new(cx));
 
         let subscriptions = vec![
@@ -170,12 +342,20 @@ impl LibraryPanel {
                     .library
                     .update(cx, |library, cx| library.set_driver_facet(driver, cx));
             }),
-            cx.subscribe_in(&app.library, window, |this, _, event, window, cx| {
-                if let LibraryEvent::SnapshotChanged = event {
-                    this.sync_facets(window, cx);
-                    this.rebuild(cx);
-                }
-            }),
+            cx.subscribe_in(
+                &app.library,
+                window,
+                |this, _, event, window, cx| match event {
+                    LibraryEvent::SnapshotChanged => {
+                        this.sync_facets(window, cx);
+                        this.rebuild(cx);
+                    }
+                    LibraryEvent::ScanFinished { unreadable, .. } => {
+                        this.unreadable = *unreadable;
+                        cx.notify();
+                    }
+                },
+            ),
             cx.observe(&app.library, |_, _, cx| cx.notify()),
             cx.subscribe(&app.session, |this, _, event, cx| {
                 if matches!(
@@ -187,6 +367,8 @@ impl LibraryPanel {
                     this.rebuild(cx);
                 }
             }),
+            // The footer's commands follow the selected row.
+            cx.observe(&tree, |_, _, cx| cx.notify()),
             cx.subscribe(&tree, |this, _, event, _| match event {
                 TreeEvent::Expanded(id) => {
                     this.closed.remove(id);
@@ -209,6 +391,7 @@ impl LibraryPanel {
             index: Rc::default(),
             opened: HashSet::new(),
             closed: HashSet::new(),
+            unreadable: 0,
             _subscriptions: subscriptions,
         };
         panel.sync_facets(window, cx);
@@ -258,31 +441,46 @@ impl LibraryPanel {
             library.year_facet().map(|year| year.to_string()),
             library.driver_facet().map(str::to_string),
         );
-        let options = |all: &str, facets: &[omatrack_library::Facet]| {
-            std::iter::once(FacetOption {
-                value: None,
-                title: all.to_string().into(),
+        // Drivers known only by their logger id read as the tree shows them.
+        let driver_names: HashMap<String, SharedString> = library
+            .snapshot()
+            .sessions()
+            .filter_map(|node| {
+                let driver = driver_of(node)?;
+                Some((node.driver.clone()?, driver.name))
             })
-            .chain(facets.iter().map(|facet| FacetOption {
-                value: Some(facet.value.clone()),
-                title: format!("{} ({})", facet.label, facet.count).into(),
-            }))
-            .collect::<Vec<_>>()
+            .collect();
+        let options = |facet: Facet, values: &[omatrack_library::Facet]| {
+            std::iter::once(facet.all_option())
+                .chain(values.iter().map(|value| {
+                    let label = driver_names
+                        .get(&value.value)
+                        .filter(|_| matches!(facet, Facet::Driver))
+                        .cloned()
+                        .unwrap_or_else(|| value.label.clone().into());
+                    FacetOption {
+                        value: Some(value.value.clone()),
+                        title: format!("{label} ({})", value.count).into(),
+                        short: label,
+                        all: false,
+                    }
+                }))
+                .collect::<Vec<_>>()
         };
         for (select, items, selected) in [
             (
                 self.track_facet.clone(),
-                options("All tracks", &facets.tracks),
+                options(Facet::Track, &facets.tracks),
                 current.0,
             ),
             (
                 self.year_facet.clone(),
-                options("All years", &facets.years),
+                options(Facet::Year, &facets.years),
                 current.1,
             ),
             (
                 self.driver_facet.clone(),
-                options("All drivers", &facets.drivers),
+                options(Facet::Driver, &facets.drivers),
                 current.2,
             ),
         ] {
@@ -332,12 +530,6 @@ impl LibraryPanel {
                 None
             }
         };
-        let holds_role = |node: &SessionNode| {
-            node.laps.iter().any(|lap| {
-                let id = SharedString::from(lap.id.clone());
-                Some(&id) == primary || Some(&id) == reference
-            })
-        };
         let mut items = Vec::new();
         for track in snapshot.tracks() {
             let track_id = SharedString::from(track.id.clone());
@@ -351,54 +543,102 @@ impl LibraryPanel {
                     if dialogs::user_library_folder(config, node.file.path()).is_some() {
                         index.user_folders.insert(session_id.clone());
                     }
+                    // Complete laps carry the recording's numbers when every
+                    // label is `L{lap id}`; only then can an out or in lap
+                    // share the scheme without reading as another lap.
+                    let numbered = node
+                        .laps
+                        .iter()
+                        .filter(|lap| lap.complete)
+                        .all(|lap| lap.label == format!("L{}", lap.lap_id));
+                    let mut roles = Vec::new();
                     let laps = node
                         .laps
                         .iter()
                         .map(|lap| {
                             let id = SharedString::from(lap.id.clone());
+                            let role = role_of(&id);
+                            roles.extend(role);
+                            let (number, kind) = if lap.complete {
+                                let kind = (!lap.representative).then_some("Pit");
+                                (Some(lap.label.clone()), kind.map(str::to_string))
+                            } else {
+                                let number = numbered.then(|| format!("L{}", lap.lap_id));
+                                (number, Some(lap.label.clone()))
+                            };
+                            let time = format_lap_time(lap.time_ms);
+                            let delta = lap.delta_to_best_ms.filter(|_| !lap.best).map(|ms| {
+                                format_delta(Some(ms / 1000.0), 3, DeltaSense::LowerIsBetter).0
+                            });
+                            let spoken = lap_spoken(
+                                number.as_deref(),
+                                kind.as_deref(),
+                                &time,
+                                delta.as_deref(),
+                                lap.best,
+                                role,
+                            );
                             index.rows.insert(
                                 id.clone(),
                                 Row::Lap {
                                     session: session_id.clone(),
                                     lap: lap.lap_id,
-                                    label: lap.label.clone().into(),
-                                    time: format_lap_time(lap.time_ms).into(),
-                                    delta_to_best: lap
-                                        .delta_to_best_ms
-                                        .filter(|_| !lap.best)
-                                        .map(|ms| ms / 1000.0),
+                                    number: number.map(SharedString::from),
+                                    kind: kind.map(SharedString::from),
+                                    time: time.into(),
+                                    counts: lap.representative,
+                                    delta,
                                     best: lap.best,
-                                    role: role_of(&id),
+                                    role,
                                 },
                             );
                             index.session_of.insert(id.clone(), session_id.clone());
-                            TreeItem::new(id, lap.label.clone())
+                            TreeItem::new(id, spoken)
                         })
                         .collect::<Vec<_>>();
                     if let Some(best) = node.best_lap_id {
                         index.best_lap.insert(session_id.clone(), best);
                     }
+                    let (title, driver) = session_heading(node);
+                    let best = node
+                        .best_time_ms
+                        .map(|ms| SharedString::from(format_lap_time(ms)));
+                    let spoken = [
+                        Some(title.to_string()),
+                        driver.as_ref().map(|driver| driver.name.to_string()),
+                        Some(plural(node.lap_count, "lap", "laps")),
+                        best.as_ref().map(|best| format!("best {best}")),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                    let open = self.is_open(&session_id, !roles.is_empty());
                     index.rows.insert(
                         session_id.clone(),
                         Row::Session {
-                            title: node.title.clone().into(),
-                            best: node
-                                .best_time_ms
-                                .map(|ms| SharedString::from(format_lap_time(ms))),
+                            title,
+                            driver,
+                            best,
                             laps: node.lap_count,
+                            roles,
                         },
                     );
                     index
                         .session_of
                         .insert(session_id.clone(), session_id.clone());
-                    let open = self.is_open(&session_id, holds_role(node));
                     sessions.push(
-                        TreeItem::new(session_id, node.title.clone())
+                        TreeItem::new(session_id, spoken)
                             .expanded(open)
                             .children(laps),
                     );
                 }
                 track_count += sessions.len();
+                let spoken = format!(
+                    "{}, {}",
+                    date.heading,
+                    plural(sessions.len(), "recording", "recordings")
+                );
                 index.rows.insert(
                     day_id.clone(),
                     Row::Day {
@@ -408,11 +648,16 @@ impl LibraryPanel {
                 );
                 let open = self.is_open(&day_id, true);
                 days.push(
-                    TreeItem::new(day_id, date.heading.clone())
+                    TreeItem::new(day_id, spoken)
                         .expanded(open)
                         .children(sessions),
                 );
             }
+            let spoken = format!(
+                "{}, {}",
+                track.name,
+                plural(track_count, "recording", "recordings")
+            );
             index.rows.insert(
                 track_id.clone(),
                 Row::Track {
@@ -422,7 +667,7 @@ impl LibraryPanel {
             );
             let open = self.is_open(&track_id, true);
             items.push(
-                TreeItem::new(track_id, track.name.clone())
+                TreeItem::new(track_id, spoken)
                     .expanded(open)
                     .children(days),
             );
@@ -438,15 +683,11 @@ impl LibraryPanel {
     }
 
     fn load_selected(&mut self, role: Role, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((id, row)) = self.selected_row(cx) else {
+        if self.selected_row(cx).is_none() {
             return;
-        };
-        let target = row.lap_target().or_else(|| match row {
-            // Enter on a recording loads its fastest lap.
-            Row::Session { .. } => self.index.best_lap.get(&id).map(|lap| (id.clone(), *lap)),
-            _ => None,
-        });
-        match target {
+        }
+        // Enter on a recording loads its fastest lap.
+        match self.selected_target(cx) {
             Some((session, lap)) => self.app.session.update(cx, |state, cx| match role {
                 Role::Primary => state.set_primary(session, lap, cx),
                 Role::Reference => state.set_reference(session, lap, cx),
@@ -563,33 +804,153 @@ impl LibraryPanel {
                     ),
             )
             .child(
-                h_flex()
-                    .gap_1()
-                    .child(
-                        Select::new(&self.track_facet)
-                            .id("facet-track")
-                            .small()
-                            .accessibility_label("Track")
-                            .flex_1()
-                            .min_w_0(),
-                    )
-                    .child(
-                        Select::new(&self.year_facet)
-                            .id("facet-year")
-                            .small()
-                            .accessibility_label("Year")
-                            .flex_1()
-                            .min_w_0(),
-                    )
-                    .child(
-                        Select::new(&self.driver_facet)
-                            .id("facet-driver")
-                            .small()
-                            .accessibility_label("Driver")
-                            .flex_1()
-                            .min_w_0(),
-                    ),
+                // The Select's own root is `size_full`; each sits in a
+                // shrinkable third so the row never overflows the sidebar.
+                h_flex().gap_1().children(
+                    [
+                        (&self.track_facet, "facet-track", Facet::Track),
+                        (&self.year_facet, "facet-year", Facet::Year),
+                        (&self.driver_facet, "facet-driver", Facet::Driver),
+                    ]
+                    .map(|(state, id, facet)| {
+                        div().flex_1().min_w_0().child(
+                            Select::new(state)
+                                .id(id)
+                                .small()
+                                .accessibility_label(facet.name())
+                                .menu_width(rems(16.)),
+                        )
+                    }),
+                ),
             )
+    }
+
+    /// One muted status line under the toolbar: what the filter hides, what
+    /// the last scan could not read.
+    fn render_status(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let library = self.app.library.read(cx);
+        let filtered = library.has_filter() && !library.filtered().is_empty();
+        if !filtered && self.unreadable == 0 {
+            return None;
+        }
+        let shown = library.filtered().recording_count();
+        let total = library.snapshot().recording_count();
+        let theme = cx.theme();
+        let filter_text = SharedString::from(format!(
+            "{shown} of {}",
+            plural(total, "recording", "recordings")
+        ));
+        let unreadable = SharedString::from(format!(
+            "{} couldn’t be read",
+            plural(self.unreadable, "recording", "recordings")
+        ));
+        Some(
+            v_flex()
+                .px_3()
+                .py_1()
+                .gap_1()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .border_b_1()
+                .border_color(theme.sidebar_border)
+                .when(filtered, |this| {
+                    this.child(
+                        h_flex()
+                            .id("library-filter-status")
+                            .test_support()
+                            .aria_label(filter_text.clone())
+                            .gap_2()
+                            .justify_between()
+                            .child(filter_text)
+                            .child(
+                                Button::new("library-status-clear")
+                                    .ghost()
+                                    .xsmall()
+                                    .label("Clear filters")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.clear_filters(window, cx);
+                                    })),
+                            ),
+                    )
+                })
+                .when(self.unreadable > 0, |this| {
+                    this.child(
+                        h_flex()
+                            .id("library-unreadable")
+                            .test_support()
+                            .aria_label(unreadable.clone())
+                            .gap_1p5()
+                            .child(
+                                Icon::new(IconName::TriangleAlert)
+                                    .xsmall()
+                                    .text_color(theme.warning),
+                            )
+                            .child(unreadable),
+                    )
+                }),
+        )
+    }
+
+    fn clear_filters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search
+            .update(cx, |search, cx| search.set_value("", window, cx));
+        self.app
+            .library
+            .update(cx, |library, cx| library.clear_filter(cx));
+        self.sync_facets(window, cx);
+    }
+
+    /// The lap (or a recording's best lap) Enter would load.
+    fn selected_target(&self, cx: &App) -> Option<(SharedString, i32)> {
+        let (id, row) = self.selected_row(cx)?;
+        row.lap_target().or_else(|| match row {
+            Row::Session { .. } => self.index.best_lap.get(&id).map(|lap| (id.clone(), *lap)),
+            _ => None,
+        })
+    }
+
+    /// The two load commands with their keys, acting on the selected row:
+    /// the panel's main task stays visible and its keyboard path learnable.
+    fn render_footer(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let enabled = self.selected_target(cx).is_some();
+        let primary = LapRole::Primary.color(cx.theme());
+        let reference = LapRole::Reference.color(cx.theme());
+        let button = |id: &'static str, label: &'static str, role: Role| {
+            let (action, color): (&dyn gpui_kit::Action, _) = match role {
+                Role::Primary => (&SetPrimary, primary),
+                Role::Reference => (&SetReference, reference),
+            };
+            Button::new(id)
+                .ghost()
+                .xsmall()
+                .accessibility_label(label)
+                .child(Swatch::new(color).xsmall())
+                .child(label)
+                .children(Kbd::binding_for_action(
+                    action,
+                    Some(LIBRARY_CONTEXT),
+                    window,
+                ))
+                .disabled(!enabled)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.load_selected(role, window, cx);
+                }))
+        };
+        h_flex()
+            .id("library-footer")
+            .test_support()
+            .flex_shrink_0()
+            .gap_1()
+            .px_2()
+            .py_1()
+            .border_t_1()
+            .border_color(cx.theme().sidebar_border)
+            .child(button("library-set-primary", "Set primary", Role::Primary))
+            .child(button(
+                "library-set-reference",
+                "Set reference",
+                Role::Reference,
+            ))
     }
 
     fn render_scan_progress(&self, cx: &App) -> Option<impl IntoElement + use<>> {
@@ -669,12 +1030,7 @@ impl LibraryPanel {
                 .small()
                 .label("Clear filters")
                 .on_click(cx.listener(|this, _, window, cx| {
-                    this.search
-                        .update(cx, |search, cx| search.set_value("", window, cx));
-                    this.app
-                        .library
-                        .update(cx, |library, cx| library.clear_filter(cx));
-                    this.sync_facets(window, cx);
+                    this.clear_filters(window, cx);
                 })),
             "rescan" => Button::new("library-empty-rescan")
                 .outline()
@@ -805,48 +1161,73 @@ fn context_menu_entries(index: &RowIndex, id: &SharedString) -> Vec<MenuEntry> {
 fn render_row(entry: &TreeEntry, index: &RowIndex, cx: &App) -> ListItem {
     let id = entry.item().id.clone();
     let theme = cx.theme();
-    let indent = rems(0.25 + 0.75 * entry.depth() as f32);
-    let chevron = |entry: &TreeEntry| {
-        div()
-            .flex_shrink_0()
-            .size_4()
-            .when(entry.is_folder(), |this| {
-                this.child(
-                    Icon::new(if entry.is_expanded() {
-                        IconName::ChevronDown
-                    } else {
-                        IconName::ChevronRight
-                    })
-                    .xsmall()
-                    .text_color(theme.muted_foreground),
-                )
-            })
+    let mono = theme.mono_font_family.clone();
+    // Laps sit one level in from their recording's chevron, so their role
+    // lane lines up under it and their label under the recording's title.
+    let depth = match index.rows.get(&id) {
+        Some(Row::Lap { .. }) => entry.depth().saturating_sub(1),
+        _ => entry.depth(),
     };
-    let count = |count: usize| {
-        div()
-            .text_xs()
-            .text_color(theme.muted_foreground)
-            .child(count.to_string())
-    };
-    let item = ListItem::new(id.clone()).pl(indent).pr_2().py_0p5();
+    let indent = rems(INDENT_BASE + INDENT_STEP * depth as f32);
+    // One fixed height: the tree is a uniform list.
+    let item = ListItem::new(id.clone())
+        .h_7()
+        .py_0()
+        .pl(indent)
+        .pr_2()
+        .text_sm();
     let Some(row) = index.rows.get(&id) else {
         return item.child(entry.item().label.clone());
     };
-    match row.clone() {
+    let lead = || {
+        h_flex()
+            .flex_shrink_0()
+            .w(LEAD_LANE)
+            .h_full()
+            .items_center()
+    };
+    let chevron = |entry: &TreeEntry| {
+        lead().when(entry.is_folder(), |this| {
+            this.child(
+                Icon::new(if entry.is_expanded() {
+                    IconName::ChevronDown
+                } else {
+                    IconName::ChevronRight
+                })
+                .xsmall()
+                .text_color(theme.muted_foreground),
+            )
+        })
+    };
+    let label = || h_flex().flex_1().min_w_0().gap_1p5().overflow_hidden();
+    // The time column: mono, right-aligned, never wrapping or shrinking.
+    let time_cell = |time: Option<SharedString>, muted: bool| {
+        div()
+            .flex_shrink_0()
+            .min_w(TIME_COLUMN)
+            .whitespace_nowrap()
+            .text_right()
+            .font_family(mono.clone())
+            .when(muted, |this| this.text_color(theme.muted_foreground))
+            .children(time)
+    };
+    let trail_cell = || {
+        h_flex()
+            .flex_shrink_0()
+            .w(TRAIL_COLUMN)
+            .justify_end()
+            .whitespace_nowrap()
+            .text_xs()
+            .text_color(theme.muted_foreground)
+    };
+    let row = row.clone();
+    match row {
         Row::Track { name, recordings } => item.child(
             h_flex()
                 .w_full()
-                .gap_1()
                 .child(chevron(entry))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .font_semibold()
-                        .child(name),
-                )
-                .child(count(recordings)),
+                .child(label().child(div().truncate().font_semibold().child(name)))
+                .child(trail_cell().child(recordings.to_string())),
         ),
         Row::Day {
             heading,
@@ -854,51 +1235,75 @@ fn render_row(entry: &TreeEntry, index: &RowIndex, cx: &App) -> ListItem {
         } => item.child(
             h_flex()
                 .w_full()
-                .gap_1()
                 .child(chevron(entry))
                 .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_color(theme.muted_foreground)
-                        .child(heading),
-                )
-                .child(count(recordings)),
-        ),
-        Row::Session { title, best, laps } => item.child(
-            h_flex()
-                .w_full()
-                .gap_1()
-                .child(chevron(entry))
-                .child(div().flex_1().min_w_0().truncate().child(title))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(format!("{laps} laps")),
-                )
-                .when_some(best, |this, best| {
-                    this.child(
+                    label().child(
                         div()
-                            .w(rems(4.5))
-                            .text_right()
-                            .font_family(theme.mono_font_family.clone())
+                            .truncate()
                             .text_color(theme.muted_foreground)
-                            .child(best),
-                    )
-                }),
+                            .child(heading),
+                    ),
+                )
+                .child(trail_cell().child(recordings.to_string())),
         ),
+        Row::Session {
+            title,
+            driver,
+            best,
+            laps,
+            roles,
+        } => {
+            // A collapsed recording still says which roles it holds.
+            let roles = if entry.is_expanded() {
+                Vec::new()
+            } else {
+                roles
+            };
+            item.child(
+                h_flex()
+                    .w_full()
+                    .gap_1()
+                    .child(
+                        h_flex().flex_1().min_w_0().child(chevron(entry)).child(
+                            label()
+                                .child(div().flex_shrink_0().child(title))
+                                .when_some(driver, |this, driver| {
+                                    this.child(
+                                        div()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_color(theme.muted_foreground)
+                                            .when(driver.unnamed, |this| this.italic())
+                                            .child(driver.name),
+                                    )
+                                })
+                                .children(
+                                    roles
+                                        .into_iter()
+                                        .map(|role| Swatch::new(role.color(theme)).xsmall()),
+                                ),
+                        ),
+                    )
+                    .child(match best {
+                        Some(best) => time_cell(Some(best), false),
+                        // Nothing counted for best: say so, not a blank.
+                        None => time_cell(Some(omatrack_ui::MISSING_VALUE.into()), true),
+                    })
+                    .child(trail_cell().child(plural(laps, "lap", "laps"))),
+            )
+        }
         Row::Lap {
             session: session_id,
             lap,
-            label,
+            number,
+            kind,
             time,
-            delta_to_best,
+            counts,
+            delta,
             best,
             role,
-        } => {
-            item.on_click(move |event, window, cx| {
+        } => item
+            .on_click(move |event, window, cx| {
                 if event.click_count() == 2 {
                     window.dispatch_action(
                         Box::new(SelectLap {
@@ -914,51 +1319,57 @@ fn render_row(entry: &TreeEntry, index: &RowIndex, cx: &App) -> ListItem {
                 h_flex()
                     .w_full()
                     .gap_1()
-                    // Role lane: the swatch and P/R letter of a loaded role.
-                    .child(h_flex().flex_shrink_0().w(rems(1.75)).gap_0p5().when_some(
-                        role,
-                        |this, role| {
-                            this.child(Swatch::new(role.color(theme)).xsmall()).child(
-                                div()
-                                    .text_xs()
-                                    .font_family(theme.mono_font_family.clone())
-                                    .text_color(theme.muted_foreground)
-                                    .child(role.marker()),
-                            )
-                        },
-                    ))
-                    .child(div().w(rems(2.5)).child(label))
-                    .child(
-                        div()
-                            .w(rems(4.5))
-                            .text_right()
-                            .font_family(theme.mono_font_family.clone())
-                            .child(time),
-                    )
                     .child(
                         h_flex()
                             .flex_1()
-                            .justify_end()
+                            .min_w_0()
+                            // Role lane: the swatch and P/R letter of a
+                            // loaded role, under the recording's chevron.
+                            .child(lead().gap_0p5().when_some(role, |this, role| {
+                                this.child(Swatch::new(role.color(theme)).xsmall()).child(
+                                    div()
+                                        .text_xs()
+                                        .font_family(mono.clone())
+                                        .text_color(role.color(theme))
+                                        .child(role.marker()),
+                                )
+                            }))
+                            .child(
+                                label()
+                                    .when_some(number, |this, number| {
+                                        this.child(
+                                            div()
+                                                .flex_shrink_0()
+                                                .when(role.is_some(), |this| this.font_semibold())
+                                                .child(number),
+                                        )
+                                    })
+                                    .when_some(kind, |this, kind| {
+                                        this.child(
+                                            div()
+                                                .flex_shrink_0()
+                                                .text_xs()
+                                                .text_color(theme.muted_foreground)
+                                                .child(kind),
+                                        )
+                                    }),
+                            ),
+                    )
+                    // A fragment's or pit lap's duration is not a lap time.
+                    .child(time_cell(Some(time), !counts))
+                    .child(
+                        trail_cell()
                             .when(best, |this| {
                                 this.child(Tag::secondary().xsmall().child("Best"))
                             })
                             // Every other lap is slower than the best by
                             // definition: the gap is metadata, not a
                             // gain/loss signal, so it stays muted.
-                            .when_some(delta_to_best, |this, delta| {
-                                let (text, _) =
-                                    format_delta(Some(delta), 3, DeltaSense::LowerIsBetter);
-                                this.child(
-                                    div()
-                                        .font_family(theme.mono_font_family.clone())
-                                        .text_color(theme.muted_foreground)
-                                        .whitespace_nowrap()
-                                        .child(text),
-                                )
+                            .when_some(delta, |this, delta| {
+                                this.child(div().font_family(mono.clone()).child(delta))
                             }),
                     ),
-            )
-        }
+            ),
     }
 }
 
@@ -995,15 +1406,18 @@ impl Focusable for LibraryPanel {
 }
 
 impl Render for LibraryPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let body = match self.render_empty(cx) {
-            Some(empty) => empty,
-            None => div()
-                .flex_1()
-                .min_h_0()
-                .size_full()
-                .child(self.render_tree())
-                .into_any_element(),
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (body, footer) = match self.render_empty(cx) {
+            Some(empty) => (empty, None),
+            None => (
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .size_full()
+                    .child(self.render_tree())
+                    .into_any_element(),
+                Some(self.render_footer(window, cx)),
+            ),
         };
         v_flex()
             .id("library-panel")
@@ -1019,7 +1433,9 @@ impl Render for LibraryPanel {
             .text_color(cx.theme().sidebar_foreground)
             .child(self.render_toolbar(cx))
             .children(self.render_scan_progress(cx))
+            .children(self.render_status(cx))
             .child(div().flex_1().min_h_0().child(body))
+            .children(footer)
     }
 }
 
@@ -1059,8 +1475,10 @@ mod tests {
             session.clone(),
             Row::Session {
                 title: "Q1".into(),
+                driver: None,
                 best: None,
                 laps: 1,
+                roles: Vec::new(),
             },
         );
         index.rows.insert(
@@ -1068,9 +1486,11 @@ mod tests {
             Row::Lap {
                 session: session.clone(),
                 lap: 2,
-                label: "L2".into(),
+                number: Some("L2".into()),
+                kind: None,
                 time: "1:16.500".into(),
-                delta_to_best: None,
+                counts: true,
+                delta: None,
                 best: true,
                 role: None,
             },

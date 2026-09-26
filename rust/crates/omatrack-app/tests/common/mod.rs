@@ -87,12 +87,12 @@ pub fn open(cx: &mut TestAppContext) -> TestApp {
     }
 }
 
-fn summary(laps: &[(i32, f64, bool, &str)]) -> RecordingSummary {
+fn summary(laps: &[(i32, f64, bool, &str)], numbered: bool) -> RecordingSummary {
     let mut start = 0.0;
     let laps: Vec<serde_json::Value> = laps
         .iter()
         .map(|(id, seconds, complete, kind)| {
-            let lap = serde_json::json!({
+            let mut lap = serde_json::json!({
                 "id": id,
                 "start_time": start,
                 "end_time": start + seconds,
@@ -101,6 +101,9 @@ fn summary(laps: &[(i32, f64, bool, &str)]) -> RecordingSummary {
                 "pit_lap": false,
                 "kind": kind,
             });
+            if numbered {
+                lap["source_number"] = serde_json::json!(id);
+            }
             start += seconds;
             lap
         })
@@ -118,9 +121,14 @@ fn summary(laps: &[(i32, f64, bool, &str)]) -> RecordingSummary {
     .expect("synthetic summary")
 }
 
-fn record(path: &str, driver: &str, laps: &[(i32, f64, bool, &str)]) -> CatalogRecord {
+fn record(
+    path: &str,
+    driver: &str,
+    laps: &[(i32, f64, bool, &str)],
+    numbered: bool,
+) -> CatalogRecord {
     let path = PathBuf::from(path);
-    let summary = summary(laps);
+    let summary = summary(laps, numbered);
     let folder: serde_yaml::Mapping = serde_yaml::from_str(&format!(
         "track: {{name: Test Circuit}}\nsession: Q1\ndriver: {{name: {driver}}}\n"
     ))
@@ -142,6 +150,12 @@ fn record(path: &str, driver: &str, laps: &[(i32, f64, bool, &str)]) -> CatalogR
 /// flying laps, in). The files do not exist: loading a lap fails, which is
 /// enough to observe which lap a role asked for.
 pub fn synthetic_snapshot() -> LibrarySnapshot {
+    synthetic_snapshot_numbered(false)
+}
+
+/// [`synthetic_snapshot`]; with `numbered`, laps carry the recording's own
+/// lap numbers (their ids), the way most loggers report them.
+pub fn synthetic_snapshot_numbered(numbered: bool) -> LibrarySnapshot {
     let laps_a = [
         (1, 95.0, false, "out"),
         (2, 76.5, true, "flying"),
@@ -157,14 +171,32 @@ pub fn synthetic_snapshot() -> LibrarySnapshot {
         (5, 91.0, false, "in"),
     ];
     LibrarySnapshot::build(vec![
-        record("/synthetic/2026-09-02/Run1_Q1.pds", "Ada", &laps_a),
-        record("/synthetic/2026-09-02/Run2_Q1.pds", "Grace", &laps_b),
+        record(
+            "/synthetic/2026-09-02/Run1_Q1.pds",
+            "Ada",
+            &laps_a,
+            numbered,
+        ),
+        record(
+            "/synthetic/2026-09-02/Run2_Q1.pds",
+            "Grace",
+            &laps_b,
+            numbered,
+        ),
     ])
 }
 
 /// Install [`synthetic_snapshot`] into the running application.
 pub fn load_synthetic_library(test: &TestApp, cx: &mut TestAppContext) -> LibrarySnapshot {
-    let snapshot = synthetic_snapshot();
+    install_snapshot(test, cx, synthetic_snapshot())
+}
+
+/// Install `snapshot` into the running application.
+pub fn install_snapshot(
+    test: &TestApp,
+    cx: &mut TestAppContext,
+    snapshot: LibrarySnapshot,
+) -> LibrarySnapshot {
     let library = test.app.library.clone();
     let installed = snapshot.clone();
     cx.update(|cx| library.update(cx, |library, cx| library.set_snapshot(installed, cx)));
