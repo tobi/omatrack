@@ -77,6 +77,8 @@ use overlay::{StageOverlay, VideoOverlay, lap_caption};
 pub const CONTROLS_HIDE_AFTER: Duration = Duration::from_millis(2000);
 /// Height of the fullscreen controls, rem.
 const CONTROLS_REMS: f32 = 2.75;
+/// Height of the fullscreen delta lane over the pictures, rem.
+const DELTA_LANE_REMS: f32 = 4.25;
 
 gpui_kit::actions!(
     omatrack,
@@ -1150,28 +1152,28 @@ impl VideoPanel {
             Role::Primary => aspects.0,
             Role::Reference => aspects.1,
         };
-        let reserved =
-            stage::reserved_height(layout, width, height, aspect, strip, controls_height);
-        let panes = stage::compose(layout, width, height - reserved, aspect);
-        let lane_bottom = controls_height + stage::LANE_MARGIN;
-        let bottom_inset = if strip > 0. {
-            strip + controls_height + 2. * stage::LANE_MARGIN
-        } else {
-            controls_height + stage::LANE_MARGIN
-        };
-        let pictures_top = panes
-            .iter()
-            .map(|pane| pane.rect.y)
-            .fold(f32::INFINITY, f32::min);
-        let overlay_stage = StageOverlay {
-            bottom_inset,
-            pictures_top: if pictures_top.is_finite() {
-                pictures_top
-            } else {
-                0.
+        let plan = stage::plan(
+            layout,
+            width,
+            height,
+            aspect,
+            stage::Lanes {
+                strip,
+                delta: DELTA_LANE_REMS * rem,
+                controls: controls_height,
+                band: hud,
             },
+        );
+        let overlay_stage = StageOverlay {
+            delta: plan.delta,
+            band: plan.band,
+            controls: controls_height,
             hud,
+            primary: plan.pane(Role::Primary),
+            reference: plan.pane(Role::Reference),
         };
+        let strip_lane = plan.strip;
+        let panes = plan.panes;
         self.overlay
             .update(cx, |overlay, cx| overlay.set_stage(Some(overlay_stage), cx));
 
@@ -1201,9 +1203,9 @@ impl VideoPanel {
                         .id("video-filmstrip-lane")
                         .test_support()
                         .absolute()
-                        .left(px(stage::LANE_MARGIN))
-                        .right(px(stage::LANE_MARGIN))
-                        .bottom(px(lane_bottom))
+                        .left(px(strip_lane.x))
+                        .top(px(strip_lane.y))
+                        .w(px(strip_lane.w))
                         .child(filmstrip),
                 )
             })
@@ -1211,8 +1213,7 @@ impl VideoPanel {
             .into_any_element()
     }
 
-    /// One picture on the stage, at its computed place; an inset is framed
-    /// and carries a compact caption.
+    /// One picture on the stage, at its computed place; an inset is framed.
     fn render_stage_pane(&self, pane: stage::Pane, cx: &App) -> AnyElement {
         let view = match pane.role {
             Role::Primary => self.primary_view.clone(),
@@ -1240,9 +1241,6 @@ impl VideoPanel {
                     .shadow_lg()
             })
             .when_some(view, |this, view| this.child(view))
-            .when(pane.inset, |this| {
-                this.children(self.render_caption(pane.role, true, cx))
-            })
             .into_any_element()
     }
 

@@ -687,17 +687,23 @@ fn keys_compose_layouts_and_f_escape_open_and_close_the_stage(cx: &mut TestAppCo
         assert!(window.try_find("video-panel").is_none());
         // The role labels of the pair head the stage.
         assert!(window.try_find("video-delta").is_some());
-        // The filmstrip rides on the stage, above the controls.
+        // The filmstrip rides on the stage above the pictures (as in the
+        // dock), the delta lane between them, all above the controls.
         let lane = window.find("video-filmstrip-lane").bounds();
         let controls = window.find("video-stage-controls").bounds();
         assert!(
             lane.bottom() <= controls.top(),
             "{lane:?} above {controls:?}"
         );
-        // The picture is aspect-fit inside the stage.
         let stage = window.find("video-fullscreen").bounds();
         let pane = window.find("primary-video-pane").bounds();
-        assert!(stage.contains(&pane.origin) && pane.bottom() <= lane.top());
+        let delta = window.find("video-delta").bounds();
+        assert!(stage.contains(&pane.origin) && lane.bottom() <= delta.top());
+        assert!(
+            (delta.bottom() - pane.top()).abs() < px(1.),
+            "the delta lane touches the pictures: {delta:?} {pane:?}"
+        );
+        assert!(pane.bottom() <= controls.top());
         let video = workspace.panels().focus_handle(PanelKind::Video, cx);
         assert!(video.is_focused(window), "the stage holds the focus");
     })

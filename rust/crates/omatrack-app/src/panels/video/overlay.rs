@@ -28,7 +28,7 @@ use std::sync::Arc;
 use gpui_kit::component::{ActiveTheme as _, StyledExt as _, h_flex, kbd::Kbd, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, Context, Hsla, InteractiveElement as _, IntoElement, MouseButton,
+    AnyElement, App, Context, InteractiveElement as _, IntoElement, MouseButton,
     ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
     Subscription, TestSupportExt as _, Window, div, linear_color_stop, linear_gradient, px,
 };
@@ -48,15 +48,9 @@ use crate::state::AppState;
 pub const GAP_ACCURACY_M: f64 = 1.0;
 /// The delta bar's full scale either side of centre, seconds.
 const DELTA_FULL_SCALE: f64 = 1.0;
-/// The delta bar's track, px.
-const DELTA_BAR_WIDTH: f32 = 260.;
-const DELTA_BAR_HEIGHT: f32 = 18.;
-/// Approximate height of the delta block (labels, bar, readout), px.
-const DELTA_BLOCK_HEIGHT: f32 = 118.;
-/// The bar and readout's share of [`DELTA_BLOCK_HEIGHT`], px.
-const DELTA_BAR_BLOCK: f32 = 64.;
-/// Speed deltas (km/h) at which the rate colour is at full strength.
-const RATE_FULL_KMH: f64 = 5.0;
+/// The delta bar's track under the readout, px.
+const DELTA_BAR_WIDTH: f32 = 240.;
+const DELTA_BAR_HEIGHT: f32 = 6.;
 
 /// Readouts of the HUD at one cursor.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -119,14 +113,17 @@ impl HudReadout {
 /// How the panel presents the fullscreen stage to this layer.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StageOverlay {
-    /// Height at the stage bottom the band keeps clear of (filmstrip lane
-    /// and controls), px.
-    pub bottom_inset: f32,
-    /// Top of the highest picture, px: the delta block sits in the
-    /// headroom above it when there is room.
-    pub pictures_top: f32,
+    /// The delta lane, directly on top of the pictures.
+    pub delta: stage::Rect,
+    /// The band's lane below the pictures (its default place).
+    pub band: stage::Rect,
+    /// Height of the controls at the stage bottom the band keeps clear of.
+    pub controls: f32,
     /// The telemetry band is shown (the stage's HUD toggle).
     pub hud: bool,
+    /// Each role's picture, when it is on the stage.
+    pub primary: Option<stage::Rect>,
+    pub reference: Option<stage::Rect>,
 }
 
 /// A drag of the band in progress (stage px).
@@ -297,19 +294,21 @@ impl VideoOverlay {
         let readout = shown.as_ref().map(|shown| {
             HudReadout::at(&shown.primary, shown.comparison.as_deref(), shown.fraction)
         });
-        let hud_size = telemetry_hud::hud_size(stage_size.0);
+        let hud_size = (stage.band.w, stage.band.h);
+        let bottom_inset = stage.controls;
         let origin = match self.drag {
             Some(drag) => drag.origin,
             None => stage::hud_origin(
                 stage_size,
                 hud_size,
-                stage.bottom_inset,
+                bottom_inset,
                 self.stored_position(cx),
+                (stage.band.x, stage.band.y),
             ),
         };
         let continuous = self.app.video.read(cx).is_continuous(cx);
         let band = match (&shown, stage.hud) {
-            (Some(shown), true) => {
+            (Some(shown), true) if hud_size.0 > 0. => {
                 let data = self.hud_data(shown);
                 let colors = TelemetryHudColors::from_theme(cx.theme());
                 let gap = readout.and_then(|r| r.gap);
@@ -363,8 +362,7 @@ impl VideoOverlay {
             }
             _ => None,
         };
-        let delta_bar = self.render_delta_bar(stage, readout, stage_size, cx);
-        let bottom_inset = stage.bottom_inset;
+        let delta_bar = self.render_delta_lane(stage, readout, cx);
         let end_drag = move |this: &mut Self, cx: &mut Context<Self>| {
             let Some(drag) = this.drag.take() else {
                 return;
@@ -409,113 +407,119 @@ impl VideoOverlay {
             .into_any_element()
     }
 
-    /// The live delta at the top of the stage: role labels either side of
-    /// centre, the gain/loss bar and the Δt readout (with `≈` and no
-    /// gain/loss colour when the alignment is LOW confidence).
-    fn render_delta_bar(
+    /// The delta lane on top of the pictures: each role's lap over its own
+    /// picture (primary at the left edge, reference at the right) and the
+    /// live Δt at the centre, the stage's largest number, over a gain/loss
+    /// bar. Green ahead, red behind; muted with `≈` when the alignment is
+    /// LOW confidence.
+    fn render_delta_lane(
         &self,
         stage: StageOverlay,
         readout: Option<HudReadout>,
-        stage_size: (f32, f32),
         cx: &App,
     ) -> Option<AnyElement> {
         let session = self.app.session.read(cx);
         let primary = session.slot(crate::actions::Role::Primary)?;
         let reference = session.slot(crate::actions::Role::Reference);
-        let comparing = readout.is_some_and(|r| r.delta.is_some());
         let approximate = self.approximate(cx);
         let theme = cx.theme();
-        let context_width = ((stage_size.0 - DELTA_BAR_WIDTH - 48.) / 2.).clamp(100., 210.);
+        let lane = stage.delta;
         let video = self.app.video.read(cx);
-        let label = |role: crate::actions::Role, info: &crate::state::LapInfo, right: bool| {
+        let label = |role: crate::actions::Role, info: &crate::state::LapInfo| {
             let lap_role = match role {
                 crate::actions::Role::Primary => LapRole::Primary,
                 crate::actions::Role::Reference => LapRole::Reference,
             };
+            let right = lap_role == LapRole::Reference;
             let color = lap_role.color(theme);
-            let mut detail = lap_caption(&info.label, video.lap(role)).to_string();
-            if !info.time.is_empty() {
-                detail.push_str(" · ");
-                detail.push_str(&info.time);
-            }
+            let caption = lap_caption(&info.label, video.lap(role));
             let name = info
                 .driver
                 .clone()
                 .unwrap_or_else(|| lap_role.label().into());
-            v_flex()
-                .w(px(context_width))
-                .flex_shrink_0()
-                .gap_0p5()
-                .when(right, |this| this.items_end())
-                .when(!right, |this| this.items_start())
+            h_flex()
+                .gap_2()
+                .items_center()
+                .when(right, |this| this.flex_row_reverse())
                 .child(
-                    h_flex()
-                        .gap_1p5()
-                        .max_w_full()
-                        .when(right, |this| this.flex_row_reverse())
-                        .child(
-                            div()
-                                .flex_shrink_0()
-                                .px_1()
-                                .rounded(theme.radius_tokens().sm)
-                                .bg(color)
-                                .text_color(match lap_role {
-                                    LapRole::Primary => theme.primary_foreground,
-                                    LapRole::Reference => theme.warning_foreground,
-                                })
-                                .text_label()
-                                .numeric()
-                                .font_semibold()
-                                .child(lap_role.marker()),
-                        )
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_body()
-                                .font_medium()
-                                .text_color(theme.foreground)
-                                .child(name),
-                        ),
+                    div()
+                        .flex_shrink_0()
+                        .px_1()
+                        .rounded(theme.radius_tokens().sm)
+                        .bg(color)
+                        .text_color(match lap_role {
+                            LapRole::Primary => theme.primary_foreground,
+                            LapRole::Reference => theme.warning_foreground,
+                        })
+                        .text_label()
+                        .numeric()
+                        .font_semibold()
+                        .child(lap_role.marker()),
+                )
+                .when(!info.time.is_empty(), |this| {
+                    this.child(
+                        div()
+                            .text_heading()
+                            .numeric()
+                            .text_color(color)
+                            .child(info.time.clone()),
+                    )
+                })
+                .child(
+                    div()
+                        .text_body()
+                        .numeric()
+                        .text_color(theme.foreground)
+                        .child(caption),
                 )
                 .child(
                     div()
-                        .max_w_full()
+                        .min_w_0()
                         .truncate()
-                        .text_caption()
-                        .numeric()
+                        .text_body()
                         .text_color(theme.muted_foreground)
-                        .child(SharedString::from(detail)),
+                        .child(name),
                 )
         };
-        let labels = h_flex()
-            .justify_center()
-            .items_start()
-            .gap_6()
-            .child(label(crate::actions::Role::Primary, primary.info(), true))
-            .when_some(reference, |this, slot| {
-                this.child(label(crate::actions::Role::Reference, slot.info(), false))
-            });
+        // Each label over its own picture, clear of the centre readout.
+        let side = (lane.w * 0.5 - DELTA_BAR_WIDTH * 0.5 - 24.).max(0.);
+        let primary_label = stage.primary.map(|rect| {
+            div()
+                .absolute()
+                .bottom_0()
+                .pb_2()
+                .left(px((rect.x - lane.x).max(0.)))
+                .pl_3()
+                .max_w(px(side))
+                .overflow_hidden()
+                .child(label(crate::actions::Role::Primary, primary.info()))
+        });
+        let reference_label = reference.zip(stage.reference).map(|(slot, rect)| {
+            div()
+                .absolute()
+                .bottom_0()
+                .pb_2()
+                .right(px((lane.right() - rect.right()).max(0.)))
+                .pr_3()
+                .max_w(px(side))
+                .flex()
+                .justify_end()
+                .overflow_hidden()
+                .child(label(crate::actions::Role::Reference, slot.info()))
+        });
 
-        let bar = readout.and_then(|r| r.delta).map(|delta| {
-            let gaining = match readout.and_then(|r| r.speed_delta) {
-                Some(speed_delta) => speed_delta >= 0.0,
-                None => delta <= 0.0,
-            };
-            let rate = if approximate {
+        let readout_delta = readout.and_then(|r| r.delta);
+        let centre = readout_delta.map(|delta| {
+            let color = if approximate {
                 theme.muted_foreground
+            } else if delta.abs() < 0.005 {
+                theme.foreground
+            } else if delta < 0.0 {
+                theme.success
             } else {
-                let base = if gaining { theme.success } else { theme.danger };
-                let strength = readout
-                    .and_then(|r| r.speed_delta)
-                    .map_or(1.0, |d| (d.abs() / RATE_FULL_KMH).min(1.0));
-                mix(
-                    theme.muted_foreground,
-                    base,
-                    (0.55 + 0.45 * strength) as f32,
-                )
+                theme.danger
             };
-            let dim = rate.opacity(0.38);
+            let dim = color.opacity(0.35);
             let share = (delta.abs() / DELTA_FULL_SCALE).min(1.0) as f32;
             let fill_w = DELTA_BAR_WIDTH * 0.5 * share;
             let ahead = delta < 0.0;
@@ -534,8 +538,23 @@ impl VideoOverlay {
                 .role(Role::Meter)
                 .aria_label(spoken)
                 .test_support()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left_0()
+                .right_0()
                 .items_center()
+                .justify_end()
+                .pb_2()
                 .gap_1()
+                .child(
+                    div()
+                        .text_stage()
+                        .line_height(gpui_kit::relative(1.))
+                        .numeric()
+                        .text_color(color)
+                        .child(text),
+                )
                 .child(
                     div()
                         .relative()
@@ -543,9 +562,7 @@ impl VideoOverlay {
                         .h(px(DELTA_BAR_HEIGHT))
                         .rounded_full()
                         .overflow_hidden()
-                        .border_1()
-                        .border_color(theme.border.opacity(0.7))
-                        .bg(theme.background.opacity(0.9))
+                        .bg(theme.foreground.opacity(0.1))
                         .when(fill_w > 0.5, |this| {
                             this.child(
                                 div()
@@ -561,14 +578,14 @@ impl VideoOverlay {
                                     .bg(if ahead {
                                         linear_gradient(
                                             90.,
-                                            linear_color_stop(rate, 0.),
+                                            linear_color_stop(color, 0.),
                                             linear_color_stop(dim, 1.),
                                         )
                                     } else {
                                         linear_gradient(
                                             90.,
                                             linear_color_stop(dim, 0.),
-                                            linear_color_stop(rate, 1.),
+                                            linear_color_stop(color, 1.),
                                         )
                                     }),
                             )
@@ -583,62 +600,22 @@ impl VideoOverlay {
                                 .bg(theme.foreground.opacity(0.7)),
                         ),
                 )
-                .child(
-                    div()
-                        .px_2()
-                        .rounded(theme.radius)
-                        .bg(theme.background.opacity(0.9))
-                        .text_display()
-                        .numeric()
-                        .text_color(rate)
-                        .child(text),
-                )
         });
-        // Centred in the headroom above the pictures when it fits there,
-        // else at the top edge over the picture.
-        let block = DELTA_BLOCK_HEIGHT - if comparing { 0. } else { DELTA_BAR_BLOCK };
-        let top = if stage.pictures_top >= block + 24. {
-            (stage.pictures_top - block) / 2.
-        } else {
-            12.
-        };
         Some(
-            v_flex()
+            div()
                 .id("video-delta")
                 .test_support()
                 .absolute()
-                .left_0()
-                .right_0()
-                .top(px(top))
-                .items_center()
-                .gap_2()
-                .child(
-                    div()
-                        .px_3()
-                        .py_1p5()
-                        .rounded(theme.radius_lg)
-                        .border_1()
-                        .border_color(theme.border.opacity(0.7))
-                        .bg(theme.background.opacity(0.9))
-                        .child(labels),
-                )
-                .when(comparing, |this| this.children(bar))
+                .left(px(lane.x))
+                .top(px(lane.y))
+                .w(px(lane.w))
+                .h(px(lane.h))
+                .children(primary_label)
+                .children(reference_label)
+                .children(centre)
                 .into_any_element(),
         )
     }
-}
-
-/// Linear mix in RGB (never a hue interpolation, which crosses hues).
-fn mix(from: Hsla, to: Hsla, t: f32) -> Hsla {
-    let (a, b) = (from.to_rgb(), to.to_rgb());
-    let lerp = |x: f32, y: f32| x + (y - x) * t;
-    gpui_kit::Rgba {
-        r: lerp(a.r, b.r),
-        g: lerp(a.g, b.g),
-        b: lerp(a.b, b.b),
-        a: lerp(a.a, b.a),
-    }
-    .into()
 }
 
 /// The 3-2-1 card counting into the next lap, centred over the stage; `None`
