@@ -1,5 +1,11 @@
 # Stable embedded video scaling: avoid uninitialized mpv LUT padding
 
+> **1.x investigation.** Measured on the retired Qt 1.x app, which drove
+> libmpv's OpenGL render API. 2.0 (`mpv-player`) uses the software render
+> API, but keeps the builtin bilinear scaler policy below
+> ([AGENTS.md](../AGENTS.md) section 9). The image-reader, acceptance-harness
+> and `build-video-dev/` references describe removed 1.x tooling.
+
 ## Application policy
 
 Omatrack explicitly sets libmpv's `scale`, `cscale`, and `dscale` to **bilinear**.

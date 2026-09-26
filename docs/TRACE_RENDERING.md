@@ -1,5 +1,15 @@
 # Trace rendering: quality without a second graphics stack
 
+> **1.x design record.** This document was written for the retired Qt 1.x
+> renderer. Its rendering semantics (source-ordered min/max decimation, NaN
+> pen-up, local reference inversion, the 0.1 px slope corridor, logical-pixel
+> strokes with shared joins, fills to a transparent baseline, paint order,
+> the 1e-7 zoom floor) carry over to 2.0 and are enforced by
+> [AGENTS.md](../AGENTS.md) section 8 and `omatrack_trace`. The Qt APIs,
+> controls, CMake/CTest commands, autotest variables and measurements below
+> are history; 2.0 is measured with
+> `cargo run --release -p omatrack-trace --example trace_bench`.
+
 ## Decision
 
 Use **Qt Quick's public scene-graph API, joined coverage meshes, and

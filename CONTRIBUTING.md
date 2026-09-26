@@ -2,53 +2,89 @@
 
 ## Before changing code
 
-Open an issue for broad product or architecture changes. Small fixes with a clear scope can go directly to a pull request.
+Open an issue for broad product or architecture changes. Small fixes with a
+clear scope can go directly to a pull request. [AGENTS.md](AGENTS.md) is the
+product and engineering contract: read the section for the crate you touch.
 
-Omatrack preserves three boundaries:
+Boundaries:
 
-1. Vendor-specific decoding belongs in `third_party/motorsport-telemetry`.
-2. Cross-format normalization and analysis belong in the Qt-free C++ core.
-3. QML owns layout and orchestration; hot telemetry loops and rendering do not belong in JavaScript.
+1. Vendor decoding belongs upstream in
+   [`motorsport-telemetry-rs`](https://github.com/tobi/motorsport-telemetry-rs);
+   Omatrack takes it through a pinned revision in `rust/Cargo.toml`.
+2. Cross-format normalization, laps, alignment, delta and corner analysis
+   belong in `omatrack-core` (no GPUI). The UI never branches on file format.
+3. Track identity, geometry and corners come from
+   [Track Atlas](https://github.com/tobi/track-atlas). Contribute
+   authoritative metadata upstream, then bump the pin.
+4. UI uses gpui-kit components and theme tokens; first-party elements only for
+   hot telemetry drawing.
 
-Track identity, geometry, and curated corner metadata come from [Track Atlas](https://github.com/tobi/track-atlas). Contribute authoritative metadata upstream rather than duplicating it in this repository.
+## Gates
 
-## Development workflow
-
-Configure and build with the checked-in presets:
+From `rust/`, every step must pass:
 
 ```sh
-cmake --preset debug
-cmake --build --preset debug
-ctest --preset debug
+scripts/check.sh
 ```
 
-Before opening a pull request:
+It runs `cargo fmt --all --check`, `cargo clippy --workspace --all-targets
+--locked -- -D warnings`, `cargo test --workspace --locked`, the `#[ignore]`d
+`real_*` tests when `OMATRACK_FIXTURES` (or the default fixture folder) is
+present, and the CLI regression against the parity baseline when it exists.
+Additionally, for the relevant changes:
 
 ```sh
-cmake --build --preset debug --target lint
-ctest --preset debug
+cargo run --release -p omatrack-trace --example trace_bench   # renderer changes
+cargo build --release --locked -p omatrack-app               # release build
+scripts/screenshot.sh                                         # headless visual check (target/shot/shot.png)
 ```
 
-Use `cmake --build --preset debug --target cpp_format` and `qml_format` to apply the project formatters. Rust sources use `cargo fmt`.
+`scripts/screenshot.sh` renders the app in a headless Wayland compositor via
+`nix shell` (cage + grim); run it outside any sandbox. It is not a substitute
+for checking native visuals and frame time on a real display.
+
+### Lockfile
+
+The GPUI stack is yanked from the crates.io index. Always pass `--locked` and
+never run `cargo update`; `rust/scripts/seed-cargo-lock.sh` documents how the
+lockfile was seeded. Parallel runners use their own
+`CARGO_TARGET_DIR=rust/target-<slug>`.
+
+### Parity baseline
+
+`rust/parity/run.sh` runs the headless CLI over 89 cases and `diff -r`s
+stdout, stderr, CSVs and exit codes against a frozen baseline in
+`rust/parity/baseline/` (gitignored: it holds GPS), captured from the last
+byte-identical run of the retired C++ implementation. It must report 0 diffs.
+A deliberate analytical change is accepted with `parity/run.sh --rebaseline`,
+with the reason in the commit message.
 
 ## Verification expectations
 
-- Parser or bridge changes: parse a copied real fixture for every affected format and run the corresponding Rust crate tests.
-- Normalization or lap changes: run `omatrack unify` on a copied real fixture and inspect sample counts, units, distance monotonicity, and physical plausibility.
-- Comparison changes: exercise primary/reference laps with different durations and with missing or degraded GPS.
-- UI or renderer changes: run the native application, inspect the changed interaction, and check hover/zoom paint timing against the 8.33 ms design target and 16.67 ms hard ceiling.
-- Video changes: verify the native OpenGL scene graph. Offscreen screenshots do not establish libmpv and `QQuickFramebufferObject` context sharing.
+- Parser pin bumps: parse a copied real fixture for every affected format.
+- Normalization or lap changes: run `omatrack2 unify` on a copied fixture and
+  check sample counts, units, distance monotonicity and physical plausibility.
+- Comparison changes: exercise laps of different durations and with missing
+  or degraded GPS.
+- Corner checks: run `omatrack2 corners` on two real laps of one track and
+  read the notes; a check that fires everywhere is noise.
+- UI changes: a headless GPUI test (`#[gpui_kit::test]`) driving real actions.
+- Renderer changes: before/after `trace_bench` numbers against the 8.33 ms
+  design target and 16.67 ms hard ceiling.
 
-Never modify, rename, or delete source telemetry or onboard video. Generated CSV files and caches belong beside copied fixtures or in disposable locations.
+## Telemetry is read-only
 
-## Pull requests
+Never modify, rename or delete source telemetry or onboard video, and never
+write beside it. Real-file tests read fixtures only; derived files belong in
+the target directory or `$TMPDIR`. Do not commit telemetry, video, parity
+output or CSV exports (they contain GPS).
 
-Keep changes focused. Include:
+## Commits and pull requests
 
-- the problem and chosen behavior;
-- affected formats and platforms;
-- exact commands or scenarios used for verification;
-- before/after timing for renderer hot-path changes;
-- screenshots for visible UI changes, with private telemetry details removed.
-
-Do not commit build trees, compile databases, telemetry files, videos, credentials, or machine-specific configuration.
+- Logical steps with subject `<scope>: <summary>`, where scope is one of
+  `core`, `cli`, `library`, `trace`, `mpv-player`, `ui`, `app`, `rust`,
+  `docs`; a short body with what, why and gate results for behaviour changes.
+- Stage explicit paths (`git add <paths>`), never `git add -A` or `.`.
+- Pull requests state the problem and chosen behaviour, the exact
+  verification commands, before/after timing for renderer hot paths, and
+  screenshots for visible changes with private telemetry details removed.

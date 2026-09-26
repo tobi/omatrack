@@ -1,49 +1,81 @@
 # Third-party notices
 
-Omatrack's MIT license covers the application code and original project assets. The following components and services retain separate terms.
+Omatrack's MIT license covers the application code and original project
+assets. The components below retain their own terms. Versions and revisions
+are those pinned in `rust/Cargo.toml` and `rust/Cargo.lock`; licenses were read
+from each crate's published manifest and license files. No third-party source
+is copied into this repository.
 
-## Bundled components
+## Statically linked Rust crates
 
-### Motorsport telemetry for Rust
+### GPUI and gpui-kit
 
-Omatrack depends on [`tobi/motorsport-telemetry-rs`](https://github.com/tobi/motorsport-telemetry-rs) at the revision recorded in `third_party/motorsport-telemetry/Cargo.lock`. It is distributed under the MIT License. The local `third_party/motorsport-telemetry` directory contains only Omatrack's C ABI adapter, header-generation tool, and dependency manifests; no vendor parser source is copied into this repository.
+- `gpui-pre` 0.3.6 and its platform crates (`gpui-pre-linux`,
+  `gpui-pre-wgpu`, `gpui-pre-platform`, …) — Apache License 2.0.
+- `gpui-kit` 0.6.6, `gpui-component` 0.6.6, `gpui-base` 0.6.6 — Apache
+  License 2.0.
+- `gpui-kit-assets` 0.6.6 — Apache License 2.0; it embeds
+  [Lucide](https://lucide.dev/) icons under the ISC License
+  (`LICENSE-LUCIDE` in that crate).
 
-### cbindgen
+### Motorsport telemetry parsers and Track Atlas crate
 
-The Rust-to-C bridge header is generated at build time with
-[`cbindgen`](https://github.com/mozilla/cbindgen), distributed under the Mozilla
-Public License 2.0. Its pinned version and checksum are recorded in
-`third_party/motorsport-telemetry/Cargo.lock`.
+[`tobi/motorsport-telemetry-rs`](https://github.com/tobi/motorsport-telemetry-rs)
+at revision `cac837feb12fe112bd85a159e2d6d49543647313` (1.3.5):
+`aim-telemetry`, `cosworth-telemetry`, `motec-telemetry`,
+`racelogic-telemetry`, `motorsport-telemetry-core`, `telemetry-format` and
+`motorsport-track-atlas` — MIT License. The embedded track catalog inside
+`motorsport-track-atlas` carries its own data terms (below).
 
-### Geist fonts
+### libmpv bindings
 
-The Geist and Geist Mono font files under `src/app/assets/fonts` are distributed under the SIL Open Font License 1.1. The license text is preserved at `src/app/assets/fonts/OFL.txt`.
+`libmpv2-sys` 4.0.1 (FFI declarations for libmpv) — declared `LGPL-2.1`.
 
-## Runtime dependencies
+### Other crates
 
-Omatrack links to these dependencies supplied by the operating system or build
-environment. Portable release artifacts bundle their redistributable dynamic
-libraries and transitive runtime dependencies; source builds normally use the
-system copies. Their source is not copied into this repository.
+The remaining dependency graph is predominantly MIT and/or Apache-2.0, with
+crates under BSD-2-Clause, BSD-3-Clause, ISC, Zlib, 0BSD, CC0-1.0,
+Unlicense (dual with MIT), Unicode-3.0 (ICU data crates), bzip2-1.0.6
+(`libbz2-rs-sys`) and MPL-2.0 (`option-ext`, via `dirs-sys`; `cbindgen` and `dwrote` appear
+only in the macOS and Windows platform graphs). For the exact list of a build,
+run `cargo metadata --locked` (or a tool such as `cargo about`) in `rust/`;
+this file does not reproduce every license text.
 
-- **Qt 6** — available under the GNU LGPL v3, GNU GPL v2/v3, or commercial terms. See <https://www.qt.io/licensing>.
-- **libmpv** — license depends on how mpv was built; LGPL v2.1-or-later is available for qualifying builds, while builds with GPL components are GPL. See <https://github.com/mpv-player/mpv/blob/master/Copyright>.
-- **libyaml** — MIT License. See <https://github.com/yaml/libyaml>.
-- **ONNX Runtime (optional image reader)** — MIT License and its bundled third-party notices. See <https://github.com/microsoft/onnxruntime>. An enabled build links the explicitly selected SDK; Linux install rules retain its `LICENSE` and `ThirdPartyNotices.txt` under the application's documentation directory.
-- **FFmpeg libraries (optional independent image decoder)** — libavformat, libavcodec, libavutil and libswscale; licensing depends on the exact build and enabled components (LGPL/GPL). See <https://ffmpeg.org/legal.html>.
+## Dynamically linked system libraries
 
-The image reader includes original C++ preprocessing that reproduces Pillow's
-BILINEAR resampling semantics, validated against Pillow. No Pillow source is
-bundled; Pillow retains its separate HPND-style terms at
-<https://github.com/python-pillow/Pillow/blob/main/LICENSE>.
+Supplied by the operating system; not bundled.
 
-Model weights and private evaluation footage are **not covered by Omatrack's MIT
-license and are not bundled in this repository**. Explicit local model staging
-is a build convenience, not permission to publish or redistribute the model or
-its source data.
+- **libmpv** (mpv ≥ 0.41, client API ≥ 2.5) — the license depends on how mpv
+  was built: LGPL-2.1-or-later for builds without GPL components, GPL
+  otherwise (distribution packages are commonly GPL builds). See
+  <https://github.com/mpv-player/mpv/blob/master/Copyright>. It pulls in
+  FFmpeg, whose terms likewise depend on its build
+  (<https://ffmpeg.org/legal.html>).
+- **Graphics and windowing** used by GPUI on Linux (Wayland client libraries,
+  libxkbcommon, libxcb, the Vulkan loader, fontconfig, FreeType) — each under
+  its own permissive or FreeType/fontconfig license as shipped by the
+  distribution.
 
-Distributors are responsible for satisfying the terms of the exact dependency builds they ship.
+Distributors are responsible for satisfying the terms of the exact
+dependency builds they ship.
 
-## Network-fetched Track Atlas data
+## Track Atlas data
 
-Omatrack independently downloads and caches Track Atlas metadata from <https://github.com/tobi/track-atlas>; it does not consume the optional Track Atlas facade from `motorsport-telemetry-rs`. No Track Atlas dataset is bundled in this repository. Track Atlas combines MIT-licensed curated overrides with data from OpenStreetMap and other attributed upstream sources; see its current `LICENSE` and `ATTRIBUTION.md` before redistributing cached data.
+The track catalog embedded through `motorsport-track-atlas` is generated from
+[Track Atlas](https://github.com/tobi/track-atlas). Omatrack shows this
+attribution (`omatrack_core::track::ATTRIBUTION`) wherever atlas data appears:
+
+> Track data: Track Atlas (https://github.com/tobi/track-atlas).
+> Geometry and named-corner coordinates are derived from OpenStreetMap data
+> via the Overpass API: © OpenStreetMap contributors, licensed under the Open
+> Database License (ODbL), https://opendatacommons.org/licenses/odbl/.
+> Ordered corner metadata and the colloquial corner-name base layer come from
+> Lovely-Sim-Racing/lovely-track-data
+> (https://github.com/Lovely-Sim-Racing/lovely-track-data); corner and
+> straight names are credited upstream to Racing Circuits.
+> Curated overrides (official names, complex grouping) are offered under the
+> Track Atlas MIT license.
+
+Centerlines and corner locations are derived data and retain the ODbL
+attribution. Reuse of the lovely-track-data layer follows that project's
+upstream terms, which are not restated here.

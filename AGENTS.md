@@ -3,10 +3,9 @@
 Omatrack 2.0 is the Rust + GPUI rewrite, built on branch `gpui-port` under
 [`rust/`](rust/) with **gpui-kit 0.6.6** and its component set
 (`gpui_kit::component` = gpui-component 0.6.6). This file is its product and
-engineering contract. The Qt 1.x contract is kept at
-[docs/legacy/AGENTS.qt.md](docs/legacy/AGENTS.qt.md); the Qt tree (`src/`,
-`cli/`, `third_party/`) stays as the **reference oracle** until parity and is
-not extended.
+engineering contract. The Qt 1.x application has been removed; its
+contract is kept for design history at
+[docs/legacy/AGENTS.qt.md](docs/legacy/AGENTS.qt.md).
 
 Status markers: **[done]** committed on `gpui-port` and gated; **[wip]** being
 built now by the port workflow (uncommitted); **[plan]** designed, not started.
@@ -72,11 +71,10 @@ finish with its Design review and Accessibility checklists.
 | Any UI test | [test.md](.agents/skills/gpui-kit/references/gpui/test.md), [test-examples.md](.agents/skills/gpui-kit/references/gpui/test-examples.md), [test-reference.md](.agents/skills/gpui-kit/references/gpui/test-reference.md) |
 | Core, CLI, parity | Section 6, [rust/AGENTS.md](rust/AGENTS.md), [rust/parity/run.sh](rust/parity/run.sh) |
 
-**Legacy Qt reference.** [docs/legacy/AGENTS.qt.md](docs/legacy/AGENTS.qt.md),
-[.agents/skills/omatrack/SKILL.md](.agents/skills/omatrack/SKILL.md) and the
-`qt-*` skills (e.g. [qt-qml](.agents/skills/qt-qml/SKILL.md)) describe the
-Qt 1.x app. Use them only to read oracle behaviour; their QML/CMake mechanics do
-not apply to `rust/`.
+**Retired 1.x app.** [docs/legacy/AGENTS.qt.md](docs/legacy/AGENTS.qt.md)
+and [.agents/skills/omatrack/SKILL.md](.agents/skills/omatrack/SKILL.md)
+describe the retired Qt 1.x app, kept for design history only; nothing in them
+applies to `rust/`.
 
 ## 4. Architecture
 
@@ -89,7 +87,7 @@ crates stay GPUI-free.
 | Crate | Status | Owns | Must not own |
 |---|---|---|---|
 | [omatrack-core](rust/crates/omatrack-core) (no GPUI) | **[done]**, byte parity | Recording open via pinned `motorsport-telemetry-rs` (no C ABI), mapping, laps, 50 Hz `UnifiedLap`, alignment, delta, embedded Track Atlas, corners, playback rules, video clock, `ChannelProvider`, `session` (`load_lap`, `Analysis`) | UI, config, executors |
-| [omatrack-cli](rust/crates/omatrack-cli) (no GPUI) | **[done]** | `parse \| unify \| corners \| compare`, port of `cli/Headless.cpp` | A second analysis |
+| [omatrack-cli](rust/crates/omatrack-cli) (no GPUI) | **[done]** | `parse \| unify \| corners \| compare`, the headless command surface | A second analysis |
 | [omatrack-library](rust/crates/omatrack-library) (no GPUI) | **[done]** | Paths, `omatrack.yml`, `TRACK.yml`, metadata precedence, `Location`, index cache, catalog, recents | Analysis, rendering |
 | [omatrack-trace](rust/crates/omatrack-trace) | **[done]** decimate, scales, layout, mesh, lanes, overlay, `TraceStack`, `trace_bench`; **[wip]** corner ruler, track map, damper strip | Trace math and trace/map/damper elements | Session state, parsing |
 | [mpv-player](rust/crates/mpv-player) | **[done]** | libmpv 2.5 player + `VideoView` (section 9) | Any Omatrack type |
@@ -154,9 +152,11 @@ file format.
 
 ## 6. Analytical contracts (carried over unchanged)
 
-Ported from the Qt core with byte parity. Behaviour changes here are product
-decisions and must keep [rust/parity/run.sh](rust/parity/run.sh) green or
-re-baseline it deliberately, with the reason in the commit.
+Ported from the 1.x core with byte parity, now held by
+[rust/parity/run.sh](rust/parity/run.sh) against the frozen baseline (89 cases,
+0 diffs). Behaviour changes here are product decisions and must keep it green
+or re-baseline it deliberately (`--rebaseline`), with the reason in the
+commit.
 
 ### 6.1 Time and source truth
 
@@ -280,7 +280,7 @@ CornerContext {primary, reference metrics, delta-trace time deltas}
 - 2.0 embeds the catalog via the pinned `motorsport-track-atlas` crate
   (`atlas_revision()`); updating data is a pin bump. It is ODbL: show
   `track::ATTRIBUTION` wherever atlas data appears (Preferences > Tracks).
-- If a network refresh returns, the Qt cache contract applies: cache under
+- If a network refresh returns, the 1.x cache contract applies: cache under
   `$XDG_CACHE_HOME/omatrack/`, never in `omatrack.yml`; skip refresh while
   younger than 24 h; work offline; fall back to embedded/cached data, never
   fabricated corners.
@@ -480,19 +480,28 @@ Gates, from `rust/`; a failing gate is a failure:
 
 ```sh
 scripts/check.sh    # fmt --check, clippy -D warnings, test --workspace --locked,
-                    # real_* tests (OMATRACK_FIXTURES), parity if the oracle is built
-parity/build-oracle.sh && parity/run.sh   # 89 cases, 0 diffs
+                    # real_* tests (OMATRACK_FIXTURES), parity if the baseline exists
+parity/run.sh       # against the frozen baseline: 89 cases, 0 diffs
 cargo run --release -p omatrack-trace --example trace_bench
 cargo build --release --locked -p omatrack-app
+scripts/screenshot.sh [-o out.png] [-k keys]   # headless visual check (cage + grim)
 ```
 
 - **Lockfile:** the gpui stack is yanked: always `--locked`, never
   `cargo update` ([seed-cargo-lock.sh](rust/scripts/seed-cargo-lock.sh)).
   Parallel runners use `CARGO_TARGET_DIR=rust/target-<slug>` and `-p` gates.
-- **Parity harness:** Rust CLI vs C++ oracle, same argv[0] and cwd, `diff -r`
-  of stdout, stderr, CSVs, exit codes. Excluded: `--version`, non-numeric
-  `--lap`/`--zone` (Rust exits 2 where C++ aborted). `.pds`/`.ld`/`.vbo` rest
-  on synthetic tests. Outputs carry GPS: gitignored.
+- **Parity harness:** the Rust CLI against a frozen baseline
+  (`rust/parity/baseline/`, captured from the last byte-identical run of the
+  retired C++ oracle), `diff -r` of stdout, stderr, CSVs, exit codes;
+  `--rebaseline` accepts a deliberate change. Excluded: `--version`,
+  non-numeric `--lap`/`--zone` (the port exits 2 where the oracle aborted).
+  `.pds`/`.ld`/`.vbo` rest on synthetic tests. Baseline and outputs carry GPS:
+  gitignored.
+- **Screenshots:** `scripts/screenshot.sh` renders `omatrack2` on a headless
+  Wayland output (`nix shell` cage + grim, keys via wtype) into
+  `target/shot/`. Run it unsandboxed (it binds a Wayland socket). It is a
+  headless visual check only: native on-device visuals, live Omarchy
+  switching and frame time stay UNVERIFIED.
 - **Headless GPUI tests** (`#[gpui_kit::test]`, `TestAppContext`;
   [test.md](.agents/skills/gpui-kit/references/gpui/test.md),
   [test-examples.md](.agents/skills/gpui-kit/references/gpui/test-examples.md)):

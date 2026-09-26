@@ -1,10 +1,10 @@
 # Omatrack 2.0 (Rust/GPUI port) — working rules
 
-This workspace is the GPUI rewrite described at the top of `Cargo.toml`. It
-lives beside the Qt tree (`../src`, `../cli`, `../third_party`), which stays
-the reference oracle until parity — see `../AGENTS.md` and
-`.agents/skills/omatrack/SKILL.md` for that boundary and the CLI parity
-harness (`parity/run.sh`).
+This workspace is Omatrack 2.0, the whole application. `../AGENTS.md` is the
+product and engineering contract. The headless CLI is regression-tested by
+`parity/run.sh` against a frozen, gitignored baseline (`parity/baseline/`,
+captured from the retired C++ implementation; `--rebaseline` accepts a
+deliberate change).
 
 ## Read the GPUI skills first
 
@@ -38,8 +38,9 @@ Minimum reading, every time (paths relative to `../.agents/skills/`):
   integration tests with `#[gpui_kit::test]`).
 - `gpui-kit-design-guides/SKILL.md` and its `references/design-guides.md`
   for any visible surface; run its Design review checklist before finishing.
-- `omatrack/SKILL.md` for the product rules that carry over (corner
-  analyzers, trace rendering principles, read-only test data).
+- `../AGENTS.md` sections 6 and 8 for the product rules (corner analyzers,
+  trace rendering, read-only test data). `omatrack/SKILL.md` describes the
+  retired Qt 1.x app and is design history only.
 
 Never invent a `gpui-kit` API: verify signatures in the registry sources
 (`~/.cargo/registry/src/*/gpui-kit-0.6.6`, `gpui-component-0.6.6`,
@@ -48,10 +49,9 @@ Never invent a `gpui-kit` API: verify signatures in the registry sources
 ## Gates
 
 ```sh
-cargo fmt --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-./parity/run.sh   # CLI parity harness against the Qt/C++ reference; see its usage
+scripts/check.sh      # fmt, clippy -D warnings, tests (--locked), real_*, parity
+./parity/run.sh       # CLI against the frozen baseline: 89 cases, 0 diffs
+scripts/screenshot.sh # headless visual check; run unsandboxed
 ```
 
 Parallel runners use their own `CARGO_TARGET_DIR`; `parity/run.sh` then

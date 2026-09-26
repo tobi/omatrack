@@ -1,280 +1,127 @@
 <div align="center">
   <img src="assets/omatrack.svg" width="112" height="112" alt="Omatrack logo">
   <h1>Omatrack</h1>
-  <p>Native, cross-format motorsport telemetry analysis.</p>
+  <p>Native, keyboard-first motorsport telemetry analysis.</p>
 
   [![CI](https://github.com/tobi/omatrack/actions/workflows/ci.yml/badge.svg)](https://github.com/tobi/omatrack/actions/workflows/ci.yml)
   [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 </div>
 
-Omatrack is a Qt 6 workstation for drivers and engineers who need one analysis workflow across heterogeneous logger formats. It normalizes every source into the same 50 Hz lap model, so traces, delta, cursor readouts, corner analysis, and synchronized onboard video use one analytical truth.
+Omatrack is a racing-telemetry workstation for drivers and race engineers doing
+post-session analysis. It turns heterogeneous logger files into one model of
+sessions, laps, channels, tracks, corners and corner complexes, and compares a
+primary lap with a reference lap across traces, delta, corner analysis, track
+map and synchronized onboard video. Every view derives from one 50 Hz lap and
+one cached alignment map, so there is a single analytical truth.
 
-Omatrack is under active development. Linux is the primary desktop target;
-Linux, macOS, and Windows are built and tested in CI.
+Omatrack 2.0 is a rewrite in Rust on [GPUI](https://www.gpui.rs/) and
+gpui-kit, in [`rust/`](rust/). It is under active development: the analysis
+core and CLI are complete and regression-tested; the workstation UI is being
+built. Linux (and [Omarchy](https://omarchy.org/) in particular) is the first
+target. The 1.x Qt application has been retired.
 
-## Screenshots
+## Supported formats
 
-### Distance-aligned lap comparison
+- Pi/Cosworth `.pds`
+- MoTeC `.ld`
+- Racelogic `.vbo`
+- AiM `aimd` telemetry embedded in `.mp4`
+- native `.telemetry` and MTJ JSONL
 
-![Omatrack comparison workspace with primary and reference telemetry traces](docs/screenshots/lap-comparison.webp)
-
-Shared cursor readouts, proportional lap strips, range selection, delta, and
-manual damper alignment all use the same normalized lap model.
-
-### Corner analysis
-
-![Omatrack corner analysis comparing braking, turn-in, apex, and throttle pickup](docs/screenshots/corner-analysis.webp)
-
-Corner metrics and trace excerpts keep the primary and reference laps aligned
-through braking, turn-in, apex, and throttle pickup.
-
-## Current capabilities
-
-- Open Pi/Cosworth `.pds`, MoTeC `.ld`, Racelogic `.vbo`, AiM `aimd` telemetry embedded in `.mp4`, and native `.telemetry`. Local native sources are parsed directly; remote conversions use the ETag cache. Sources are never rewritten.
-- Open MP4, MOV, MKV, AVI, M4V, and WebM in fullscreen video mode; Escape returns to the workspace. Video file associations are optional, not a takeover of your media defaults.
-- With the optional image reader configured, collect gear, displayed lap counter and brake/throttle visible fill while watching supported videos. Scan faster than playback from the cursor, backfill the recording, and reuse partial/complete standard `.telemetry` caches. The docked workspace shows real image-derived time traces, not a screenshot HUD. Native telemetry takes precedence and unknown layouts stay unknown. See [progressive extraction and cache setup](docs/VIDEO_TELEMETRY_USAGE.md).
-- Group a library as Track → Date → Session → Laps, with lazy parsing and fastest-lap selection.
-- Compare primary and reference laps through a cached track-station map that remains useful when GPS is sparse or absent.
-- Overlay standard and raw channels, share a cursor, pan, zoom, select ranges, pin lanes, and manually align specialist signals.
-- Derive distance-aligned cumulative delta and corner metrics from the normalized lap arrays.
-- Consume Track Atlas corner ranges through an independent offline cache,
-  spatially map them from the layout centerline when lap GPS is usable, and
-  retain user-owned YAML overrides.
-- Synchronize embedded onboard video through libmpv's OpenGL Render API.
-- Follow the active Omarchy palette on Linux, with a Qt system-palette fallback elsewhere.
-- Connect WebDAV servers, S3 buckets, and Google Cloud Storage buckets from
-  Preferences; remote telemetry is streamed into a local ETag-aware cache,
-  reused without downloads, and available offline. Onboard video plays over
-  the network rather than being downloaded, or is downloaded on request for a
-  flight.
-- Extend the trace workspace with Lua plugins: a `plugin.lua` under
-  `~/.config/omatrack/plugins/<name>/` offers channels for the open session
-  (it sees the track, GPS location, wall-clock window and lap; it gets
-  `http`, jailed `io`, `json` and a persisted `kv` cache) and, once enabled
-  under Channels… → PLUGINS, is drawn as an overlay group like an MTX sidecar.
-  `plugins/weather/` is the worked example: Open-Meteo temperature,
-  precipitation, wind, humidity and pressure across the session. The contract
-  is documented at the top of `src/app/PluginHost.h`.
-- Inspect parsing, channel mapping, lap detection, unification and corner analysis headlessly: `omatrack parse|unify|corners|compare` run before Qt starts, with no window and no configuration.
-
-## Architecture
-
-```mermaid
-flowchart TD
-    F["PDS / LD / VBO / MP4"] --> R["motorsport-telemetry-rs"]
-    R --> B["Panic-safe bulk C ABI"]
-    B --> C["Qt-free C++ normalization core"]
-    C --> CLI["omatrack parse / unify / corners"]
-    C --> S["TelemetryStore"]
-    A["Track Atlas JSONL"] --> S
-    S --> T["C++ trace renderer"]
-    S --> V["libmpv video renderer"]
-    S --> Q["Qt Quick Material UI"]
-```
-
-Vendor decoding stays in Rust. Cross-format racing analysis stays in the Qt-free C++ core. Session state and caching live in `TelemetryStore`; QML owns layout rather than telemetry loops. See [AGENTS.md](AGENTS.md) for the full architecture and engineering contracts.
-
-## Requirements
-
-- CMake 3.21+
-- Ninja
-- C++17 compiler
-- Qt 6.5+ with Core, Gui, Quick, Quick Controls 2, QML, and Network
-- libmpv development files
-- libyaml development files
-- Rust/Cargo 1.84+
-- `pkg-config`
-
-### Arch Linux
-
-```sh
-sudo pacman -S --needed base-devel cmake ninja pkgconf \
-  qt6-base qt6-declarative mpv libyaml rust
-```
-
-### Ubuntu and other Linux distributions
-
-Install Qt 6.5 or newer from your distribution or the Qt installer, then install the native dependencies. On Ubuntu:
-
-```sh
-sudo apt install build-essential cmake ninja-build pkg-config libmpv-dev libyaml-dev
-```
-
-### Windows
-
-Use the **MSYS2 UCRT64** shell:
-
-```sh
-pacman -S --needed git \
-  mingw-w64-ucrt-x86_64-cmake \
-  mingw-w64-ucrt-x86_64-libyaml \
-  mingw-w64-ucrt-x86_64-mpv \
-  mingw-w64-ucrt-x86_64-ninja \
-  mingw-w64-ucrt-x86_64-pkgconf \
-  mingw-w64-ucrt-x86_64-qt6-base \
-  mingw-w64-ucrt-x86_64-qt6-declarative \
-  mingw-w64-ucrt-x86_64-rust
-```
-
-### macOS
-
-Install the native dependencies with Homebrew, then install Qt 6.5 or newer
-from Qt or Homebrew:
-
-```sh
-brew install cmake ninja pkg-config mpv libyaml rust
-```
+Decoding comes from the pinned
+[`motorsport-telemetry-rs`](https://github.com/tobi/motorsport-telemetry-rs)
+crates; track identity, layouts and corners come from the embedded
+[Track Atlas](https://github.com/tobi/track-atlas) catalog. Source telemetry
+and video are never rewritten, renamed or written beside.
 
 ## Build and run
 
+Requirements: stable Rust (1.90+), `pkg-config`, libmpv **2.5 or newer**
+development files (mpv 0.41+), and the usual GPUI Linux libraries (Wayland,
+libxkbcommon, libxcb, Vulkan loader, fontconfig, freetype). On Arch Linux:
+
 ```sh
-git clone https://github.com/tobi/omatrack.git
-cd omatrack
-cmake --preset release
-cmake --build --preset release
-./build/omatrack /path/to/telemetry-directory
+sudo pacman -S --needed base-devel pkgconf rust mpv \
+  wayland libxkbcommon libxkbcommon-x11 libxcb vulkan-icd-loader \
+  fontconfig freetype2
 ```
 
-On macOS, run `./build/Omatrack.app/Contents/MacOS/Omatrack`. On Windows, run
-`./build/omatrack.exe` from the UCRT64 shell.
+Older distribution libmpv packages (for example current Ubuntu LTS) are too
+old; the build fails with a clear message when libmpv < 2.5.
 
-#### Windows release zip
+```sh
+git clone https://github.com/tobi/omatrack.git
+cd omatrack/rust
+cargo build --release --locked -p omatrack-app
+target/release/omatrack2
+```
 
-`./scripts/package-windows.sh` builds the release, stages `cmake --install`,
-and writes `dist/omatrack-<version>-windows-x86_64.zip`. The layout is flat:
-`omatrack.exe` and the DLLs it loads sit at the archive
-root next to a `qt.conf`, while Qt plugins, QML modules, and license/doc files
-live under `lib/` and stay out of the way.
-
-On a fresh install the app defaults to the platform Documents folder (honoring
-Windows OneDrive redirection) and creates `Documents/Telemetry` when it does
-not exist.
-
-Open a single supported telemetry or video file with the file picker, by dropping it on the window, or by passing it directly (`./build/omatrack /path/to/file`). The six most recently opened files are kept separately from configured telemetry directories. Configuration is stored in `$XDG_CONFIG_HOME/omatrack/omatrack.yml` on Linux, falling back to `~/.config/omatrack/omatrack.yml`.
-An existing pre-rename `racecraft.yml`, legacy `QSettings` preferences, and Track Atlas cache are imported once; legacy files remain untouched as a backup.
+Always build with `--locked`: the GPUI stack is yanked from the crates.io
+index and resolves only through the checked-in `Cargo.lock`.
 
 ## Headless inspection
 
-```sh
-./build/omatrack parse /path/to/copied-session.pds
-./build/omatrack unify /path/to/copied-session.pds \
-  --output /tmp/session.unified.csv
-./build/omatrack corners /path/to/session.mp4 --lap 4 \
-  --reference /path/to/session.mp4 --reference-lap 3 --zone 0.05:0.09
-```
-
-These commands are dispatched before Qt is initialised, so they need no
-display and never read `omatrack.yml`. `./build/omatrack-cli` is a thin
-test-only binary over the same commands (used by CTest and the benchmark
-scripts); it is not installed or shipped.
-
-`unify` refuses to overwrite an existing file. Its CSV includes GPS latitude and longitude when available; treat exported files as sensitive location data. Omatrack never rewrites source telemetry or video.
-
-## Install
+The same binary runs the analysis headlessly when the first argument is a
+command; no window system is touched and no configuration is read.
 
 ```sh
-cmake --install build --prefix "$HOME/.local"
+omatrack2 parse <file.pds|file.ld|file.vbo|file.mp4|file.telemetry>
+omatrack2 unify <file> --output <csv>
+omatrack2 corners <file> [--lap N] [--reference <file>] [--reference-lap N] \
+  --zone <start:end> [--zone ...]
+omatrack2 compare <aimd.mp4> <file.telemetry>
 ```
 
-The install target provides `omatrack`, platform deployment
-metadata, and license notices. Tagged releases publish a Linux AppImage, its
-`.zsync` sidecar, a macOS disk image, a Windows Velopack installer, and
-`SHA256SUMS.txt` from GitHub Actions. The macOS build is
-ad-hoc signed but not Apple-notarized. Portable Linux AppImages, Windows
-Velopack installs, and macOS apps check GitHub Releases from the header,
-keep an update icon until the new build is installed, and replace
-themselves after a SHA-256 check. The Windows installer is per-user (no
-UAC) and applies updates through Velopack `Update.exe`.
-From-source builds do not self-update. Portable builds
-bundle Qt, libmpv, libyaml, QML modules, media codecs, and their
-redistributable dependency
-closure. Linux and Windows also statically link Omatrack's GNU C++ runtime.
-Each package is rejected if a binary still refers to a build-machine library;
-only operating-system and graphics-driver interfaces remain host-provided.
+`corners` runs the corner analyzers on the fastest lap (or the laps given);
+zones are lap fractions. `unify` refuses to overwrite an existing file and
+exports GPS latitude and longitude when available: treat the CSV as sensitive
+location data.
 
-## Privacy and network behavior
+## Configuration
 
-Telemetry and video stay local. Omatrack does not upload session data. Track
-Atlas connectivity is independent of telemetry parsing: when its metadata or
-selected-layout geometry cache is missing or older than 24 hours, Omatrack
-requests the public data from `raw.githubusercontent.com`; manual refresh
-performs the same metadata request. Fresh caches are used without a startup
-request. Offline starts retain cached corner geometry; without it, GPS laps do
-not silently substitute distance-based corner locations. A portable Linux
-AppImage, Windows Velopack install, or macOS app may also request
-`api.github.com/repos/tobi/omatrack/releases/latest`
-once a day; Later snoozes the prompt for a week. Turn the check off under
-Preferences → Updates. No session paths are sent.
+`$XDG_CONFIG_HOME/omatrack/omatrack.yml` (else `~/.config/omatrack/omatrack.yml`)
+is the only user config store: telemetry locations, channel display, drivers,
+recents, per-track corner overrides, video and trace settings, and the
+workspace layout. It is hand-editable and unknown keys are preserved. A
+`TRACK.yml` in any telemetry folder supplies metadata inherited by every
+recording below it. Caches live under `$XDG_CACHE_HOME/omatrack/`.
 
-Plugins are opt-in code you install yourself. An enabled plugin may make the
-HTTP requests it is written to make (the bundled weather example calls
-`open-meteo.com` with the session's rounded coordinates and date, cached for
-a day or 90 days); nothing is enabled until you press Add.
+The UI follows the live Omarchy palette
+(`~/.local/state/omarchy/current/theme/colors.toml`) and hot-reloads it;
+without one it uses the built-in gpui-component dark theme.
 
-Server connections are opt-in and configured in Preferences. WebDAV uses
-authenticated `PROPFIND` discovery; `s3://` and `gs://` buckets use
-ListObjectsV2 with AWS Signature Version 4 — Google Cloud Storage through its
-S3-compatible XML endpoint, which means an HMAC interoperability key rather
-than a service-account file. An address can be pasted whole —
-`s3://ACCESS_KEY:SECRET_KEY@bucket/prefix?region=eu-west-2&endpoint_override=host`,
-`gs://…`, or a WebDAV URL with `user:pass@` — and the keys and settings are
-split out into the connection's own fields rather than kept in the address.
-Each enabled connection streams changed telemetry
-into `$XDG_CACHE_HOME/omatrack/<protocol>/` (or the platform cache
-equivalent). ETag and Last-Modified metadata avoid unchanged downloads; a
-previous cache is used when the server is unavailable. Omatrack never rewrites
-remote files.
+## Keyboard
 
-Onboard video is not downloaded by default. A session's video runs 5–30 GB
-against telemetry's kilobytes, so the player streams it directly over HTTP
-range requests — from a time-limited presigned URL for S3 and GCS, refreshed
-automatically if it expires while the machine is asleep. Right-click a
-recording and choose "Download for offline use" to keep one on this machine
-for a flight; it downloads in the background, plays from disk afterwards, and
-is given back from the same menu. Everything else the cache holds stays under
-`cache: {limit: 20 GB}` in `omatrack.yml`, past which the least recently opened
-files are dropped and re-fetched if they are wanted again. Recordings kept for
-offline use sit outside that limit, since they are only there because you asked
-for them. Preferences shows both numbers and can empty the cache.
+| Keys | Action |
+|---|---|
+| ctrl-k / ctrl-, / ctrl-o / ctrl-q | Palette / Preferences / Open folder / Quit |
+| ctrl-b / ctrl-j | Toggle library / inspector dock |
+| ctrl-1 … ctrl-6 | Focus Library / Traces / Video / Corners / Laps / Map |
+| space; left / right | Play/pause; ±2 s |
+| m / s / p | Mute / 0.25x / continuous playback |
+| f / escape | Video fullscreen / exit (escape also closes overlays) |
+| 1–5 | Split, primary+PiP, reference+PiP, primary only, reference only |
+| x / a | Swap roles / edit corners |
+| h / j | Previous / next corner |
+| = / - / ctrl-0 | Zoom in / out / reset |
+| [ / ] / t | Previous / next lap / toggle Distance-Time axis |
+| enter / alt-enter (Library) | Set primary / reference |
+| ctrl-s / escape (resize, corner edit) | Save / cancel |
 
-Credentials — a WebDAV password, an S3 or GCS access key and secret — are
-stored in plain text in the user's `omatrack.yml`, which the connection dialog
-says plainly. They leave the machine only in a request to the server that was
-configured, and, for video, inside the URL handed to the player; nothing logs
-or displays such a URL.
+Every action is also reachable from the command palette (ctrl-k).
 
+## Privacy
 
-## Test and lint
+Telemetry and video stay local; Omatrack uploads nothing. Track Atlas data is
+embedded in the build, so no network access is needed.
 
-```sh
-ctest --preset release
-cmake --build --preset release --target lint
-```
+## Contributing
 
-The test suite covers the Rust integration bridge, C++ normalization and comparison behavior, formatting, Rust lints, and QML invariants. Parser-crate tests live upstream in `motorsport-telemetry-rs`. CI runs the release build and tests on Linux, macOS, and Windows.
-
-Update all upstream parser crates to the same commit and regenerate the lockfile with:
-
-```sh
-./scripts/update-motorsport-telemetry.sh \
-  --smoke-file /path/to/copied-session.mp4
-```
-
-The optional smoke file is parsed only after the Rust, build, lint, and unit checks pass. Supply a branch, tag, or full commit as the final argument to pin something other than upstream `HEAD`.
-
-## Project status and boundaries
-
-- Session parsing is lazy, but opening a source currently decodes and retains whole channel arrays; this is not a streaming reader.
-- Track Atlas corner ranges and GPS-based centerline station mapping are wired
-  through the app. First-class corner complexes and full geometry rendering
-  remain planned work.
-- Embedded AiM telemetry time is translated to MP4 presentation time through
-  the upstream edit-list offset exposed by Omatrack's C bridge.
-- Separate-file persisted video associations and multi-video alignment are not implemented.
-- The GUI is file-based post-session analysis today.
-
-Issues and focused pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing parser, normalization, or rendering behavior.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the gates and conventions, and
+[AGENTS.md](AGENTS.md) for the product and engineering contract.
 
 ## License
 
-Omatrack is released under the [MIT License](LICENSE). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for bundled font/parser licenses, system dependency terms, and Track Atlas data attribution.
+Omatrack is released under the [MIT License](LICENSE). See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for dependency licenses,
+libmpv terms and Track Atlas (ODbL) attribution.

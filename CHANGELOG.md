@@ -2,7 +2,21 @@
 
 All notable user-facing changes are documented here.
 
-## Unreleased
+## Unreleased — 2.0.0-dev
+
+- Omatrack 2.0 is a rewrite in Rust on GPUI and gpui-kit (`rust/`): the
+  `omatrack2` binary runs the workstation, or the headless `parse`, `unify`,
+  `corners` and `compare` commands when given one.
+- The analysis core (mapping, laps, 50 Hz lap model, alignment, delta, corner
+  analyzers, embedded Track Atlas) is a byte-for-byte port of the 1.x C++
+  core, held by a CLI regression harness against a frozen baseline captured
+  from the last identical run (89 cases).
+- The Qt 6/QML application, the C++ core and its C bridge, CMake build,
+  packaging, and the out-of-scope features (remote storage, Lua plugins,
+  image-derived telemetry, self-update) are removed.
+- Linux and Omarchy first; libmpv 2.5 or newer is required.
+
+## 1.x — unreleased after 1.8.6
 
 - Opening a video no longer jumps to fullscreen: it opens docked above the
   traces, and fullscreen is only entered with F or **Full**.

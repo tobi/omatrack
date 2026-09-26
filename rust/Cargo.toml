@@ -1,5 +1,5 @@
-# Omatrack 2.0: the Rust/GPUI port. Lives beside the Qt tree (src/, cli/,
-# third_party/) until parity; that tree stays the reference oracle.
+# Omatrack 2.0: the Rust/GPUI workstation. The CLI is regression-tested
+# against a frozen baseline (parity/run.sh).
 [workspace]
 resolver = "3"
 members = ["crates/*"]
@@ -17,7 +17,7 @@ repository = "https://github.com/tobi/omatrack"
 # component system. Omarchy desktop themes are bridged by omatrack-ui::theme.
 gpui-kit = { version = "=0.6.6", default-features = false, features = ["assets", "component"] }
 
-# Vendor parsers, pinned to the same upstream revision the Qt bridge links.
+# Vendor parsers, all pinned to one upstream revision.
 # omatrack-core/build.rs derives the converter generation from the rev below.
 aim-telemetry = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "cac837feb12fe112bd85a159e2d6d49543647313" }
 cosworth-telemetry = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "cac837feb12fe112bd85a159e2d6d49543647313" }
@@ -27,8 +27,8 @@ motorsport-telemetry-core = { git = "https://github.com/tobi/motorsport-telemetr
 telemetry-format = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "cac837feb12fe112bd85a159e2d6d49543647313" }
 motorsport-track-atlas = { git = "https://github.com/tobi/motorsport-telemetry-rs", rev = "cac837feb12fe112bd85a159e2d6d49543647313" }
 
-# Parity requirement: unify float_roundtrip into the upstream MTJ reader
-# exactly as the Qt bridge does, so both sides parse identical f64 values.
+# Parity requirement: unify float_roundtrip into the upstream MTJ reader, as
+# the retired C++ bridge did, so parsed f64 values match the baseline.
 serde_json = { version = "=1.0.151", features = ["float_roundtrip"] }
 blake3 = "=1.5.5"
 serde = { version = "1", features = ["derive"] }

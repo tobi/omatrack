@@ -1,11 +1,16 @@
 ---
 name: omatrack
 description: >-
+  RETIRED (design history only; the Rust contract is AGENTS.md).
   Omatrack-specific Qt 6 / QML working rules, tooling paths, and known
   deviations. Use whenever touching src/app/*.qml, the C++ Quick items,
   the CMake build, or the Rust parser workspace in this repository — before
   applying generic Qt advice from the qt-qml / qt-cpp-review skills.
 ---
+
+> **Retired.** This skill describes the Qt 1.x app, which has been removed.
+> It is kept only as history for the product rules it records. The Rust 2.0
+> contract is [AGENTS.md](../../../AGENTS.md).
 
 # Omatrack Qt/QML working rules
 
