@@ -10,13 +10,26 @@ use gpui_kit::test::TestWindowExt as _;
 use omatrack_app::LayoutOrigin;
 use omatrack_app::panels::PanelKind;
 
+/// Panels opened on demand (palette, Ctrl+4, "Open in detail"), not
+/// placed by the default layout.
+const ON_DEMAND: [PanelKind; 4] = [
+    PanelKind::Corners,
+    PanelKind::Channels,
+    PanelKind::Map,
+    PanelKind::Inspector,
+];
+
 fn holds_every_panel(test: &common::TestApp, cx: &mut TestAppContext) {
     cx.update(|cx| {
         let workspace = test.workspace.read(cx);
         let area = workspace.dock_area().read(cx);
         for kind in PanelKind::ALL {
             let id = workspace.panels().handle(kind).panel_id(cx);
-            assert!(area.panel(id).is_some(), "{kind:?} is in the dock");
+            assert_eq!(
+                area.panel(id).is_some(),
+                !ON_DEMAND.contains(&kind),
+                "{kind:?} in the default dock"
+            );
         }
     });
 }
@@ -151,7 +164,7 @@ fn a_corrupt_layout_falls_back_to_the_default(cx: &mut TestAppContext) {
 fn a_layout_from_another_version_is_replaced(cx: &mut TestAppContext) {
     // Version 2 hid the map behind the inspector; its saved layouts reset
     // to the default and say so.
-    assert_eq!(omatrack_app::LAYOUT_VERSION, 6);
+    assert_eq!(omatrack_app::LAYOUT_VERSION, 7);
     let sandbox = common::Sandbox::new();
     sandbox.write_config(
         "workspace:\n  layout:\n    version: 2\n    center: {panel_name: StackPanel, children: [], info: {stack: {sizes: [], axis: 0}}}\n",
@@ -194,6 +207,33 @@ fn reset_layout_restores_the_default(cx: &mut TestAppContext) {
     holds_every_panel(&test, cx);
 }
 
+/// The on-demand panels join the right dock beside Time lost when opened.
+#[gpui_kit::test]
+fn on_demand_panels_open_into_the_right_dock(cx: &mut TestAppContext) {
+    use omatrack_app::actions::{ShowChannels, ShowInspector, ShowMap};
+
+    let sandbox = common::Sandbox::new();
+    let test = common::start(cx, sandbox.options());
+    cx.update_window(test.window.into(), |_, window, cx| {
+        window.dispatch_action(Box::new(ShowMap), cx);
+        window.dispatch_action(Box::new(ShowChannels), cx);
+        window.dispatch_action(Box::new(ShowInspector), cx);
+        window.press("ctrl-4", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let workspace = test.workspace.read(cx);
+        let area = workspace.dock_area().read(cx);
+        let right = area.layout(DockPlacement::Right).expect("a right dock");
+        for kind in ON_DEMAND {
+            let id = workspace.panels().handle(kind).panel_id(cx);
+            assert!(right.find_panel_node(id).is_some(), "{kind:?} on the right");
+        }
+        assert!(area.is_dock_open(DockPlacement::Right));
+    });
+}
+
 /// Ctrl+4 reveals the dock the Corners panel is in now, not the one it
 /// starts in.
 #[gpui_kit::test]
@@ -203,6 +243,12 @@ fn focusing_a_moved_panel_opens_its_current_dock(cx: &mut TestAppContext) {
     let sandbox = common::Sandbox::new();
     let test = common::start(cx, sandbox.options());
     let area = cx.update(|cx| test.workspace.read(cx).dock_area().clone());
+    // Corners is opened on demand; Ctrl+4 places it.
+    cx.update_window(test.window.into(), |_, window, cx| {
+        window.press("ctrl-4", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
     let (library, corners) = cx.update(|cx| {
         let panels = test.workspace.read(cx).panels().clone();
         (
@@ -241,7 +287,16 @@ fn focusing_a_moved_panel_opens_its_current_dock(cx: &mut TestAppContext) {
         assert!(!area.is_dock_open(DockPlacement::Left));
     });
 
+    // The moved panel took focus into the closed dock; the user is back
+    // in the traces when they press Ctrl+4.
+    let traces = cx.update(|cx| {
+        test.workspace
+            .read(cx)
+            .panels()
+            .focus_handle(PanelKind::Traces, cx)
+    });
     cx.update_window(test.window.into(), |_, window, cx| {
+        window.focus(&traces, cx);
         window.press("ctrl-4", cx)
     })
     .unwrap();
@@ -258,7 +313,7 @@ fn focusing_a_moved_panel_opens_its_current_dock(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn a_narrow_window_closes_the_library_so_the_traces_keep_half_the_width(cx: &mut TestAppContext) {
+fn a_narrow_window_closes_the_right_dock_and_keeps_laps(cx: &mut TestAppContext) {
     let sandbox = common::Sandbox::new();
     let test = common::start(cx, sandbox.options());
     let size = gpui_kit::size(gpui_kit::px(1280.), gpui_kit::px(800.));
@@ -266,8 +321,11 @@ fn a_narrow_window_closes_the_library_so_the_traces_keep_half_the_width(cx: &mut
     cx.run_until_parked();
     cx.update(|cx| {
         let area = test.workspace.read(cx).dock_area().read(cx);
-        assert!(!area.is_dock_open(DockPlacement::Left), "Library closed");
-        assert!(area.is_dock_open(DockPlacement::Right));
+        assert!(area.is_dock_open(DockPlacement::Left), "Laps open");
+        assert!(
+            !area.is_dock_open(DockPlacement::Right),
+            "right dock closed"
+        );
     });
     cx.update_window(test.window.into(), |_, window, cx| {
         window.render_frame(cx);
@@ -276,6 +334,10 @@ fn a_narrow_window_closes_the_library_so_the_traces_keep_half_the_width(cx: &mut
             traces.bounds().size.width >= gpui_kit::px(640.),
             "traces take at least half of 1280 px: {:?}",
             traces.bounds().size.width
+        );
+        assert!(
+            window.find("laps-panel").bounds().size.width >= gpui_kit::px(240.),
+            "the Laps sidebar keeps 15 rem"
         );
     })
     .unwrap();
@@ -286,19 +348,13 @@ fn a_narrow_window_closes_the_library_so_the_traces_keep_half_the_width(cx: &mut
     cx.run_until_parked();
     cx.update(|cx| {
         let area = test.workspace.read(cx).dock_area().read(cx);
-        assert!(area.is_dock_open(DockPlacement::Left));
+        assert!(area.is_dock_open(DockPlacement::Right));
     });
 
     // Once the user toggles a dock the layout is theirs.
     cx.update_window(test.window.into(), |_, window, cx| {
-        window.press("ctrl-b", cx)
-    })
-    .unwrap();
-    let size = gpui_kit::size(gpui_kit::px(1300.), gpui_kit::px(800.));
-    cx.simulate_window_resize(test.window.into(), size);
-    cx.run_until_parked();
-    cx.update_window(test.window.into(), |_, window, cx| {
-        window.press("ctrl-b", cx)
+        window.press("ctrl-b", cx);
+        window.press("ctrl-b", cx);
     })
     .unwrap();
     let size = gpui_kit::size(gpui_kit::px(1280.), gpui_kit::px(800.));
@@ -307,8 +363,8 @@ fn a_narrow_window_closes_the_library_so_the_traces_keep_half_the_width(cx: &mut
     cx.update(|cx| {
         let area = test.workspace.read(cx).dock_area().read(cx);
         assert!(
-            area.is_dock_open(DockPlacement::Left),
-            "the user's choice stays"
+            area.is_dock_open(DockPlacement::Right),
+            "the user's layout stays"
         );
     });
 }

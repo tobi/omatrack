@@ -264,18 +264,29 @@ async fn compare(scene: Scene, cx: &mut TestAppContext) -> Scene {
     scene
 }
 
-/// Make `kind` the visible tab of its dock group.
+/// Make `kind` the visible tab of its dock group, placing it on the right
+/// first when the default layout leaves it out (opened on demand).
 fn show_panel(test: &common::TestApp, kind: PanelKind, cx: &mut TestAppContext) {
     let workspace = test.workspace.clone();
     let handle: AnyWindowHandle = test.window.into();
     cx.update_window(handle, |_, window, cx| {
-        let (area, id) = workspace.read_with(cx, |workspace, cx| {
-            (
-                workspace.dock_area().clone(),
-                workspace.panels().handle(kind).panel_id(cx),
-            )
+        let (area, panel, id) = workspace.read_with(cx, |workspace, cx| {
+            let panel = workspace.panels().handle(kind);
+            let id = panel.panel_id(cx);
+            (workspace.dock_area().clone(), panel, id)
         });
-        area.update(cx, |area, cx| area.select_panel(id, window, cx));
+        area.update(cx, |area, cx| {
+            if area.panel(id).is_none() {
+                area.add_panel_view(
+                    panel,
+                    gpui_kit::component::dock::DockPlacement::Right,
+                    None,
+                    window,
+                    cx,
+                );
+            }
+            area.select_panel(id, window, cx)
+        });
         window.render_frame(cx);
     })
     .unwrap();

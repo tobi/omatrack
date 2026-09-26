@@ -28,6 +28,10 @@ gpui_kit::actions!(
         FocusPanel4,
         FocusPanel5,
         FocusPanel6,
+        // Panels outside the default layout, opened into the right dock.
+        ShowChannels,
+        ShowMap,
+        ShowInspector,
         // Video.
         TogglePlay,
         SeekBack,

@@ -223,6 +223,12 @@ pub(crate) fn init(cx: &mut App) {
         .keywords(["focus", "time lost", "heat", "map", "loss"]),
         CommandSpec::new("focus-library", "Browse library", Panels, FocusPanel6)
             .keywords(["focus", "library", "sessions", "events", "tree"]),
+        CommandSpec::new("show-channels", "Show channels", Panels, ShowChannels)
+            .keywords(["panel", "lanes", "traces"]),
+        CommandSpec::new("show-map", "Show track map", Panels, ShowMap)
+            .keywords(["panel", "gps", "circuit"]),
+        CommandSpec::new("show-inspector", "Show inspector", Panels, ShowInspector)
+            .keywords(["panel", "cursor", "values"]),
         CommandSpec::new("reset-layout", "Reset layout", Layouts, ResetLayout)
             .keywords(["dock", "panels"]),
         CommandSpec::new("video-split", "Video: split", Layouts, ComposeLayout1),

@@ -21,13 +21,17 @@ pub const DOCK_AREA_ID: &str = "omatrack.workspace";
 /// and Inspector are tabs behind it.
 /// 6: the docks scale with the window (the mockup's 290 / 350 px at
 /// 1440 wide) and the focus keys follow the layout left to right.
-pub const LAYOUT_VERSION: usize = 6;
+/// 7: Time lost is the right dock's only panel (no tab strip); Corners,
+/// Channels, Map and Inspector join it when opened (palette, Ctrl+4,
+/// "Open in detail"). Narrow windows close the right dock first and keep
+/// the Laps sidebar.
+pub const LAYOUT_VERSION: usize = 7;
 
 /// Left dock (Laps sidebar) share of the window width, between
 /// [`LEFT_DOCK_MIN_REMS`] and [`LEFT_DOCK_MAX_REMS`] (288 px at 1440 wide,
-/// 360 px from 1800 wide at the default 16 px base).
+/// 256 px at 1280, 360 px from 1800 wide at the default 16 px base).
 pub(crate) const LEFT_DOCK_SHARE: f32 = 0.2;
-pub(crate) const LEFT_DOCK_MIN_REMS: f32 = 18.0;
+pub(crate) const LEFT_DOCK_MIN_REMS: f32 = 15.0;
 pub(crate) const LEFT_DOCK_MAX_REMS: f32 = 22.5;
 /// Right dock (Where the time goes) share of the window width, between
 /// [`RIGHT_DOCK_MIN_REMS`] and [`RIGHT_DOCK_MAX_REMS`] (360 px at 1440
@@ -38,22 +42,38 @@ pub(crate) const RIGHT_DOCK_MAX_REMS: f32 = 27.5;
 /// Video pane height above the traces, in rems (the traces take the rest).
 pub(crate) const VIDEO_REMS: f32 = 22.5;
 
-/// Narrowest window, in rems (1440 px at the default base), whose default
-/// layout opens the left dock too: below it the traces would get less
-/// than half the width, so the Laps sidebar starts closed (ctrl-b opens it).
-pub(crate) const LIBRARY_OPEN_MIN_REMS: f32 = 90.0;
+/// Narrowest window, in rems (1400 px at the default base), whose default
+/// layout opens the right dock: below it the traces would get less than
+/// half the width with both docks, so the right dock closes first (ctrl-j
+/// opens it).
+pub(crate) const RIGHT_OPEN_MIN_REMS: f32 = 87.5;
+/// Narrowest window, in rems (960 px), whose default layout opens the Laps
+/// sidebar.
+pub(crate) const LEFT_OPEN_MIN_REMS: f32 = 60.0;
 /// The right dock never takes more than this share of the window.
 pub(crate) const RIGHT_DOCK_MAX_SHARE: f32 = 0.3;
 
-/// Default dock widths for a window `width` wide: (left dock open, left
-/// width, right dock width).
-pub(crate) fn default_dock_widths(width: Pixels, rem: Pixels) -> (bool, Pixels, Pixels) {
-    let library = width >= rem * LIBRARY_OPEN_MIN_REMS;
+/// The default docks for one window width.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct DockWidths {
+    pub left_open: bool,
+    pub left: Pixels,
+    pub right_open: bool,
+    pub right: Pixels,
+}
+
+/// Default dock widths for a window `width` wide.
+pub(crate) fn default_dock_widths(width: Pixels, rem: Pixels) -> DockWidths {
     let left = (width * LEFT_DOCK_SHARE).clamp(rem * LEFT_DOCK_MIN_REMS, rem * LEFT_DOCK_MAX_REMS);
     let right = (width * RIGHT_DOCK_SHARE)
         .clamp(rem * RIGHT_DOCK_MIN_REMS, rem * RIGHT_DOCK_MAX_REMS)
         .min(width * RIGHT_DOCK_MAX_SHARE);
-    (library, left, right)
+    DockWidths {
+        left_open: width >= rem * LEFT_OPEN_MIN_REMS,
+        left,
+        right_open: width >= rem * RIGHT_OPEN_MIN_REMS,
+        right,
+    }
 }
 
 /// How a layout came to be on screen.
@@ -81,10 +101,10 @@ pub(crate) fn default_placement(kind: PanelKind) -> DockPlacement {
     }
 }
 
-/// [Laps | Library] on the left; video over traces in the center;
-/// one tab group on the right led by Time lost, the whole dock height for
-/// its map, table and card; the tables, the plain map and the inspector are
-/// tabs behind it (the trace gutter carries the cursor readouts).
+/// [Laps | Library] on the left; video over traces in the center; Time
+/// lost alone on the right, the whole dock height for its map, table and
+/// card. Corners, Channels, Map and Inspector are not placed until opened
+/// (they then join the right dock as tabs).
 pub(crate) fn apply_default(
     area: &Entity<DockArea>,
     panels: &WorkspacePanels,
@@ -94,8 +114,7 @@ pub(crate) fn apply_default(
     // The dock stores pixels; derive them from the rem scale so the default
     // layout follows the theme's base font.
     let rem = window.rem_size();
-    let (library_open, left_width, right_width) =
-        default_dock_widths(window.viewport_size().width, rem);
+    let docks = default_dock_widths(window.viewport_size().width, rem);
     let tabs = |kinds: &[PanelKind], cx: &App| {
         kinds.iter().fold(DockLayout::tabs(), |layout, kind| {
             layout.panel_view(panels.handle(*kind), cx)
@@ -105,48 +124,41 @@ pub(crate) fn apply_default(
         .child(tabs(&[PanelKind::Video], cx), Some(rem * VIDEO_REMS))
         .child(tabs(&[PanelKind::Traces], cx), None);
     let left = tabs(&[PanelKind::Laps, PanelKind::Library], cx);
-    let right = tabs(
-        &[
-            PanelKind::TimeGoes,
-            PanelKind::Corners,
-            PanelKind::Channels,
-            PanelKind::Map,
-            PanelKind::Inspector,
-        ],
-        cx,
-    )
-    .active_index(0);
+    let right = tabs(&[PanelKind::TimeGoes], cx);
     area.update(cx, |area, cx| {
         area.set_version(Some(LAYOUT_VERSION), cx);
         area.set_center(center, window, cx);
         area.set_dock(DockPlacement::Left, left, window, cx);
         area.set_dock(DockPlacement::Right, right, window, cx);
-        area.set_dock_size(DockPlacement::Left, left_width, window, cx);
-        area.set_dock_size(DockPlacement::Right, right_width, window, cx);
-        if area.is_dock_open(DockPlacement::Left) != library_open {
-            area.toggle_dock(DockPlacement::Left, window, cx);
-        }
-        if !area.is_dock_open(DockPlacement::Right) {
-            area.toggle_dock(DockPlacement::Right, window, cx);
-        }
+        set_docks(area, docks, window, cx);
     });
+}
+
+/// Size the docks and open or close them to `docks`.
+fn set_docks(
+    area: &mut DockArea,
+    docks: DockWidths,
+    window: &mut Window,
+    cx: &mut Context<DockArea>,
+) {
+    area.set_dock_size(DockPlacement::Left, docks.left, window, cx);
+    area.set_dock_size(DockPlacement::Right, docks.right, window, cx);
+    for (placement, open) in [
+        (DockPlacement::Left, docks.left_open),
+        (DockPlacement::Right, docks.right_open),
+    ] {
+        if area.has_dock(placement) && area.is_dock_open(placement) != open {
+            area.toggle_dock(placement, window, cx);
+        }
+    }
 }
 
 /// Re-fit the default layout's docks to the window's width (see
 /// [`default_dock_widths`]): the window may open at one size and settle at
 /// another before the user has touched a dock.
 pub(crate) fn fit_default_docks(area: &Entity<DockArea>, window: &mut Window, cx: &mut App) {
-    let (library_open, left_width, right_width) =
-        default_dock_widths(window.viewport_size().width, window.rem_size());
-    area.update(cx, |area, cx| {
-        area.set_dock_size(DockPlacement::Left, left_width, window, cx);
-        area.set_dock_size(DockPlacement::Right, right_width, window, cx);
-        if area.has_dock(DockPlacement::Left)
-            && area.is_dock_open(DockPlacement::Left) != library_open
-        {
-            area.toggle_dock(DockPlacement::Left, window, cx);
-        }
-    });
+    let docks = default_dock_widths(window.viewport_size().width, window.rem_size());
+    area.update(cx, |area, cx| set_docks(area, docks, window, cx));
 }
 
 /// The saved layout, validated: parsed, of this version, with a center.
@@ -248,31 +260,33 @@ mod tests {
     use gpui_kit::px;
 
     #[test]
-    fn narrow_windows_keep_at_least_half_the_width_for_the_center() {
+    fn narrow_windows_close_the_right_dock_first_and_keep_laps() {
         let rem = px(16.);
-        for width in [1024., 1280., 1366., 1440., 1920., 2560.] {
+        for width in [1024., 1280., 1366., 1400., 1440., 1920., 2560.] {
             let width = px(width);
-            let (library, left, right) = default_dock_widths(width, rem);
-            let docks = right + if library { left } else { px(0.) };
+            let docks = default_dock_widths(width, rem);
+            let taken = if docks.left_open { docks.left } else { px(0.) }
+                + if docks.right_open {
+                    docks.right
+                } else {
+                    px(0.)
+                };
             assert!(
-                width - docks >= width * 0.5,
+                width - taken >= width * 0.5,
                 "{width:?}: the center keeps half the window"
             );
+            assert!(docks.left_open, "{width:?}: Laps open");
+            assert!(docks.left >= rem * LEFT_DOCK_MIN_REMS);
         }
-        assert!(
-            !default_dock_widths(px(1280.), rem).0,
-            "Library closed at 1280"
-        );
-        assert!(
-            default_dock_widths(px(1920.), rem).0,
-            "Library open at 1920"
-        );
+        let at = |width: f32| default_dock_widths(px(width), rem);
+        assert!(!at(1280.).right_open, "right dock closed at 1280");
+        assert!(!at(1366.).right_open);
+        assert!(at(1440.).right_open, "right dock open at 1440");
+        assert_eq!(at(1280.).left, px(256.));
         // The mockup's proportions at 1440 wide; capped on wide windows.
-        let (_, left, right) = default_dock_widths(px(1440.), rem);
-        assert_eq!((left, right), (px(288.), px(360.)));
-        let (_, left, right) = default_dock_widths(px(1920.), rem);
+        assert_eq!((at(1440.).left, at(1440.).right), (px(288.), px(360.)));
         assert_eq!(
-            (left, right),
+            (at(1920.).left, at(1920.).right),
             (rem * LEFT_DOCK_MAX_REMS, rem * RIGHT_DOCK_MAX_REMS)
         );
     }

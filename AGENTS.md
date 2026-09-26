@@ -357,15 +357,22 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   section list + `GroupBox` cards, replacing the dock area and status bar
   while open; the dock stays alive behind it). Never rebuild what the kit
   has.
-- **Right dock default** (layout v6): one tab group led by **Time lost**
+- **Right dock default** (layout v7): **Time lost** alone, no tab strip
   (`panels::time_goes`, "Where the time goes": heat map, corners by Δt
-  largest first with loss bar, s and entry-speed Δ, the corners/straights
-  split, and a card for the selected corner with its speeds, entry/exit Δt
-  and the `CornerCheck` notes as sentences, plus "Open … in detail" =
-  `FocusCorner` + the Corners tab); Corners, Channels, Map and
-  Inspector are tabs behind it. The selected corner is the focused one, else
-  the one under the cursor, else the largest loss. Without GPS the map is
-  omitted and the table stands alone.
+  largest first with loss bar, s and entry-speed Δ, capped at 8 rows with
+  "Show all N corners", the corners/straights split, and a card for the
+  selected corner with its speeds, entry/exit Δt and the `CornerCheck`
+  notes as `CornerNote::sentence`, plus the ghost "Open … in detail" =
+  `FocusCorner` + Corners). Corners (Ctrl+4), Channels, Map and Inspector
+  (palette `Show …`) join the right dock as tabs when opened. The selected
+  corner is the focused one, else the one under the cursor, else the
+  largest loss. Without GPS the map is omitted and the table stands alone.
+  **Time loss is placed only by a map that follows the track**
+  (`Comparison::places_time_loss`: GPS, pre-corner dampers, Lap distance %,
+  manual dampers on a distance base): on a lap-time map the panel says
+  "Time loss can’t be placed on the lap", ranks nothing and shows the
+  corner card in lap order without Δt (principle 9). Corner notes live in
+  the card; the traces carry no notes popover.
 - **First-party components** only where the kit has none: trace lanes
   (in the idiom of gpui-component chart/plot: scales, axis, grid, crossline),
   `LapStrip`, `CornerRuler`, `TrackMap`, delta lane, `DamperStrip`, `VideoHud`,
@@ -408,15 +415,16 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   or more corners are a quiet bracket line above the rows. Zones shade every
   lane as quiet columns (`muted` at low alpha, in the overlay); edges show
   only as grips while editing.
-- **Left dock: [Laps | Library]** (layout v6). The **Laps sidebar**
+- **Left dock: [Laps | Library]** (layout v7). The **Laps sidebar**
   (`panels::laps`, `PanelKind::Laps`) is the default left surface: the
   primary's event (its track and day in the `LibrarySnapshot`, plus the
   reference's recording when it comes from elsewhere), one group per
-  recording in catalog order (driver name, `N timed laps, best m:ss.sss`, a
-  lap-time trend over `counts_for_best` laps with the best dotted, painted
-  through `omatrack_trace::mesh`). Timed laps list lap, time, a gap bar
-  scaled to that group's own best-to-worst spread, and the gap via
-  `format_delta` (`Best` on the best); out / in / pit / partial laps wait
+  recording, the primary's first, then the reference's, then the rest by
+  best time (driver name, `N timed laps, best m:ss.sss`, a lap-time trend
+  over `counts_for_best` laps with the best dotted, painted through
+  `omatrack_trace::mesh`). Timed laps list lap, time, a gap bar on one
+  scale for the event, and the gap to the event's best lap via
+  `format_delta` (`Best` only on that lap); out / in / pit / partial laps wait
   behind `Show out and in laps (N)` unless they hold a role. Role laps are
   filled with the role badge; groups without a role start collapsed. The
   Library tree is the tab beside it, reached by Ctrl+6, the palette
@@ -424,9 +432,10 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   right is gone (one lap list, not two). A title-bar pill click focuses
   it (Ctrl+1).
 - **Dock proportions** (`workspace::layout::default_dock_widths`): left
-  20% of the window (18–22.5 rem), right 25% (22–27.5 rem, at most 30%):
+  20% of the window (15–22.5 rem), right 25% (22–27.5 rem, at most 30%):
   the mockup's 288 / 360 px at 1440 wide, 360 / 440 px at 1920. Below
-  90 rem the left dock starts closed (ctrl-b opens it). The filmstrip row
+  87.5 rem the right dock closes first (ctrl-j opens it) and the Laps
+  sidebar stays (256 px at 1280); below 60 rem it closes too. The filmstrip row
   stays full width above the docks at every size.
 - **gpui-omarchy was evaluated and rejected**: it disables gpui-component,
   lacks key components, and its theme conflicts with gpui-component's.
@@ -464,7 +473,10 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   (a line swatch) exists only while a lane is shared. The gap lane
   (`Gap to R`) is the only big figure: the gap at the cursor (idle: the
   change in view) in gain/loss, over `s at cursor, ends +2.44` (`… in view`
-  when zoomed); under LOW confidence it reads `≈` and muted. A shared
+  when zoomed); under LOW confidence it reads `≈` and its figure and fill
+  keep gain/loss at 60% emphasis (`APPROXIMATE_DELTA_EMPHASIS`), never
+  grey. Its FIT minimum is `GAP_LANE_MIN_HEIGHT` (1.5 lanes); the basis is
+  the Sync selector's, never a lane subtitle. A shared
   lane's title and two rows fit `MIN_LANE_HEIGHT`. Nothing clips
   (headless-tested).
 
@@ -584,7 +596,7 @@ palette items. See [action.md](.agents/skills/gpui-kit/references/gpui/action.md
 | Keys | Action |
 |---|---|
 | ctrl-k / ctrl-, / ctrl-o / ctrl-q | Palette / Preferences / Open folder / Quit |
-| ctrl-b / ctrl-j | Toggle left dock ([Laps, Library]) / right dock ([Time lost, Corners, Channels, Map, Inspector] tabs) |
+| ctrl-b / ctrl-j | Toggle left dock ([Laps, Library]) / right dock (Time lost, plus any panel opened into it) |
 | ctrl-1 … ctrl-6 | Focus, in layout order: Laps / Traces / Video / Corners / Where the time goes / Library (Channels, Map and Inspector are tabs behind Where the time goes) |
 | space; left / right | Play/pause; ±2 s |
 | m / s / p | Mute / 0.25x / continuous playback |
@@ -602,8 +614,9 @@ Pointer: left-drag selects, middle-drag and horizontal scroll pan, wheel (also
 shift/ctrl) zooms about the pointer, vertical wheel scrolls overflowing lanes,
 double-click resets. Focusing a corner (click, `h`/`j`) centres it in the left
 half with one 140 ms OutCubic transition (retargeted on repeat), masks
-neighbour laps behind `« L8` / `L10 »` rules instead of re-framing, and shows
-notes; escape restores the pre-focus viewport.
+neighbour laps behind `« L8` / `L10 »` rules instead of re-framing, and
+selects it in the Time lost card (its notes); escape restores the
+pre-focus viewport.
 
 Filmstrip: a click selects that row's role's lap (cursor and viewport stay
 put); clicking the lap the role already holds moves the cursor to the lap

@@ -663,6 +663,17 @@ impl Workspace {
         .on_action(cx.listener(|this, _: &FocusPanel6, window, cx| {
             this.focus_panel(PanelKind::Library, window, cx)
         }))
+        .on_action(cx.listener(|this, _: &ShowChannels, window, cx| {
+            this.focus_panel(PanelKind::Channels, window, cx)
+        }))
+        .on_action(
+            cx.listener(|this, _: &ShowMap, window, cx| {
+                this.focus_panel(PanelKind::Map, window, cx)
+            }),
+        )
+        .on_action(cx.listener(|this, _: &ShowInspector, window, cx| {
+            this.focus_panel(PanelKind::Inspector, window, cx)
+        }))
         // Playback.
         .on_action(cx.listener(|this, _: &TogglePlay, _, cx| {
             this.app.video.update(cx, |video, cx| video.toggle_play(cx))
