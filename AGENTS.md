@@ -89,15 +89,16 @@ crates stay GPUI-free.
 | [omatrack-core](rust/crates/omatrack-core) (no GPUI) | **[done]**, byte parity | Recording open via pinned `motorsport-telemetry-rs` (no C ABI), mapping, laps, 50 Hz `UnifiedLap`, alignment, delta, embedded Track Atlas, corners, playback rules, video clock, `ChannelProvider`, `session` (`load_lap`, `Analysis`) | UI, config, executors |
 | [omatrack-cli](rust/crates/omatrack-cli) (no GPUI) | **[done]** | `parse \| unify \| corners \| compare`, the headless command surface | A second analysis |
 | [omatrack-library](rust/crates/omatrack-library) (no GPUI) | **[done]** | Paths, `omatrack.yml`, `TRACK.yml`, metadata precedence, `Location`, index cache, catalog, recents | Analysis, rendering |
-| [omatrack-trace](rust/crates/omatrack-trace) | **[done]** decimate, scales, layout, mesh, lanes, overlay, `TraceStack`, `trace_bench`; **[wip]** corner ruler, track map, damper strip | Trace math and trace/map/damper elements | Session state, parsing |
+| [omatrack-trace](rust/crates/omatrack-trace) | **[done]** decimate, scales, layout, mesh, lanes, overlay, `TraceStack`, `trace_bench`, corner ruler, track map, damper strip | Trace math and trace/map/damper elements | Session state, parsing |
 | [mpv-player](rust/crates/mpv-player) | **[done]** | libmpv 2.5 player + `VideoView` (section 9) | Any Omatrack type |
-| [omatrack-ui](rust/crates/omatrack-ui) | **[done]** theme, `RoleChip`, `Readout`, `Swatch`; **[wip]** `LapStrip`, `VideoHud` | Omarchy loader, domain components on tokens | What the kit provides |
-| [omatrack-app](rust/crates/omatrack-app) (bin `omatrack2`) | **[done]** shell; **[wip]** state, workspace, panels, actions, keymap; **[plan]** video sync, preferences, metadata, e2e | Entities, workspace, panels, palette, video sync | Analysis, format branches |
+| [omatrack-ui](rust/crates/omatrack-ui) | **[done]** theme + bundled Inter / Geist Mono, `RoleChip`, `Readout`, `Swatch`, `LapStrip`, `VideoHud`, `DeltaText` | Omarchy loader, domain components on tokens | What the kit provides |
+| [omatrack-app](rust/crates/omatrack-app) (bin `omatrack2`) | **[done]** shell, state, workspace, panels, actions, keymap, `sync` (video), `preferences`, `dialogs` (metadata, `TRACK.yml`); **[plan]** e2e | Entities, workspace, panels, palette, video sync | Analysis, format branches |
 
-Waves: 1 foundations **[done]**; 2 app backbone + domain components **[wip]**;
+Waves: 1 foundations **[done]**; 2 app backbone + domain components **[done]**;
 3 panels (traces, video sync, corners/laps/inspector/channels/map,
-preferences/metadata/`TRACK.yml`) **[plan]**; 4 integration, design review,
-keyboard audit, trace/mpv hardening **[plan]**; 5 final verification **[plan]**.
+preferences/metadata/`TRACK.yml`) **[done]**; 4 integration, design review
+(first UX round **[done]**), keyboard audit, trace/mpv hardening **[plan]**;
+5 final verification **[plan]**.
 
 ### 4.2 Data flow
 
@@ -120,7 +121,7 @@ Everything from core/library is `Arc`-shared, `Send + Sync`, GPUI-free.
 Crate seams **[done]**: `session::{load_lap, Analysis}`,
 `omatrack_trace::{TraceScene, FractionMap, ViewportState, CursorState,
 TraceStack}`, `mpv_player::{Player, FrameSource, VideoView, Follower}`,
-`omatrack_ui::theme::install`. **[wip]** `omatrack_app::AppState` (entity
+`omatrack_ui::theme::install`, `omatrack_app::AppState` (entity
 handles), `CommandRegistry`, one `init(cx)` + `Panel` per panel module.
 
 New format or track data: upstream (`motorsport-telemetry-rs`, Track Atlas),
@@ -435,6 +436,9 @@ dependency.
   maps onto the gpui-component `Theme`, and hot-reloads via a `notify` watcher.
   No palette: built-in gpui-component dark. `ThemeStatus {name, source}` shows
   in the status bar.
+- Fonts: the desktop fontconfig choice when one is configured and installed,
+  else the bundled Inter (UI) and Geist Mono (numerics), OFL, registered by
+  `theme::install`; the active families show next to the theme status.
 - Roles: primary = `primary` (Omarchy accent); reference = `warning`; gain =
   `success`; loss = `danger`; grid `border`/`muted`; labels
   `muted_foreground`; extra channels `chart_1..5`;
@@ -445,7 +449,7 @@ dependency.
 ## 11. Keyboard and actions
 
 Actions live in `omatrack-app/src/actions.rs` (namespace `omatrack`), bound in
-`keymap.rs` **[wip]**, all reachable from the palette with their `Kbd`.
+`keymap.rs`, all reachable from the palette with their `Kbd`.
 Single-letter keys bind in `Workspace && !Input` so they never reach text
 fields (tested). `SelectLap {session, lap, role}` and `FocusCorner {id}` back
 palette items. See [action.md](.agents/skills/gpui-kit/references/gpui/action.md),
