@@ -450,7 +450,14 @@ async fn h_and_j_focus_corners_in_the_left_half(cx: &mut TestAppContext) {
         });
         assert_eq!(ruler, Some(corner.id), "the ruler marks the focused corner");
         assert_eq!(stack, Some(corner.id), "the lanes mark the focused corner");
+        let cursor = cx.update(|cx| f.test.app.cursor.read(cx).fraction());
+        assert_eq!(
+            cursor,
+            Some(corner.start),
+            "the readouts describe the focused corner"
+        );
     };
+    let before = cx.update(|cx| f.test.app.cursor.read(cx).fraction());
     press(cx, "j");
     check(cx, 0);
     press(cx, "j");
@@ -473,6 +480,11 @@ async fn h_and_j_focus_corners_in_the_left_half(cx: &mut TestAppContext) {
     assert_eq!(
         cx.update(|cx| f.test.app.viewport.read(cx).viewport()),
         Viewport::FULL
+    );
+    assert_eq!(
+        cx.update(|cx| f.test.app.cursor.read(cx).fraction()),
+        before,
+        "escape restores the cursor with the viewport"
     );
     assert_eq!(
         cx.update(|cx| f.traces.read(cx).ruler().read(cx).focused_corner()),

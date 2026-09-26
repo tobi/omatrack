@@ -144,6 +144,12 @@ impl AppState {
             state
         });
         let cursor = cx.new(|_| CursorState::new());
+        // Connected here, not deferred: outside an update a deferred
+        // callback runs before the global exists and the video would never
+        // drive the cursor.
+        video.update(cx, |video, cx| {
+            video.connect(cursor.clone(), viewport.clone(), cx)
+        });
         let state = Self {
             preferences,
             library,

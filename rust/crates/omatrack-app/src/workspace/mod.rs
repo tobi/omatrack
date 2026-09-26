@@ -57,6 +57,8 @@ pub struct Workspace {
     focused_corner: Option<usize>,
     /// The viewport before the first corner focus; Escape returns to it.
     pre_focus_viewport: Option<Viewport>,
+    /// The cursor before the corner focus, restored with the viewport.
+    pre_focus_cursor: Option<f64>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -155,6 +157,7 @@ impl Workspace {
             video_fullscreen: false,
             focused_corner: None,
             pre_focus_viewport: None,
+            pre_focus_cursor: None,
             _subscriptions: subscriptions,
         };
         workspace.sync_strategies(window, cx);
@@ -372,12 +375,16 @@ impl Workspace {
         self.focused_corner = Some(ix);
         if self.pre_focus_viewport.is_none() {
             self.pre_focus_viewport = Some(self.app.viewport.read(cx).viewport());
+            self.pre_focus_cursor = self.app.cursor.read(cx).fraction();
         }
         self.app.viewport.update(cx, |viewport, cx| {
             viewport.focus(zone.start, zone.end, true, cx)
         });
+        // The cursor moves to the corner so every readout (legends,
+        // inspector, HUD, video) describes the corner being looked at.
         self.app.cursor.update(cx, |cursor, cx| {
-            cursor.set_focus(Some(Selection::new(zone.start, zone.end)), cx)
+            cursor.set_focus(Some(Selection::new(zone.start, zone.end)), cx);
+            cursor.set_fraction(Some(zone.start), cx);
         });
     }
 
@@ -386,6 +393,7 @@ impl Workspace {
     fn forget_corner_focus(&mut self, cx: &mut Context<Self>) {
         self.focused_corner = None;
         self.pre_focus_viewport = None;
+        self.pre_focus_cursor = None;
         if self.app.cursor.read(cx).focus().is_some() {
             self.app
                 .cursor
@@ -399,10 +407,16 @@ impl Workspace {
         let Some(viewport) = self.pre_focus_viewport.take() else {
             return false;
         };
+        let cursor = self.pre_focus_cursor.take();
         self.forget_corner_focus(cx);
         self.app
             .viewport
             .update(cx, |state, cx| state.set_viewport(viewport, cx));
+        if cursor.is_some() {
+            self.app
+                .cursor
+                .update(cx, |state, cx| state.set_fraction(cursor, cx));
+        }
         true
     }
 

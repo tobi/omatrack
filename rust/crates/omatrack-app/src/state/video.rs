@@ -38,7 +38,6 @@ use omatrack_library::config::HudPosition;
 use omatrack_trace::{CursorState, Selection, ViewportState};
 
 use crate::actions::Role;
-use crate::state::AppState;
 use crate::state::preferences::Preferences;
 use crate::state::session::{LapRef, RoleSlot, RoleState, Session, SessionEvent};
 
@@ -331,20 +330,6 @@ impl VideoController {
         let subscriptions = vec![cx.subscribe(session, |this, _, event, cx| {
             this.on_session_event(event, cx);
         })];
-        // The shared cursor and viewport are created after this entity; the
-        // application state is installed by the time deferred work runs.
-        let this = cx.weak_entity();
-        cx.defer(move |cx| {
-            let Some(state) = AppState::try_global(cx) else {
-                return;
-            };
-            let (cursor, viewport) = (state.cursor.clone(), state.viewport.clone());
-            let _ = this.update(cx, |this, cx| {
-                if this.cursor.is_none() {
-                    this.connect(cursor, viewport, cx);
-                }
-            });
-        });
         Self {
             preferences,
             session: session.clone(),
@@ -375,7 +360,7 @@ impl VideoController {
 
     /// Follow `cursor` (explicit jumps seek the videos) and write it from
     /// the primary clock; `viewport` follows the playhead in continuous
-    /// playback. Done automatically from the installed [`AppState`].
+    /// playback. [`crate::state::AppState::install`] connects the shared pair.
     pub fn connect(
         &mut self,
         cursor: Entity<CursorState>,
@@ -387,6 +372,11 @@ impl VideoController {
         self._cursor = Some(cx.observe(&cursor, |this, _, cx| this.on_cursor_changed(cx)));
         self.cursor = Some(cursor);
         self.viewport = Some(viewport);
+    }
+
+    /// Whether a cursor is connected (see [`Self::connect`]).
+    pub fn is_connected(&self) -> bool {
+        self.cursor.is_some()
     }
 
     fn deck(&self, role: Role) -> &Deck {

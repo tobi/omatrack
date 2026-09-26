@@ -1171,3 +1171,16 @@ fn real_run4_video_drives_the_cursor_and_run1_follows_the_map(cx: &mut TestAppCo
     }
     drop(sandbox);
 }
+
+/// The controller follows the shared cursor from the moment the state is
+/// installed, with no deferred step: in the running application `install`
+/// runs outside an update, where a deferred callback fires before the
+/// global exists and the video would never drive the cursor.
+#[gpui_kit::test]
+fn install_connects_the_video_to_the_shared_cursor(cx: &mut TestAppContext) {
+    let sandbox = common::Sandbox::new();
+    cx.update(|cx| {
+        let state = omatrack_app::AppState::install(sandbox.options(), cx);
+        assert!(state.video.read(cx).is_connected());
+    });
+}

@@ -251,3 +251,57 @@ fn real_stepping_laps_keeps_the_video_bound(cx: &mut TestAppContext) {
         assert_eq!(*video.availability(), VideoAvailability::Ready);
     });
 }
+
+/// Seeking the primary video moves the shared cursor: the video is the
+/// recording itself, so its clock drives the telemetry.
+#[gpui_kit::test]
+#[ignore]
+fn real_seeking_the_primary_moves_the_cursor(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let root = std::env::var("OMATRACK_FIXTURES")
+        .expect("set OMATRACK_FIXTURES to the 26T07_PLM folder of AiM MP4 recordings");
+    let sandbox = common::Sandbox::new();
+    let run = |name: &str| format!("{root}/CT1/26IMSA17_T07_PLM_CT1_{name}.MP4");
+    sandbox.write_config(&format!(
+        "locations:\n  - type: folder\n    target: {root}\nselection:\n  primary_key: {}\n  primary_lap: 10\n  compare_key: {}\n  compare_lap: 8\n",
+        run("Run4_TL"),
+        run("Run1_MB"),
+    ));
+    let options = sandbox
+        .options()
+        .video(true)
+        .audio_output(Some("null".to_string()));
+    let test = common::start(cx, options);
+    let library = test.app.library.clone();
+    cx.update(|cx| library.update(cx, |library, cx| library.rescan(cx)));
+    cx.run_until_parked();
+    let video = test.app.video.clone();
+    let cursor = test.app.cursor.clone();
+    for _ in 0..50 {
+        if cx.update(|cx| video.read(cx).is_synced()) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        cx.run_until_parked();
+    }
+    cx.update(|cx| {
+        let video = video.read(cx);
+        eprintln!(
+            "identity {:?} synced {}",
+            video.identity(omatrack_app::actions::Role::Primary),
+            video.is_synced()
+        );
+        assert!(
+            video.is_synced(),
+            "the recording's own video drives the cursor"
+        );
+    });
+    let before = cx.update(|cx| cursor.read(cx).fraction().unwrap_or(0.0));
+    cx.update(|cx| video.update(cx, |video, cx| video.seek_by(2.0, cx)));
+    cx.run_until_parked();
+    let after = cx.update(|cx| cursor.read(cx).fraction().unwrap_or(0.0));
+    assert!(
+        after > before + 0.01,
+        "a 2 s seek moves the cursor ({before} -> {after})"
+    );
+}
