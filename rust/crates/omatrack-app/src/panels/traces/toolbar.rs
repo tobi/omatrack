@@ -1,5 +1,5 @@
-//! The trace toolbar, the modal editors' bar, and the lap and corner rows
-//! above the lanes.
+//! The trace toolbar, the modal editors' bar, and the corner row above the
+//! lanes. (The laps are in the workspace filmstrip, above every panel.)
 //!
 //! The toolbar is kit button groups only (x-axis, lane sizing, corner
 //! editing, zoom), all the same size and variant. Every control dispatches
@@ -15,19 +15,18 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Action, App, ClickEvent, Context, ElementId, FocusHandle, InteractiveElement as _, IntoElement,
+    Action, App, ClickEvent, Context, FocusHandle, InteractiveElement as _, IntoElement,
     ParentElement as _, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
     TestSupportExt as _, Window, div,
 };
 use omatrack_core::session::CornerSource;
 use omatrack_trace::XAxis;
 use omatrack_ui::TypeScale as _;
-use omatrack_ui::{LapRole, LapSelect, LapStrip};
 
 use super::{TraceMode, TracesPanel};
 use crate::actions::{
-    CancelEdit, ResizeLanes, Role as LapSlotRole, SaveEdit, SelectLap, ToggleCornerEdit, ToggleFit,
-    ToggleXAxis, ZoomIn, ZoomOut, ZoomReset,
+    CancelEdit, ResizeLanes, SaveEdit, ToggleCornerEdit, ToggleFit, ToggleXAxis, ZoomIn, ZoomOut,
+    ZoomReset,
 };
 use crate::keymap::{TRACE_EDIT_CONTEXT, WORKSPACE_CONTEXT};
 
@@ -308,60 +307,6 @@ impl TracesPanel {
                     .tooltip_with_action("Save", &SaveEdit, Some(TRACE_EDIT_CONTEXT))
                     .on_click(cx.listener(|this, _, window, cx| this.save(&SaveEdit, window, cx))),
             )
-    }
-
-    /// The primary recording's laps. A click selects the primary lap,
-    /// Alt+click the reference, through the same `SelectLap` action as the
-    /// library and the palette.
-    pub(super) fn render_lap_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let session = self.app.session.read(cx);
-        let primary = session.primary();
-        let session_id = primary.map(|slot| slot.lap_ref().session().clone());
-        let title = primary
-            .map(|slot| slot.info().title.clone())
-            .unwrap_or_default();
-        let reference_lap = session
-            .reference()
-            .filter(|reference| Some(reference.lap_ref().session()) == session_id.as_ref())
-            .map(|reference| reference.lap_ref().lap());
-        let primary_lap = primary.map(|slot| slot.lap_ref().lap());
-        let reference_playhead = reference_lap
-            .and(self.playhead)
-            .map(|fraction| self.scene.reference_fraction(fraction));
-        let keys = self.focus_handle.clone();
-        let strip_session = session_id.clone().unwrap_or_default();
-        let strip_id = ElementId::Name(format!("trace-laps-{strip_session}").into());
-        let strip = LapStrip::new(strip_id, self.laps.clone())
-            .primary(primary_lap)
-            .reference(reference_lap)
-            .primary_playhead(self.playhead)
-            .reference_playhead(reference_playhead)
-            .on_select(move |select: &LapSelect, window, cx| {
-                let role = match select.role {
-                    LapRole::Primary => LapSlotRole::Primary,
-                    LapRole::Reference => LapSlotRole::Reference,
-                };
-                keys.dispatch_action(
-                    &SelectLap {
-                        session: strip_session.clone(),
-                        lap: select.lap_id,
-                        role,
-                    },
-                    window,
-                    cx,
-                );
-            });
-        row(
-            "trace-lap-row",
-            div()
-                .text_xs()
-                .text_color(theme.muted_foreground)
-                .truncate()
-                .child(title),
-            strip,
-            cx,
-        )
     }
 
     /// Corner zones and complexes on the shared x mapping, labelled with

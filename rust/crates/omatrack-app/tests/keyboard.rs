@@ -153,7 +153,7 @@ fn single_key_tooltips_open_and_show_their_key(cx: &mut TestAppContext) {
     let test = common::start(cx, sandbox.options());
     select_pair(&test, cx);
 
-    hover_until_tooltip(&test, "header-swap", cx);
+    hover_until_tooltip(&test, "filmstrip-swap", cx);
     hover_until_tooltip(&test, "video-mute", cx);
 
     // The context the tooltips use resolves the predicate bindings.

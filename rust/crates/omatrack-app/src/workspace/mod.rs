@@ -1,7 +1,8 @@
-//! The window's root view: title bar, dock workspace, status bar and the
-//! overlay layers, and the one place every workspace action is routed to
-//! the entity that owns it.
+//! The window’s root view: title bar, lap filmstrip, dock workspace, status
+//! bar and the overlay layers, and the one place every workspace action is
+//! routed to the entity that owns it.
 
+pub mod filmstrip;
 pub mod header;
 pub mod layout;
 pub mod status;
@@ -31,6 +32,7 @@ use crate::state::{
     AppState, ComposeLayout, LapRef, LibraryEvent, PreferencesEvent, SessionEvent, VideoEvent,
 };
 
+pub use filmstrip::{Filmstrip, FilmstripRow};
 pub use header::SyncOption;
 pub use layout::{DOCK_AREA_ID, LAYOUT_VERSION, LayoutOrigin};
 pub use status::StatusView;
@@ -48,6 +50,7 @@ pub struct Workspace {
     dock_area: Entity<DockArea>,
     _skin: Rc<DockSkin>,
     panels: WorkspacePanels,
+    filmstrip: Entity<Filmstrip>,
     status: Entity<StatusView>,
     sync_select: Entity<SelectState<Vec<SyncOption>>>,
     palette: Palette,
@@ -83,6 +86,7 @@ impl Workspace {
         }
 
         let status = cx.new(|cx| StatusView::new(app.clone(), cx));
+        let filmstrip = cx.new(|cx| Filmstrip::new(app.clone(), cx));
         let sync_select = cx.new(|cx| {
             SelectState::new(
                 vec![SyncOption::automatic()],
@@ -157,6 +161,7 @@ impl Workspace {
             dock_area,
             _skin: skin,
             panels,
+            filmstrip,
             status,
             sync_select,
             palette: Palette::default(),
@@ -182,6 +187,13 @@ impl Workspace {
     /// The panel entities of this workspace.
     pub fn panels(&self) -> &WorkspacePanels {
         &self.panels
+    }
+
+    /// The lap filmstrip. The workspace renders it full width below the
+    /// title bar; a surface that shows it elsewhere (a lane over
+    /// fullscreen video) renders this same entity instead.
+    pub fn filmstrip(&self) -> &Entity<Filmstrip> {
+        &self.filmstrip
     }
 
     /// The application state this workspace shows.
@@ -724,6 +736,7 @@ impl Render for Workspace {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(self.render_header(window, cx))
+            .child(self.filmstrip.clone())
             .child(
                 div()
                     .id("workspace-dock")

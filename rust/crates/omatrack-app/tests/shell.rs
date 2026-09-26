@@ -35,10 +35,9 @@ fn main_window_shows_title_dock_and_status_with_the_built_in_theme(cx: &mut Test
         assert_eq!(track.label(), Some("Omatrack"));
 
         // Without a lap every analysis surface says what to do next.
-        assert_eq!(
-            window.find("header-primary").label(),
-            Some("No primary lap")
-        );
+        // The filmstrip takes no space until a lap is chosen.
+        assert!(window.try_find("filmstrip-primary").is_none());
+        assert!(window.try_find("filmstrip-swap").is_none());
         assert_eq!(window.find("status-cursor").label(), Some("No lap loaded"));
         let library = window.find("library-panel");
         assert!(library.visible());

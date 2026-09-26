@@ -1,8 +1,8 @@
 //! Traces: the synchronized channel lanes of the primary and reference laps.
 //!
 //! Top to bottom: a toolbar (x-axis, FIT, corner editing, lane resizing,
-//! zoom, and the range statistics of a selection), the lap strip of the
-//! primary session, the corner ruler with complex brackets, the damper
+//! zoom, and the range statistics of a selection), the corner ruler with
+//! complex brackets, the damper
 //! strip while manual damper alignment is in effect, then the
 //! [`TraceStack`] (pinned Δ lane, scrollable channel lanes, shared x-axis).
 //!
@@ -18,7 +18,7 @@
 //!   only on Save.
 //!
 //! A cursor move notifies `CursorState`; this panel re-renders its readouts
-//! (the lap-strip playhead, the stats chip) but never the cached static
+//! (the corner focus, the stats chip) but never the cached static
 //! trace layer (see [`TraceStack::static_rebuilds`]).
 //!
 //! Video seeking follows `CursorState` in the video controller; this panel
@@ -49,7 +49,6 @@ use omatrack_trace::{
     CornerBand, CornerRuler, CornerRulerEvent, DamperStrip, DamperStripData, DamperStripEvent,
     Selection, TraceEvent, TraceScene, TraceStack, XAxis,
 };
-use omatrack_ui::LapStripItem;
 
 use crate::actions::{CancelEdit, FocusCorner, ResizeLanes, SaveEdit};
 use crate::commands::{self, CommandCategory, CommandSpec};
@@ -115,8 +114,6 @@ pub struct TracesPanel {
     damper: Entity<DamperStrip>,
     scene: Arc<TraceScene>,
     built: Option<BuiltScene>,
-    /// Lap strip cells of the primary recording.
-    laps: Arc<[LapStripItem]>,
     show_damper: bool,
     scene_request: u64,
     scene_task: Option<Task<()>>,
@@ -126,7 +123,6 @@ pub struct TracesPanel {
     corners: Option<CornerDraft>,
     range: Option<RangeStats>,
     focused_band: Option<u32>,
-    playhead: Option<f64>,
     axis: XAxis,
     /// Lane palette commands as registered (key, visible), to register again
     /// only on a change.
@@ -176,7 +172,6 @@ impl TracesPanel {
             damper,
             scene: Arc::new(TraceScene::default()),
             built: None,
-            laps: Arc::from(Vec::new()),
             show_damper: false,
             scene_request: 0,
             scene_task: None,
@@ -185,7 +180,6 @@ impl TracesPanel {
             corners: None,
             range: None,
             focused_band: None,
-            playhead: None,
             axis,
             lane_commands: Vec::new(),
             menu: None,
@@ -310,19 +304,6 @@ impl TracesPanel {
         self.scene = built
             .as_ref()
             .map_or_else(|| Arc::new(TraceScene::default()), |b| b.scene.clone());
-        self.laps = built.as_ref().map_or_else(
-            || Arc::from(Vec::new()),
-            |built| {
-                built
-                    .analysis
-                    .primary()
-                    .strip()
-                    .iter()
-                    .map(LapStripItem::from)
-                    .collect::<Vec<_>>()
-                    .into()
-            },
-        );
         let damper = built
             .as_ref()
             .and_then(|built| damper_data(&built.analysis));
@@ -411,10 +392,10 @@ impl TracesPanel {
     // ---- cursor -----------------------------------------------------------
 
     /// Follow the shared cursor: the focused corner (whoever focused it),
-    /// the selection statistics and the lap-strip playhead.
+    /// and the selection statistics.
     fn on_cursor(&mut self, cx: &mut Context<Self>) {
         let cursor = self.app.cursor.read(cx);
-        let (fraction, selection, focus) = (cursor.fraction(), cursor.selection(), cursor.focus());
+        let (selection, focus) = (cursor.selection(), cursor.focus());
         let mut changed = false;
 
         let band = focus.and_then(|focus| band_for(self.scene.corners(), focus));
@@ -443,10 +424,6 @@ impl TracesPanel {
         if self.range.map(|range| range.selection) != selection {
             self.range = selection.map(|selection| RangeStats::of(&self.scene, selection));
             changed = true;
-        }
-        if fraction != self.playhead {
-            self.playhead = fraction;
-            changed = !self.laps.is_empty() || changed;
         }
         if changed {
             cx.notify();
@@ -813,7 +790,6 @@ impl TracesPanel {
         v_flex()
             .size_full()
             .min_h_0()
-            .child(self.render_lap_row(cx))
             .child(self.render_ruler_row(cx))
             .when(self.show_damper, |el| el.child(self.damper.clone()))
             .child(

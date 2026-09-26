@@ -1,14 +1,15 @@
-//! The title bar: what is being compared, how it is aligned, and the two
-//! window-level commands (palette, preferences).
+//! The title bar: where (track, event), how the pair is aligned (sync and
+//! its confidence), and the two window-level commands (palette,
+//! preferences). Driver and lap details live in the filmstrip below it
+//! ([`super::filmstrip`]), never duplicated here.
 
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, IconName, Sizable as _, StyledExt as _, TitleBar,
+    ActiveTheme as _, IconName, Sizable as _, StyledExt as _, TitleBar,
     button::{Button, ButtonVariants as _},
     h_flex,
     kbd::Kbd,
     searchable_list::SearchableListItem,
     select::Select,
-    separator::Separator,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -17,11 +18,9 @@ use gpui_kit::{
 };
 use omatrack_core::alignment::Strategy;
 use omatrack_core::session::StrategyRequest;
-use omatrack_ui::{LapRole, RoleChip};
 
-use crate::actions::{OpenPreferences, SwapRoles, TogglePalette};
+use crate::actions::{OpenPreferences, TogglePalette};
 use crate::keymap::WORKSPACE_CONTEXT;
-use crate::state::{RoleSlot, RoleState};
 use crate::workspace::Workspace;
 
 /// One entry of the sync strategy select; `None` is the automatic choice.
@@ -100,57 +99,6 @@ pub fn sync_summary(
     format!("{basis} · {anchors} · {confidence} confidence.{caution}{rejection}").into()
 }
 
-/// `Primary lap L8 1:13.644 · TL`, for the chip's accessible name.
-fn chip_label(role: LapRole, slot: Option<&RoleSlot>) -> SharedString {
-    match slot {
-        Some(slot) => {
-            let info = slot.info();
-            let state = match slot.state() {
-                RoleState::Loading => " (loading)",
-                RoleState::Failed(_) => " (failed)",
-                RoleState::Loaded(_) => "",
-            };
-            format!(
-                "{} lap {} {}{}{}",
-                role.label(),
-                info.label,
-                info.time,
-                info.driver
-                    .as_ref()
-                    .map(|driver| format!(" · {driver}"))
-                    .unwrap_or_default(),
-                state
-            )
-            .into()
-        }
-        None => format!("No {} lap", role.label().to_lowercase()).into(),
-    }
-}
-
-fn role_chip(role: LapRole, slot: Option<&RoleSlot>) -> impl IntoElement {
-    let id = match role {
-        LapRole::Primary => "header-primary",
-        LapRole::Reference => "header-reference",
-    };
-    let chip = match slot {
-        Some(slot) => {
-            let info = slot.info();
-            let mut chip = RoleChip::new(format!("{id}-chip"), role, info.label.clone())
-                .time(info.time.clone());
-            if let Some(driver) = &info.driver {
-                chip = chip.driver(driver.clone());
-            }
-            chip
-        }
-        None => RoleChip::new(format!("{id}-chip"), role, "—"),
-    };
-    div()
-        .id(id)
-        .test_support()
-        .aria_label(chip_label(role, slot))
-        .child(chip)
-}
-
 impl Workspace {
     pub(super) fn render_header(
         &self,
@@ -159,7 +107,6 @@ impl Workspace {
     ) -> impl IntoElement {
         let session = self.app.session.read(cx);
         let primary = session.primary();
-        let reference = session.reference();
         let track = primary
             .map(|slot| slot.info().track.clone())
             .unwrap_or_else(|| SharedString::from("Omatrack"));
@@ -183,7 +130,6 @@ impl Workspace {
             );
             (confidence, summary)
         });
-        let can_swap = primary.is_some() && reference.is_some();
         let theme = cx.theme();
 
         TitleBar::new().child(
@@ -210,63 +156,32 @@ impl Workspace {
                         }),
                 )
                 .child(
-                    h_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .justify_center()
-                        .gap_3()
-                        .child(
-                            h_flex()
-                                .id("header-laps")
-                                .gap_0p5()
-                                .child(role_chip(LapRole::Primary, primary))
-                                .child(
-                                    Button::new("header-swap")
-                                        .ghost()
+                    h_flex().flex_1().min_w_0().justify_center().gap_3().child(
+                        h_flex()
+                            .id("header-sync-group")
+                            .gap_1()
+                            .child(
+                                // The select fills its parent; the box
+                                // fixes its width so the badge sits
+                                // right beside it.
+                                div().w_56().child(
+                                    Select::new(&self.sync_select)
+                                        .id("header-sync")
                                         .xsmall()
-                                        .icon(IconName::Replace)
-                                        .disabled(!can_swap)
-                                        .accessibility_label("Swap primary and reference")
-                                        .tooltip_with_action(
-                                            "Swap primary and reference",
-                                            &SwapRoles,
-                                            Some(WORKSPACE_CONTEXT),
-                                        )
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.app
-                                                .session
-                                                .update(cx, |session, cx| session.swap(cx));
-                                        })),
-                                )
-                                .child(role_chip(LapRole::Reference, reference)),
-                        )
-                        .child(Separator::vertical().h_4())
-                        .child(
-                            h_flex()
-                                .id("header-sync-group")
-                                .gap_1()
-                                .child(
-                                    // The select fills its parent; the box
-                                    // fixes its width so the badge sits
-                                    // right beside it.
-                                    div().w_56().child(
-                                        Select::new(&self.sync_select)
-                                            .id("header-sync")
-                                            .xsmall()
-                                            .accessibility_label("Reference sync")
-                                            .title_prefix("Sync: ")
-                                            .disabled(comparison.is_none()),
-                                    ),
-                                )
-                                .when_some(sync, |this, (confidence, summary)| {
-                                    this.child(super::status::confidence_badge(
-                                        "header-confidence",
-                                        confidence,
-                                        summary,
-                                        cx,
-                                    ))
-                                }),
-                        ),
+                                        .accessibility_label("Reference sync")
+                                        .title_prefix("Sync: ")
+                                        .disabled(comparison.is_none()),
+                                ),
+                            )
+                            .when_some(sync, |this, (confidence, summary)| {
+                                this.child(super::status::confidence_badge(
+                                    "header-confidence",
+                                    confidence,
+                                    summary,
+                                    cx,
+                                ))
+                            }),
+                    ),
                 )
                 .child(
                     h_flex()

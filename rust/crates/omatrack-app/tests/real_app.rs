@@ -115,8 +115,16 @@ async fn real_run4_against_run1_through_the_workspace(cx: &mut TestAppContext) {
 
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        let primary = window.find("header-primary").label().unwrap().to_string();
-        let reference = window.find("header-reference").label().unwrap().to_string();
+        let primary = window
+            .find("filmstrip-primary")
+            .label()
+            .unwrap()
+            .to_string();
+        let reference = window
+            .find("filmstrip-reference")
+            .label()
+            .unwrap()
+            .to_string();
         assert!(
             primary.starts_with(&format!("Primary lap L{run4_best} {run4_time}")),
             "{primary}"
@@ -173,7 +181,11 @@ async fn real_run4_against_run1_through_the_workspace(cx: &mut TestAppContext) {
     });
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        let primary = window.find("header-primary").label().unwrap().to_string();
+        let primary = window
+            .find("filmstrip-primary")
+            .label()
+            .unwrap()
+            .to_string();
         assert!(primary.starts_with("Primary lap L8 1:13.644"), "{primary}");
         assert!(window.find("status-selection").visible());
     })
