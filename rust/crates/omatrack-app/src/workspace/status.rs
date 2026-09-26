@@ -105,6 +105,16 @@ pub fn analysis_approximate(analysis: &Analysis) -> bool {
         .is_some_and(|comparison| approximate(comparison.confidence()))
 }
 
+/// Whether the comparison is a share of lap time (`Lap time %`): every
+/// station then maps to the same share of the other lap's duration, so the
+/// cumulative Δt is a ramp of the lap-time difference, not a station
+/// delta, and a corner's Δt mostly measures how long the corner is.
+pub fn analysis_time_share(analysis: &Analysis) -> bool {
+    analysis
+        .comparison()
+        .is_some_and(|comparison| comparison.basis() == omatrack_core::alignment::BASIS_LAP_TIME)
+}
+
 /// Why GPS alignment was not used although both laps carry GPS: the
 /// fixes of the two laps never agreed in position, speed and heading.
 pub fn gps_rejection(analysis: &Analysis) -> Option<SharedString> {

@@ -1,7 +1,8 @@
 //! Corners: where the lap gains and loses time, corner by corner.
 //!
 //! A [`DataTable`] over the analysis' corner rows, sorted by Δt descending
-//! by default ("where am I losing time"), with the selected corner's notes
+//! by default ("where am I losing time"; track order when the alignment is
+//! only a share of lap time), with the selected corner's notes
 //! below it. The notes are the `CornerCheck` registry's output
 //! (`omatrack_core::corners::checks::run`, already in each row); this view
 //! only presents them and never decides what a corner says.
@@ -245,8 +246,12 @@ pub struct CornerTable {
     /// it through sorting and rebuilds.
     selected: Option<SharedString>,
     has_reference: bool,
-    /// The alignment is LOW confidence: Δt reads `≈`, two decimals, muted.
+    /// The alignment is LOW confidence: the Δt header reads `Δt ≈`, the
+    /// cells two decimals, muted.
     approximate: bool,
+    /// The alignment is a share of lap time: Δt measures corner length
+    /// more than driving, so it never drives the default sort.
+    time_share: bool,
     /// The sorted column and direction (`Default` is lap order).
     sort: (Col, ColumnSort),
     /// The window's rem size when the table was built: the table API sizes
@@ -261,6 +266,7 @@ impl CornerTable {
             selected: None,
             has_reference: false,
             approximate: false,
+            time_share: false,
             sort: (Col::Order, ColumnSort::Default),
             rem,
         }
@@ -299,13 +305,32 @@ impl CornerTable {
         ix
     }
 
-    /// Replace the rows. The first analysis with a reference sorts by Δt
-    /// descending; after that the user's sort is kept.
-    fn set_lines(&mut self, lines: Vec<CornerLine>, has_reference: bool, approximate: bool) {
+    /// Replace the rows. The first analysis with a station-aligned
+    /// reference sorts by Δt descending; under a time-share alignment the
+    /// table keeps track order (its Δt ranks corner length, not driving).
+    /// After that the user's sort is kept.
+    fn set_lines(
+        &mut self,
+        lines: Vec<CornerLine>,
+        has_reference: bool,
+        approximate: bool,
+        time_share: bool,
+    ) {
         self.approximate = approximate;
-        if has_reference && !self.has_reference && self.sort == (Col::Order, ColumnSort::Default) {
-            self.sort = (Col::Dt, ColumnSort::Descending);
+        let automatic = |sort: (Col, ColumnSort)| {
+            sort == (Col::Order, ColumnSort::Default) || sort == (Col::Dt, ColumnSort::Descending)
+        };
+        if has_reference
+            && (!self.has_reference || time_share != self.time_share)
+            && automatic(self.sort)
+        {
+            self.sort = if time_share {
+                (Col::Order, ColumnSort::Default)
+            } else {
+                (Col::Dt, ColumnSort::Descending)
+            };
         }
+        self.time_share = time_share;
         if !has_reference && self.sort.0 == Col::Dt {
             self.sort = (Col::Order, ColumnSort::Default);
         }
@@ -454,13 +479,18 @@ impl TableDelegate for CornerTable {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let col = Col::ALL[col_ix];
+        let title: SharedString = if col == Col::Dt && self.approximate {
+            "Δt ≈ s".into()
+        } else {
+            col.title().into()
+        };
         div()
             .size_full()
             .flex()
             .items_center()
             .when(col.is_numeric(), |this| this.justify_end())
             .text_color(cx.theme().muted_foreground)
-            .child(col.title())
+            .child(title)
     }
 
     fn render_tr(
@@ -499,13 +529,14 @@ impl TableDelegate for CornerTable {
                 .font_semibold()
                 .child(line.name.clone())
                 .into_any_element(),
+            // `≈` is said once, in the header; the cells are muted.
             Col::Dt => h_flex()
                 .w_full()
                 .justify_end()
                 .child(
                     DeltaText::new(Some(line.dt))
                         .decimals(if self.approximate { 2 } else { 3 })
-                        .approximate(self.approximate),
+                        .muted(self.approximate),
                 )
                 .into_any_element(),
             Col::Entry => self.render_speed(line.speeds[0], cx).into_any_element(),
@@ -728,6 +759,10 @@ impl CornersPanel {
             .shown
             .as_ref()
             .is_some_and(|analysis| crate::workspace::status::analysis_approximate(analysis));
+        let time_share = self
+            .shown
+            .as_ref()
+            .is_some_and(|analysis| crate::workspace::status::analysis_time_share(analysis));
         let (lines, has_reference) = match &self.shown {
             Some(analysis) => (
                 analysis
@@ -751,7 +786,7 @@ impl CornersPanel {
             .map(|result| &result.values);
         table.update(cx, |table, cx| {
             let delegate = table.delegate_mut();
-            delegate.set_lines(lines, has_reference, approximate);
+            delegate.set_lines(lines, has_reference, approximate, time_share);
             if let Some(values) = consistency {
                 delegate.set_consistency(values);
             }
@@ -1174,7 +1209,9 @@ impl Render for CornersPanel {
         let label: SharedString = format!(
             "{count} corner{}{}",
             if count == 1 { "" } else { "s" },
-            if analysis.reference().is_some() {
+            if analysis.reference().is_some()
+                && table.read(cx).delegate().sort == (Col::Dt, ColumnSort::Descending)
+            {
                 ", sorted by time lost"
             } else {
                 ""
@@ -1270,18 +1307,35 @@ mod tests {
             vec![line(0, 0.1), line(1, f64::NAN), line(2, 0.3), line(3, -0.2)],
             true,
             false,
+            false,
         );
         assert_eq!(ids(&table), ["t3", "t1", "t4", "t2"]);
     }
 
     #[test]
+    fn a_time_share_comparison_keeps_track_order() {
+        let lines = || vec![line(0, 0.1), line(1, 0.3), line(2, 0.2)];
+        let mut table = CornerTable::new(gpui_kit::px(16.));
+        table.set_lines(lines(), true, true, true);
+        assert_eq!(ids(&table), ["t1", "t2", "t3"], "Δt ranks corner length");
+        // A station-aligned analysis of the pair then sorts by time lost.
+        table.set_lines(lines(), true, false, false);
+        assert_eq!(ids(&table), ["t2", "t3", "t1"]);
+    }
+
+    #[test]
     fn a_single_lap_keeps_lap_order_and_the_user_sort_survives_a_rebuild() {
         let mut table = CornerTable::new(gpui_kit::px(16.));
-        table.set_lines(vec![line(1, f64::NAN), line(0, f64::NAN)], false, false);
+        table.set_lines(
+            vec![line(1, f64::NAN), line(0, f64::NAN)],
+            false,
+            false,
+            false,
+        );
         assert_eq!(ids(&table), ["t1", "t2"]);
         table.sort = (Col::Order, ColumnSort::Descending);
         table.apply_sort();
-        table.set_lines(vec![line(0, 0.2), line(1, 0.1)], true, false);
+        table.set_lines(vec![line(0, 0.2), line(1, 0.1)], true, false, false);
         assert_eq!(ids(&table), ["t2", "t1"], "the user's sort is kept");
     }
 }

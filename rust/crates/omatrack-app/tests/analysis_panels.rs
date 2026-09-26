@@ -281,7 +281,14 @@ async fn corners_sort_by_time_lost_and_a_header_click_resorts(cx: &mut TestAppCo
     })
     .unwrap();
 
-    // Click the sort control of the Δt header: ascending now.
+    // The synthetic pair has no distance or GPS: a time-share alignment
+    // keeps track order, so the first click on Δt sorts descending.
+    cx.update(|cx| {
+        let table = corners.read(cx).table().unwrap().read(cx);
+        let column = gpui_kit::component::table::TableDelegate::column(table.delegate(), 2, cx);
+        assert_eq!(column.sort, Some(ColumnSort::Default));
+    });
+    // Click the sort control of the Δt header.
     cx.update_window(scene.handle, |_, window, cx| {
         let mut panel = window.within("corners-table");
         let header = panel.find(("col-header", 2usize));
@@ -296,13 +303,13 @@ async fn corners_sort_by_time_lost_and_a_header_click_resorts(cx: &mut TestAppCo
     cx.run_until_parked();
     let dts = corner_dts(&scene, cx);
     assert!(
-        dts.windows(2).all(|pair| pair[0] <= pair[1]),
+        dts.windows(2).all(|pair| pair[0] >= pair[1]),
         "a header click re-sorts: {dts:?}"
     );
     cx.update(|cx| {
         let table = corners.read(cx).table().unwrap().read(cx);
         let column = gpui_kit::component::table::TableDelegate::column(table.delegate(), 2, cx);
-        assert_eq!(column.sort, Some(ColumnSort::Ascending));
+        assert_eq!(column.sort, Some(ColumnSort::Descending));
         // The selection followed the corner, not the row index.
         let ix = table.selected_row().unwrap();
         assert_eq!(table.delegate().lines()[ix].id(), &worst);
