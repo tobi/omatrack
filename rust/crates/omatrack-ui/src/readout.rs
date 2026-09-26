@@ -1,10 +1,12 @@
 //! Numeric readouts: a value with a muted unit, and a signed delta colored by
 //! whether it is a gain or a loss.
 //!
-//! Both render in the theme's monospace family so digits keep a fixed width
+//! Both render with tabular figures so digits keep a fixed width
 //! and columns of readouts line up while values change.
 
 use gpui_kit::component::{ActiveTheme as _, h_flex};
+
+use crate::TypeScale as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, IntoElement, ParentElement as _, RenderOnce, SharedString, Styled as _, Window, div,
@@ -13,13 +15,30 @@ use gpui_kit::{
 /// Shown for a value that does not exist (no sample, NaN).
 pub const MISSING_VALUE: &str = "—";
 
-/// Format `value` with a fixed number of decimals, or the missing marker for
-/// `None` and non-finite values.
+/// The minus sign of displayed numbers: U+2212, as wide as `+` and a
+/// tabular figure. The ASCII hyphen is a short dash that, in tabular
+/// columns, leaves a gap before the digits.
+pub const MINUS: char = '\u{2212}';
+
+/// Format `value` with a fixed number of decimals (negatives with [`MINUS`],
+/// never a negative zero), or the missing marker for `None` and non-finite
+/// values.
 pub fn format_value(value: Option<f64>, decimals: usize) -> SharedString {
     match value {
-        Some(value) if value.is_finite() => format!("{value:.decimals$}").into(),
+        Some(value) if value.is_finite() => {
+            let magnitude = format!("{:.decimals$}", value.abs());
+            if value < 0. && !rounds_to_zero(&magnitude) {
+                format!("{MINUS}{magnitude}").into()
+            } else {
+                magnitude.into()
+            }
+        }
         _ => MISSING_VALUE.into(),
     }
+}
+
+fn rounds_to_zero(magnitude: &str) -> bool {
+    magnitude.bytes().all(|b| b == b'0' || b == b'.')
 }
 
 /// Whether a delta is better, worse or neither.
@@ -40,7 +59,7 @@ pub enum DeltaSense {
     HigherIsBetter,
 }
 
-/// Format a delta with an explicit sign (`+0.123`, `-0.123`, `±0.000`) and
+/// Format a delta with an explicit sign (`+0.123`, `−0.123`, `±0.000`) and
 /// classify it. A value that rounds to zero at `decimals` is even, so the
 /// sign and color never disagree with the digits shown.
 pub fn format_delta(
@@ -52,11 +71,10 @@ pub fn format_delta(
         return (MISSING_VALUE.into(), DeltaTrend::Even);
     };
     let magnitude = format!("{:.decimals$}", value.abs());
-    let is_zero = magnitude.bytes().all(|b| b == b'0' || b == b'.');
-    if is_zero {
+    if rounds_to_zero(&magnitude) {
         return (format!("±{magnitude}").into(), DeltaTrend::Even);
     }
-    let sign = if value > 0. { '+' } else { '-' };
+    let sign = if value > 0. { '+' } else { MINUS };
     let better = match sense {
         DeltaSense::LowerIsBetter => value < 0.,
         DeltaSense::HigherIsBetter => value > 0.,
@@ -69,7 +87,7 @@ pub fn format_delta(
     (format!("{sign}{magnitude}").into(), trend)
 }
 
-/// A value in monospace digits with an optional muted unit.
+/// A value in tabular digits with an optional muted unit.
 #[derive(IntoElement)]
 pub struct Readout {
     value: SharedString,
@@ -103,7 +121,7 @@ impl RenderOnce for Readout {
         h_flex()
             .items_baseline()
             .gap_0p5()
-            .font_family(theme.mono_font_family.clone())
+            .numeric()
             .whitespace_nowrap()
             .child(self.value)
             .when_some(self.unit, |this, unit| {
@@ -112,7 +130,7 @@ impl RenderOnce for Readout {
     }
 }
 
-/// A signed delta in monospace digits, colored by trend: gain uses the
+/// A signed delta in tabular digits, colored by trend: gain uses the
 /// theme's `success`, loss its `danger`, even stays muted. The explicit sign
 /// carries the same meaning for readers who cannot rely on color.
 #[derive(IntoElement)]
@@ -186,7 +204,7 @@ impl RenderOnce for DeltaText {
         h_flex()
             .items_baseline()
             .gap_0p5()
-            .font_family(theme.mono_font_family.clone())
+            .numeric()
             .whitespace_nowrap()
             .child(div().text_color(color).child(text))
             .when_some(self.unit, |this, unit| {
@@ -202,7 +220,8 @@ mod tests {
     #[test]
     fn values_format_with_fixed_decimals_and_a_missing_marker() {
         assert_eq!(format_value(Some(123.456), 1).as_ref(), "123.5");
-        assert_eq!(format_value(Some(-0.25), 2).as_ref(), "-0.25");
+        assert_eq!(format_value(Some(-0.25), 2).as_ref(), "\u{2212}0.25");
+        assert_eq!(format_value(Some(-0.004), 2).as_ref(), "0.00");
         assert_eq!(format_value(None, 1).as_ref(), MISSING_VALUE);
         assert_eq!(format_value(Some(f64::NAN), 1).as_ref(), MISSING_VALUE);
     }
@@ -211,7 +230,7 @@ mod tests {
     fn time_deltas_are_gains_when_negative() {
         assert_eq!(
             format_delta(Some(-0.1234), 3, DeltaSense::LowerIsBetter),
-            ("-0.123".into(), DeltaTrend::Gain)
+            ("\u{2212}0.123".into(), DeltaTrend::Gain)
         );
         assert_eq!(
             format_delta(Some(0.5), 3, DeltaSense::LowerIsBetter),
@@ -227,7 +246,7 @@ mod tests {
         );
         assert_eq!(
             format_delta(Some(-2.26), 1, DeltaSense::HigherIsBetter),
-            ("-2.3".into(), DeltaTrend::Loss)
+            ("\u{2212}2.3".into(), DeltaTrend::Loss)
         );
     }
 

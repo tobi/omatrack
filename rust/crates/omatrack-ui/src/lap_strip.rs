@@ -39,7 +39,7 @@ use gpui_kit::{
 };
 use omatrack_core::session::{LapStripCell, LapStripKind};
 
-use crate::LapRole;
+use crate::{LapRole, TypeScale as _};
 
 /// Width of a pit-stop cell, logical pixels.
 pub const PIT_STOP_CELL: f32 = 36.0;
@@ -49,9 +49,9 @@ pub const MIN_CELL: f32 = 12.0;
 /// Horizontal room a cell keeps around its text, logical pixels.
 const CELL_TEXT_INSET: f32 = 6.0;
 
-/// Advance of one monospace `text_xs` character, as a share of the rem
-/// (0.75 rem × a 0.6 em advance, rounded up for wider mono faces).
-const MONO_XS_ADVANCE: f32 = 0.47;
+/// Advance of one tabular-figure `text_xs` character, as a share of the rem
+/// (0.75 rem × a 0.6 em advance, rounded up for wider desktop faces).
+const FIGURE_XS_ADVANCE: f32 = 0.47;
 /// Widest gap between cells, logical pixels.
 pub const MAX_GAP: f32 = 3.0;
 
@@ -217,7 +217,7 @@ impl LapStripItem {
         }
     }
 
-    /// What fits a cell `width` logical pixels wide when one monospace
+    /// What fits a cell `width` logical pixels wide when one tabular
     /// character takes `char_width`: the time, else the label (`In`, `L3`),
     /// else nothing (the cell keeps its spoken label and tooltip). Never a
     /// clipped or ellipsized fragment.
@@ -419,7 +419,7 @@ impl Element for StripCellsElement {
         let width = bounds.size.width.as_f32();
         let height = bounds.size.height.as_f32();
         let spans = lap_strip_layout(width, &self.items);
-        let char_width = window.rem_size().as_f32() * MONO_XS_ADVANCE;
+        let char_width = window.rem_size().as_f32() * FIGURE_XS_ADVANCE;
         let mut cells = Vec::with_capacity(self.items.len());
         for (item, span) in self.items.iter().zip(spans) {
             if span.width <= 0.0 {
@@ -531,7 +531,7 @@ impl StripCellsElement {
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_xs()
-                        .font_family(theme.mono_font_family.clone())
+                        .numeric()
                         .text_color(text_color)
                         .when(is_primary || is_reference, |d| d.font_semibold())
                         .child(text),

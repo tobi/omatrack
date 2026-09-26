@@ -14,7 +14,7 @@ use gpui_kit::{
     RenderOnce, SharedString, Styled as _, Window, div,
 };
 
-use crate::{Readout, Swatch};
+use crate::{Readout, Swatch, TypeScale as _};
 
 /// The two sides of a lap comparison.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -131,7 +131,7 @@ impl RenderOnce for RoleChip {
             .child(
                 div()
                     .text_color(theme.muted_foreground)
-                    .font_family(theme.mono_font_family.clone())
+                    .numeric()
                     .child(self.role.marker()),
             )
             .when_some(self.driver, |this, driver| {

@@ -34,7 +34,7 @@ use gpui_kit::{
     Styled as _, Window, canvas, div, relative, rems,
 };
 
-use crate::{DeltaText, MISSING_VALUE, Swatch};
+use crate::{DeltaText, MISSING_VALUE, Swatch, TypeScale as _};
 
 /// Range of the gap bar either side of level, metres.
 pub const GAP_RANGE_M: f64 = 8.0;
@@ -289,14 +289,13 @@ impl RenderOnce for VideoHud {
             theme.border,
             theme.muted_foreground,
         );
-        let mono = theme.mono_font_family.clone();
 
         // One row, `236 km/h │ Gear 6 │ Δ +0.123 s`, baseline-aligned; the
-        // values are mono so they do not jitter while the video plays.
+        // values use tabular figures so they do not jitter while the video plays.
         let caption = |text: &'static str| div().text_xs().text_color(muted).child(text);
         let value = |text: SharedString| {
             div()
-                .font_family(mono.clone())
+                .numeric()
                 .font_semibold()
                 .map(|d| {
                     if fullscreen {
@@ -371,7 +370,7 @@ impl RenderOnce for VideoHud {
                         .flex_shrink_0()
                         .text_right()
                         .text_xs()
-                        .font_family(mono.clone())
+                        .numeric()
                         .text_color(color)
                         .child(format_gap(gap)),
                 )

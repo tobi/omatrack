@@ -6,13 +6,15 @@
 //! telemetry meaning: lap roles ([`RoleChip`]), signed deltas and readouts
 //! ([`DeltaText`], [`Readout`]), a session's laps ([`LapStrip`]) and the
 //! telemetry HUD over the video ([`VideoHud`]). Every color is a theme token;
-//! [`theme`] is the only module that knows literal colors.
+//! [`theme`] is the only module that knows literal colors;
+//! [`TypeScale`] is the one type scale (sizes, tabular figures).
 
 mod lap_strip;
 mod readout;
 mod role_chip;
 mod swatch;
 pub mod theme;
+mod typography;
 mod video_hud;
 
 pub use lap_strip::{
@@ -20,10 +22,11 @@ pub use lap_strip::{
     lap_strip_layout, strip_cells,
 };
 pub use readout::{
-    DeltaSense, DeltaText, DeltaTrend, MISSING_VALUE, Readout, format_delta, format_value,
+    DeltaSense, DeltaText, DeltaTrend, MINUS, MISSING_VALUE, Readout, format_delta, format_value,
 };
 pub use role_chip::{LapRole, RoleChip};
 pub use swatch::Swatch;
+pub use typography::{TypeScale, TypeStep, tabular_figures};
 pub use video_hud::{
     GAP_RANGE_M, HUD_INSET, HudPosition, HudVariant, VideoHud, format_gap, format_gear,
     gap_position,
