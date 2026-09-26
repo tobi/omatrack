@@ -475,17 +475,13 @@ async fn h_and_j_focus_corners_in_the_left_half(cx: &mut TestAppContext) {
     check(cx, 1);
     press(cx, "h");
     check(cx, 0);
-    let notes = cx
-        .update_window(f.window, |_, window, cx| {
-            window.render_frame(cx);
-            window
-                .find("trace-corner-notes")
-                .label()
-                .map(str::to_string)
-        })
-        .unwrap()
-        .expect("the focused corner's notes");
-    assert!(notes.starts_with(corners[0].label.as_ref()), "{notes}");
+    // The notes live in Where the time goes (its card follows the focus),
+    // never in a card over the plot.
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("trace-corner-notes").is_none());
+    })
+    .unwrap();
     // Escape returns to the viewport from before the focus.
     press(cx, "escape");
     assert_eq!(

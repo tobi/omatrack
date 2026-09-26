@@ -16,7 +16,7 @@ use gpui_kit::{
     ParentElement as _, Render, SharedString, Styled as _, Subscription, TestSupportExt as _,
     Window, div,
 };
-use omatrack_core::session::Analysis;
+use omatrack_core::session::{Analysis, CornerSource};
 use omatrack_trace::{
     FractionMap, GeoPoint, GpsTrack, MapCorner, Selection, TrackMap, TrackMapData, TrackMapEvent,
 };
@@ -36,6 +36,24 @@ fn gps_track(latitude: &[f64], longitude: &[f64]) -> Option<GpsTrack> {
     (usable == 2).then(|| GpsTrack::new(Arc::from(latitude), Arc::from(longitude)))
 }
 
+/// `track` (the reference lap) resampled onto the primary's `samples`
+/// grid through `map`: sample `i` is where the reference was at primary
+/// fraction `i / (samples - 1)`.
+fn stationed_track(track: &GpsTrack, map: &dyn FractionMap, samples: usize) -> Option<GpsTrack> {
+    if samples < 2 {
+        return None;
+    }
+    let last = (samples - 1) as f64;
+    let (latitude, longitude): (Vec<f64>, Vec<f64>) = (0..samples)
+        .map(|i| {
+            track
+                .position_at(map.reference_fraction(i as f64 / last))
+                .map_or((f64::NAN, f64::NAN), |p| (p.lat, p.lon))
+        })
+        .unzip();
+    gps_track(&latitude, &longitude)
+}
+
 /// Everything the map draws for an analysis.
 pub fn map_data(analysis: &Analysis) -> TrackMapData {
     // Under a LOW-confidence alignment the gain/loss colouring would claim a
@@ -51,10 +69,22 @@ pub fn map_data(analysis: &Analysis) -> TrackMapData {
 pub(crate) fn map_layers(analysis: &Analysis) -> TrackMapData {
     let primary = analysis.primary();
     let unified = primary.unified();
-    let primary_track = gps_track(&unified.gps_lat, &unified.gps_lon);
     let reference_track = analysis
         .reference()
         .and_then(|lap| gps_track(&lap.unified().gps_lat, &lap.unified().gps_lon));
+    let primary_track = if analysis.corner_source() == CornerSource::Reference {
+        // The primary's own GPS misses the circuit (the core carried the
+        // reference's corners over for the same reason): place the primary
+        // where the reference was at the same station, through the one map.
+        reference_track
+            .as_ref()
+            .zip(analysis.comparison())
+            .and_then(|(track, comparison)| {
+                stationed_track(track, comparison.as_ref(), unified.len())
+            })
+    } else {
+        gps_track(&unified.gps_lat, &unified.gps_lon)
+    };
     let centerline: Vec<GeoPoint> = primary
         .layout()
         .map(|layout| {

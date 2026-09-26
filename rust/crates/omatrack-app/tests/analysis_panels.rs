@@ -69,7 +69,7 @@ fn sample(t: f64) -> [f64; 8] {
 
 /// Write the synthetic recording as an MTJ document into `dir` (without
 /// the two GPS channels unless `gps`).
-fn write_recording(dir: &Path, gps: bool) -> PathBuf {
+fn write_recording(dir: &Path, gps: bool, lap_distance: bool) -> PathBuf {
     const CHANNELS: [(&str, &str); 8] = [
         ("Speed", "km/h"),
         ("Throttle Pos", "%"),
@@ -80,13 +80,35 @@ fn write_recording(dir: &Path, gps: bool) -> PathBuf {
         ("GPS Latitude", "deg"),
         ("GPS Longitude", "deg"),
     ];
-    let channels = if gps { &CHANNELS[..] } else { &CHANNELS[..6] };
+    let mut channels: Vec<(&str, &str)> = if gps { &CHANNELS[..] } else { &CHANNELS[..6] }.to_vec();
     let count = (DURATION * RATE) as usize;
     let mut columns = vec![Vec::with_capacity(count); channels.len()];
     for i in 0..count {
         for (column, value) in columns.iter_mut().zip(sample(i as f64 / RATE)) {
             column.push(value);
         }
+    }
+    if lap_distance {
+        // The logger's own lap distance: integrated speed restarting at
+        // every lap start, scaled so every lap is one track length (the
+        // synthetic laps last alike at different speeds).
+        let lap_of = |i: usize| ((i as f64 / RATE - FIRST_LAP_START) / LAP_SECONDS).floor() as i64;
+        let mut integral = vec![0.0; count];
+        for i in 1..count {
+            if lap_of(i) == lap_of(i - 1) {
+                integral[i] = integral[i - 1] + sample(i as f64 / RATE)[0] / 3.6 / RATE;
+            }
+        }
+        let mut totals = std::collections::BTreeMap::new();
+        for i in 0..count {
+            totals.insert(lap_of(i), integral[i]);
+        }
+        let track = (0..4).map(|lap| totals[&lap]).sum::<f64>() / 4.0;
+        let distance: Vec<f64> = (0..count)
+            .map(|i| integral[i] * track / totals[&lap_of(i)].max(1.0))
+            .collect();
+        channels.push(("Lap Distance", "m"));
+        columns.push(distance);
     }
     let ns = |seconds: f64| (seconds * 1e9).round() as u64;
     let directory: Vec<String> = channels
@@ -147,9 +169,19 @@ async fn scan_synthetic(cx: &mut TestAppContext) -> Scene {
 }
 
 async fn scan_recording(cx: &mut TestAppContext, gps: bool) -> Scene {
+    scan_written(cx, gps, false).await
+}
+
+/// The synthetic recording with the logger's own lap distance: the laps
+/// align on lap distance %, which places time loss.
+async fn scan_with_lap_distance(cx: &mut TestAppContext) -> Scene {
+    scan_written(cx, true, true).await
+}
+
+async fn scan_written(cx: &mut TestAppContext, gps: bool, lap_distance: bool) -> Scene {
     let sandbox = common::Sandbox::new();
     let recordings = sandbox.dir.path().join("recordings");
-    write_recording(&recordings, gps);
+    write_recording(&recordings, gps, lap_distance);
     sandbox.write_config(&format!(
         "locations:\n  - type: folder\n    name: Synthetic\n    target: {}\n",
         recordings.display()
@@ -192,6 +224,12 @@ async fn scan_recording(cx: &mut TestAppContext, gps: bool) -> Scene {
 /// Scan, then compare the second complete lap against the fourth.
 async fn analysed(cx: &mut TestAppContext) -> Scene {
     compare(scan_synthetic(cx).await, cx).await
+}
+
+/// [`analysed`] over the recording with the logger's lap distance: the
+/// pair aligns on lap distance %, which places time loss.
+async fn analysed_on_distance(cx: &mut TestAppContext) -> Scene {
+    compare(scan_with_lap_distance(cx).await, cx).await
 }
 
 /// Compare the scene's second complete lap against its fourth.
@@ -636,7 +674,12 @@ fn selected_corner(scene: &Scene, cx: &mut TestAppContext) -> Option<SharedStrin
 
 #[gpui_kit::test]
 async fn where_the_time_goes_leads_the_right_dock_largest_loss_first(cx: &mut TestAppContext) {
-    let scene = analysed(cx).await;
+    let scene = analysed_on_distance(cx).await;
+    cx.update(|cx| {
+        let analysis = scene.test.app.session.read(cx).analysis().unwrap().clone();
+        assert_eq!(analysis.comparison().unwrap().basis(), "Lap distance %");
+        assert!(analysis.time_loss_placed());
+    });
     let panel = time_goes(&scene, cx);
     let (ids, dts, split, final_delta) = cx.update(|cx| {
         let panel = panel.read(cx);
@@ -699,7 +742,7 @@ async fn where_the_time_goes_leads_the_right_dock_largest_loss_first(cx: &mut Te
 
 #[gpui_kit::test]
 async fn the_time_goes_card_follows_the_selected_corner(cx: &mut TestAppContext) {
-    let scene = analysed(cx).await;
+    let scene = analysed_on_distance(cx).await;
     let panel = time_goes(&scene, cx);
     let lap_order: Vec<SharedString> = cx.update(|cx| {
         let analysis = scene.test.app.session.read(cx).analysis().unwrap().clone();
@@ -813,18 +856,55 @@ async fn open_in_detail_focuses_the_corner_and_shows_the_corners_table(cx: &mut 
 }
 
 #[gpui_kit::test]
-async fn without_gps_the_time_goes_table_stands_alone(cx: &mut TestAppContext) {
+async fn without_gps_or_logger_distance_time_loss_is_not_placed(cx: &mut TestAppContext) {
+    // Lap time %: the delta is the lap-time gap spread evenly, so the panel
+    // says so instead of ranking corners (no heat, table or split).
+    let scene = analysed(cx).await;
+    let panel = time_goes(&scene, cx);
+    let lap_order: Vec<SharedString> = cx.update(|cx| {
+        let analysis = scene.test.app.session.read(cx).analysis().unwrap().clone();
+        assert_eq!(analysis.comparison().unwrap().basis(), "Lap time %");
+        assert!(!analysis.time_loss_placed());
+        analysis
+            .corners()
+            .iter()
+            .map(|zone| SharedString::from(zone.id.clone()))
+            .collect()
+    });
+    cx.update(|cx| {
+        let panel = panel.read(cx);
+        assert!(!panel.map().read(cx).data().is_heat(), "no heat to show");
+        let ids: Vec<_> = panel.lines().iter().map(|l| l.id().clone()).collect();
+        assert_eq!(ids, lap_order, "lap order, never ranked");
+    });
+    cx.update_window(scene.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let notice = window.find("time-goes-unplaced");
+        assert!(notice.visible());
+        assert!(notice.label().unwrap().contains("lap time"));
+        assert!(window.try_find("time-goes-table").is_none());
+        assert!(window.try_find("time-goes-split").is_none());
+        assert!(window.try_find("time-goes-legend").is_none());
+        let card = window.find("time-goes-card").label().unwrap().to_string();
+        assert!(!card.contains("vs R"), "no cross-lap entry delta: {card}");
+        assert!(card.contains(" km/h"), "{card}");
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn without_gps_the_time_goes_panel_has_no_map(cx: &mut TestAppContext) {
     let scene = compare(scan_recording(cx, false).await, cx).await;
     let panel = time_goes(&scene, cx);
     cx.update(|cx| {
         let panel = panel.read(cx);
         assert!(panel.map().read(cx).data().is_empty(), "nothing to draw");
-        assert!(panel.lines().len() >= 2, "the corners still rank");
+        assert!(panel.lines().len() >= 2);
     });
     cx.update_window(scene.handle, |_, window, cx| {
         window.render_frame(cx);
         assert!(window.try_find("track-map").is_none(), "no map without GPS");
-        assert!(window.find("time-goes-table").visible());
+        assert!(window.find("time-goes-unplaced").visible());
         assert!(window.find("time-goes-card").visible());
     })
     .unwrap();
@@ -832,7 +912,7 @@ async fn without_gps_the_time_goes_table_stands_alone(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 async fn a_cursor_move_leaves_the_heat_map_static_layer_alone(cx: &mut TestAppContext) {
-    let scene = analysed(cx).await;
+    let scene = analysed_on_distance(cx).await;
     let panel = time_goes(&scene, cx);
     let map = cx.update(|cx| panel.read(cx).map().clone());
     cx.update_window(scene.handle, |_, window, cx| window.render_frame(cx))

@@ -28,7 +28,6 @@
 //! only moves the shared cursor.
 
 mod edit;
-mod notes;
 mod scene_build;
 mod stats;
 mod toolbar;
@@ -800,7 +799,6 @@ impl TracesPanel {
                     .flex_1()
                     .min_h_0()
                     .children(stack)
-                    .children(self.render_notes(cx))
                     .children(self.render_range_stats(cx)),
             )
             .into_any_element()

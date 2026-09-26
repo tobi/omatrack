@@ -25,14 +25,24 @@
 //! selection changes.
 //!
 //! Every number comes from the analysis; nothing here measures a lap.
-//! Under a LOW-confidence alignment the figures are marked `≈`.
+//! Under a LOW-confidence alignment the figures are marked `≈`. When the
+//! map does not place time loss ([`Analysis::time_loss_placed`]: a lap-time
+//! base, whose delta is the lap-time gap spread evenly), the panel says so
+//! instead of ranking corners: no heat, no loss table, no split, and the
+//! card keeps only the primary's speeds and the notes (principle 9).
+//!
+//! Only the [`TABLE_ROWS`] largest losses are listed (plus the selected
+//! corner when it ranks lower), so the map, the table, the split and the
+//! card fit a 900 px window; "Show all" opens the full Corners table.
 
 use std::sync::Arc;
 
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, StyledExt as _,
+    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
-    h_flex, v_flex,
+    h_flex,
+    scroll::ScrollableElement as _,
+    v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -54,7 +64,9 @@ use crate::state::AppState;
 const MAP_REMS: f32 = 20.0;
 /// ...at most this share of the window height, so the table and the card
 /// stay in view on a short window.
-const MAP_MAX_WINDOW_SHARE: f32 = 0.3;
+const MAP_MAX_WINDOW_SHARE: f32 = 0.32;
+/// Corners listed by time lost before "Show all" (the Corners table).
+pub const TABLE_ROWS: usize = 8;
 /// Width of the corner-name column, in rems.
 const NAME_REMS: f32 = 3.25;
 /// Width of each numeric column, in rems.
@@ -103,7 +115,7 @@ impl LossLine {
                 .iter()
                 // The card states the entry speed with its numbers already.
                 .filter(|note| note.id != "entry_speed")
-                .map(|note| (note.severity, prose(&note.text)))
+                .map(|note| (note.severity, note.sentence().into()))
                 .collect(),
         }
     }
@@ -137,9 +149,12 @@ impl LossLine {
 }
 
 /// The analysis' corners, largest loss first (unknown Δt last, then lap
-/// order).
+/// order); in lap order when the map does not place time loss.
 pub fn loss_lines(analysis: &Analysis) -> Vec<LossLine> {
     let mut lines: Vec<LossLine> = analysis.rows().iter().map(LossLine::new).collect();
+    if !analysis.time_loss_placed() {
+        return lines;
+    }
     lines.sort_by(|a, b| match (a.dt.is_finite(), b.dt.is_finite()) {
         (true, true) => b.dt.total_cmp(&a.dt),
         (true, false) => std::cmp::Ordering::Less,
@@ -147,35 +162,6 @@ pub fn loss_lines(analysis: &Analysis) -> Vec<LossLine> {
         (false, false) => std::cmp::Ordering::Equal,
     });
     lines
-}
-
-/// A corner note as a sentence: a capital first letter, a space between a
-/// number and its unit (`23m` → `23 m`), and a full stop.
-pub fn prose(text: &str) -> SharedString {
-    let mut out = String::with_capacity(text.len() + 4);
-    let chars: Vec<char> = text.trim().chars().collect();
-    for (ix, &ch) in chars.iter().enumerate() {
-        if ix == 0 {
-            out.extend(ch.to_uppercase());
-            continue;
-        }
-        if chars[ix - 1].is_ascii_digit() && (ch == 'm' || ch == 's') {
-            // Only a unit: `23m`, `450ms`, `0.5s`, never `3rd`.
-            let unit_end = chars[ix..]
-                .iter()
-                .position(|c| !c.is_ascii_alphabetic())
-                .map_or(chars.len(), |len| ix + len);
-            let unit: String = chars[ix..unit_end].iter().collect();
-            if matches!(unit.as_str(), "m" | "ms" | "s") {
-                out.push(' ');
-            }
-        }
-        out.push(ch);
-    }
-    if !out.ends_with(['.', '!', '?']) {
-        out.push('.');
-    }
-    out.into()
 }
 
 /// `≈1.55 s` (the split is always approximate: it sums over zones).
@@ -332,13 +318,20 @@ impl TimeGoesPanel {
         }
     }
 
+    /// Whether the analysis places time loss (see the module docs).
+    fn placed(&self) -> bool {
+        self.shown
+            .as_deref()
+            .is_some_and(Analysis::time_loss_placed)
+    }
+
     fn approximate(&self) -> bool {
         self.shown
             .as_deref()
             .is_some_and(crate::workspace::status::analysis_approximate)
     }
 
-    fn render_header(&self, palette: &TracePalette, cx: &App) -> impl IntoElement {
+    fn render_header(&self, palette: &TracePalette, heat: bool, cx: &App) -> impl IntoElement {
         let theme = cx.theme();
         let key = |color: Hsla, label: &'static str| {
             h_flex()
@@ -356,17 +349,19 @@ impl TimeGoesPanel {
                     .text_color(theme.foreground)
                     .child("Where the time goes"),
             )
-            .child(
-                h_flex()
-                    .id("time-goes-legend")
-                    .test_support()
-                    .aria_label("Colour: time lost per metre, less to more")
-                    .gap_2()
-                    .text_caption()
-                    .text_color(theme.muted_foreground)
-                    .child(key(palette.heat(0.35), "less"))
-                    .child(key(palette.heat(1.0), "more")),
-            )
+            .when(heat, |this| {
+                this.child(
+                    h_flex()
+                        .id("time-goes-legend")
+                        .test_support()
+                        .aria_label("Colour: time lost per metre, less to more")
+                        .gap_2()
+                        .text_caption()
+                        .text_color(theme.muted_foreground)
+                        .child(key(palette.heat(0.0), "less"))
+                        .child(key(palette.heat(1.0), "more")),
+                )
+            })
     }
 
     fn render_table(&self, palette: &TracePalette, cx: &mut Context<Self>) -> impl IntoElement {
@@ -401,7 +396,14 @@ impl TimeGoesPanel {
             )
             .child(number(NUMBER_REMS).child(if approximate { "≈ s" } else { "s" }))
             .child(number(NUMBER_REMS).child("Entry"));
-        let rows = self.lines.iter().map(|line| {
+        // The largest losses, plus the selected corner when it ranks lower.
+        let listed = self
+            .lines
+            .iter()
+            .enumerate()
+            .filter(|(ix, line)| *ix < TABLE_ROWS || self.selected.as_ref() == Some(&line.id));
+        let hidden = self.lines.len().saturating_sub(TABLE_ROWS);
+        let rows = listed.map(|(_, line)| {
             let selected = self.selected.as_ref() == Some(&line.id);
             let share = if worst > 0.0 && line.dt.is_finite() {
                 (line.dt / worst).clamp(0.0, 1.0)
@@ -477,6 +479,69 @@ impl TimeGoesPanel {
             .gap_px()
             .child(head)
             .children(rows)
+            .when(hidden > 0, |this| {
+                this.child(
+                    h_flex().child(
+                        Button::new("time-goes-show-all")
+                            .ghost()
+                            .small()
+                            .label(SharedString::from(format!(
+                                "Show all {} corners",
+                                self.lines.len()
+                            )))
+                            .tooltip("Open the Corners table (Ctrl+4)")
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(FocusPanel4), cx);
+                            }),
+                    ),
+                )
+            })
+    }
+
+    /// Why nothing is ranked: the map does not place time loss.
+    fn render_unplaced(&self, analysis: &Analysis, cx: &App) -> impl IntoElement {
+        let theme = cx.theme();
+        let gap = analysis
+            .lap_time_delta()
+            .map(|dt| {
+                format!(
+                    " ({} s)",
+                    format_delta(Some(dt), 3, DeltaSense::LowerIsBetter).0
+                )
+            })
+            .unwrap_or_default();
+        let title = "Time loss can\u{2019}t be placed on the lap";
+        let body = format!(
+            "Without GPS or logger distance on both laps, they align by lap time, \
+             which spreads the lap-time gap{gap} evenly. Corner notes are approximate."
+        );
+        v_flex()
+            .id("time-goes-unplaced")
+            .test_support()
+            .role(Role::Group)
+            .aria_label(SharedString::from(format!("{title}. {body}")))
+            .gap_1()
+            .px_2()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .text_body()
+                    .font_medium()
+                    .text_color(theme.foreground)
+                    .child(
+                        Icon::new(IconName::TriangleAlert)
+                            .small()
+                            .text_color(theme.warning),
+                    )
+                    .child(title),
+            )
+            .child(
+                div()
+                    .text_label()
+                    .numeric()
+                    .text_color(theme.muted_foreground)
+                    .child(body),
+            )
     }
 
     fn render_summary(&self, cx: &App) -> Option<impl IntoElement> {
@@ -501,6 +566,7 @@ impl TimeGoesPanel {
         let line = self.selected()?.clone();
         let theme = cx.theme();
         let approximate = self.approximate();
+        let placed = self.placed();
         let signed = |value: f64, decimals: usize, sense: DeltaSense| {
             let (text, _) = format_delta(Some(value), decimals, sense);
             if approximate || decimals == 2 {
@@ -509,19 +575,31 @@ impl TimeGoesPanel {
                 text.to_string()
             }
         };
-        let speed = format!(
-            "Entry {} km/h ({} vs R), minimum {} km/h.",
-            format_value(Some(line.entry), 0),
-            format_delta(Some(line.entry_delta), 1, DeltaSense::HigherIsBetter).0,
-            format_value(Some(line.minimum), 0),
-        );
+        // Without a placing map the entry points of the two laps are not
+        // the same place: the primary's own speeds only.
+        let speed = if placed {
+            format!(
+                "Entry {} km/h ({} vs R), minimum {} km/h.",
+                format_value(Some(line.entry), 0),
+                format_delta(Some(line.entry_delta), 1, DeltaSense::HigherIsBetter).0,
+                format_value(Some(line.minimum), 0),
+            )
+        } else {
+            format!(
+                "Entry {} km/h, minimum {} km/h.",
+                format_value(Some(line.entry), 0),
+                format_value(Some(line.minimum), 0),
+            )
+        };
         let split = format!(
             "Entry {} s, exit {} s.",
             signed(line.entry_dt, 2, DeltaSense::LowerIsBetter),
             signed(line.exit_dt, 2, DeltaSense::LowerIsBetter),
         );
         // The notes continue the entry/exit sentence as one paragraph.
-        let paragraph = std::iter::once(split)
+        let paragraph = placed
+            .then_some(split)
+            .into_iter()
             .chain(line.notes().map(|note| note.to_string()))
             .collect::<Vec<_>>()
             .join(" ");
@@ -534,11 +612,12 @@ impl TimeGoesPanel {
         };
         let id = line.id.clone();
         let label: SharedString = format!("Open {} in detail", line.name).into();
-        let spoken = format!(
-            "{}, {} s. {speed} {paragraph}",
-            line.name,
-            signed(line.dt, 2, DeltaSense::LowerIsBetter)
-        );
+        let headline =
+            placed.then(|| format!("{} s", signed(line.dt, 2, DeltaSense::LowerIsBetter)));
+        let spoken = match &headline {
+            Some(headline) => format!("{}, {headline}. {speed} {paragraph}", line.name),
+            None => format!("{}. {speed} {paragraph}", line.name),
+        };
         Some(
             v_flex()
                 .id("time-goes-card")
@@ -563,23 +642,26 @@ impl TimeGoesPanel {
                                 .text_color(theme.foreground)
                                 .child(line.name.clone()),
                         )
-                        .child(div().numeric().text_color(loss_color).child(format!(
-                            "{} s",
-                            signed(line.dt, 2, DeltaSense::LowerIsBetter)
-                        ))),
+                        .children(headline.map(|headline| {
+                            div().numeric().text_color(loss_color).child(headline)
+                        })),
                 )
                 .child(div().numeric().text_color(theme.foreground).child(speed))
-                .child(
-                    div()
-                        .numeric()
-                        .text_color(theme.foreground)
-                        .child(paragraph),
-                )
+                .when(!paragraph.is_empty(), |this| {
+                    this.child(
+                        div()
+                            .numeric()
+                            .text_color(theme.foreground)
+                            .child(paragraph),
+                    )
+                })
                 .child(
                     h_flex().child(
                         Button::new("time-goes-open-corner")
-                            .link()
+                            .ghost()
+                            .small()
                             .label(label)
+                            .tooltip("Focus it in the traces and open the Corners table")
                             .on_click(move |_, window, cx| {
                                 window
                                     .dispatch_action(Box::new(FocusCorner { id: id.clone() }), cx);
@@ -601,7 +683,9 @@ impl TimeGoesPanel {
             .min(window.viewport_size().height * MAP_MAX_WINDOW_SHARE);
         let theme = cx.theme();
         let palette = TracePalette::from_theme(theme);
-        let has_map = !self.map.read(cx).data().is_empty();
+        let map_data = self.map.read(cx).data().clone();
+        let has_map = !map_data.is_empty();
+        let heat = map_data.is_heat();
         let body = if analysis.reference().is_none() {
             let description = "Pick a reference lap to see where this lap loses time.";
             panel_body(
@@ -620,6 +704,12 @@ impl TimeGoesPanel {
                 cx,
             )
             .into_any_element()
+        } else if !analysis.time_loss_placed() {
+            v_flex()
+                .gap_3()
+                .child(self.render_unplaced(analysis, cx))
+                .children(self.render_card(cx))
+                .into_any_element()
         } else {
             v_flex()
                 .gap_3()
@@ -631,11 +721,11 @@ impl TimeGoesPanel {
         v_flex()
             .id("time-goes-scroll")
             .size_full()
-            .overflow_y_scroll()
+            .overflow_y_scrollbar()
             .px_3()
             .py_2()
             .gap_3()
-            .child(self.render_header(&palette, cx))
+            .child(self.render_header(&palette, heat, cx))
             .when(has_map, |this| {
                 this.child(div().flex_shrink_0().h(map_height).child(self.map.clone()))
             })
@@ -702,21 +792,6 @@ pub fn init(cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn notes_read_as_sentences_with_spaced_units() {
-        assert_eq!(prose("throttle 23m late").as_ref(), "Throttle 23 m late.");
-        assert_eq!(
-            prose("first downshift 120ms later than reference (8m into braking)").as_ref(),
-            "First downshift 120 ms later than reference (8 m into braking)."
-        );
-        assert_eq!(
-            prose("reference trail-brakes 0.4s longer").as_ref(),
-            "Reference trail-brakes 0.4 s longer."
-        );
-        assert_eq!(prose("2 gears lower").as_ref(), "2 gears lower.");
-        assert_eq!(prose("Closely matched.").as_ref(), "Closely matched.");
-    }
 
     #[test]
     fn the_split_reads_in_seconds() {
