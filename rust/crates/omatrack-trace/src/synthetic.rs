@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use crate::scene::{CornerBand, FractionMap, LaneKind, LaneSeries, TraceScene, YRange};
+use crate::scene::{CornerBand, FractionMap, LaneKind, LaneSeries, LaneSpread, TraceScene, YRange};
 
 /// A smooth nonlinear primary → reference map.
 pub struct WarpMap;
@@ -216,4 +216,38 @@ pub fn scene() -> TraceScene {
         .with_map(Some(Arc::new(WarpMap)))
         .with_corners(corners, Vec::new())
         .with_neighbour_labels(Some("L7".into()), Some("L9".into()))
+}
+
+/// `scene` with a session spread of `laps` other laps on every lane but
+/// the Δ (the Consistency view), each at its own pace and noise, already
+/// on the primary grid.
+pub fn with_session_spread(scene: TraceScene, laps: usize) -> TraceScene {
+    let others: Vec<Lap> = (0..laps)
+        .map(|i| lap(PRIMARY_SAMPLES, 0.97 + 0.01 * i as f64, 101 + i as u64))
+        .collect();
+    let spread = |pick: fn(&Lap) -> &Vec<f64>| -> Arc<LaneSpread> {
+        let series: Vec<Arc<[f64]>> = others.iter().map(|l| pick(l).clone().into()).collect();
+        let fold = |f: fn(f64, f64) -> f64| -> Arc<[f64]> {
+            (0..PRIMARY_SAMPLES)
+                .map(|i| series.iter().map(|s| s[i]).reduce(f).unwrap_or(f64::NAN))
+                .collect()
+        };
+        let (min, max) = (fold(f64::min), fold(f64::max));
+        Arc::new(LaneSpread::new(series, min, max))
+    };
+    let spreads = [
+        ("speed", spread(|l| &l.speed)),
+        ("throttle", spread(|l| &l.throttle)),
+        ("brake", spread(|l| &l.brake)),
+        ("gear", spread(|l| &l.gear)),
+        ("steering", spread(|l| &l.steering)),
+        ("rpm", spread(|l| &l.rpm)),
+        ("g_long", spread(|l| &l.g_long)),
+    ];
+    scene.with_spreads(|key| {
+        spreads
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, s)| s.clone())
+    })
 }

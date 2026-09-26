@@ -54,7 +54,9 @@ use crate::layout::{GAP_LANE_MIN_HEIGHT, LaneLayout, LaneSizing, LayoutMode, lay
 use crate::overlay::TraceOverlay;
 use crate::palette::{APPROXIMATE_DELTA_EMPHASIS, ColorMode, TracePalette};
 use crate::scale::{Tick, Viewport, XAxis, axis_ticks};
-use crate::scene::{CornerBand, LaneKind, LaneSeries, LaneStyles, Readout, TraceScene};
+use crate::scene::{
+    CornerBand, LaneKind, LaneSeries, LaneStyles, Readout, TraceLayers, TraceScene,
+};
 use crate::state::{CursorState, Selection, ViewportState};
 use crate::static_layer::{StaticStats, TraceStaticView};
 
@@ -101,6 +103,7 @@ pub struct TraceStack {
     resize_draft: Option<Vec<f64>>,
     editing_corners: bool,
     focused_corner: Option<u32>,
+    layers: TraceLayers,
     viewport: Entity<ViewportState>,
     cursor: Entity<CursorState>,
     static_view: Entity<TraceStaticView>,
@@ -162,6 +165,7 @@ impl TraceStack {
             resize_draft: None,
             editing_corners: false,
             focused_corner: None,
+            layers: TraceLayers::LAP,
             viewport,
             cursor,
             static_view,
@@ -203,6 +207,22 @@ impl TraceStack {
         self.relayout(cx);
         self.refresh_ticks(cx);
         cx.notify();
+    }
+
+    /// The optional layers of the trace view mode (session spread, event
+    /// ticks). Repaints the static layer once; lane geometry is kept.
+    pub fn set_layers(&mut self, layers: TraceLayers, cx: &mut Context<Self>) {
+        if layers == self.layers {
+            return;
+        }
+        self.layers = layers;
+        self.static_view
+            .update(cx, |view, cx| view.set_layers(layers, cx));
+        cx.notify();
+    }
+
+    pub fn layers(&self) -> TraceLayers {
+        self.layers
     }
 
     /// Replace corner zones without touching the static layer (corner edits).
@@ -1217,6 +1237,7 @@ impl Render for TraceStack {
             selection,
             focus,
             editing_corners: self.editing_corners,
+            layers: self.layers,
             palette,
             gesture: if empty {
                 GestureCursor::Default

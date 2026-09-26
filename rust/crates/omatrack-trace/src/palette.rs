@@ -109,6 +109,8 @@ pub struct TracePalette {
     pub delta_line: Hsla,
     /// The quiet end of the heat ramp ([`Self::heat`]).
     pub heat_quiet: Hsla,
+    /// Floating labels (event hover).
+    pub popover: Hsla,
     pub chart: [Hsla; 5],
     /// Channel hues of [`ColorMode::Channel`], from the theme's named
     /// palette: speed, throttle, brake, steering.
@@ -148,6 +150,7 @@ impl TracePalette {
             // Neutral: the Δ is neither lap; gain and loss colour its fill.
             delta_line: opaque(theme.muted_foreground),
             heat_quiet: opaque(theme.muted_foreground.opacity(0.28)),
+            popover: theme.popover,
             chart: [
                 opaque(theme.chart_1),
                 opaque(theme.chart_2),

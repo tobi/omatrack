@@ -14,8 +14,8 @@ use gpui_kit::{
 };
 use omatrack_trace::layout::{LaneSizing, MIN_LANE_HEIGHT};
 use omatrack_trace::{
-    Apex, ColorMode, CursorState, LaneStyle, LaneStyles, TraceEvent, TraceStack, Viewport,
-    ViewportState, synthetic,
+    Apex, ColorMode, CursorState, EventMark, EventMarkKind, LaneStyle, LaneStyles, TraceEvent,
+    TraceLayers, TraceStack, Viewport, ViewportState, synthetic,
 };
 
 struct Fixture {
@@ -871,4 +871,84 @@ fn pinning_moves_a_lane_above_the_scroll_region(cx: &mut TestAppContext) {
         assert!(delta.bounds().top() < speed.bounds().top());
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+fn view_layers_repaint_once_and_never_on_the_cursor(cx: &mut TestAppContext) {
+    let f = open(cx);
+    let events = vec![
+        EventMark::new(EventMarkKind::BrakeOnset, "brake", false, 0.30, "Brake"),
+        EventMark::new(EventMarkKind::BrakeOnset, "brake", true, 0.31, "Brake"),
+        EventMark::new(EventMarkKind::Downshift, "gear", false, 0.32, "Down to 3"),
+        EventMark::new(
+            EventMarkKind::Note,
+            "delta",
+            false,
+            0.33,
+            "T3: Braked later",
+        ),
+    ];
+    let scene =
+        Arc::new(synthetic::with_session_spread(synthetic::scene(), 4).with_events(events.clone()));
+    assert!(scene.has_spread());
+    assert_eq!(scene.events().len(), 4);
+    f.stack.update(cx, |stack, cx| stack.set_scene(scene, cx));
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| draw(window, cx))
+        .unwrap();
+    let plain = cx.update(|cx| f.stack.read(cx).static_stats(cx));
+
+    // Consistency on: one static render, the spread geometry built once
+    // and drawn behind the lanes.
+    f.stack.update(cx, |stack, cx| {
+        stack.set_layers(TraceLayers::NONE.consistency(true).events(true), cx)
+    });
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| draw(window, cx))
+        .unwrap();
+    let layered = cx.update(|cx| f.stack.read(cx).static_stats(cx));
+    assert_eq!(layered.renders, plain.renders + 1);
+    assert!(layered.geometry_builds > plain.geometry_builds);
+    assert!(
+        layered.vertices > plain.vertices,
+        "{layered:?} vs {plain:?}"
+    );
+
+    // The same layers again: nothing to do.
+    f.stack.update(cx, |stack, cx| {
+        stack.set_layers(TraceLayers::NONE.consistency(true).events(true), cx)
+    });
+    cx.run_until_parked();
+
+    // Cursor and hover over the events (their labels): overlay only.
+    f.cursor
+        .update(cx, |cursor, cx| cursor.set_fraction(Some(0.31), cx));
+    cx.run_until_parked();
+    let plot = plot_bounds(cx, f.window);
+    for fx in [0.29, 0.30, 0.31, 0.33] {
+        dispatch(
+            cx,
+            f.window,
+            MouseMoveEvent {
+                position: at(plot, fx, 0.5),
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }
+            .to_platform_input(),
+        );
+    }
+    let after = cx.update(|cx| f.stack.read(cx).static_stats(cx));
+    assert_eq!(after.renders, layered.renders, "the cursor rebuilt statics");
+    assert_eq!(after.geometry_builds, layered.geometry_builds);
+
+    // Back to the lap view: one repaint, lane geometry kept.
+    f.stack
+        .update(cx, |stack, cx| stack.set_layers(TraceLayers::NONE, cx));
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| draw(window, cx))
+        .unwrap();
+    let back = cx.update(|cx| f.stack.read(cx).static_stats(cx));
+    assert_eq!(back.renders, after.renders + 1);
+    assert_eq!(back.geometry_builds, after.geometry_builds);
+    assert_eq!(back.vertices, plain.vertices);
 }

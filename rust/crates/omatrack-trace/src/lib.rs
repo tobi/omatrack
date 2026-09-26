@@ -11,14 +11,16 @@
 //!   minimum, combined lanes, overlay-group adjacency, resize borrowing,
 //!   pinned region above the scroll region).
 //! - [`interaction`]: the gesture state machine of `TraceInteraction`.
-//! - [`mesh`]: non-overlapping triangle meshes (strokes, baseline fills).
+//! - [`mesh`]: non-overlapping triangle meshes (strokes, baseline fills,
+//!   min–max bands).
 //!
 //! GPUI:
 //! - [`palette`]: trace colours from `cx.theme()` tokens.
 //! - [`scene`]: the immutable, `Arc`-shared [`TraceScene`] and [`FractionMap`].
 //! - [`state`]: the shared [`ViewportState`] and [`CursorState`] entities.
 //! - [`lanes`]: per-channel geometry cached as GPUI paths.
-//! - [`static_layer`]: the cached static view (grids, masks, paths).
+//! - [`static_layer`]: the cached static view (grids, masks, paths, and the
+//!   optional [`TraceLayers`]: session spread behind the lanes, event ticks).
 //! - `overlay` (private): cursor, hover, selection, focus dimming, corner
 //!   zones and the pointer surface.
 //! - [`axis`]: the shared x-axis row.
@@ -119,8 +121,8 @@ pub use damper_strip::{DamperStrip, DamperStripData, DamperStripEvent};
 pub use palette::ColorMode;
 pub use scale::{Viewport, XAxis};
 pub use scene::{
-    Apex, ComplexBand, CornerBand, FractionMap, LaneKind, LaneSeries, LaneStyle, LaneStyles,
-    Readout, TraceScene, YRange,
+    Apex, ComplexBand, CornerBand, EventMark, EventMarkKind, FractionMap, LaneKind, LaneSeries,
+    LaneSpread, LaneStyle, LaneStyles, Readout, TraceLayers, TraceScene, YRange,
 };
 pub use stack::{CHROME_REMS, GUTTER_REMS, LEGEND_REMS, TraceEvent, TraceStack};
 pub use state::{CursorState, Selection, ViewportState};

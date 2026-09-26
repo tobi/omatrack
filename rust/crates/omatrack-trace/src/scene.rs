@@ -180,6 +180,119 @@ pub struct LaneSeries {
     /// the lap (focused corner near start/finish).
     pub previous: Option<Arc<[f64]>>,
     pub next: Option<Arc<[f64]>>,
+    /// The session spread of this channel (Consistency view), on the
+    /// primary grid.
+    pub spread: Option<Arc<LaneSpread>>,
+}
+
+/// Other laps of the primary's session on the primary's 50 Hz grid, and
+/// their per-sample envelope: drawn as thin quiet lines behind the primary
+/// over a low-alpha min–max band (the Consistency view).
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct LaneSpread {
+    /// One series per other lap, primary grid, fastest first.
+    pub laps: Vec<Arc<[f64]>>,
+    /// Envelope per primary sample (NaN lifts the band).
+    pub min: Arc<[f64]>,
+    pub max: Arc<[f64]>,
+}
+
+impl LaneSpread {
+    pub fn new(laps: Vec<Arc<[f64]>>, min: Arc<[f64]>, max: Arc<[f64]>) -> Self {
+        Self { laps, min, max }
+    }
+}
+
+/// What a trace event marks ([`EventMark`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EventMarkKind {
+    BrakeOnset,
+    LiftOff,
+    Upshift,
+    Downshift,
+    Note,
+}
+
+/// One driving event on the traces (the Events view): a tick on its lane
+/// with a label on hover.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct EventMark {
+    pub kind: EventMarkKind,
+    /// Lane channel key the mark sits on (`brake`, `throttle`, `gear`,
+    /// `delta`).
+    pub channel: SharedString,
+    /// On the reference lap (drawn quieter).
+    pub reference: bool,
+    /// Primary lap fraction.
+    pub fraction: f64,
+    /// Hover label (`Brake · 1,234 m`).
+    pub label: SharedString,
+}
+
+impl EventMark {
+    pub fn new(
+        kind: EventMarkKind,
+        channel: impl Into<SharedString>,
+        reference: bool,
+        fraction: f64,
+        label: impl Into<SharedString>,
+    ) -> Self {
+        Self {
+            kind,
+            channel: channel.into(),
+            reference,
+            fraction,
+            label: label.into(),
+        }
+    }
+}
+
+/// Which optional layers the static layer draws (the trace view mode).
+/// A change repaints the static layer; lane geometry is kept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct TraceLayers {
+    /// Session spread lines and band ([`LaneSeries::spread`]).
+    pub consistency: bool,
+    /// Event ticks ([`TraceScene::events`]).
+    pub events: bool,
+    /// Apex callouts on the speed lane (the Lap and Corners views).
+    pub apexes: bool,
+}
+
+impl Default for TraceLayers {
+    fn default() -> Self {
+        Self::LAP
+    }
+}
+
+impl TraceLayers {
+    /// No optional layer.
+    pub const NONE: Self = Self {
+        consistency: false,
+        events: false,
+        apexes: false,
+    };
+    /// The lap view: the two laps with their apex callouts.
+    pub const LAP: Self = Self {
+        consistency: false,
+        events: false,
+        apexes: true,
+    };
+    pub fn consistency(mut self, on: bool) -> Self {
+        self.consistency = on;
+        self
+    }
+    pub fn events(mut self, on: bool) -> Self {
+        self.events = on;
+        self
+    }
+    pub fn apexes(mut self, on: bool) -> Self {
+        self.apexes = on;
+        self
+    }
 }
 
 impl LaneSeries {
@@ -200,7 +313,14 @@ impl LaneSeries {
             y_range,
             previous: None,
             next: None,
+            spread: None,
         }
+    }
+
+    /// The session spread of this channel (see [`LaneSpread`]).
+    pub fn with_spread(mut self, spread: Option<Arc<LaneSpread>>) -> Self {
+        self.spread = spread;
+        self
     }
 
     pub fn with_unit(mut self, unit: impl Into<SharedString>) -> Self {
@@ -458,6 +578,8 @@ pub struct TraceScene {
     pub(crate) reference_label: Option<SharedString>,
     /// Corner apexes, called out on the speed lane.
     pub(crate) apexes: Vec<Apex>,
+    /// Driving events of both laps, by fraction (the Events view).
+    pub(crate) events: Arc<[EventMark]>,
 }
 
 impl TraceScene {
@@ -531,6 +653,14 @@ impl TraceScene {
         self
     }
 
+    /// Driving events, sorted by fraction here.
+    pub fn with_events(mut self, mut events: Vec<EventMark>) -> Self {
+        events.sort_by(|a, b| a.fraction.total_cmp(&b.fraction));
+        self.events = events.into();
+        self.generation = next_generation();
+        self
+    }
+
     pub fn primary_label(&self) -> Option<&SharedString> {
         self.primary_label.as_ref()
     }
@@ -546,8 +676,27 @@ impl TraceScene {
         self
     }
 
+    pub fn events(&self) -> &Arc<[EventMark]> {
+        &self.events
+    }
+
+    /// Attach session spreads by lane key (`None` clears a lane's). A new
+    /// generation: the lanes' geometry is rebuilt once.
+    pub fn with_spreads(mut self, spread: impl Fn(&str) -> Option<Arc<LaneSpread>>) -> Self {
+        for lane in &mut self.lanes {
+            lane.spread = spread(&lane.key).filter(|s| s.min.len() == lane.primary.len());
+        }
+        self.generation = next_generation();
+        self
+    }
+
     pub fn apexes(&self) -> &[Apex] {
         &self.apexes
+    }
+
+    /// Whether any lane carries a session spread.
+    pub fn has_spread(&self) -> bool {
+        self.lanes.iter().any(|lane| lane.spread.is_some())
     }
 
     /// Identity of this scene's contents: unique per construction and

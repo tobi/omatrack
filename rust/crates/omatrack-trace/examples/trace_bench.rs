@@ -23,13 +23,15 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui_kit::{point, px};
-use omatrack_trace::lanes::{BuildInput, ChannelGeometry, Scratch};
+use omatrack_trace::lanes::{BuildInput, ChannelGeometry, Scratch, SpreadGeometry};
 use omatrack_trace::layout::{LayoutMode, layout_lanes};
 use omatrack_trace::scene::{LaneKind, LaneSeries, LaneStyles, TraceScene, YRange};
 use omatrack_trace::{Viewport, synthetic};
 
 const FRAMES: usize = 310;
 const DPR: f32 = 2.0;
+/// Other session laps drawn in the Consistency row.
+const CONSISTENCY_LAPS: usize = 8;
 
 struct Stats {
     avg: f64,
@@ -206,6 +208,11 @@ fn run(scene: &TraceScene, label: &str, width: f32, height: f32) -> Row {
         .iter()
         .map(|_| ChannelGeometry::default())
         .collect();
+    let mut spreads: Vec<SpreadGeometry> = scene
+        .lanes()
+        .iter()
+        .map(|_| SpreadGeometry::default())
+        .collect();
     let mut scratch = Scratch::default();
     let mut geometry_ms = Vec::with_capacity(FRAMES);
     let mut submit_ms = Vec::with_capacity(FRAMES);
@@ -222,6 +229,9 @@ fn run(scene: &TraceScene, label: &str, width: f32, height: f32) -> Row {
                     .with_stroke_width(style.stroke_width)
                     .with_fill(style.fill_for(series.kind, &series.key) > 0.0);
                 geometries[index].prepare(&input, &mut scratch);
+                if series.spread.is_some() {
+                    spreads[index].prepare(&input, &mut scratch);
+                }
             }
         }
         geometry_ms.push(started.elapsed().as_secs_f64() * 1e3);
@@ -233,7 +243,13 @@ fn run(scene: &TraceScene, label: &str, width: f32, height: f32) -> Row {
         paths = 0;
         for (slot_ix, slot) in layout.slots.iter().enumerate() {
             for index in slot.channels() {
-                for buffer in geometries[index].buffers() {
+                let spread = scene.lanes()[index]
+                    .spread
+                    .is_some()
+                    .then(|| spreads[index].buffers())
+                    .into_iter()
+                    .flatten();
+                for buffer in geometries[index].buffers().into_iter().chain(spread) {
                     for path in buffer.translated(point(px(0.), px(slot_ix as f32 * 10.0))) {
                         let scaled = path.scale(DPR);
                         let inserted = scaled.clone();
@@ -388,6 +404,12 @@ fn main() {
             "2560 lp × 1400 (5120 dev px, stress)",
             2560.0,
             1400.0,
+        ),
+        run(
+            &synthetic::with_session_spread(scene.clone(), CONSISTENCY_LAPS),
+            "1280 lp × 700, Consistency (8 session laps + band)",
+            1280.0,
+            700.0,
         ),
     ];
     println!();

@@ -20,22 +20,30 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::{
-    App, Bounds, CursorStyle, DispatchPhase, Element, ElementId, GlobalElementId, Hitbox,
-    HitboxBehavior, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent,
+    App, Bounds, CursorStyle, DispatchPhase, Element, ElementId, FontWeight, GlobalElementId,
+    Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, Pixels, Point, Position, ScrollDelta, ScrollWheelEvent, Style,
     WeakEntity, Window, fill, point, px, relative, size,
 };
+use omatrack_ui::TypeStep;
 
 use crate::interaction::{GestureCursor, KeyModifiers, PointerButton, WheelDelta};
+use crate::label;
 use crate::layout::LaneLayout;
 use crate::palette::TracePalette;
 use crate::scale::Viewport;
-use crate::scene::{CornerBand, LaneStyles, TraceScene};
+use crate::scene::{CornerBand, LaneStyles, TraceLayers, TraceScene};
 use crate::stack::TraceStack;
 use crate::state::Selection;
+use crate::static_layer::event_color;
 
 /// Width of the cursor's cap at the plot's top edge, logical pixels.
 const CURSOR_CAP: f32 = 7.0;
+
+/// Pointer distance within which an event shows its label, logical px.
+pub const EVENT_HOVER_RADIUS: f64 = 6.0;
+/// At most this many event labels at once (one per lane).
+const EVENT_LABELS_MAX: usize = 6;
 
 /// Everything one overlay frame paints, snapshotted by the stack's render.
 pub(crate) struct TraceOverlay {
@@ -50,6 +58,7 @@ pub(crate) struct TraceOverlay {
     pub selection: Option<Selection>,
     pub focus: Option<Selection>,
     pub editing_corners: bool,
+    pub layers: TraceLayers,
     pub palette: TracePalette,
     pub gesture: GestureCursor,
     /// Plot bounds seen by the stack's last layout; a change is reported.
@@ -135,9 +144,14 @@ impl Element for TraceOverlay {
         _: &mut (),
         hitbox: &mut Hitbox,
         window: &mut Window,
-        _: &mut App,
+        cx: &mut App,
     ) {
         self.paint_marks(bounds, window);
+        if self.layers.events
+            && let Some(hover) = self.hover
+        {
+            self.paint_event_labels(bounds, hover, window, cx);
+        }
         let style = match self.gesture {
             GestureCursor::Default => CursorStyle::Arrow,
             GestureCursor::Crosshair => CursorStyle::Crosshair,
@@ -266,6 +280,109 @@ impl TraceOverlay {
                     palette.label.opacity(0.45),
                 )
                 .corner_radii(px(1.5)),
+            );
+        }
+    }
+
+    /// Labels of the events under the pointer (within
+    /// [`EVENT_HOVER_RADIUS`]), each on its own lane beside its flag, on
+    /// the popover surface. Only a few labels exist at once; shaping reuses
+    /// the label's `SharedString` (no formatting per frame).
+    fn paint_event_labels(
+        &self,
+        bounds: Bounds<Pixels>,
+        hover: f64,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let width = bounds.size.width.as_f32() as f64;
+        if width <= 0.0 {
+            return;
+        }
+        let events = self.scene.events();
+        let radius = EVENT_HOVER_RADIUS * self.viewport.span() / width;
+        let from = events.partition_point(|mark| mark.fraction < hover - radius);
+        let size_text = TypeStep::Caption.size(window);
+        let line_height = size_text * 1.3;
+        let height = bounds.size.height.as_f32();
+        let pinned = self.layout.pinned_height as f32;
+        // One label per lane: the mark nearest the pointer.
+        let mut drawn = 0usize;
+        for slot in &self.layout.slots {
+            if drawn >= EVENT_LABELS_MAX {
+                break;
+            }
+            let (top, bottom) = if slot.pinned {
+                (0.0, pinned)
+            } else {
+                (pinned, height)
+            };
+            let y = slot.y as f32;
+            if y < top || y + line_height.as_f32() + 6.0 > bottom {
+                continue;
+            }
+            let nearest = events[from..]
+                .iter()
+                .take_while(|mark| mark.fraction <= hover + radius)
+                .filter(|mark| {
+                    slot.channels().any(|index| {
+                        self.scene
+                            .lanes
+                            .get(index)
+                            .is_some_and(|lane| lane.key == mark.channel)
+                    })
+                })
+                .min_by(|a, b| {
+                    (a.fraction - hover)
+                        .abs()
+                        .total_cmp(&(b.fraction - hover).abs())
+                });
+            let Some(mark) = nearest else {
+                continue;
+            };
+            drawn += 1;
+            let color = event_color(&self.palette, mark.kind, mark.reference);
+            let line = label::shape(
+                mark.label.clone(),
+                size_text,
+                FontWeight::NORMAL,
+                self.palette.foreground,
+                window,
+            );
+            let pad = 4.0;
+            let box_width = line.width.as_f32() + pad * 2.0 + 6.0;
+            let box_height = line_height.as_f32() + 2.0;
+            let x = self.viewport.x_for_fraction(mark.fraction, 0.0, width) as f32;
+            // Right of the flag, flipped left near the plot's right edge.
+            let left = if x + 6.0 + box_width > width as f32 {
+                (x - 6.0 - box_width).max(0.0)
+            } else {
+                x + 6.0
+            };
+            let origin = bounds.origin + point(px(left), px(y + 3.0));
+            window.paint_quad(
+                fill(
+                    Bounds::new(origin, size(px(box_width), px(box_height))),
+                    self.palette.popover,
+                )
+                .corner_radii(px(3.))
+                .border_widths(px(1.))
+                .border_color(self.palette.grid_strong),
+            );
+            // The role swatch, then the text.
+            window.paint_quad(fill(
+                Bounds::new(
+                    origin + point(px(pad), px(box_height * 0.5 - 2.0)),
+                    size(px(4.), px(4.)),
+                ),
+                color,
+            ));
+            label::paint(
+                &line,
+                origin + point(px(pad + 6.0), px(1.)),
+                line_height,
+                window,
+                cx,
             );
         }
     }

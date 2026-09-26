@@ -28,11 +28,13 @@ use gpui_kit::{
 };
 
 use crate::label;
-use crate::lanes::{BuildInput, ChannelColors, ChannelGeometry, Scratch};
+use crate::lanes::{BuildInput, ChannelColors, ChannelGeometry, Scratch, SpreadGeometry};
 use crate::layout::LaneLayout;
 use crate::palette::{APPROXIMATE_DELTA_EMPHASIS, ColorMode, TracePalette};
 use crate::scale::{Viewport, nice_step, value_at_fraction};
-use crate::scene::{LaneKind, LaneSeries, LaneStyles, TraceScene, YRange};
+use crate::scene::{
+    EventMarkKind, LaneKind, LaneSeries, LaneStyles, TraceLayers, TraceScene, YRange,
+};
 use crate::stack::GUTTER_REMS;
 use crate::state::ViewportState;
 use omatrack_ui::{DeltaSense, DeltaTrend, TypeStep, format_delta, format_value};
@@ -140,6 +142,7 @@ pub struct StaticStats {
 #[derive(Default)]
 pub struct StaticCache {
     channels: HashMap<SharedString, ChannelGeometry>,
+    spreads: HashMap<SharedString, SpreadGeometry>,
     scratch: Scratch,
     value_ticks: Vec<(TickPlace, SharedString)>,
     stats: StaticStats,
@@ -158,6 +161,7 @@ pub struct TraceStaticView {
     layout: Arc<LaneLayout>,
     viewport: Entity<ViewportState>,
     color_mode: ColorMode,
+    layers: TraceLayers,
     cache: Rc<RefCell<StaticCache>>,
     _viewport_subscription: Subscription,
 }
@@ -177,6 +181,7 @@ impl TraceStaticView {
             layout,
             viewport,
             color_mode: ColorMode::default(),
+            layers: TraceLayers::LAP,
             cache: Rc::default(),
             _viewport_subscription: subscription,
         }
@@ -216,6 +221,19 @@ impl TraceStaticView {
         self.color_mode
     }
 
+    /// The optional layers (the trace view mode). Lane geometry is kept;
+    /// spread geometry is built on first use and cached like a lane's.
+    pub fn set_layers(&mut self, layers: TraceLayers, cx: &mut Context<Self>) {
+        if layers != self.layers {
+            self.layers = layers;
+            cx.notify();
+        }
+    }
+
+    pub fn layers(&self) -> TraceLayers {
+        self.layers
+    }
+
     pub fn stats(&self) -> StaticStats {
         self.cache.borrow().stats()
     }
@@ -232,6 +250,7 @@ impl Render for TraceStaticView {
             viewport: state.viewport(),
             palette: TracePalette::from_theme(cx.theme()).with_mode(self.color_mode),
             numerals: cx.theme().mono_font_family.clone(),
+            layers: self.layers,
             cache: self.cache.clone(),
         }
     }
@@ -245,6 +264,7 @@ struct StaticLayerElement {
     palette: TracePalette,
     /// The trace numerals' family (the theme's monospace family).
     numerals: SharedString,
+    layers: TraceLayers,
     cache: Rc<RefCell<StaticCache>>,
 }
 
@@ -252,6 +272,87 @@ impl IntoElement for StaticLayerElement {
     type Element = Self;
     fn into_element(self) -> Self {
         self
+    }
+}
+
+/// Alpha of the session envelope band over the lane background.
+pub const SPREAD_BAND_ALPHA: f32 = 0.12;
+/// Emphasis of a session lap line (the label tone over the background).
+pub const SPREAD_LINE_ALPHA: f32 = 0.35;
+/// Event tick: flag size and line alpha, logical pixels. The reference's
+/// ticks are quieter than the primary's.
+pub const EVENT_FLAG_SIZE: f32 = 5.0;
+const EVENT_LINE_ALPHA: f32 = 0.55;
+const EVENT_REFERENCE_EMPHASIS: f32 = 0.55;
+
+/// The colour of an event tick: the lap's role, the reference quieter,
+/// a corner note in the label tone.
+pub(crate) fn event_color(palette: &TracePalette, kind: EventMarkKind, reference: bool) -> Hsla {
+    match (kind, reference) {
+        (EventMarkKind::Note, _) => palette.foreground,
+        (_, false) => palette.primary,
+        (_, true) => palette
+            .background
+            .blend(palette.reference.opacity(EVENT_REFERENCE_EMPHASIS)),
+    }
+}
+
+/// Ticks of the events on lane `key`: a thin line through the lane and a
+/// small flag at its top (a downshift's at its foot, where gear falls).
+#[allow(clippy::too_many_arguments)]
+fn paint_event_ticks(
+    scene: &TraceScene,
+    key: &str,
+    viewport: &Viewport,
+    origin: gpui_kit::Point<Pixels>,
+    width: f32,
+    height: f32,
+    palette: &TracePalette,
+    window: &mut Window,
+) {
+    let events = scene.events();
+    let from = events.partition_point(|mark| mark.fraction < viewport.start);
+    let flag = EVENT_FLAG_SIZE.min(height * 0.25);
+    for mark in &events[from..] {
+        if mark.fraction > viewport.end {
+            break;
+        }
+        if mark.channel.as_ref() != key {
+            continue;
+        }
+        let x = viewport
+            .x_for_fraction(mark.fraction, 0.0, width as f64)
+            .round() as f32;
+        if x < 0.0 || x > width {
+            continue;
+        }
+        let color = event_color(palette, mark.kind, mark.reference);
+        let emphasis = if mark.reference {
+            EVENT_REFERENCE_EMPHASIS
+        } else {
+            1.0
+        };
+        window.paint_quad(fill(
+            Bounds::new(
+                origin + point(px(x), px(1.)),
+                size(px(1.), px((height - 2.0).max(0.0))),
+            ),
+            palette
+                .background
+                .blend(color.opacity(EVENT_LINE_ALPHA * emphasis)),
+        ));
+        let top = if mark.kind == EventMarkKind::Downshift {
+            height - 1.0 - flag
+        } else {
+            1.0
+        };
+        window.paint_quad(fill(
+            Bounds::new(
+                origin + point(px(x - flag * 0.5 + 0.5), px(top)),
+                size(px(flag), px(flag)),
+            ),
+            color,
+        ));
     }
 }
 
@@ -338,6 +439,12 @@ impl Element for StaticLayerElement {
                 let geometry = cache.channels.entry(series.key.clone()).or_default();
                 if geometry.prepare(&input, &mut cache.scratch) {
                     rebuilt += 1;
+                }
+                if self.layers.consistency && series.spread.is_some() {
+                    let spread = cache.spreads.entry(series.key.clone()).or_default();
+                    if spread.prepare(&input, &mut cache.scratch) {
+                        rebuilt += 1;
+                    }
                 }
             }
         }
@@ -494,6 +601,23 @@ impl Element for StaticLayerElement {
                         let style = self.styles.get(&series.key);
                         let (primary, reference) =
                             palette.channel_colors(&series.key, position == 0, &style);
+                        // The session behind the primary: its envelope as a
+                        // low-alpha band, each lap a thin quiet line.
+                        if self.layers.consistency
+                            && series.spread.is_some()
+                            && let Some(spread) = cache.spreads.get(&series.key)
+                        {
+                            spread.paint(
+                                origin + point(px(0.), px(y)),
+                                primary.opacity(SPREAD_BAND_ALPHA),
+                                palette
+                                    .background
+                                    .blend(palette.label.opacity(SPREAD_LINE_ALPHA)),
+                                window,
+                            );
+                            vertices += spread.vertex_count();
+                            paths += spread.path_count();
+                        }
                         let mut colors = ChannelColors::new(primary, reference);
                         colors.fill_alpha = style.fill_for(series.kind, &series.key);
                         colors.neighbour = palette.background.blend(primary.opacity(0.5));
@@ -517,9 +641,25 @@ impl Element for StaticLayerElement {
                         geometry.paint(origin + point(px(0.), px(y)), &colors, window);
                         vertices += geometry.vertex_count();
                         paths += geometry.path_count();
-                        if series.key.as_ref() == SPEED_KEY {
+                        if series.key.as_ref() == SPEED_KEY && self.layers.apexes {
                             apexes +=
                                 self.paint_apexes(series, range, (y, h), primary, plot, window, cx);
+                        }
+                    }
+                    if self.layers.events {
+                        for index in slot.channels() {
+                            if let Some(series) = self.scene.lanes.get(index) {
+                                paint_event_ticks(
+                                    &self.scene,
+                                    &series.key,
+                                    &self.viewport,
+                                    origin + point(px(0.), px(y)),
+                                    width,
+                                    h,
+                                    palette,
+                                    window,
+                                );
+                            }
                         }
                     }
                     // Lane separator (owned by the lower lane), across the
