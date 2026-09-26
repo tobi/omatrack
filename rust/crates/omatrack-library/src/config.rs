@@ -425,6 +425,21 @@ pub enum TraceColorMode {
     Channel,
 }
 
+/// `trace.view_mode`: what the traces show besides the two laps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TraceViewMode {
+    /// The two laps.
+    #[default]
+    Lap,
+    /// The laps with the corner zones in focus.
+    Corners,
+    /// The primary's session laps behind it: thin lines over a min–max band.
+    Consistency,
+    /// Brake onsets, lifts, shifts and corner notes as ticks on the lanes.
+    Events,
+}
+
 /// `trace`: trace workspace settings.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -448,6 +463,12 @@ pub struct TraceConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub color_mode: Option<TraceColorMode>,
+    #[serde(
+        default,
+        deserialize_with = "lenient",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub view_mode: Option<TraceViewMode>,
     #[serde(flatten)]
     pub extra: Mapping,
 }
@@ -461,6 +482,9 @@ impl TraceConfig {
     }
     pub fn color_mode(&self) -> TraceColorMode {
         self.color_mode.unwrap_or_default()
+    }
+    pub fn view_mode(&self) -> TraceViewMode {
+        self.view_mode.unwrap_or_default()
     }
 }
 

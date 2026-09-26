@@ -5,7 +5,7 @@ use omatrack_core::alignment::Strategy;
 use omatrack_core::corners::{CornerZone, ZoneSource};
 use omatrack_core::playback::ReferencePlayback;
 use omatrack_library::config::{
-    ChannelStyle, Config, ConfigError, ConfigFile, LocationConfig, XAxis, track_key,
+    ChannelStyle, Config, ConfigError, ConfigFile, LocationConfig, TraceViewMode, XAxis, track_key,
 };
 use omatrack_library::recent::{MAX_RECENT_FILES, prune_recent, push_recent};
 use serde_yaml::Value;
@@ -39,6 +39,7 @@ channels:
 trace:
   fit_channels: false
   x_axis: time
+  view_mode: consistency
   lane_gap: 3
 video:
   muted: true
@@ -106,6 +107,8 @@ fn typed_keys_parse_leniently() {
 
     assert!(!config.trace.is_fitting_channels());
     assert_eq!(config.trace.x_axis(), XAxis::Time);
+    assert_eq!(config.trace.view_mode(), TraceViewMode::Consistency);
+    assert_eq!(Config::default().trace.view_mode(), TraceViewMode::Lap);
     assert!(config.video.is_muted());
     assert!(config.video.is_continuous_playback());
     assert_eq!(config.video.reference_sync(), Some(Strategy::ManualDampers));
