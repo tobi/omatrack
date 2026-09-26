@@ -45,6 +45,13 @@ use crate::LapRole;
 pub const PIT_STOP_CELL: f32 = 36.0;
 /// Selectable floor of a driven cell, logical pixels.
 pub const MIN_CELL: f32 = 12.0;
+
+/// Horizontal room a cell keeps around its text, logical pixels.
+const CELL_TEXT_INSET: f32 = 6.0;
+
+/// Advance of one monospace `text_xs` character, as a share of the rem
+/// (0.75 rem × a 0.6 em advance, rounded up for wider mono faces).
+const MONO_XS_ADVANCE: f32 = 0.47;
 /// Widest gap between cells, logical pixels.
 pub const MAX_GAP: f32 = 3.0;
 
@@ -200,6 +207,27 @@ impl LapStripItem {
     /// What the cell shows: the time of a complete lap, else its label.
     pub fn text(&self) -> SharedString {
         self.time.clone().unwrap_or_else(|| self.label.clone())
+    }
+
+    /// The full description of a cell, for its tooltip.
+    pub fn tooltip(&self) -> SharedString {
+        match &self.time {
+            Some(time) => format!("{} · {time}", self.label).into(),
+            None => self.label.clone(),
+        }
+    }
+
+    /// What fits a cell `width` logical pixels wide when one monospace
+    /// character takes `char_width`: the time, else the label (`In`, `L3`),
+    /// else nothing (the cell keeps its spoken label and tooltip). Never a
+    /// clipped or ellipsized fragment.
+    pub fn text_for_width(&self, width: f32, char_width: f32) -> Option<SharedString> {
+        let fits = |text: &str| text.chars().count() as f32 * char_width + CELL_TEXT_INSET <= width;
+        [self.time.as_ref(), Some(&self.label)]
+            .into_iter()
+            .flatten()
+            .find(|text| fits(text))
+            .cloned()
     }
 }
 
@@ -391,12 +419,13 @@ impl Element for StripCellsElement {
         let width = bounds.size.width.as_f32();
         let height = bounds.size.height.as_f32();
         let spans = lap_strip_layout(width, &self.items);
+        let char_width = window.rem_size().as_f32() * MONO_XS_ADVANCE;
         let mut cells = Vec::with_capacity(self.items.len());
         for (item, span) in self.items.iter().zip(spans) {
             if span.width <= 0.0 {
                 continue;
             }
-            let mut cell = self.cell(item, span.width, height, cx);
+            let mut cell = self.cell(item, span.width, height, char_width, cx);
             cell.layout_as_root(
                 size(
                     AvailableSpace::Definite(px(span.width)),
@@ -428,7 +457,14 @@ impl Element for StripCellsElement {
 }
 
 impl StripCellsElement {
-    fn cell(&self, item: &LapStripItem, width: f32, height: f32, cx: &App) -> AnyElement {
+    fn cell(
+        &self,
+        item: &LapStripItem,
+        width: f32,
+        height: f32,
+        char_width: f32,
+        cx: &App,
+    ) -> AnyElement {
         let theme = cx.theme();
         let is_primary = self.primary == Some(item.lap_id);
         let is_reference = !is_primary && self.reference == Some(item.lap_id);
@@ -488,16 +524,20 @@ impl StripCellsElement {
             .w(px(width))
             .h(px(height))
             .when(width < 28.0, |b| b.px_0())
-            .child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .text_xs()
-                    .font_family(theme.mono_font_family.clone())
-                    .text_color(text_color)
-                    .when(is_primary || is_reference, |d| d.font_semibold())
-                    .child(item.text()),
-            )
+            .when_some(item.text_for_width(width, char_width), |b, text| {
+                b.child(
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_xs()
+                        .font_family(theme.mono_font_family.clone())
+                        .text_color(text_color)
+                        .when(is_primary || is_reference, |d| d.font_semibold())
+                        .child(text),
+                )
+            })
+            .tooltip(item.tooltip())
             .when(item.best, |b| {
                 b.child(
                     div()
@@ -544,6 +584,19 @@ mod tests {
 
     fn pit(id: i32) -> LapStripItem {
         LapStripItem::new(id, "Pit", 0.0).pit_stop(true)
+    }
+
+    #[test]
+    fn cell_text_is_the_time_the_label_or_nothing_never_a_fragment() {
+        let lap = lap(3, 90.0).time("1:21.004");
+        assert_eq!(lap.text_for_width(120.0, 7.0).as_deref(), Some("1:21.004"));
+        assert_eq!(lap.text_for_width(30.0, 7.0).as_deref(), Some("L3"));
+        assert_eq!(lap.text_for_width(12.0, 7.0), None);
+        // A trailing in-lap at the 12 px floor shows nothing, not "I…".
+        let in_lap = LapStripItem::new(9, "In", 5.0);
+        assert_eq!(in_lap.text_for_width(MIN_CELL, 7.0), None);
+        assert_eq!(in_lap.text_for_width(24.0, 7.0).as_deref(), Some("In"));
+        assert_eq!(lap.tooltip().as_ref(), "L3 · 1:21.004");
     }
 
     fn right(span: &CellSpan) -> f32 {
