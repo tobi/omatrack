@@ -8,8 +8,8 @@
 //! monospace face next to proportional labels. The monospace family is kept
 //! for what is genuinely code: paths, file contents, identifiers.
 //!
-//! **Scale.** Six steps in rems, so they follow the application zoom (at
-//! the default 16 px rem: 11 / 12 / 13 / 14 / 16 / 20 px):
+//! **Scale.** Seven steps in rems, so they follow the application zoom (at
+//! the default 16 px rem: 11 / 12 / 13 / 14 / 16 / 20 / 40 px):
 //!
 //! | Step | rem | Use |
 //! |---|---|---|
@@ -19,6 +19,7 @@
 //! | [`Title`](TypeStep::Title) | 0.875 | panel and section titles |
 //! | [`Heading`](TypeStep::Heading) | 1.0 | the one heading of a surface |
 //! | [`Display`](TypeStep::Display) | 1.25 | the video HUD's primary figures |
+//! | [`Stage`](TypeStep::Stage) | 2.5 | the one live number of the fullscreen stage (Δt) |
 //!
 //! **Weights.** Regular for values and prose, medium for names that
 //! identify a row or lane, semibold only for a surface's heading. Never
@@ -40,6 +41,7 @@ pub enum TypeStep {
     Title,
     Heading,
     Display,
+    Stage,
 }
 
 impl TypeStep {
@@ -52,6 +54,7 @@ impl TypeStep {
             TypeStep::Title => 0.875,
             TypeStep::Heading => 1.0,
             TypeStep::Display => 1.25,
+            TypeStep::Stage => 2.5,
         }
     }
 
@@ -108,6 +111,12 @@ pub trait TypeScale: Styled + Sized {
         self.text_step(TypeStep::Display)
     }
 
+    /// 40 px: the fullscreen stage's live delta, the one number read from
+    /// across the room.
+    fn text_stage(self) -> Self {
+        self.text_step(TypeStep::Stage)
+    }
+
     /// Tabular figures in the interface family: every number, so values
     /// align in columns and do not jitter as they change.
     fn numeric(self) -> Self {
@@ -130,9 +139,10 @@ mod tests {
             TypeStep::Title,
             TypeStep::Heading,
             TypeStep::Display,
+            TypeStep::Stage,
         ];
         let px: Vec<f32> = steps.iter().map(|s| s.rems() * 16.0).collect();
-        assert_eq!(px, [11.0, 12.0, 13.0, 14.0, 16.0, 20.0]);
+        assert_eq!(px, [11.0, 12.0, 13.0, 14.0, 16.0, 20.0, 40.0]);
     }
 
     #[test]

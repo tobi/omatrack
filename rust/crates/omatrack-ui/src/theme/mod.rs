@@ -370,13 +370,27 @@ fn apply_palette(palette: &OmarchyPalette, dir: &Path, cx: &mut App) {
     cx.refresh_windows();
 }
 
+/// The built-in dark theme's `primary` is near-white, the foreground's
+/// colour: the primary lap would read as text, the Δ line and the cursor.
+/// Without an Omarchy accent the primary role takes the kit's blue scale
+/// (named colours of the kit, not literals), so it is a real accent next
+/// to the reference's amber.
+fn with_accent(mut config: ThemeConfig) -> ThemeConfig {
+    let colors = &mut config.colors;
+    colors.primary = Some("blue-400".into());
+    colors.primary_hover = Some("blue-300".into());
+    colors.primary_active = Some("blue-500".into());
+    colors.primary_foreground = Some("neutral-950".into());
+    config
+}
+
 fn apply_built_in(cx: &mut App) {
     let registry = ThemeRegistry::global(cx);
     let (dark, light) = (
         (**registry.default_dark_theme()).clone(),
         (**registry.default_light_theme()).clone(),
     );
-    let (dark, light) = (with_fonts(dark, cx), with_fonts(light, cx));
+    let (dark, light) = (with_fonts(with_accent(dark), cx), with_fonts(light, cx));
     cx.set_global(ThemeStatus {
         name: dark.name.clone(),
         mode: ThemeMode::Dark,
