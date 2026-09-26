@@ -308,6 +308,16 @@ impl TraceStack {
         cx.notify();
     }
 
+    /// Mark a corner focused (the traces outside it dim) without moving the
+    /// viewport: for a focus the caller has already framed (the Corners
+    /// view frames with approach and exit, not in the left half).
+    pub fn mark_focused_corner(&mut self, id: u32, cx: &mut Context<Self>) {
+        if self.focused_corner != Some(id) && self.corners.iter().any(|c| c.id == id) {
+            self.focused_corner = Some(id);
+            cx.notify();
+        }
+    }
+
     pub fn clear_corner_focus(&mut self, cx: &mut Context<Self>) {
         if self.focused_corner.take().is_some() {
             self.cursor.update(cx, |c, cx| c.set_focus(None, cx));

@@ -10,6 +10,14 @@
 /// Numerical zoom floor, in lap fraction. Sub-sample inspection is allowed.
 pub const MIN_SPAN: f64 = 1.0e-7;
 
+/// The Corners view's approach before a zone, in zone lengths, and its
+/// floor in lap fraction (about 120 m of a 4 km lap: the braking zone).
+pub const CORNER_APPROACH: f64 = 1.2;
+pub const CORNER_APPROACH_MIN: f64 = 0.03;
+/// The Corners view's exit after a zone, in zone lengths, and its floor.
+pub const CORNER_EXIT: f64 = 0.8;
+pub const CORNER_EXIT_MIN: f64 = 0.02;
+
 /// The visible window of the primary lap, in lap fraction. It may extend past
 /// `0..1` (a focused corner near start/finish keeps its place; the renderer
 /// fills the overhang with the neighbouring lap).
@@ -124,6 +132,25 @@ impl Viewport {
         let span = (zone / ZONE_SHARE_OF_VIEW).clamp(0.004, 1.0);
         let mid = (start + end) * 0.5;
         let view_start = mid - CORNER_CENTRE * span;
+        Self {
+            start: view_start,
+            end: view_start + span,
+        }
+    }
+
+    /// The viewport of the Corners view: the zone with its approach (the
+    /// braking before it) and its exit (the run out of it). The approach
+    /// is [`CORNER_APPROACH`] zone lengths, at least
+    /// [`CORNER_APPROACH_MIN`] of the lap; the exit [`CORNER_EXIT`] zone
+    /// lengths, at least [`CORNER_EXIT_MIN`]. Unclamped like
+    /// [`Self::focus_on`]: a corner by the line shows the neighbour lap's
+    /// mask, never a shifted frame.
+    pub fn frame_corner(start: f64, end: f64) -> Self {
+        let zone = (end - start).max(0.002);
+        let approach = (zone * CORNER_APPROACH).max(CORNER_APPROACH_MIN);
+        let exit = (zone * CORNER_EXIT).max(CORNER_EXIT_MIN);
+        let (view_start, view_end) = (start - approach, end + exit);
+        let span = (view_end - view_start).min(1.0);
         Self {
             start: view_start,
             end: view_start + span,
@@ -405,6 +432,18 @@ mod tests {
         assert!(((mid - v.start) / v.span() - 0.25).abs() < 1e-12);
         // Near the start the view may run off the lap.
         assert!(Viewport::focus_on(0.0, 0.03).start < 0.0);
+    }
+
+    #[test]
+    fn a_corner_frame_holds_its_approach_and_exit() {
+        let v = Viewport::frame_corner(0.40, 0.45);
+        assert!((v.start - (0.40 - 0.06)).abs() < 1e-12, "{v:?}");
+        assert!((v.end - (0.45 + 0.04)).abs() < 1e-12, "{v:?}");
+        // Short zones keep the floors; a corner by the line runs off the lap.
+        let v = Viewport::frame_corner(0.0, 0.005);
+        assert!((v.start + CORNER_APPROACH_MIN).abs() < 1e-12);
+        assert!((v.end - (0.005 + CORNER_EXIT_MIN)).abs() < 1e-12);
+        assert!(Viewport::frame_corner(0.0, 2.0).span() <= 1.0);
     }
 
     #[test]
