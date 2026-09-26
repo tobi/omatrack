@@ -203,14 +203,18 @@ fn lap_label(lap: &LoadedLap) -> SharedString {
         .unwrap_or_else(|| format!("L{}", lap.lap_id()).into())
 }
 
-/// Each corner's slowest point for the speed lane's callouts: where the
-/// primary's apex marker sits, its apex speed and the reference's, from
-/// the analysis's corner rows.
+/// Each corner's apex for the speed lane's callouts: where the primary's
+/// apex marker sits, its apex speed and the reference's, from the
+/// analysis's corner rows. A zone whose minimum is only its edge
+/// (`CornerMetrics::apex_is_local`) gets no callout.
 fn apexes(analysis: &Analysis) -> Vec<Apex> {
     analysis
         .rows()
         .iter()
         .filter_map(|row| {
+            if !row.primary.apex_is_local() {
+                return None;
+            }
             let marker = row
                 .markers
                 .iter()

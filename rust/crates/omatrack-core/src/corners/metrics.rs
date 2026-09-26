@@ -117,6 +117,29 @@ impl Default for CornerMetrics {
     }
 }
 
+/// An apex this close to either end of its zone is the zone's edge, not a
+/// minimum of the corner (a kink taken flat, a zone drawn past the apex),
+/// metres.
+pub const APEX_EDGE_MARGIN_M: f64 = 10.0;
+/// Least speed lost from the fastest point before the apex to the apex for
+/// the zone minimum to count as a corner's apex, km/h.
+pub const APEX_MIN_DROP_KMH: f64 = 5.0;
+
+impl CornerMetrics {
+    /// The zone's slowest point is a real apex: inside the zone (more than
+    /// [`APEX_EDGE_MARGIN_M`] from both ends) and at least
+    /// [`APEX_MIN_DROP_KMH`] below the entry. A minimum on a zone edge (the
+    /// lap accelerating out of the previous corner, or braking for the
+    /// next) marks no apex. Not printed by the CLI.
+    pub fn apex_is_local(&self) -> bool {
+        self.valid
+            && self.apex_point.is_finite()
+            && self.apex_point > APEX_EDGE_MARGIN_M
+            && self.length_meters - self.apex_point > APEX_EDGE_MARGIN_M
+            && self.entry_speed - self.apex_speed >= APEX_MIN_DROP_KMH
+    }
+}
+
 /// Turn-in: find where lateral load starts building, then walk back to where
 /// the steering left its approach baseline. Steering alone is the fallback
 /// without an accelerometer channel.
@@ -465,4 +488,31 @@ pub fn measure_corner(
         m.combined_grip_mid = average(split + 1, apex_index);
     }
     m
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn metrics(apex_point: f64, entry: f64, apex: f64) -> CornerMetrics {
+        CornerMetrics {
+            valid: true,
+            length_meters: 200.0,
+            apex_point,
+            entry_speed: entry,
+            apex_speed: apex,
+            ..CornerMetrics::default()
+        }
+    }
+
+    #[test]
+    fn an_apex_is_an_interior_minimum_below_the_entry() {
+        assert!(metrics(90.0, 180.0, 95.0).apex_is_local());
+        // The minimum on the zone's first or last metres is its edge.
+        assert!(!metrics(2.0, 183.0, 183.0).apex_is_local());
+        assert!(!metrics(195.0, 252.0, 240.0).apex_is_local());
+        // A kink taken flat loses nothing.
+        assert!(!metrics(100.0, 173.0, 171.0).apex_is_local());
+        assert!(!CornerMetrics::default().apex_is_local());
+    }
 }
