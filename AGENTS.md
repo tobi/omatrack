@@ -136,8 +136,8 @@ file format.
 - `omatrack.yml` (`$XDG_CONFIG_HOME/omatrack/`, else `~/.config/omatrack/`) is
   the only user config store: locations, channel display, drivers, last
   selection, recents (max 6), per-track corner overrides, video/trace settings,
-  `workspace.layout`. Hand-editable, unknown keys preserved, atomic writes, never
-  written into telemetry or caches.
+  `workspace.layout`, `trace.view_mode`. Hand-editable, unknown keys preserved,
+  atomic writes, never written into telemetry or caches.
 - `TRACK.yml` in any folder: recordings inherit every one above them, merged
   root to leaf (closer wins per key). App edits are atomic and keep unrelated
   keys.
@@ -344,6 +344,26 @@ so a pin bump regenerates every cache.
   (`Cursor at 368 m, Turn 1`, `straight after T3` between corners) and the
   along-track gap when gated as above, never over the pictures.
 
+### 6.10 Session consistency and driving events
+
+- **Consistency** (`consistency::{SessionLaps::for_consistency,
+  build_consistency, Consistency}`): every `counts_for_best` lap of the
+  primary's recording (`spread_lap_ids`, fastest first; the parsed recording
+  and the primary lap are reused), resampled onto the primary's 50 Hz grid
+  by **share of lap distance** (gear at the nearest sample, never blended),
+  per `SPREAD_CHANNELS` channel: each other lap's `Arc<[f64]>` and the
+  per-station min/max over those laps and the primary. Laps without distance
+  are left out; fewer than `MIN_SPREAD_LAPS` (2) other laps is no spread
+  and the view says so.
+- **Events** (`events::{detect, analysis_events}`): brake onsets (brake
+  crosses `BRAKE_ONSET_BAR` after at least `BRAKE_REARM_SECONDS` below it),
+  lift-offs (throttle from above `LIFT_FROM_THROTTLE` to below
+  `LIFT_TO_THROTTLE`), up/down shifts with the new gear (held
+  `GEAR_HOLD_SECONDS`, neutral ignored), for both laps (the reference's
+  through the shared map), plus every `CornerNote` at its zone start as
+  `T5: <sentence>`. Thresholds are named constants; nothing here changes
+  CLI output.
+
 ## 7. UI architecture rules (GPUI)
 
 On top of [coding-guides.md](.agents/skills/gpui-kit/references/coding-guides.md)
@@ -459,6 +479,19 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   alignment. Swap (`x`) cancels pending loads, keeps cursor and viewport,
   inverts manual offset. Changing a lap clears pair tuning, keeps cursor and
   viewport.
+- **Trace view mode** (`state::TraceView`, `trace.view_mode`: `lap`,
+  `corners`, `consistency`, `events`) maps to `omatrack_trace::TraceLayers`
+  (a mode switch repaints the static layer once, lane geometry kept).
+  Consistency owns the session-spread pipeline slot, started lazily on
+  entering the mode, once per primary lap (Jobs: "Loading session laps"
+  with progress); the spread attaches only to the primary lap it was built
+  on. Drawn behind each lane: a low-alpha min–max band
+  (`SPREAD_BAND_ALPHA`) and one thin quiet line per lap
+  (`SPREAD_LINE_WIDTH`, decimated at `SPREAD_LINE_COLUMNS_PER_PX`), static
+  layer, cached per scene like the lane. Events draw ticks with a flag on
+  their lane (brake onset on Brake, lift on Throttle, shifts on Gear, notes
+  on the gap lane; the reference quieter) and label on hover in the overlay.
+  Too few laps shows a notice over the lanes, never an empty view.
 - **Overlays through `Root`**; escape closes the topmost, restoring focus.
 - **Preferences** writes go through the Preferences entity: debounced, atomic,
   off-thread, flushed on quit.
@@ -544,7 +577,9 @@ Semantics carry over from [docs/TRACE_RENDERING.md](docs/TRACE_RENDERING.md).
   (8 lanes x 2 laps, 1x–10,000x sweep, 2560 device px, dpr 2): geometry avg
   ≤ 4 ms, worst ≤ 8.33 ms, hover < 0.1 ms. Report before/after for renderer
   changes. The worst-frame target is not yet met on every run; wave 4 hardens
-  it **[plan]**.
+  it **[plan]**. The Consistency row (8 session laps + band on 7 lanes) meets
+  the average (≈2.7 ms) but its worst (cold, full lap ≈12 ms) exceeds the
+  8.33 ms target while staying under the 16.67 ms ceiling.
 
 ## 9. mpv-player contract
 
