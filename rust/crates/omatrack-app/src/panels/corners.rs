@@ -112,6 +112,11 @@ impl CornerLine {
         }
     }
 
+    /// Position in lap order, 0-based.
+    pub fn order(&self) -> usize {
+        self.order
+    }
+
     /// The zone id (`T5`, an atlas range id, or `tN`).
     pub fn id(&self) -> &SharedString {
         &self.id

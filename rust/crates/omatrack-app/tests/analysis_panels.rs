@@ -746,11 +746,13 @@ async fn real_run4_against_run1_fills_the_corners_table_and_the_map(cx: &mut Tes
         "Road Atlanta has 10+ corners: {}",
         lines.len()
     );
-    let dts: Vec<f64> = lines.iter().map(|line| line.dt()).collect();
+    // Run4's GPS misses the centreline, so the pair aligns by a share of
+    // lap time: its Δt ranks corner length, and the table keeps track
+    // order instead of sorting by it.
+    let orders: Vec<usize> = lines.iter().map(|line| line.order()).collect();
     assert!(
-        dts.windows(2)
-            .all(|pair| pair[0] >= pair[1] || pair[1].is_nan()),
-        "worst corner first: {dts:?}"
+        orders.windows(2).all(|pair| pair[0] < pair[1]),
+        "track order under a time-share alignment: {orders:?}"
     );
     // Brake-point consistency arrives from the background.
     cx.wait_for(handle, Duration::from_secs(600), |_, cx| {
