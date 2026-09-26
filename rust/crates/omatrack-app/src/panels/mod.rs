@@ -94,8 +94,10 @@ impl PanelKind {
     }
 }
 
-/// One entity per panel, owned by a workspace.
+/// One entity per panel, owned by a workspace. Built only by
+/// [`WorkspacePanels::new`]; the fields are readable handles.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct WorkspacePanels {
     pub library: Entity<LibraryPanel>,
     pub traces: Entity<TracesPanel>,

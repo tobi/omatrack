@@ -410,8 +410,8 @@ impl Workspace {
         true
     }
 
-    /// The next (`step` 1) or previous (-1) corner from the focused one, or
-    /// from the cursor.
+    /// Focus the next (`step` 1) or previous (-1) corner (see
+    /// [`step_corner_ix`]).
     fn step_corner(&mut self, step: isize, cx: &mut Context<Self>) {
         let Some(starts) = self.app.session.read(cx).analysis().map(|analysis| {
             analysis
@@ -422,24 +422,8 @@ impl Workspace {
         }) else {
             return;
         };
-        if starts.is_empty() {
-            return;
-        }
-        let next = match self.focused_corner.filter(|ix| *ix < starts.len()) {
-            Some(ix) => ix.checked_add_signed(step).filter(|ix| *ix < starts.len()),
-            None => {
-                let cursor = self.app.cursor.read(cx).fraction().unwrap_or(0.0);
-                if step > 0 {
-                    starts.iter().position(|start| *start > cursor).or(Some(0))
-                } else {
-                    starts
-                        .iter()
-                        .rposition(|start| *start < cursor)
-                        .or(Some(starts.len() - 1))
-                }
-            }
-        };
-        if let Some(ix) = next {
+        let cursor = self.app.cursor.read(cx).fraction();
+        if let Some(ix) = step_corner_ix(&starts, self.focused_corner, cursor, step) {
             self.focus_corner(ix, cx);
         }
     }
@@ -718,5 +702,68 @@ impl Render for Workspace {
             .children(sheets)
             .children(dialogs)
             .children(notifications)
+    }
+}
+
+/// The corner H (`step` -1) or J (`step` 1) moves to, given the corners'
+/// start fractions in lap order: the neighbour of the focused corner, else
+/// the first corner after (J) or before (H) the cursor. There is no wrap:
+/// past the last corner J does nothing, before the first H does nothing.
+/// Without a cursor the playhead is at the lap start, so J focuses the
+/// first corner and H has nowhere to go.
+fn step_corner_ix(
+    starts: &[f64],
+    focused: Option<usize>,
+    cursor: Option<f64>,
+    step: isize,
+) -> Option<usize> {
+    if let Some(ix) = focused.filter(|ix| *ix < starts.len()) {
+        return ix.checked_add_signed(step).filter(|ix| *ix < starts.len());
+    }
+    match (cursor, step > 0) {
+        (None, true) => (!starts.is_empty()).then_some(0),
+        (None, false) => None,
+        (Some(cursor), true) => starts.iter().position(|start| *start > cursor),
+        (Some(cursor), false) => starts.iter().rposition(|start| *start < cursor),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::step_corner_ix;
+
+    const STARTS: [f64; 3] = [0.1, 0.4, 0.7];
+
+    #[test]
+    fn stepping_from_a_focused_corner_does_not_wrap() {
+        assert_eq!(step_corner_ix(&STARTS, Some(0), Some(0.5), 1), Some(1));
+        assert_eq!(step_corner_ix(&STARTS, Some(1), None, -1), Some(0));
+        assert_eq!(step_corner_ix(&STARTS, Some(2), Some(0.5), 1), None);
+        assert_eq!(step_corner_ix(&STARTS, Some(0), Some(0.5), -1), None);
+    }
+
+    #[test]
+    fn stepping_from_the_cursor_does_not_wrap() {
+        assert_eq!(step_corner_ix(&STARTS, None, Some(0.5), 1), Some(2));
+        assert_eq!(step_corner_ix(&STARTS, None, Some(0.5), -1), Some(1));
+        // Past the last corner J stays; before the first H stays.
+        assert_eq!(step_corner_ix(&STARTS, None, Some(0.9), 1), None);
+        assert_eq!(step_corner_ix(&STARTS, None, Some(0.05), -1), None);
+        // A cursor exactly on a corner start moves past it.
+        assert_eq!(step_corner_ix(&STARTS, None, Some(0.4), 1), Some(2));
+        assert_eq!(step_corner_ix(&STARTS, None, Some(0.4), -1), Some(0));
+    }
+
+    #[test]
+    fn without_a_cursor_the_lap_start_is_the_playhead() {
+        assert_eq!(step_corner_ix(&STARTS, None, None, 1), Some(0));
+        assert_eq!(step_corner_ix(&STARTS, None, None, -1), None);
+        assert_eq!(step_corner_ix(&[], None, None, 1), None);
+    }
+
+    #[test]
+    fn a_stale_focus_falls_back_to_the_cursor() {
+        // The focused index is from an analysis with more corners.
+        assert_eq!(step_corner_ix(&STARTS, Some(5), Some(0.5), 1), Some(2));
     }
 }

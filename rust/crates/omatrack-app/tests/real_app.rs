@@ -202,18 +202,26 @@ async fn real_run4_against_run1_through_the_workspace(cx: &mut TestAppContext) {
         assert!(viewport.start <= focus.start && viewport.end >= focus.end);
     });
 
-    // The palette focuses a corner by name.
+    // The palette focuses a corner by typing its name.
     let (ix, name) = cx.update(|cx| {
         let corners = session.read(cx).analysis().unwrap().corners().to_vec();
-        let ix = corners.len() / 2;
+        let ix = corners
+            .iter()
+            .position(|zone| zone.name == "Turn 5")
+            .unwrap_or_else(|| {
+                let names: Vec<_> = corners.iter().map(|zone| zone.name.clone()).collect();
+                panic!("the track has a Turn 5: {names:?}")
+            });
         (ix, corners[ix].name.clone())
     });
+    // Typed the short way: T5 finds Turn 5.
+    let query = "T5";
     cx.update_window(handle, |_, window, cx| window.press("ctrl-k", cx))
         .unwrap();
     cx.run_until_parked();
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        window.input(&format!("{name} · Focus corner"), cx);
+        window.input(query, cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -230,6 +238,39 @@ async fn real_run4_against_run1_through_the_workspace(cx: &mut TestAppContext) {
         "the palette focused {name}"
     );
 
+    // J and H do not wrap: from the last corner J stays, from the first
+    // H stays.
+    let last = cx.update(|cx| session.read(cx).analysis().unwrap().corners().len() - 1);
+    for _ in 0..=last {
+        cx.update_window(handle, |_, window, cx| window.press("j", cx))
+            .unwrap();
+    }
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|cx| test.workspace.read(cx).focused_corner()),
+        Some(last)
+    );
+    cx.update_window(handle, |_, window, cx| window.press("j", cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|cx| test.workspace.read(cx).focused_corner()),
+        Some(last),
+        "J does not wrap to the first corner"
+    );
+    for _ in 0..=last {
+        cx.update_window(handle, |_, window, cx| window.press("h", cx))
+            .unwrap();
+    }
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|cx| test.workspace.read(cx).focused_corner()),
+        Some(0),
+        "H does not wrap to the last corner"
+    );
+    cx.executor().advance_clock(Duration::from_millis(300));
+    cx.run_until_parked();
+
     // Escape leaves the corner focus and returns to the viewport the
     // first focus started from.
     cx.update_window(handle, |_, window, cx| window.press("escape", cx))
@@ -240,4 +281,18 @@ async fn real_run4_against_run1_through_the_workspace(cx: &mut TestAppContext) {
         assert_eq!(cursor.read(cx).focus(), None);
         assert_eq!(viewport.read(cx).viewport(), zoomed);
     });
+
+    // With no corner focused, J from past the last corner and H from before
+    // the first do nothing (no wrap).
+    for (fraction, key) in [(0.999, "j"), (0.0001, "h")] {
+        cx.update(|cx| cursor.update(cx, |cursor, cx| cursor.set_fraction(Some(fraction), cx)));
+        cx.update_window(handle, |_, window, cx| window.press(key, cx))
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update(|cx| test.workspace.read(cx).focused_corner()),
+            None,
+            "{key} at {fraction} wrapped"
+        );
+    }
 }
