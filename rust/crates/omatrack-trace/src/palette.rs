@@ -66,6 +66,8 @@ pub struct TracePalette {
     pub dim: Hsla,
     /// Δ line.
     pub delta_line: Hsla,
+    /// The quiet end of the heat ramp ([`Self::heat`]).
+    pub heat_quiet: Hsla,
     pub chart: [Hsla; 5],
 }
 
@@ -95,6 +97,7 @@ impl TracePalette {
             dim: background.opacity(0.6),
             // Neutral: the Δ is neither lap; gain and loss colour its fill.
             delta_line: opaque(theme.muted_foreground),
+            heat_quiet: opaque(theme.muted_foreground.opacity(0.28)),
             chart: [
                 opaque(theme.chart_1),
                 opaque(theme.chart_2),
@@ -106,6 +109,12 @@ impl TracePalette {
     }
 
     /// Default hue of a channel key.
+    /// The loss ramp at `t` in `[0, 1]`: the quiet muted tone at 0, the
+    /// loss role (`danger`) at 1, opaque in between.
+    pub fn heat(&self, t: f32) -> Hsla {
+        self.heat_quiet.blend(self.loss.opacity(t.clamp(0.0, 1.0)))
+    }
+
     pub fn channel_hue(&self, key: &str) -> Hsla {
         match key {
             "speed" | "throttle" | "driver_throttle" => self.chart[1],

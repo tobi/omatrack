@@ -21,6 +21,14 @@
 //! [`FractionMap`]), the hover ring and the corner labels are the overlay,
 //! painted on top every frame: a few quads and text runs.
 //!
+//! **Heat mode** ([`TrackMapData::with_heat`]): the primary lap is coloured
+//! by time lost per metre on a ramp of [`HEAT_LEVELS`] steps from a quiet
+//! muted tone to `danger` ([`TracePalette::heat`]), "less — more". Gaining
+//! stations sit at the quiet end: the ramp answers where time goes, and a
+//! second hue for gains would compete with it (gains stay readable in the
+//! delta lane). The reference lap and the centerline ribbon are left out so
+//! the one line reads; the cursor is a ring on it.
+//!
 //! Interaction: hovering reports the lap fraction of the nearest primary
 //! sample ([`TrackMapEvent::MapHover`], `None` on leave or when nothing is
 //! near); a click reports [`TrackMapEvent::MapClicked`]. Without a primary
@@ -65,6 +73,17 @@ pub const HOVER_DISTANCE: f64 = 24.0;
 pub const SLOPE_HALF_WINDOW: usize = 12;
 /// Δt change over the slope window below which the lap is drawn level.
 pub const SLOPE_DEADBAND_S: f64 = 0.002;
+/// Steps of the heat ramp, the quiet one included.
+pub const HEAT_LEVELS: usize = 6;
+/// Share of the losing stations below the top of the heat ramp: a robust
+/// maximum, so one spike does not flatten the rest of the lap to quiet.
+pub const HEAT_SCALE_QUANTILE: f64 = 0.95;
+/// Share of the losing stations at the quiet end of the ramp: the lap's
+/// background loss (a straight under a time-share alignment still "loses"
+/// in proportion to its time) stays quiet so the corners stand out.
+pub const HEAT_FLOOR_QUANTILE: f64 = 0.25;
+/// Stroke width of the heat lap, logical pixels.
+const HEAT_STROKE: f64 = 3.5;
 
 /// A WGS84 position.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -203,6 +222,7 @@ pub struct TrackMapData {
     delta: Option<Arc<[f64]>>,
     map: Option<Arc<dyn FractionMap>>,
     corners: Vec<MapCorner>,
+    heat: Option<Arc<[f64]>>,
 }
 
 fn next_generation() -> u64 {
@@ -249,6 +269,25 @@ impl TrackMapData {
         self.corners = corners;
         self.generation = next_generation();
         self
+    }
+    /// Heat mode: time lost per metre (s/m) on the primary grid colours the
+    /// primary lap on the loss ramp (see the module docs). Ignored unless it
+    /// is as long as the primary lap.
+    pub fn with_heat(mut self, loss_rate: Option<Arc<[f64]>>) -> Self {
+        self.heat = loss_rate;
+        self.generation = next_generation();
+        self
+    }
+    /// The loss rate driving heat mode, when set.
+    pub fn heat(&self) -> Option<&[f64]> {
+        self.heat.as_deref()
+    }
+    /// Whether the primary lap is drawn as heat.
+    pub fn is_heat(&self) -> bool {
+        match (&self.primary, &self.heat) {
+            (Some(primary), Some(heat)) => heat.len() == primary.len(),
+            _ => false,
+        }
     }
 
     pub fn generation(&self) -> u64 {
@@ -414,6 +453,42 @@ pub fn delta_slope_signs(delta: &[f64], half_window: usize, deadband: f64) -> Ve
         .collect()
 }
 
+/// Ramp step (0 = quiet .. `levels - 1` = hottest) of every loss rate: the
+/// losing stations spread from their [`HEAT_FLOOR_QUANTILE`] (quiet) to
+/// their [`HEAT_SCALE_QUANTILE`] (hottest); gains and non-finite values
+/// quiet.
+pub fn heat_levels(loss_rate: &[f64], levels: usize) -> Vec<u8> {
+    let top = levels.clamp(1, usize::from(u8::MAX)) - 1;
+    let mut losing: Vec<f64> = loss_rate
+        .iter()
+        .copied()
+        .filter(|r| r.is_finite() && *r > 0.0)
+        .collect();
+    let (floor, ceiling) = if losing.is_empty() {
+        (0.0, 0.0)
+    } else {
+        let mut quantile = |q: f64| {
+            let ix = ((losing.len() - 1) as f64 * q).round() as usize;
+            *losing.select_nth_unstable_by(ix, f64::total_cmp).1
+        };
+        let ceiling = quantile(HEAT_SCALE_QUANTILE);
+        let floor = quantile(HEAT_FLOOR_QUANTILE);
+        // A flat loss (every station alike) ramps from zero instead.
+        (if floor < ceiling { floor } else { 0.0 }, ceiling)
+    };
+    let span = ceiling - floor;
+    loss_rate
+        .iter()
+        .map(|&rate| {
+            if span > 0.0 && rate.is_finite() && rate > 0.0 {
+                (((rate - floor) / span).clamp(0.0, 1.0) * top as f64).round() as u8
+            } else {
+                0
+            }
+        })
+        .collect()
+}
+
 /// Index of the nearest `(x, y)` within `max_distance`, if any.
 pub fn nearest_point(points: &[(f32, f32)], x: f32, y: f32, max_distance: f32) -> Option<usize> {
     let mut best = None;
@@ -449,6 +524,8 @@ struct MapGeometry {
     level: PathBuffer,
     gain: PathBuffer,
     loss: PathBuffer,
+    /// Heat mode: one buffer per ramp step.
+    heat: [PathBuffer; HEAT_LEVELS],
     /// Hover targets: projected points and their lap fraction.
     targets: Vec<(f32, f32)>,
     target_fractions: Vec<f64>,
@@ -507,7 +584,7 @@ impl MapGeometry {
         }
     }
 
-    fn buffers_mut(&mut self) -> [&mut PathBuffer; 5] {
+    fn buffers_mut(&mut self) -> impl Iterator<Item = &mut PathBuffer> {
         [
             &mut self.centerline,
             &mut self.reference,
@@ -515,6 +592,8 @@ impl MapGeometry {
             &mut self.gain,
             &mut self.loss,
         ]
+        .into_iter()
+        .chain(self.heat.iter_mut())
     }
 
     fn build(&mut self, data: &TrackMapData, width: f32, height: f32, dpr: f32) {
@@ -531,6 +610,7 @@ impl MapGeometry {
             PathPoint::new(x, y)
         };
 
+        let heat = data.is_heat();
         // Centerline: a closed ribbon under the laps.
         let centerline: Vec<GeoPoint> = data
             .centerline
@@ -538,7 +618,7 @@ impl MapGeometry {
             .copied()
             .filter(GeoPoint::is_valid)
             .collect();
-        if centerline.len() >= 2 {
+        if centerline.len() >= 2 && !heat {
             self.points.clear();
             self.points.extend(
                 centerline
@@ -549,7 +629,7 @@ impl MapGeometry {
             stroke(&self.points, 5.0, &mut self.centerline);
         }
 
-        if let Some(track) = &data.reference {
+        if let Some(track) = data.reference.as_ref().filter(|_| !heat) {
             polyline(track, &project, min_step, &mut self.points);
             stroke(&self.points, 1.25, &mut self.reference);
         }
@@ -561,19 +641,33 @@ impl MapGeometry {
                 .as_ref()
                 .filter(|d| d.len() == n)
                 .map(|d| delta_slope_signs(d, SLOPE_HALF_WINDOW, SLOPE_DEADBAND_S));
-            let sign_at = |i: usize| signs.as_ref().map_or(SlopeSign::Level, |s| s[i]);
-            // Walk the lap, stroking each same-sign run into its colour's
+            let levels = data
+                .heat
+                .as_ref()
+                .filter(|_| heat)
+                .map(|h| heat_levels(h, HEAT_LEVELS));
+            // One bucket per colour: a slope sign, or a heat step.
+            let sign_at = |i: usize| match (&levels, &signs) {
+                (Some(levels), _) => Bucket::Heat(levels[i]),
+                (None, Some(signs)) => Bucket::Slope(signs[i]),
+                (None, None) => Bucket::Slope(SlopeSign::Level),
+            };
+            // Walk the lap, stroking each same-bucket run into its colour's
             // buffer; consecutive runs share their boundary vertex.
             let mut run: Vec<PathPoint> = Vec::with_capacity(n.min(8192));
             let mut run_sign = sign_at(0);
             let last = (n - 1).max(1) as f64;
-            let flush = |run: &mut Vec<PathPoint>, sign: SlopeSign, geometry: &mut Self| {
-                let buffer = match sign {
-                    SlopeSign::Level => &mut geometry.level,
-                    SlopeSign::Gain => &mut geometry.gain,
-                    SlopeSign::Loss => &mut geometry.loss,
+            let flush = |run: &mut Vec<PathPoint>, bucket: Bucket, geometry: &mut Self| {
+                let (buffer, width) = match bucket {
+                    Bucket::Slope(SlopeSign::Level) => (&mut geometry.level, 2.0),
+                    Bucket::Slope(SlopeSign::Gain) => (&mut geometry.gain, 2.0),
+                    Bucket::Slope(SlopeSign::Loss) => (&mut geometry.loss, 2.0),
+                    Bucket::Heat(level) => (
+                        &mut geometry.heat[usize::from(level).min(HEAT_LEVELS - 1)],
+                        HEAT_STROKE,
+                    ),
                 };
-                stroke(run, 2.0, buffer);
+                stroke(run, width, buffer);
             };
             for i in 0..n {
                 let geo = track.at(i);
@@ -620,6 +714,13 @@ impl MapGeometry {
             }
         }
     }
+}
+
+/// The colour a primary run is stroked in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Bucket {
+    Slope(SlopeSign),
+    Heat(u8),
 }
 
 /// Project a GPS lap into `points` with pen-ups at gaps, dropping vertices
@@ -969,6 +1070,13 @@ impl Element for MapStaticElement {
                 window.paint_path(path, color);
             }
         }
+        // Heat steps, quiet first so hotter runs sit on top at the joins.
+        for (level, buffer) in geometry.heat.iter().enumerate() {
+            let color = palette.heat(level as f32 / (HEAT_LEVELS - 1) as f32);
+            for path in buffer.translated(bounds.origin) {
+                window.paint_path(path, color);
+            }
+        }
     }
 }
 
@@ -1166,13 +1274,15 @@ impl MapOverlay {
             );
         }
 
-        // Cursor dots: reference through the shared map, primary on top.
+        // Cursor dots: reference through the shared map, primary on top
+        // (heat mode draws no reference lap, so no reference dot either).
         if let Some(cursor) = self.cursor {
-            if let Some(position) = self
-                .data
-                .reference
-                .as_ref()
-                .and_then(|t| t.position_at(self.data.reference_fraction(cursor)))
+            if !self.data.is_heat()
+                && let Some(position) = self
+                    .data
+                    .reference
+                    .as_ref()
+                    .and_then(|t| t.position_at(self.data.reference_fraction(cursor)))
             {
                 dot(
                     window,
@@ -1188,13 +1298,24 @@ impl MapOverlay {
                 .as_ref()
                 .and_then(|t| t.position_at(cursor))
             {
-                dot(
-                    window,
-                    at(position),
-                    4.5,
-                    palette.primary,
-                    palette.background,
-                );
+                if self.data.is_heat() {
+                    // A ring, so the heat under the cursor stays visible.
+                    dot(
+                        window,
+                        at(position),
+                        6.0,
+                        palette.background.opacity(0.0),
+                        palette.foreground,
+                    );
+                } else {
+                    dot(
+                        window,
+                        at(position),
+                        4.5,
+                        palette.primary,
+                        palette.background,
+                    );
+                }
             }
         }
     }
@@ -1362,6 +1483,59 @@ mod tests {
         assert_eq!(geometry.builds, 1);
         geometry.prepare(&data, 301.0, 300.0, 2.0);
         assert_eq!(geometry.builds, 2);
+    }
+
+    #[test]
+    fn heat_levels_ramp_losses_and_keep_gains_quiet() {
+        let mut rate: Vec<f64> = (0..100).map(|i| f64::from(i) * 1e-4).collect();
+        rate.extend([-0.01, f64::NAN, 1.0]);
+        let levels = heat_levels(&rate, HEAT_LEVELS);
+        assert_eq!(levels.len(), rate.len());
+        assert_eq!(levels[0], 0, "no loss is quiet");
+        assert_eq!(levels[100], 0, "a gain is quiet");
+        assert_eq!(levels[101], 0, "unknown is quiet");
+        assert_eq!(levels[102], (HEAT_LEVELS - 1) as u8, "a spike clamps");
+        assert_eq!(levels[99], (HEAT_LEVELS - 1) as u8);
+        assert_eq!(levels[20], 0, "the background loss is quiet");
+        assert!(levels[60] > 0 && levels[60] < (HEAT_LEVELS - 1) as u8);
+        assert!(levels.windows(2).take(99).all(|w| w[0] <= w[1]));
+        // A flat loss ramps from zero: every losing station is hot.
+        assert!(
+            heat_levels(&[0.01; 8], HEAT_LEVELS)
+                .iter()
+                .all(|l| usize::from(*l) == HEAT_LEVELS - 1)
+        );
+        assert!(
+            heat_levels(&[0.0, -1.0], HEAT_LEVELS)
+                .iter()
+                .all(|l| *l == 0)
+        );
+    }
+
+    #[test]
+    fn heat_mode_strokes_the_ramp_and_drops_the_reference() {
+        let n = 200;
+        let lat: Arc<[f64]> = (0..n).map(|i| 34.15 + i as f64 * 1e-5).collect();
+        let lon: Arc<[f64]> = (0..n).map(|_| -83.81).collect();
+        let rate: Arc<[f64]> = (0..n).map(|i| if i < 100 { 0.0 } else { 0.01 }).collect();
+        let data = TrackMapData::new()
+            .with_centerline(rectangle())
+            .with_primary(Some(GpsTrack::new(lat.clone(), lon.clone())))
+            .with_reference(Some(GpsTrack::new(lat, lon)))
+            .with_heat(Some(rate));
+        assert!(data.is_heat());
+        let mut geometry = MapGeometry::default();
+        geometry.prepare(&data, 300.0, 300.0, 2.0);
+        assert!(geometry.heat[0].vertex_count() > 0);
+        assert!(geometry.heat[HEAT_LEVELS - 1].vertex_count() > 0);
+        assert!(geometry.reference.is_empty() && geometry.centerline.is_empty());
+        assert!(geometry.level.is_empty());
+        assert_eq!(geometry.targets.len(), n);
+        // A heat array of another length is ignored.
+        let short = TrackMapData::new()
+            .with_primary(data.primary().cloned())
+            .with_heat(Some(Arc::from([0.0; 3].as_slice())));
+        assert!(!short.is_heat());
     }
 
     #[test]
