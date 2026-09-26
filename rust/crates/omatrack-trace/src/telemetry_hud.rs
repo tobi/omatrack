@@ -4,16 +4,20 @@
 //! One band, 1000:210, drawn in design units scaled by `width / 1000`:
 //!
 //! - a scrolling track-progress window over 10% of the lap, the playhead at
-//!   86% (33% in continuous playback, where the traces lead); throttle and
-//!   brake, the primary solid in the channel hues, the reference thin in
-//!   the reference role, placed through the shared alignment map exactly
-//!   like the traces;
-//! - brake and throttle pedal bars (the reference level as a tick);
+//!   86% (33% in continuous playback, where the traces lead), clamped to
+//!   the lap so it is never half empty at the lap's start or end: throttle
+//!   and brake in two labelled sub-lanes, the primary lap filled and
+//!   stroked in the primary role, the reference thin in the reference
+//!   role, placed through the shared alignment map exactly like the traces;
+//! - a pedal level at the end of each sub-lane (the reference as a tick);
 //! - a steering dial with primary and reference ring notches;
-//! - the gear, coloured by the gear delta against the reference, with a
-//!   shift arrow; the speed, tinted by the speed delta;
+//! - the gear with a shift arrow when the reference is in another gear, the
+//!   speed, and the speed delta in gain/loss colour;
 //! - the ±8 m gap bar, only when the caller supplies a gap (both GPS fixes
 //!   better than 1 m, `alignment::relative_along_track_meters`).
+//!
+//! Colour is role only: primary and reference as everywhere, gain and loss
+//! only on Δ values (speed delta, gap), never on a pedal.
 //!
 //! Performance: the static scale scans (brake maximum, throttle scale) run
 //! once per selection in [`TelemetryHudData::new`]. A frame samples the
@@ -40,7 +44,7 @@ use omatrack_ui::{MINUS, TypeStep, format_gap, gap_position};
 use crate::decimate::{DecimateParams, PathPoint, PlotRect, decimate};
 use crate::label;
 use crate::lanes::PathBuffer;
-use crate::mesh::{TriangleSink as _, stroke};
+use crate::mesh::{TriangleSink as _, fill_to_baseline, stroke};
 use crate::palette::TracePalette;
 use crate::scene::FractionMap as _;
 
@@ -58,19 +62,19 @@ const WIDTH_SHARE: f32 = 0.72;
 const HUD_SCALE: f32 = 0.65;
 /// Steering beyond this (degrees) pins the notch.
 const STEERING_LIMIT: f64 = 180.0;
-/// Speed deltas below this (km/h) leave the speed untinted.
-const SPEED_TINT_FROM: f64 = 1.0;
-/// Speed deltas beyond `SPEED_TINT_FROM + SPEED_TINT_SPAN` tint fully.
-const SPEED_TINT_SPAN: f64 = 4.0;
+/// Speed deltas below this (km/h) are not shown.
+const SPEED_DELTA_FROM: f64 = 1.0;
 
 // Design units (the band is 1000 x 210).
 const BAND_RIGHT: f32 = 902.;
 const BAND_TOP: f32 = 35.;
 const BAND_BOTTOM: f32 = 175.;
-const GRAPH: [f32; 4] = [52., 39., 630., 132.];
-const PEDAL_X: f32 = 714.;
-const PEDAL_STEP: f32 = 30.;
-const PEDAL_WIDTH: f32 = 24.;
+const GRAPH: [f32; 4] = [16., 39., 704., 132.];
+/// The throttle and brake sub-lanes' height and the gap between them.
+const SUB_LANE: f32 = 62.;
+const SUB_GAP: f32 = 8.;
+const PEDAL_X: f32 = 730.;
+const PEDAL_WIDTH: f32 = 34.;
 const DIAL: [f32; 2] = [902., 105.];
 const DIAL_RADIUS: f32 = 70.;
 const DIAL_RING: f32 = 10.;
@@ -251,8 +255,8 @@ pub struct TelemetryHudColors {
     pub grid: Hsla,
     pub foreground: Hsla,
     pub muted: Hsla,
-    pub throttle: Hsla,
-    pub brake: Hsla,
+    /// The primary lap (pedals, traces, steering notch).
+    pub primary: Hsla,
     pub reference: Hsla,
     pub gain: Hsla,
     pub loss: Hsla,
@@ -271,9 +275,7 @@ impl TelemetryHudColors {
             ring: theme.foreground.opacity(0.07),
             foreground: theme.foreground,
             muted: theme.muted_foreground,
-            // Pedals read go/stop, the broadcast convention.
-            throttle: theme.success,
-            brake: theme.danger,
+            primary: palette.primary,
             reference: palette.reference,
             gain: palette.gain,
             loss: palette.loss,
@@ -316,6 +318,9 @@ pub struct TelemetryHudBuffers {
     points: Vec<PathPoint>,
     primary_throttle: PathBuffer,
     primary_brake: PathBuffer,
+    throttle_fill: PathBuffer,
+    brake_fill: PathBuffer,
+    fill_below: PathBuffer,
     reference_throttle: PathBuffer,
     reference_brake: PathBuffer,
     primary_notch: PathBuffer,
@@ -324,6 +329,7 @@ pub struct TelemetryHudBuffers {
     notch: Vec<PathPoint>,
     gear: CachedLabel,
     speed: CachedLabel,
+    speed_delta: CachedLabel,
     unit: CachedLabel,
     legend_throttle: CachedLabel,
     legend_brake: CachedLabel,
@@ -442,6 +448,9 @@ impl TelemetryHud {
             points,
             primary_throttle,
             primary_brake,
+            throttle_fill,
+            brake_fill,
+            fill_below,
             reference_throttle,
             reference_brake,
             primary_notch,
@@ -453,6 +462,9 @@ impl TelemetryHud {
         for buffer in [
             &mut *primary_throttle,
             &mut *primary_brake,
+            &mut *throttle_fill,
+            &mut *brake_fill,
+            &mut *fill_below,
             &mut *reference_throttle,
             &mut *reference_brake,
             &mut *primary_notch,
@@ -465,15 +477,18 @@ impl TelemetryHud {
             return;
         }
         let data = &self.data;
-        let inset = 4.0 * s;
-        let rect = PlotRect::new(
-            GRAPH[0] as f64 * s,
-            GRAPH[1] as f64 * s + inset,
-            GRAPH[2] as f64 * s,
-            GRAPH[3] as f64 * s - 2.0 * inset,
-        );
-        let start = self.fraction - self.marker * WINDOW_FRACTION;
-        let params = |y_span: f64| DecimateParams {
+        let inset = 3.0 * s;
+        let lane = |top: f32| {
+            PlotRect::new(
+                GRAPH[0] as f64 * s,
+                top as f64 * s + inset,
+                GRAPH[2] as f64 * s,
+                SUB_LANE as f64 * s - 2.0 * inset,
+            )
+        };
+        let (throttle_rect, brake_rect) = (lane(GRAPH[1]), lane(GRAPH[1] + SUB_LANE + SUB_GAP));
+        let start = window_start(self.fraction, self.marker);
+        let params = |rect: PlotRect, y_span: f64| DecimateParams {
             x_start: start,
             x_span: WINDOW_FRACTION,
             rect,
@@ -483,33 +498,41 @@ impl TelemetryHud {
             ..DecimateParams::default()
         };
         let thin = (1.5 * s).max(1.0);
-        let bold = (2.5 * s).max(1.5);
+        let bold = (2.0 * s).max(1.5);
         if let Some(reference) = data.reference() {
             let map = |f: f64| data.reference_fraction(f);
             decimate(
                 &reference.throttle,
                 &map,
-                &params(data.throttle_scale),
+                &params(throttle_rect, data.throttle_scale),
                 points,
             );
             stroke(points, thin, reference_throttle);
-            decimate(&reference.brake, &map, &params(data.brake_max), points);
+            decimate(
+                &reference.brake,
+                &map,
+                &params(brake_rect, data.brake_max),
+                points,
+            );
             stroke(points, thin, reference_brake);
         }
         let identity = |f: f64| f;
+        let baseline = |rect: PlotRect| rect.top + rect.height;
         decimate(
             &data.primary.throttle,
             &identity,
-            &params(data.throttle_scale),
+            &params(throttle_rect, data.throttle_scale),
             points,
         );
+        fill_to_baseline(points, baseline(throttle_rect), throttle_fill, fill_below);
         stroke(points, bold, primary_throttle);
         decimate(
             &data.primary.brake,
             &identity,
-            &params(data.brake_max),
+            &params(brake_rect, data.brake_max),
             points,
         );
+        fill_to_baseline(points, baseline(brake_rect), brake_fill, fill_below);
         stroke(points, bold, primary_brake);
 
         // Ring notches: from the rim inwards, at the steering angle.
@@ -539,7 +562,7 @@ impl TelemetryHud {
         // The shift arrow beside the gear: up when the primary is a gear
         // higher than the reference, down when lower.
         if let Some(delta) = sample.gear_delta().filter(|d| *d != 0) {
-            let (x, y) = (928.0 * s as f32, 89.0 * s as f32);
+            let (x, y) = (926.0 * s as f32, 80.0 * s as f32);
             let (half, rise) = (5.0 * s as f32, 4.5 * s as f32);
             let dir = if delta > 0 { -1.0 } else { 1.0 };
             arrow.triangle(
@@ -552,6 +575,9 @@ impl TelemetryHud {
         for buffer in [
             primary_throttle,
             primary_brake,
+            throttle_fill,
+            brake_fill,
+            fill_below,
             reference_throttle,
             reference_brake,
             primary_notch,
@@ -619,11 +645,25 @@ impl TelemetryHud {
                 .corner_radii(px((DIAL_RADIUS - DIAL_RING) * s)),
         );
 
-        // Graph well, quarter rules, traces, playhead.
-        let graph = rect(GRAPH[0], GRAPH[1], GRAPH[2], GRAPH[3]);
-        window.paint_quad(fill(graph, c.well).corner_radii(px(2.0 * s)));
-        for quarter in 1..4 {
-            let y = GRAPH[1] + GRAPH[3] * quarter as f32 / 4.0;
+        // Two sub-lane wells (throttle over brake), half rules, traces,
+        // pedal levels at each lane's end, the playhead.
+        let lanes = [
+            (
+                GRAPH[1],
+                sample.primary.throttle,
+                sample.reference.and_then(|r| r.throttle),
+            ),
+            (
+                GRAPH[1] + SUB_LANE + SUB_GAP,
+                sample.primary.brake,
+                sample.reference.and_then(|r| r.brake),
+            ),
+        ];
+        for (top, _, _) in lanes {
+            window.paint_quad(
+                fill(rect(GRAPH[0], top, GRAPH[2], SUB_LANE), c.well).corner_radii(px(2.0 * s)),
+            );
+            let y = top + SUB_LANE * 0.5;
             window.paint_quad(fill(
                 Bounds::new(
                     origin + point(px(GRAPH[0] * s), px((y * s).round())),
@@ -635,17 +675,21 @@ impl TelemetryHud {
         {
             let buffers = self.buffers.borrow();
             for (buffer, color) in [
+                (&buffers.throttle_fill, c.primary.opacity(0.22)),
+                (&buffers.brake_fill, c.primary.opacity(0.22)),
                 (&buffers.reference_throttle, c.reference),
-                (&buffers.reference_brake, c.reference.opacity(0.8)),
-                (&buffers.primary_throttle, c.throttle),
-                (&buffers.primary_brake, c.brake),
+                (&buffers.reference_brake, c.reference),
+                (&buffers.primary_throttle, c.primary),
+                (&buffers.primary_brake, c.primary),
             ] {
                 for path in buffer.translated(origin) {
                     window.paint_path(path, color);
                 }
             }
         }
-        let marker_x = ((GRAPH[0] + GRAPH[2] * self.marker as f32) * s).round();
+        let start = window_start(self.fraction, self.marker);
+        let at = ((self.fraction - start) / WINDOW_FRACTION).clamp(0.0, 1.0) as f32;
+        let marker_x = ((GRAPH[0] + GRAPH[2] * at) * s).round();
         window.paint_quad(fill(
             Bounds::new(
                 origin + point(px(marker_x), px(GRAPH[1] * s)),
@@ -654,63 +698,53 @@ impl TelemetryHud {
             c.foreground.opacity(0.6),
         ));
 
-        // Legend in the gutter.
+        // Lane names inside each well, top left.
         let small = TypeStep::Caption.size(window).max(px(12.0 * s));
-        let legend_x = |line: &ShapedLine| origin.x + px(26.0 * s) - line.width * 0.5;
         {
             let mut buffers = self.buffers.borrow_mut();
+            let legend_x = origin.x + px((GRAPH[0] + 6.0) * s);
             let line = buffers.legend_throttle.get(
                 0,
                 small,
                 FontWeight::MEDIUM,
-                c.throttle,
-                || "THR".into(),
+                c.muted,
+                || "Throttle".into(),
                 window,
             );
-            let at = point(legend_x(line), origin.y + px(72.0 * s) - small * 0.6);
+            let at = point(legend_x, origin.y + px((GRAPH[1] + 4.0) * s));
             label::paint(line, at, small * 1.2, window, cx);
             let line = buffers.legend_brake.get(
                 0,
                 small,
                 FontWeight::MEDIUM,
-                c.brake,
-                || "BRK".into(),
+                c.muted,
+                || "Brake".into(),
                 window,
             );
-            let at = point(legend_x(line), origin.y + px(138.0 * s) - small * 0.6);
+            let at = point(
+                legend_x,
+                origin.y + px((GRAPH[1] + SUB_LANE + SUB_GAP + 4.0) * s),
+            );
             label::paint(line, at, small * 1.2, window, cx);
         }
 
-        // Pedals: brake then throttle, filled from the bottom.
-        let pedals = [
-            (
-                sample.primary.brake,
-                sample.reference.and_then(|r| r.brake),
-                c.brake,
-            ),
-            (
-                sample.primary.throttle,
-                sample.reference.and_then(|r| r.throttle),
-                c.throttle,
-            ),
-        ];
-        for (i, (value, reference, color)) in pedals.into_iter().enumerate() {
-            let x = PEDAL_X + i as f32 * PEDAL_STEP;
-            let well = rect(x, GRAPH[1], PEDAL_WIDTH, GRAPH[3]);
+        // Pedal levels, filled from the bottom of each lane.
+        for (top, value, reference) in lanes {
+            let well = rect(PEDAL_X, top, PEDAL_WIDTH, SUB_LANE);
             window.paint_quad(fill(well, c.well).corner_radii(px(2.0 * s)));
-            let inner_h = GRAPH[3] - 4.0;
+            let inner_h = SUB_LANE - 4.0;
             if let Some(value) = value.filter(|v| *v > 0.0) {
                 let h = inner_h * value as f32;
                 window.paint_quad(fill(
-                    rect(x + 2., GRAPH[1] + 2. + inner_h - h, PEDAL_WIDTH - 4., h),
-                    color.opacity(0.9),
+                    rect(PEDAL_X + 2., top + 2. + inner_h - h, PEDAL_WIDTH - 4., h),
+                    c.primary.opacity(0.9),
                 ));
             }
             if let Some(reference) = reference {
-                let y = GRAPH[1] + 2. + inner_h * (1.0 - reference as f32);
+                let y = top + 2. + inner_h * (1.0 - reference as f32);
                 window.paint_quad(fill(
                     Bounds::new(
-                        origin + point(px(x * s), px(y * s - 1.)),
+                        origin + point(px(PEDAL_X * s), px(y * s - 1.)),
                         size(px(PEDAL_WIDTH * s), px(2.)),
                     ),
                     c.reference,
@@ -725,28 +759,16 @@ impl TelemetryHud {
                 window.paint_path(path, c.reference);
             }
             for path in buffers.primary_notch.translated(origin) {
-                window.paint_path(path, c.foreground);
+                window.paint_path(path, c.primary);
             }
         }
 
         // Gear, shift arrow, speed.
-        let gear_delta = sample.gear_delta().unwrap_or(0);
-        let gear_color = match gear_delta.signum() {
-            -1 => c.brake,
-            1 => c.throttle,
-            _ => c.foreground,
-        };
-        let speed_color = match sample.speed_delta() {
-            Some(delta) if delta.abs() > SPEED_TINT_FROM => {
-                let t = ((delta.abs() - SPEED_TINT_FROM) / SPEED_TINT_SPAN).min(1.0) as f32;
-                let target = if delta > 0.0 { c.throttle } else { c.brake };
-                mix(c.foreground, target, t)
-            }
-            _ => c.foreground,
-        };
+        let gear_color = c.foreground;
+        let speed_color = c.foreground;
         let centre_x = origin.x + px(DIAL[0] * s);
         let mut buffers = self.buffers.borrow_mut();
-        let gear_size = px(46.0 * s);
+        let gear_size = px(40.0 * s);
         let gear = sample.primary.gear;
         let line = buffers.gear.get(
             gear.map_or(i64::MIN, i64::from),
@@ -758,11 +780,11 @@ impl TelemetryHud {
         );
         let at = point(
             centre_x - line.width * 0.5,
-            origin.y + px(89.0 * s) - gear_size * 0.62,
+            origin.y + px(80.0 * s) - gear_size * 0.62,
         );
         label::paint(line, at, gear_size * 1.24, window, cx);
         for path in buffers.arrow.translated(origin) {
-            window.paint_path(path, gear_color);
+            window.paint_path(path, c.reference);
         }
 
         let unit_size = TypeStep::Caption.size(window).max(px(13.0 * s));
@@ -776,7 +798,7 @@ impl TelemetryHud {
         );
         let at = point(
             centre_x - line.width * 0.5,
-            origin.y + px(144.0 * s) - unit_size * 0.6,
+            origin.y + px(140.0 * s) - unit_size * 0.6,
         );
         label::paint(line, at, unit_size * 1.2, window, cx);
 
@@ -795,9 +817,34 @@ impl TelemetryHud {
         );
         let at = point(
             centre_x - line.width * 0.5,
-            origin.y + px(120.0 * s) - speed_size * 0.6,
+            origin.y + px(118.0 * s) - speed_size * 0.6,
         );
         label::paint(line, at, speed_size * 1.2, window, cx);
+
+        // The speed delta, a Δ value: gain/loss colour.
+        if let Some(delta) = sample
+            .speed_delta()
+            .filter(|d| d.is_finite() && d.abs() >= SPEED_DELTA_FROM)
+        {
+            let rounded = delta.round() as i64;
+            let color = if delta > 0.0 { c.gain } else { c.loss };
+            let line = buffers.speed_delta.get(
+                rounded,
+                unit_size,
+                FontWeight::NORMAL,
+                color,
+                || {
+                    let sign = if rounded < 0 { MINUS } else { '+' };
+                    SharedString::from(format!("{sign}{}", rounded.unsigned_abs()))
+                },
+                window,
+            );
+            let at = point(
+                centre_x - line.width * 0.5,
+                origin.y + px(160.0 * s) - unit_size * 0.6,
+            );
+            label::paint(line, at, unit_size * 1.2, window, cx);
+        }
 
         // Gap bar.
         if let Some(gap) = self.gap {
@@ -852,17 +899,11 @@ impl TelemetryHud {
     }
 }
 
-/// Linear mix in RGB (never a hue interpolation, which crosses hues).
-fn mix(from: Hsla, to: Hsla, t: f32) -> Hsla {
-    let (a, b) = (from.to_rgb(), to.to_rgb());
-    let lerp = |x: f32, y: f32| x + (y - x) * t;
-    gpui_kit::Rgba {
-        r: lerp(a.r, b.r),
-        g: lerp(a.g, b.g),
-        b: lerp(a.b, b.b),
-        a: lerp(a.a, b.a),
-    }
-    .into()
+/// The lap fraction at the progress window's left edge: the playhead at
+/// `marker` of the window, clamped so the window stays inside the lap (the
+/// playhead then moves across it at the lap's start and end).
+pub fn window_start(fraction: f64, marker: f64) -> f64 {
+    (fraction - marker * WINDOW_FRACTION).clamp(0.0, 1.0 - WINDOW_FRACTION)
 }
 
 /// `+0.23` / `−0.23` (two decimals, the broadcast delta).
@@ -949,6 +990,16 @@ mod tests {
         assert_eq!(sample.gear_delta(), Some(1));
         assert!((sample.speed_delta().unwrap() - 6.0).abs() < 1e-9);
         assert_eq!(sample.reference.unwrap().steering, Some(-90.0));
+    }
+
+    #[test]
+    fn the_window_stays_inside_the_lap() {
+        // Mid-lap: the playhead at the marker.
+        assert!((window_start(0.5, MARKER) - (0.5 - MARKER * WINDOW_FRACTION)).abs() < 1e-12);
+        // Lap start: the window starts at 0, the playhead moves right.
+        assert_eq!(window_start(0.01, MARKER), 0.0);
+        // Lap end: the window ends at 1.
+        assert!((window_start(0.999, CONTINUOUS_MARKER) - (1.0 - WINDOW_FRACTION)).abs() < 1e-12);
     }
 
     #[test]

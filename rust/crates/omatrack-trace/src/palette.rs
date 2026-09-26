@@ -8,15 +8,15 @@
 //! premultiplied blending, and an opaque stroke cannot double-blend at a
 //! folded join.
 //!
-//! Channel hues identify a channel that shares a lane with another
-//! (throttle/brake) and mark that channel's primary lap. They come only from the chart tokens (`speed`/`throttle`
-//! `chart_2`, `brake` `chart_4`, `steering` `chart_5`, others hashed over
-//! `chart_1..5`), never from a role token: a red brake would read as Δ loss,
-//! an amber steering as the reference lap. The lane's root channel keeps the
-//! role colours, and every reference line (root or shared) stays in the
-//! reference role, so the reference lap reads the same everywhere. `channels.<key>.color`
-//! and `reference_color` overrides (user data, carried by [`LaneStyle`])
-//! win over both.
+//! A channel that shares a lane with another (brake under throttle) stays
+//! in the role colours too, one step quieter: the primary lap in a deeper
+//! shade of the primary hue, the reference in a quieter reference. Colour
+//! therefore always answers "which lap"; which channel is told by the
+//! lane's legend and the line's shade, never by a third hue that means
+//! neither lap (and never by a gain/loss colour: a red brake would read as
+//! Δ loss). [`TracePalette::channel_hue`] (the chart tokens) is kept for
+//! user-coloured overlays. `channels.<key>.color` and `reference_color`
+//! overrides (user data, carried by [`LaneStyle`]) win over both.
 //!
 //! Geometry caches never key on colour: a theme change only repaints.
 
@@ -27,7 +27,10 @@ use crate::scene::LaneStyle;
 
 /// Strength of a shared-lane channel's reference line against the lane
 /// root's (full) reference colour.
-const SHARED_REFERENCE_ALPHA: f32 = 0.7;
+const SHARED_REFERENCE_ALPHA: f32 = 0.6;
+/// Strength of a shared-lane channel's primary line against the lane root's
+/// (full) primary colour.
+const SHARED_PRIMARY_ALPHA: f32 = 0.6;
 
 /// Resolved colours of one trace frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -82,14 +85,16 @@ impl TracePalette {
             grid_strong: opaque(theme.border),
             zero: opaque(theme.muted_foreground.opacity(0.55)),
             label: theme.muted_foreground,
-            cursor: theme.foreground,
+            // The cursor is chrome, not data: never as loud as a lap.
+            cursor: opaque(theme.foreground.opacity(0.7)),
             hover: theme.muted_foreground.opacity(0.9),
             selection: theme.primary.opacity(0.14),
             corner_band: theme.foreground.opacity(0.035),
             corner_edge: theme.muted_foreground.opacity(0.2),
             mask: background.opacity(0.62),
             dim: background.opacity(0.6),
-            delta_line: opaque(theme.foreground.opacity(0.85)),
+            // Neutral: the Δ is neither lap; gain and loss colour its fill.
+            delta_line: opaque(theme.muted_foreground),
             chart: [
                 opaque(theme.chart_1),
                 opaque(theme.chart_2),
@@ -116,17 +121,18 @@ impl TracePalette {
     }
 
     /// Primary and reference stroke colours of a channel. `root` is whether
-    /// the channel owns its lane (see the module docs).
-    pub fn channel_colors(&self, key: &str, root: bool, style: &LaneStyle) -> (Hsla, Hsla) {
+    /// the channel owns its lane (see the module docs); the key is kept for
+    /// callers that colour by channel.
+    pub fn channel_colors(&self, _key: &str, root: bool, style: &LaneStyle) -> (Hsla, Hsla) {
         let (primary, reference) = if root {
             (self.primary, self.reference)
         } else {
-            // The channel hue marks the primary lap; the reference stays in
-            // the reference role, a step quieter than the lane root's so the
-            // two reference lines remain tellable apart. Never a hue mix: it
-            // interpolates hue (blue and amber made green).
+            // Both laps keep their role hue, a step quieter than the lane
+            // root's so the two lines of one lap remain tellable apart. Never
+            // a hue mix: it interpolates hue (blue and amber made green).
             (
-                self.channel_hue(key),
+                self.background
+                    .blend(self.primary.opacity(SHARED_PRIMARY_ALPHA)),
                 self.background
                     .blend(self.reference.opacity(SHARED_REFERENCE_ALPHA)),
             )
@@ -161,9 +167,10 @@ mod tests {
             palette.channel_colors("speed", true, &style),
             (palette.primary, palette.reference)
         );
-        // A shared-lane channel never borrows a role colour.
+        // A shared-lane channel keeps the primary hue, quieter, and never
+        // takes a gain/loss colour.
         let brake = palette.channel_colors("brake", false, &style).0;
-        assert_eq!(brake, palette.chart[3]);
+        assert!((brake.h - palette.primary.h).abs() < 0.02 || palette.primary.s < 0.05);
         for role in [
             palette.gain,
             palette.loss,
