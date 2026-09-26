@@ -116,15 +116,6 @@ fn layout_action(layout: ComposeLayout) -> Box<dyn Action> {
     }
 }
 
-/// The pane the HUD lives in: the large one. It reads the primary lap, so
-/// it sits on the primary video unless the reference fills the stage.
-pub fn hud_pane(layout: ComposeLayout) -> Role {
-    match layout {
-        ComposeLayout::ReferenceWithPrimaryInset | ComposeLayout::ReferenceOnly => Role::Reference,
-        _ => Role::Primary,
-    }
-}
-
 /// Where a pane's picture frame sits.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PaneAlign {
@@ -136,8 +127,8 @@ enum PaneAlign {
 /// A pane's role in the composition.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PanePlace {
-    /// A pane filling its part of the stage; `hud` when it carries the HUD.
-    Main { hud: bool, align: PaneAlign },
+    /// A pane filling its part of the stage.
+    Main { align: PaneAlign },
     /// The small picture-in-picture pane.
     Inset,
 }
@@ -709,6 +700,9 @@ impl VideoPanel {
             .child(divider())
             .child(compose)
             .child(div().flex_1().min_w_2())
+            // The Δ readout rides in the bar, never over the pictures'
+            // burned-in timers and dashboards.
+            .child(self.overlay.clone())
             .child(self.render_status(cx))
             .child(divider())
             .child(self.render_fullscreen_button())
@@ -1010,8 +1004,8 @@ impl VideoPanel {
         };
         let theme = cx.theme();
         let aspect = self.picture_aspect(role, cx);
-        let (hud, align) = match place {
-            PanePlace::Main { hud, align } => (hud, align),
+        let align = match place {
+            PanePlace::Main { align } => align,
             PanePlace::Inset => {
                 return div()
                     .id(id)
@@ -1043,8 +1037,7 @@ impl VideoPanel {
             .aspect_ratio(aspect)
             .when_some(view, |this, view| this.child(view))
             .children(self.render_caption(role, false, cx))
-            .children(inset)
-            .when(hud, |this| this.child(self.overlay.clone()));
+            .children(inset);
         div()
             .id(id)
             .test_support()
@@ -1068,7 +1061,6 @@ impl VideoPanel {
     fn render_stage(&self, window: &Window, cx: &App) -> AnyElement {
         let video = self.app.video.read(cx);
         let layout = video.layout().effective(video.is_dual());
-        let hud = hud_pane(layout);
         let theme = cx.theme();
         let single = |role: Role, inset: Option<Role>| {
             let inset = inset.map(|inset| {
@@ -1076,7 +1068,6 @@ impl VideoPanel {
                     .into_any_element()
             });
             let place = PanePlace::Main {
-                hud: hud == role,
                 align: PaneAlign::Center,
             };
             div()
@@ -1084,10 +1075,7 @@ impl VideoPanel {
                 .child(self.render_pane(role, place, inset, cx))
         };
         let split_half = |role: Role, align: PaneAlign| {
-            let place = PanePlace::Main {
-                hud: hud == role,
-                align,
-            };
+            let place = PanePlace::Main { align };
             div()
                 .flex_1()
                 .min_w_0()
@@ -1368,8 +1356,8 @@ fn sync_label(state: SyncState) -> &'static str {
         SyncState::Wait => "waiting",
         SyncState::NoMap => "not aligned",
         SyncState::Aligning => "aligning",
-        SyncState::Locked => "locked",
-        SyncState::Best => "best effort",
+        SyncState::Locked => "in sync",
+        SyncState::Best => "nearest frame",
         SyncState::RealTime => "1×",
         SyncState::Gps => "GPS",
         SyncState::Corner => "corner",

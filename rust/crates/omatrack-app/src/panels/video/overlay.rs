@@ -1,8 +1,8 @@
 //! What is drawn over the videos.
 //!
-//! - Docked: the slim telemetry card ([`VideoHud`]: speed, gear, Δ at the
-//!   cursor, and the gap bar when both GPS fixes are better than 1 m),
-//!   placed inside the large video pane.
+//! - Docked: the Δ at the cursor, the speed difference and (when both GPS
+//!   fixes are better than 1 m) the along-track gap, inline in the video
+//!   bar, never over the pictures' burned-in timers and dashboards.
 //! - Fullscreen stage ([`StageOverlay`]): the broadcast telemetry band
 //!   ([`TelemetryHud`], port of the Qt `VideoTelemetryHud`), draggable over
 //!   the whole stage, and the live delta bar at the top (port of
@@ -17,9 +17,9 @@
 //! frame to frame; its per-selection scales are built once
 //! ([`TelemetryHudData`]) and kept while the laps stay the same.
 //!
-//! `video.hud_position` is the one stored HUD placement (normalized in the
-//! space the HUD can reach, so it survives resizes); both presentations
-//! read it and write it once, at drag end.
+//! `video.hud_position` is the band's stored placement on the stage
+//! (normalized in the space it can reach, so it survives resizes), written
+//! once, at drag end.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -38,8 +38,8 @@ use omatrack_core::monotonic::interpolate_fraction;
 use omatrack_core::unify::UnifiedLap;
 use omatrack_trace::telemetry_hud::{self, format_live_delta};
 use omatrack_trace::{TelemetryHud, TelemetryHudBuffers, TelemetryHudColors, TelemetryHudData};
+use omatrack_ui::LapRole;
 use omatrack_ui::TypeScale as _;
-use omatrack_ui::{HudPosition, LapRole, VideoHud};
 
 use super::stage;
 use crate::state::AppState;
@@ -253,32 +253,72 @@ impl VideoOverlay {
             .map(|(x, y)| (x as f32, y as f32))
     }
 
+    /// Docked: the Δ at the cursor and the speed difference, inline in the
+    /// video bar, never over the pictures (they carry burned-in timers and
+    /// dashboards; speed and gear are already in the traces).
     fn render_docked(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let readout = self.readout(cx);
+        let Some(readout) = self.readout(cx).filter(|r| r.delta.is_some()) else {
+            return div().into_any_element();
+        };
         let approximate = self.approximate(cx);
-        let position = self
-            .stored_position(cx)
-            .map(|(x, y)| HudPosition::new(x, y))
-            .unwrap_or_default();
-        let video = self.app.video.clone();
-        div()
-            .absolute()
-            .inset_0()
-            .when_some(readout, |this, readout| {
-                this.child(
-                    VideoHud::new("video-hud")
-                        .speed(readout.speed)
-                        .gear(readout.gear)
-                        .delta(readout.delta)
+        let theme = cx.theme();
+        let mut spoken = match readout.delta {
+            Some(delta) if approximate => format!("Delta approximately {delta:+.2} s"),
+            Some(delta) => format!("Delta {delta:+.3} s"),
+            None => String::new(),
+        };
+        if let Some(dv) = readout.speed_delta {
+            spoken.push_str(&format!(", speed {dv:+.0} km/h"));
+        }
+        if let Some(gap) = readout.gap {
+            spoken.push_str(&format!(", gap {}", omatrack_ui::format_gap(gap)));
+        }
+        let caption = |text: SharedString| {
+            div()
+                .text_caption()
+                .text_color(theme.muted_foreground)
+                .child(text)
+        };
+        let speed_delta = readout.speed_delta.map(|dv| {
+            let (label, color) = if dv.abs() < 0.5 {
+                ("±0".to_string(), theme.foreground)
+            } else if dv > 0. {
+                (format!("+{dv:.0}"), theme.success)
+            } else {
+                (format!("−{:.0}", dv.abs()), theme.danger)
+            };
+            h_flex()
+                .items_baseline()
+                .gap_1()
+                .child(div().numeric().text_color(color).child(label))
+                .child(caption("km/h".into()))
+        });
+        let gap = readout.gap.map(|gap| {
+            div()
+                .numeric()
+                .text_color(theme.warning)
+                .child(omatrack_ui::format_gap(gap))
+        });
+        h_flex()
+            .id("video-hud-card")
+            .role(Role::Status)
+            .aria_label(SharedString::from(spoken))
+            .test_support()
+            .flex_shrink_0()
+            .items_baseline()
+            .gap_2()
+            .px_2()
+            .child(caption("Δ".into()))
+            .child(
+                div().text_label().font_semibold().child(
+                    omatrack_ui::DeltaText::new(readout.delta)
+                        .decimals(if approximate { 2 } else { 3 })
                         .approximate(approximate)
-                        .gap(readout.gap)
-                        .position(position)
-                        .on_moved(move |position, _, cx| {
-                            let (x, y) = (f64::from(position.x), f64::from(position.y));
-                            video.update(cx, |video, cx| video.set_hud_position(x, y, cx));
-                        }),
-                )
-            })
+                        .unit("s"),
+                ),
+            )
+            .children(speed_delta)
+            .children(gap)
             .into_any_element()
     }
 

@@ -482,88 +482,13 @@ fn the_cursor_follows_the_mock_clock_and_leaves_the_static_traces_alone(cx: &mut
         "per-lap playback never moves the viewport"
     );
 
-    // The HUD reads the lap at the cursor.
+    // The docked Δ readout needs a comparison (the mock has none) and
+    // never sits over a picture.
     cx.update_window(mock.handle, |_, window, cx| {
         window.render_frame(cx);
-        let hud = window.find("video-hud-card").label().unwrap().to_string();
-        assert!(hud.starts_with("Speed "), "{hud}");
-        assert!(hud.contains("km/h"), "{hud}");
+        assert!(window.try_find("video-hud-card").is_none());
     })
     .unwrap();
-
-    // Dragging the HUD persists its placement (`video.hud_position`) once,
-    // at drag end.
-    assert_eq!(cx.update(|cx| mock.video().read(cx).hud_position(cx)), None);
-    let (card, frame) = cx
-        .update_window(mock.handle, |_, window, _| {
-            (
-                window.find("video-hud-card").bounds(),
-                window.find("primary-video-frame").bounds(),
-            )
-        })
-        .unwrap();
-    // By default the card sits on the primary picture's bottom-left corner,
-    // wholly inside it (never across a seam).
-    assert!(frame.contains(&card.origin), "{card:?} in {frame:?}");
-    assert!(
-        frame.contains(&card.bottom_right()),
-        "{card:?} in {frame:?}"
-    );
-    assert!(
-        card.left() - frame.left() < px(20.),
-        "{card:?} in {frame:?}"
-    );
-    assert!(
-        frame.bottom() - card.bottom() < px(20.),
-        "{card:?} in {frame:?}"
-    );
-    let grab = card.center();
-    let target = point(frame.center().x, frame.top() + card.size.height);
-    pointer(
-        cx,
-        mock.handle,
-        MouseDownEvent {
-            button: MouseButton::Left,
-            position: grab,
-            modifiers: Modifiers::default(),
-            click_count: 1,
-            first_mouse: false,
-        }
-        .to_platform_input(),
-    );
-    for at in [grab + point(px(0.), px(-20.)), target] {
-        pointer(
-            cx,
-            mock.handle,
-            MouseMoveEvent {
-                position: at,
-                pressed_button: Some(MouseButton::Left),
-                modifiers: Modifiers::default(),
-            }
-            .to_platform_input(),
-        );
-    }
-    assert_eq!(
-        cx.update(|cx| mock.video().read(cx).hud_position(cx)),
-        None,
-        "nothing is written while dragging"
-    );
-    pointer(
-        cx,
-        mock.handle,
-        MouseUpEvent {
-            button: MouseButton::Left,
-            position: target,
-            modifiers: Modifiers::default(),
-            click_count: 1,
-        }
-        .to_platform_input(),
-    );
-    let (x, y) = cx
-        .update(|cx| mock.video().read(cx).hud_position(cx))
-        .expect("the drag end is persisted");
-    assert!((x - 0.5).abs() < 0.05, "{x}");
-    assert!(y < 0.5, "moved up: {y}");
 
     // Pausing stops the pull.
     let video = mock.video();
@@ -761,6 +686,47 @@ fn enter_stage(
 }
 
 #[gpui_kit::test]
+fn the_stage_stays_up_through_the_keys_that_follow_it(cx: &mut TestAppContext) {
+    let mock = mock(cx, 2);
+    select_pair(&mock, cx);
+    // Ctrl+3 focuses the video panel, f opens the stage; then the keys a
+    // user presses on the stage must act on it, never close it.
+    for key in ["ctrl-3", "f"] {
+        cx.update_window(mock.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(key, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+    let on_stage = |cx: &mut TestAppContext| {
+        cx.update(|cx| mock.test.workspace.read(cx).is_video_fullscreen())
+    };
+    assert!(on_stage(cx), "f opens the stage");
+    for key in [
+        "2", "right", "left", "space", "space", "m", "m", "1", "s", "s",
+    ] {
+        cx.update_window(mock.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(key, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(on_stage(cx), "the stage survives {key}");
+        cx.update_window(mock.handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("video-fullscreen").is_some(), "{key}");
+        })
+        .unwrap();
+    }
+    assert_eq!(
+        cx.update(|cx| mock.video().read(cx).layout()),
+        ComposeLayout::Split,
+        "layout keys act on the stage"
+    );
+}
+
+#[gpui_kit::test]
 fn the_stage_controls_hide_after_two_idle_seconds_and_come_back_on_input(cx: &mut TestAppContext) {
     use omatrack_app::panels::video::CONTROLS_HIDE_AFTER;
     let mock = mock(cx, 2);
@@ -812,10 +778,9 @@ fn the_stage_controls_hide_after_two_idle_seconds_and_come_back_on_input(cx: &mu
 #[gpui_kit::test]
 fn the_telemetry_band_shows_only_on_the_stage_and_its_drag_end_persists(cx: &mut TestAppContext) {
     let mock = mock(cx, 2);
-    // Docked: the slim HUD card, never the band.
+    // Docked: never the band.
     cx.update_window(mock.handle, |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.try_find("video-hud-card").is_some());
         assert!(window.try_find("video-telemetry-hud").is_none());
     })
     .unwrap();
@@ -967,9 +932,7 @@ fn the_transport_bar_sets_rate_and_playback_mode_and_shows_the_composition(
             window.find("video-stage").label(),
             Some("Video, Primary only")
         );
-        let frame = window.find("primary-video-frame").bounds();
-        let card = window.find("video-hud-card").bounds();
-        assert!(frame.contains(&card.origin) && frame.contains(&card.bottom_right()));
+        assert!(window.try_find("video-hud-card").is_none());
     })
     .unwrap();
 }
