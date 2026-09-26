@@ -1,8 +1,9 @@
 //! The cursor overlay and pointer surface of a trace stack.
 //!
 //! Everything that moves with the pointer or the playhead lives here and
-//! nowhere else: corner zones (so corner drags never touch the static
-//! layer), focus dimming, the selection band, the hover line, the cursor
+//! nowhere else: the corner zones while they are edited (so corner drags
+//! never touch the static layer; otherwise the static layer shades them
+//! behind the traces), focus dimming, the selection band, the hover line, the cursor
 //! line and its crosshair dots, and the overflow scroll indicator. It is a
 //! handful of quads per frame, rebuilt with the stack whenever
 //! [`crate::state::CursorState`] changes.
@@ -200,16 +201,17 @@ impl TraceOverlay {
             }
         };
 
-        // Corner zones: a quiet tint through every lane, a pixel short of
-        // the zone end so neighbours read as separate; edges only as grips
-        // while editing.
-        for corner in self.corners.iter() {
-            let (x1, x2) = (x_for(corner.start), x_for(corner.end));
-            if x2 <= 0.0 || x1 >= width {
-                continue;
-            }
-            column(window, x1, (x2 - 1.0).max(x1 + 1.0), palette.corner_band);
-            if self.editing_corners {
+        // Corner zones shade the static layer, behind the traces. While
+        // they are edited the static layer drops them and the draft is
+        // drawn here, a pixel short of each zone end so neighbours read as
+        // separate, with its edges as grips.
+        if self.editing_corners {
+            for corner in self.corners.iter() {
+                let (x1, x2) = (x_for(corner.start), x_for(corner.end));
+                if x2 <= 0.0 || x1 >= width {
+                    continue;
+                }
+                column(window, x1, (x2 - 1.0).max(x1 + 1.0), palette.corner_band);
                 vline(window, x1, palette.reference);
                 vline(window, x2, palette.reference);
             }

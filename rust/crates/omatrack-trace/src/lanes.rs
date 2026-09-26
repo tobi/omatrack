@@ -447,7 +447,7 @@ impl ChannelGeometry {
             }
             stroke(
                 stepped(&scratch.points, step, &mut scratch.step),
-                width,
+                width * REFERENCE_STROKE_SCALE,
                 &mut self.reference,
             );
         }
@@ -542,6 +542,10 @@ impl ChannelGeometry {
         ]
     }
 }
+
+/// The reference lap's stroke width as a share of the primary's: the
+/// primary is the lap under study and reads first, in either colour mode.
+pub const REFERENCE_STROKE_SCALE: f64 = 0.75;
 
 /// Stroke width of one session lap line (Consistency view), logical
 /// pixels: thinner than any lane stroke, context rather than data.

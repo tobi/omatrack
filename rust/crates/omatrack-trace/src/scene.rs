@@ -229,6 +229,9 @@ pub struct EventMark {
     pub fraction: f64,
     /// Hover label (`Brake · 1,234 m`).
     pub label: SharedString,
+    /// Short label drawn beside the tick when it fits (`T5`, `↓3`,
+    /// `+12 m`); the hover label carries the rest.
+    pub tag: Option<SharedString>,
 }
 
 impl EventMark {
@@ -245,7 +248,14 @@ impl EventMark {
             reference,
             fraction,
             label: label.into(),
+            tag: None,
         }
+    }
+
+    /// With a short label beside the tick (see [`Self::tag`]).
+    pub fn with_tag(mut self, tag: Option<SharedString>) -> Self {
+        self.tag = tag;
+        self
     }
 }
 

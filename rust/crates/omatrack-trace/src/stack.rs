@@ -50,7 +50,9 @@ use crate::interaction::{
     CornerSpan, Effect, Effects, GestureCursor, Interaction, InteractionContext, KeyModifiers,
     PointerButton, WheelDelta,
 };
-use crate::layout::{GAP_LANE_MIN_HEIGHT, LaneLayout, LaneSizing, LayoutMode, layout_lanes};
+use crate::layout::{
+    GAP_LANE_MIN_HEIGHT, LaneLayout, LaneSizing, LayoutMode, STEP_LANE_MIN_HEIGHT, layout_lanes,
+};
 use crate::overlay::TraceOverlay;
 use crate::palette::{APPROXIMATE_DELTA_EMPHASIS, ColorMode, TracePalette};
 use crate::scale::{Tick, Viewport, XAxis, axis_ticks};
@@ -281,6 +283,10 @@ impl TraceStack {
         if self.editing_corners != editing {
             self.editing_corners = editing;
             self.interaction.cancel();
+            // The draft zones move with the pointer: the overlay draws them
+            // while the committed ones leave the static layer.
+            self.static_view
+                .update(cx, |view, cx| view.set_corner_bands(!editing, cx));
             cx.notify();
         }
     }
@@ -408,6 +414,9 @@ impl TraceStack {
                 sizing.visible = sizing.visible && lane.primary.len() >= 2;
                 if lane.kind == LaneKind::Delta {
                     sizing.min_height = sizing.min_height.max(GAP_LANE_MIN_HEIGHT);
+                }
+                if lane.kind == LaneKind::Step {
+                    sizing.min_height = sizing.min_height.max(STEP_LANE_MIN_HEIGHT);
                 }
                 sizing
             })

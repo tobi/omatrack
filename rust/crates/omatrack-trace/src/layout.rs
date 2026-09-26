@@ -22,6 +22,10 @@ pub const MIN_LANE_HEIGHT: f64 = 44.0;
 /// and its curve is the lap's verdict, so it reads at 1.5 lanes.
 pub const GAP_LANE_MIN_HEIGHT: f64 = 1.5 * MIN_LANE_HEIGHT;
 
+/// A step lane's minimum (gear): its two-line legend (the large figure)
+/// and three whole-gear ticks (2 / 4 / 6), taken from the taller lanes.
+pub const STEP_LANE_MIN_HEIGHT: f64 = 64.0;
+
 /// Default height share of a channel's lane, percent of the trace area,
 /// unless `channels.<key>.height_percent` is configured. In FIT these are the
 /// relative weights: speed leads, the pedals and Δ are first-class lanes, a

@@ -38,7 +38,9 @@ const SHARED_REFERENCE_ALPHA: f32 = 0.6;
 const SHARED_PRIMARY_ALPHA: f32 = 0.6;
 /// Strength of the reference lap's line against its channel hue in
 /// [`ColorMode::Channel`]: the same hue, clearly the quieter of the two.
-pub const CHANNEL_REFERENCE_ALPHA: f32 = 0.5;
+pub const CHANNEL_REFERENCE_ALPHA: f32 = 0.4;
+/// Alpha of the corner zone columns (the `muted` token) behind the traces.
+pub const CORNER_BAND_ALPHA: f32 = 0.45;
 /// Opacity of the gain/loss colours on an approximate (LOW confidence)
 /// Δ: still a reading, not a verdict.
 pub(crate) const APPROXIMATE_DELTA_EMPHASIS: f32 = 0.6;
@@ -120,6 +122,16 @@ pub struct TracePalette {
     pub yellow: Hsla,
 }
 
+/// Whether two colours read as one hue (both saturated, hues within
+/// [`SAME_HUE`]).
+fn same_hue(a: Hsla, b: Hsla) -> bool {
+    let distance = (a.h - b.h).abs();
+    a.s > 0.2 && b.s > 0.2 && distance.min(1.0 - distance) < SAME_HUE
+}
+
+/// Hue distance (0–1 turn) under which two colours read as the same hue.
+const SAME_HUE: f32 = 0.04;
+
 impl TracePalette {
     /// Lap colours from `theme`; see [`Self::with_mode`].
     pub fn from_theme(theme: &Theme) -> Self {
@@ -142,9 +154,9 @@ impl TracePalette {
             cursor: opaque(theme.foreground.opacity(0.7)),
             hover: theme.muted_foreground.opacity(0.9),
             selection: theme.primary.opacity(0.14),
-            // The muted surface token at low alpha: a zone reads as a
-            // quiet column, never as data.
-            corner_band: theme.muted.opacity(0.5),
+            // The muted surface token at low alpha, behind the traces: a
+            // zone reads as a quiet column, never as data.
+            corner_band: theme.muted.opacity(CORNER_BAND_ALPHA),
             mask: background.opacity(0.62),
             dim: background.opacity(0.6),
             // Neutral: the Δ is neither lap; gain and loss colour its fill.
@@ -158,7 +170,13 @@ impl TracePalette {
                 opaque(theme.chart_4),
                 opaque(theme.chart_5),
             ],
-            blue: opaque(theme.blue),
+            // Speed's hue must not read as the primary role: where the
+            // theme's blue is the accent, speed takes cyan.
+            blue: opaque(if same_hue(theme.blue, theme.primary) {
+                theme.cyan
+            } else {
+                theme.blue
+            }),
             green: opaque(theme.green),
             red: opaque(theme.red),
             yellow: opaque(theme.yellow),
@@ -309,7 +327,14 @@ mod tests {
         let brake = palette.channel_colors("brake", true, &style);
         let steering = palette.channel_colors("steering", true, &style);
         // The theme's named hues, opaque.
-        assert_eq!(speed.0, theme.background.blend(theme.blue));
+        let speed_hue = if same_hue(theme.blue, theme.primary) {
+            theme.cyan
+        } else {
+            theme.blue
+        };
+        assert_eq!(speed.0, theme.background.blend(speed_hue));
+        // Speed never takes the primary role's colour.
+        assert!(!same_hue(speed.0, palette.primary));
         assert_eq!(throttle.0, theme.background.blend(theme.green));
         assert_eq!(brake.0, theme.background.blend(theme.red));
         assert_eq!(steering.0, theme.background.blend(theme.yellow));

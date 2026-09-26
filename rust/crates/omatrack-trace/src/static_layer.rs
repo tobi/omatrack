@@ -46,14 +46,20 @@ const SPEED_KEY: &str = "speed";
 const VALUE_AXIS_MIN_HEIGHT: f32 = 56.0;
 /// Least spacing of value ticks, logical pixels.
 const VALUE_TICK_SPACING: f32 = 30.0;
+/// Least spacing of a step lane's whole-gear ticks, logical pixels.
+const STEP_TICK_SPACING: f32 = 18.0;
 /// Most value ticks in one lane.
 const VALUE_TICKS_MAX: usize = 5;
 /// Gap between a tick label and the plot's left edge, logical pixels.
 const TICK_LABEL_GAP: f32 = 6.0;
 /// Radius of an apex callout's dot, logical pixels.
-const APEX_DOT_RADIUS: f32 = 2.5;
+const APEX_DOT_RADIUS: f32 = 3.5;
 /// Gap between an apex dot and its label, logical pixels.
 const APEX_LABEL_GAP: f32 = 3.0;
+/// An apex label keeps this far from the plot's sides.
+const APEX_LABEL_INSET: f32 = 4.0;
+/// Samples of the primary across an apex label's width, to keep it clear.
+const APEX_LABEL_PROBES: usize = 6;
 
 /// Decimals of a value-axis figure: as many as its tick `step` needs.
 fn axis_decimals(kind: LaneKind, step: f64) -> usize {
@@ -102,11 +108,30 @@ pub(crate) fn value_ticks(
     let count = ((height / VALUE_TICK_SPACING).floor() as usize).clamp(2, VALUE_TICKS_MAX);
     let mut step = nice_step(span / count as f64);
     if series.kind == LaneKind::Step {
-        step = step.max(1.0).round();
+        // Whole gears, as dense as the lane allows: 2 / 4 / 6 in a short
+        // gear lane, every gear in a tall one.
+        step = [1.0, 2.0, 5.0, 10.0]
+            .into_iter()
+            .find(|step| (span / step) as f32 * STEP_TICK_SPACING <= height)
+            .unwrap_or(10.0);
+    }
+    let ticks_of = |step: f64| {
+        (
+            (range.min * scale / step).ceil() as i64,
+            (range.max * scale / step).floor() as i64,
+        )
+    };
+    // A lane shows at least two ticks where it can (a zoomed Δ lane would
+    // otherwise read a lone `0`): the next smaller 1-2-5 step.
+    for _ in 0..3 {
+        let (first, last) = ticks_of(step);
+        if last > first || series.kind == LaneKind::Step {
+            break;
+        }
+        step = nice_step(step * 0.4);
     }
     let decimals = axis_decimals(series.kind, step);
-    let first = (range.min * scale / step).ceil() as i64;
-    let last = (range.max * scale / step).floor() as i64;
+    let (first, last) = ticks_of(step);
     for n in first..=last.min(first + VALUE_TICKS_MAX as i64) {
         let value = n as f64 * step;
         let label = if n == 0 {
@@ -162,6 +187,9 @@ pub struct TraceStaticView {
     viewport: Entity<ViewportState>,
     color_mode: ColorMode,
     layers: TraceLayers,
+    /// Whether the committed corner zones shade the lanes here (off while
+    /// the zones are edited: the overlay then draws the draft).
+    corner_bands: bool,
     cache: Rc<RefCell<StaticCache>>,
     _viewport_subscription: Subscription,
 }
@@ -182,6 +210,7 @@ impl TraceStaticView {
             viewport,
             color_mode: ColorMode::default(),
             layers: TraceLayers::LAP,
+            corner_bands: true,
             cache: Rc::default(),
             _viewport_subscription: subscription,
         }
@@ -234,6 +263,14 @@ impl TraceStaticView {
         self.layers
     }
 
+    /// Shade the scene's corner zones behind the traces (see the field).
+    pub fn set_corner_bands(&mut self, show: bool, cx: &mut Context<Self>) {
+        if show != self.corner_bands {
+            self.corner_bands = show;
+            cx.notify();
+        }
+    }
+
     pub fn stats(&self) -> StaticStats {
         self.cache.borrow().stats()
     }
@@ -251,6 +288,7 @@ impl Render for TraceStaticView {
             palette: TracePalette::from_theme(cx.theme()).with_mode(self.color_mode),
             numerals: cx.theme().mono_font_family.clone(),
             layers: self.layers,
+            corner_bands: self.corner_bands,
             cache: self.cache.clone(),
         }
     }
@@ -265,6 +303,7 @@ struct StaticLayerElement {
     /// The trace numerals' family (the theme's monospace family).
     numerals: SharedString,
     layers: TraceLayers,
+    corner_bands: bool,
     cache: Rc<RefCell<StaticCache>>,
 }
 
@@ -279,10 +318,15 @@ impl IntoElement for StaticLayerElement {
 pub const SPREAD_BAND_ALPHA: f32 = 0.12;
 /// Emphasis of a session lap line (the label tone over the background).
 pub const SPREAD_LINE_ALPHA: f32 = 0.35;
-/// Event tick: flag size and line alpha, logical pixels. The reference's
-/// ticks are quieter than the primary's.
-pub const EVENT_FLAG_SIZE: f32 = 5.0;
-const EVENT_LINE_ALPHA: f32 = 0.55;
+/// Emphasis of the reference lap in the Consistency view: the session's
+/// laps are the comparison there, and the primary stays the hero.
+pub const CONSISTENCY_REFERENCE_EMPHASIS: f32 = 0.5;
+/// Event tick: its length from the lane edge (the primary's at the top,
+/// the reference's at the bottom) and width, logical pixels.
+pub const EVENT_TICK_LENGTH: f32 = 6.0;
+const EVENT_TICK_WIDTH: f32 = 2.0;
+/// Gap between an event tick and its tag, and between two tags, logical px.
+const EVENT_TAG_GAP: f32 = 3.0;
 const EVENT_REFERENCE_EMPHASIS: f32 = 0.55;
 
 /// The colour of an event tick: the lap's role, the reference quieter,
@@ -297,8 +341,11 @@ pub(crate) fn event_color(palette: &TracePalette, kind: EventMarkKind, reference
     }
 }
 
-/// Ticks of the events on lane `key`: a thin line through the lane and a
-/// small flag at its top (a downshift's at its foot, where gear falls).
+/// Ticks of the events on lane `key`: a short tick down from the lane's top
+/// edge for the primary, up from its bottom edge for the reference (never
+/// a full-height line, which would read as a gridline), and the primary's
+/// short tag beside its tick where it clears the previous tag. The full
+/// label shows on hover (the overlay).
 #[allow(clippy::too_many_arguments)]
 fn paint_event_ticks(
     scene: &TraceScene,
@@ -308,11 +355,16 @@ fn paint_event_ticks(
     width: f32,
     height: f32,
     palette: &TracePalette,
+    numerals: &SharedString,
     window: &mut Window,
+    cx: &mut App,
 ) {
     let events = scene.events();
     let from = events.partition_point(|mark| mark.fraction < viewport.start);
-    let flag = EVENT_FLAG_SIZE.min(height * 0.25);
+    let tick = EVENT_TICK_LENGTH.min(height * 0.25);
+    let tag_size = TypeStep::Caption.size(window);
+    let tag_height = tag_size * 1.2;
+    let mut tag_right = f32::NEG_INFINITY;
     for mark in &events[from..] {
         if mark.fraction > viewport.end {
             break;
@@ -327,32 +379,43 @@ fn paint_event_ticks(
             continue;
         }
         let color = event_color(palette, mark.kind, mark.reference);
-        let emphasis = if mark.reference {
-            EVENT_REFERENCE_EMPHASIS
+        let top = if mark.reference {
+            height - 1.0 - tick
         } else {
             1.0
         };
         window.paint_quad(fill(
             Bounds::new(
-                origin + point(px(x), px(1.)),
-                size(px(1.), px((height - 2.0).max(0.0))),
-            ),
-            palette
-                .background
-                .blend(color.opacity(EVENT_LINE_ALPHA * emphasis)),
-        ));
-        let top = if mark.kind == EventMarkKind::Downshift {
-            height - 1.0 - flag
-        } else {
-            1.0
-        };
-        window.paint_quad(fill(
-            Bounds::new(
-                origin + point(px(x - flag * 0.5 + 0.5), px(top)),
-                size(px(flag), px(flag)),
+                origin + point(px(x - EVENT_TICK_WIDTH * 0.5), px(top)),
+                size(px(EVENT_TICK_WIDTH), px(tick)),
             ),
             color,
         ));
+        let Some(tag) = mark.tag.as_ref().filter(|_| !mark.reference) else {
+            continue;
+        };
+        let tone = if mark.kind == EventMarkKind::Note {
+            palette.foreground
+        } else {
+            palette.label
+        };
+        let line = label::shape_numerals(tag.clone(), numerals, tag_size, &[(0, tone)], window);
+        let left = x + EVENT_TAG_GAP;
+        let right = left + line.width.as_f32();
+        if left < tag_right + EVENT_TAG_GAP
+            || right > width - EVENT_TAG_GAP
+            || height < tick + tag_height.as_f32()
+        {
+            continue;
+        }
+        label::paint(
+            &line,
+            origin + point(px(left), px(1.0)),
+            tag_height,
+            window,
+            cx,
+        );
+        tag_right = right;
     }
 }
 
@@ -506,6 +569,28 @@ impl Element for StaticLayerElement {
             ));
         };
 
+        // Corner zones first, behind the grid and every trace: one quiet
+        // column per zone through all lanes. Touching zones merge into one
+        // column (never a background hairline between them, never a double
+        // tint where they overlap).
+        if self.corner_bands {
+            let mut shaded = f32::NEG_INFINITY;
+            for corner in &self.scene.corners {
+                let left = x_for(corner.start).round().max(shaded).max(0.0);
+                let right = x_for(corner.end).round().min(width);
+                if right > left {
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            origin + point(px(left), px(0.)),
+                            size(px(right - left), px(height)),
+                        ),
+                        palette.corner_band,
+                    ));
+                    shaded = right;
+                }
+            }
+        }
+
         let mut vertices = 0;
         let mut paths = 0;
         let mut apexes = 0;
@@ -618,6 +703,13 @@ impl Element for StaticLayerElement {
                             vertices += spread.vertex_count();
                             paths += spread.path_count();
                         }
+                        let reference = if self.layers.consistency {
+                            palette
+                                .background
+                                .blend(reference.opacity(CONSISTENCY_REFERENCE_EMPHASIS))
+                        } else {
+                            reference
+                        };
                         let mut colors = ChannelColors::new(primary, reference);
                         colors.fill_alpha = style.fill_for(series.kind, &series.key);
                         colors.neighbour = palette.background.blend(primary.opacity(0.5));
@@ -657,7 +749,9 @@ impl Element for StaticLayerElement {
                                     width,
                                     h,
                                     palette,
+                                    &self.numerals,
                                     window,
+                                    cx,
                                 );
                             }
                         }
@@ -762,7 +856,7 @@ impl StaticLayerElement {
                     color,
                 )
                 .corner_radii(px(r))
-                .border_widths(px(1.))
+                .border_widths(px(1.5))
                 .border_color(palette.background),
             );
             painted += 1;
@@ -795,16 +889,39 @@ impl StaticLayerElement {
                 window,
             );
             let label_width = line.width.as_f32();
-            let left = (x - label_width * 0.5).clamp(0.0, (width - label_width).max(0.0));
+            let left = (x - label_width * 0.5).clamp(
+                APEX_LABEL_INSET,
+                (width - label_width - APEX_LABEL_INSET).max(APEX_LABEL_INSET),
+            );
             if left < previous_right + APEX_LABEL_GAP {
                 continue;
             }
-            // Beneath the dot, or above it where the lane ends first.
-            let below = dot_y + r + APEX_LABEL_GAP;
+            // Clear of the primary across the label's whole width: beneath
+            // its lowest point there, or above its highest where the lane
+            // ends first.
+            let (mut lowest, mut highest) = (dot_y, dot_y);
+            for step in 0..=APEX_LABEL_PROBES {
+                let probe_x = left + label_width * step as f32 / APEX_LABEL_PROBES as f32;
+                let fraction = self
+                    .viewport
+                    .fraction_for_x(probe_x as f64, 0.0, width as f64);
+                let value = value_at_fraction(&series.primary, fraction);
+                if value.is_finite() {
+                    let t = ((value - range.min) / range.span()).clamp(0.0, 1.0) as f32;
+                    let probe_y = y + 1.0 + (h - 2.0) * (1.0 - t);
+                    lowest = lowest.max(probe_y);
+                    highest = highest.min(probe_y);
+                }
+            }
+            let below = lowest + r + APEX_LABEL_GAP;
+            let above = highest - r - APEX_LABEL_GAP - lh;
             let label_top = if below + lh <= y + h - 1.0 {
                 below
+            } else if above >= y + 1.0 {
+                above
             } else {
-                (dot_y - r - APEX_LABEL_GAP - lh).max(y + 1.0)
+                // No clear place in this lane: the dot speaks alone.
+                continue;
             };
             label::paint(
                 &line,
@@ -846,6 +963,13 @@ mod tests {
         assert_eq!(
             labels(&steering, YRange::new(-90.0, 90.0), 90.0),
             ["L", "R"]
+        );
+        // The gear lane at its minimum height still reads 2 / 4 / 6.
+        assert_eq!(labels(&gear, YRange::new(0.5, 6.5), 64.0), ["2", "4", "6"]);
+        // A zoomed Δ lane keeps two ticks, its zero among them.
+        assert_eq!(
+            labels(&delta, YRange::new(-0.05, 0.18), 60.0),
+            ["0", "+0.1"]
         );
         // Short lanes carry no axis.
         assert!(labels(&gear, YRange::new(0.5, 6.5), 40.0).is_empty());
