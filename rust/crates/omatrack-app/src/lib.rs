@@ -14,6 +14,7 @@
 //! - [`panels`]: the dock panels.
 //! - [`actions`] and `keymap`: every command and its default keys.
 //! - [`commands`]: the command registry and palette.
+//! - [`sync`]: video sync rules (identity, pacing, lap end, timelines).
 
 pub mod actions;
 mod app;
@@ -21,6 +22,7 @@ pub mod commands;
 mod keymap;
 pub mod panels;
 pub mod state;
+pub mod sync;
 pub mod workspace;
 
 pub use app::{AppOptions, init, init_with, main_window_options, open_main_window, run};

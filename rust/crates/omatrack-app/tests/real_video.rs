@@ -142,3 +142,112 @@ fn real_an_unplayable_video_is_reported(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+/// Stepping to another lap of the bound recording keeps the video bound
+/// (no "no video" flash, no reload of the same file); a lap of another
+/// recording says it is loading until its video binds.
+#[gpui_kit::test]
+#[ignore]
+fn real_stepping_laps_keeps_the_video_bound(cx: &mut TestAppContext) {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use omatrack_app::state::{RoleState, VideoEvent};
+
+    cx.executor().allow_parking();
+    let root = std::env::var("OMATRACK_FIXTURES")
+        .expect("set OMATRACK_FIXTURES to the 26T07_PLM folder of AiM MP4 recordings");
+    let sandbox = common::Sandbox::new();
+    sandbox.write_config(&format!(
+        "locations:\n  - type: folder\n    target: {root}\n"
+    ));
+    let options = sandbox
+        .options()
+        .video(true)
+        .audio_output(Some("null".to_string()));
+    let test = common::start(cx, options);
+    let library = test.app.library.clone();
+    cx.update(|cx| library.update(cx, |library, cx| library.rescan(cx)));
+    cx.run_until_parked();
+    let (run1, run4) = cx.update(|cx| {
+        let snapshot = library.read(cx).snapshot().clone();
+        let find = |run: &str| {
+            snapshot
+                .sessions()
+                .find(|node| node.file_name().contains(run))
+                .cloned()
+                .unwrap_or_else(|| panic!("{run} is in the library"))
+        };
+        (find("Run1"), find("Run4"))
+    });
+    let session = test.app.session.clone();
+    let video = test.app.video.clone();
+    cx.update(|cx| {
+        session.update(cx, |session, cx| {
+            session.set_primary(run1.id.clone().into(), 8, cx)
+        })
+    });
+    cx.run_until_parked();
+    let run1_video = run1.file.path().to_path_buf();
+    assert_eq!(
+        cx.update(|cx| video.read(cx).bound_path().cloned()),
+        Some(run1_video.clone())
+    );
+
+    let source_changes = Rc::new(Cell::new(0));
+    let seen = source_changes.clone();
+    cx.update(|cx| {
+        cx.subscribe(&video, move |_, event, _| {
+            if *event == VideoEvent::SourceChanged {
+                seen.set(seen.get() + 1);
+            }
+        })
+        .detach()
+    });
+
+    // [ : L7 of the same recording. While it loads the video stays.
+    cx.update(|cx| session.update(cx, |session, cx| session.prev_lap(cx)));
+    cx.update(|cx| {
+        let session = session.read(cx);
+        assert!(session.primary().unwrap().is_loading(), "L7 is loading");
+        assert_eq!(video.read(cx).bound_path(), Some(&run1_video));
+    });
+    cx.update_window(test.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find("video-empty").is_none(),
+            "the video stays on screen while the lap loads"
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let slot = session.read(cx).primary().unwrap().clone();
+        assert!(matches!(slot.state(), RoleState::Loaded(_)));
+        assert_eq!(slot.lap_ref().lap(), 7);
+        let video = video.read(cx);
+        assert_eq!(video.bound_path(), Some(&run1_video));
+        assert_eq!(*video.availability(), VideoAvailability::Ready);
+    });
+    assert_eq!(source_changes.get(), 0, "the same file is never reloaded");
+
+    // Another recording: a loading state, never "no onboard video".
+    let run4_best = run4.best_lap_id.unwrap();
+    cx.update(|cx| {
+        session.update(cx, |session, cx| {
+            session.set_primary(run4.id.clone().into(), run4_best, cx)
+        })
+    });
+    cx.update_window(test.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let empty = window.find("video-empty").label().unwrap().to_string();
+        assert!(empty.starts_with("Loading "), "{empty}");
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let video = video.read(cx);
+        assert_eq!(video.bound_path(), Some(&run4.file.path().to_path_buf()));
+        assert_eq!(*video.availability(), VideoAvailability::Ready);
+    });
+}
