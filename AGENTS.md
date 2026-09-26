@@ -91,7 +91,7 @@ crates stay GPUI-free.
 | [omatrack-library](rust/crates/omatrack-library) (no GPUI) | **[done]** | Paths, `omatrack.yml`, `TRACK.yml`, metadata precedence, `Location`, index cache, catalog, recents | Analysis, rendering |
 | [omatrack-trace](rust/crates/omatrack-trace) | **[done]** decimate, scales, layout, mesh, lanes, overlay, `TraceStack`, `trace_bench`, corner ruler, track map, damper strip | Trace math and trace/map/damper elements | Session state, parsing |
 | [mpv-player](rust/crates/mpv-player) | **[done]** | libmpv 2.5 player + `VideoView` (section 9) | Any Omatrack type |
-| [omatrack-ui](rust/crates/omatrack-ui) | **[done]** theme + bundled Inter / Geist Mono, `RoleChip`, `Readout`, `Swatch`, `LapStrip`, `VideoHud`, `DeltaText` | Omarchy loader, domain components on tokens | What the kit provides |
+| [omatrack-ui](rust/crates/omatrack-ui) | **[done]** theme + bundled Inter / Geist Mono, type scale (`TypeScale`, tabular figures), `RoleChip`, `Readout`, `Swatch`, `LapStrip`, `VideoHud`, `DeltaText` | Omarchy loader, domain components on tokens | What the kit provides |
 | [omatrack-app](rust/crates/omatrack-app) (bin `omatrack2`) | **[done]** shell, state, workspace, panels, actions, keymap, `sync` (video), `preferences`, `dialogs` (metadata, `TRACK.yml`); **[plan]** e2e | Entities, workspace, panels, palette, video sync | Analysis, format branches |
 
 Waves: 1 foundations **[done]**; 2 app backbone + domain components **[done]**;
@@ -361,6 +361,12 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
 - **Preferences** writes go through the Preferences entity: debounced, atomic,
   off-thread, flushed on quit.
 - **Primary = active lap, reference = compare lap**, fixed colours everywhere.
+- **Lane legends**: the chrome column is `omatrack_trace::CHROME_REMS` wide
+  (lanes, damper strip and toolbar rows share it). Line 1 is title + unit;
+  below it, P / R / Δ sit in fixed-width tabular columns on the same spines
+  in every lane, with a P R Δ key in the axis row. The Δt lane states
+  `In view` and `Cursor`. A shared lane's title and two rows fit
+  `MIN_LANE_HEIGHT`. Nothing clips (headless-tested).
 
 ## 8. Trace rendering performance contract
 
@@ -437,12 +443,25 @@ dependency.
   No palette: built-in gpui-component dark. `ThemeStatus {name, source}` shows
   in the status bar.
 - Fonts: the desktop fontconfig choice when one is configured and installed,
-  else the bundled Inter (UI) and Geist Mono (numerics), OFL, registered by
+  else the bundled Inter (UI) and Geist Mono (code), OFL, registered by
   `theme::install`; the active families show next to the theme status.
+- Type ([`omatrack_ui::typography`](rust/crates/omatrack-ui/src/typography.rs)):
+  one interface family. Every number is `.numeric()` (Inter `tnum`, tabular
+  figures), never the monospace family, which is kept for paths, file
+  contents and identifiers. Sizes come only from the `TypeScale` steps
+  (caption 11 / label 12 / body 13 / title 14 / heading 16 / display 20 px
+  at the default rem); painted labels use `TypeStep::size` and
+  `tabular_figures()`. Regular for values, medium for row and lane names,
+  semibold only for a surface heading. Displayed negatives use U+2212
+  (`omatrack_ui::MINUS`, via `format_value` / `format_delta`).
 - Roles: primary = `primary` (Omarchy accent); reference = `warning`; gain =
   `success`; loss = `danger`; grid `border`/`muted`; labels
   `muted_foreground`; extra channels `chart_1..5`;
-  `channels.<key>.color`/`reference_color` override.
+  `channels.<key>.color`/`reference_color` override. A channel sharing a
+  lane (brake under throttle) draws its primary in its chart hue and its
+  reference in the reference role (a quieter `warning`, never a hue mix).
+  Legend and inspector values always carry the lap role colour; the chart
+  hue only names the channel.
 - Consumers `observe_global::<Theme>`; a theme change repaints, never rebuilds
   geometry.
 
