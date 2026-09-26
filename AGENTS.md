@@ -410,8 +410,9 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   its key. The traces carry no toolbar; a range selection's statistics
   float at the top right of the lanes.
 - **Corner ruler**: labels only, centred over their zones on two staggered
-  rows by corner index (T1 T3 T5 above, T2 T4 below), one form throughout
-  (full names, else short forms), never overlapping. The focused corner,
+  rows by corner index (T1 T3 T5 above, T2 T4 below), in the short form
+  (`T10A`, as on the map and in the tables) at every width, never
+  overlapping. The focused corner,
   else the one under the cursor, is a filled chip. Complexes that group two
   or more corners are a quiet bracket line above the rows. Zones shade every
   lane as quiet columns (`muted` at low alpha, in the overlay); edges show

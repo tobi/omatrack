@@ -30,7 +30,7 @@ use gpui_kit::{
     SharedString, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, div,
 };
 use omatrack_core::alignment::Strategy;
-use omatrack_core::session::StrategyRequest;
+use omatrack_core::session::{CornerSource, StrategyRequest};
 use omatrack_ui::{DeltaSense, DeltaText, LapRole, TypeScale as _};
 
 use crate::actions::{FocusPanel1, OpenPreferences, SwapRoles, TogglePalette};
@@ -351,7 +351,16 @@ impl Workspace {
         let options = self.sync_options.clone();
         let current = self.sync_current;
         let session = self.app.session.clone();
-        let footnote = summary.clone();
+        // Corners carried over from the reference are a sync matter: the
+        // primary's GPS misses the circuit, so its zones come through the map.
+        let footnote: SharedString = if analysis.corner_source() == CornerSource::Reference {
+            format!(
+                "{summary} Corners are placed through the reference lap: the primary’s GPS misses the circuit."
+            )
+            .into()
+        } else {
+            summary.clone()
+        };
         Some(
             Button::new("header-sync")
                 .small()

@@ -10,10 +10,11 @@
 //! The chip corner, the focused one or else the one under the shared cursor,
 //! is a filled chip in the foreground; a hovered corner brightens.
 //!
-//! Labels never overlap and are never ellipsized. The ruler uses one form:
-//! full names when every visible label fits its row that way, else short
-//! forms (`Turn 10A` → `T10A`) throughout; when two labels of a row would
-//! collide the lower-priority one is dropped. Priority: the chip corner
+//! Labels never overlap and are never ellipsized. The ruler uses one form,
+//! the short one (`Turn 10A` → `T10A`, as on the map, the table and the
+//! palette) at every width and zoom; a corner without a short form keeps
+//! its name. When two labels of a row would collide the lower-priority one
+//! is dropped. Priority: the chip corner
 //! (always labelled), then the hovered one, then wider bands
 //! ([`place_labels`]).
 //!
@@ -418,28 +419,15 @@ const LABEL_GAP: f32 = 6.0;
 ///
 /// Corners alternate rows by index (T1 T3 T5 above, T2 T4 below), so a
 /// label may span its neighbours' bands: it only has to clear the labels of
-/// its own row. One form for the whole ruler: full names when every visible
-/// label fits that way, else short forms (`Turn 10A` → `T10A`) throughout
-/// (mixing `Turn 2` and `T3` reads as two naming schemes). Within a row,
+/// its own row. One form for the whole ruler, the short one (`Turn 10A` →
+/// `T10A`): the same names the map and the tables use, at every width.
+/// Within a row,
 /// candidates go in priority order (higher `priority`, then wider bands),
 /// centred on their visible band and clamped into the ruler; a label that
 /// would come within [`LABEL_GAP`] of one already placed is dropped. The
 /// chip corner (`priority >= 2`) is always placed.
 pub(crate) fn place_labels(candidates: &[LabelCandidate], width: f32) -> Vec<Option<Placement>> {
-    let full = place_in_rows(candidates, width, false);
-    let dropped = |placed: &[Option<Placement>]| {
-        candidates
-            .iter()
-            .zip(placed)
-            .filter(|(c, p)| p.is_none() && c.right > 0.0 && c.left < width)
-            .count()
-    };
-    let lost = dropped(&full);
-    if lost == 0 || candidates.iter().all(|c| c.short.is_none()) {
-        return full;
-    }
-    let short = place_in_rows(candidates, width, true);
-    if dropped(&short) <= lost { short } else { full }
+    place_in_rows(candidates, width, true)
 }
 
 fn place_in_rows(candidates: &[LabelCandidate], width: f32, short: bool) -> Vec<Option<Placement>> {
@@ -941,18 +929,21 @@ mod tests {
             ],
             1000.0,
         );
-        // Full names fit their rows: the row keeps full names, centred.
+        // Short forms even with room for full names, centred.
         assert_eq!(
             placed[0],
             Some(Placement {
-                form: LabelForm::Full,
-                x: 95.0
+                form: LabelForm::Short,
+                x: 107.0
             })
         );
-        assert_eq!(placed[1].map(|p| p.form), Some(LabelForm::Full));
-        assert_eq!(placed[2].map(|p| p.form), Some(LabelForm::Full));
+        assert!(
+            placed
+                .iter()
+                .all(|p| p.map(|p| p.form) == Some(LabelForm::Short))
+        );
 
-        // Too tight for full names on the upper row: short forms throughout.
+        // Tight: short forms throughout.
         let placed = place_labels(
             &[
                 candidate(100.0, 120.0, 40.0, Some(16.0), 0),

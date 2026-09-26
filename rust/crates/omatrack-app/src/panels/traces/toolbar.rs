@@ -164,7 +164,9 @@ impl TracesPanel {
             Some(CornerSource::Atlas) => "Corners · Track Atlas".into(),
             Some(CornerSource::User) => "Corners · edited".into(),
             Some(CornerSource::Generated) => "Corners · from braking".into(),
-            Some(CornerSource::Reference) => "Corners · via reference".into(),
+            // Atlas corners placed through the reference lap; the Sync
+            // menu says why.
+            Some(CornerSource::Reference) => "Corners · Track Atlas".into(),
             Some(CornerSource::Unmatched) => "Corners · GPS off the map".into(),
             None => "Corners".into(),
         };
