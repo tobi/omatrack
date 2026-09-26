@@ -22,6 +22,39 @@ use crate::actions::{CancelEdit, SaveEdit};
 use crate::keymap::TRACE_EDIT_CONTEXT;
 
 impl TracesPanel {
+    /// Why the Consistency view shows no session behind the lap (too few
+    /// timed laps, or still loading), floating at the top left of the lanes
+    /// clear of the legends: a degraded view says so, never draws nothing
+    /// silently.
+    pub(super) fn render_consistency_notice(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement> {
+        let notice = self.consistency_notice(cx)?;
+        let theme = cx.theme();
+        Some(
+            div()
+                .id("trace-consistency-notice")
+                .role(Role::Status)
+                .aria_label(notice.clone())
+                .test_support()
+                .absolute()
+                .top_1()
+                .left(gpui_kit::rems(omatrack_trace::CHROME_REMS + 0.5))
+                .max_w_1_2()
+                .px_2()
+                .py_0p5()
+                .rounded(theme.radius)
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.popover)
+                .text_caption()
+                .text_color(theme.muted_foreground)
+                .truncate()
+                .child(notice),
+        )
+    }
+
     /// The statistics of the range selection, floating at the top right of
     /// the lanes while a range is selected, with its clear button.
     pub(super) fn render_range_stats(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {

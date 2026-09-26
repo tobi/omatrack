@@ -49,14 +49,15 @@ use gpui_kit::{
 use omatrack_core::alignment::Strategy;
 use omatrack_trace::{
     CornerBand, CornerRuler, CornerRulerEvent, DamperStrip, DamperStripData, DamperStripEvent,
-    Selection, TraceEvent, TraceScene, TraceStack,
+    Selection, TraceEvent, TraceLayers, TraceScene, TraceStack,
 };
 
 use crate::actions::{CancelEdit, FocusCorner, ResizeLanes, SaveEdit};
 use crate::commands::{self, CommandCategory, CommandSpec};
 use crate::keymap::TRACE_EDIT_CONTEXT;
 use crate::panels::{PanelKind, analysis_body, simple_panel};
-use crate::state::{AppState, SessionEvent};
+use crate::state::{AppState, SessionEvent, TraceViewEvent, TraceViewMode};
+use omatrack_core::consistency::MIN_SPREAD_LAPS;
 
 pub use edit::{CornerDraft, ResizeDraft};
 pub use scene_build::{DELTA_KEY, DELTA_TITLE};
@@ -142,6 +143,10 @@ impl TracesPanel {
                 if let SessionEvent::AnalysisReady = event {
                     this.request_scene(cx);
                 }
+            }),
+            cx.subscribe(&app.trace_view, |this, _, event, cx| match event {
+                TraceViewEvent::ModeChanged => this.apply_layers(cx),
+                TraceViewEvent::SpreadReady => this.apply_spread(cx),
             }),
             // Loading and failure states, the primary's track.
             cx.observe(&app.session, |_, _, cx| cx.notify()),
@@ -293,9 +298,10 @@ impl TracesPanel {
         {
             self.leave_mode(cx);
         }
-        self.scene = built
-            .as_ref()
-            .map_or_else(|| Arc::new(TraceScene::default()), |b| b.scene.clone());
+        self.scene = built.as_ref().map_or_else(
+            || Arc::new(TraceScene::default()),
+            |built| self.with_spread(built, cx),
+        );
         let damper = built
             .as_ref()
             .and_then(|built| damper_data(&built.analysis));
@@ -316,6 +322,69 @@ impl TracesPanel {
         self.focused_band = None;
         self.on_cursor(cx);
         cx.notify();
+    }
+
+    /// `built`'s scene with the session spread when one lies on its
+    /// primary lap (in any mode: the layer decides what is drawn).
+    fn with_spread(&self, built: &BuiltScene, cx: &App) -> Arc<TraceScene> {
+        let trace_view = self.app.trace_view.read(cx);
+        match trace_view
+            .spread_for(built.analysis.primary())
+            .filter(|spread| spread.consistency().is_meaningful())
+        {
+            Some(spread) => Arc::new(scene_build::with_session_spread(
+                &built.scene,
+                spread.consistency(),
+            )),
+            None => built.scene.clone(),
+        }
+    }
+
+    /// A spread arrived: attach it when it lies on the lap on screen.
+    fn apply_spread(&mut self, cx: &mut Context<Self>) {
+        let Some(built) = &self.built else {
+            return;
+        };
+        let scene = self.with_spread(built, cx);
+        if Arc::ptr_eq(&scene, &self.scene) {
+            cx.notify();
+            return;
+        }
+        self.scene = scene.clone();
+        if let Some(stack) = &self.stack {
+            stack.update(cx, |stack, cx| stack.set_scene(scene, cx));
+        }
+        cx.notify();
+    }
+
+    /// The static layers of the view mode (the stack repaints once).
+    fn apply_layers(&mut self, cx: &mut Context<Self>) {
+        let layers = layers_for(self.app.trace_view.read(cx).mode());
+        if let Some(stack) = &self.stack {
+            stack.update(cx, |stack, cx| stack.set_layers(layers, cx));
+        }
+        cx.notify();
+    }
+
+    /// Why the Consistency view draws no session, when it does not.
+    pub fn consistency_notice(&self, cx: &App) -> Option<SharedString> {
+        let trace_view = self.app.trace_view.read(cx);
+        if trace_view.mode() != TraceViewMode::Consistency {
+            return None;
+        }
+        let built = self.built.as_ref()?;
+        if trace_view.is_loading() {
+            return Some("Loading the session's laps…".into());
+        }
+        let spread = trace_view.spread_for(built.analysis.primary())?;
+        let count = spread.consistency().lap_count();
+        (!spread.consistency().is_meaningful()).then(|| match count {
+            0 => "No other timed laps in this session to compare with".into(),
+            _ => format!(
+                "Only {count} other timed lap in this session: consistency needs {MIN_SPREAD_LAPS}"
+            )
+            .into(),
+        })
     }
 
     /// Lane styles from `channels.<key>`, this session's pins and a resize
@@ -654,6 +723,8 @@ impl TracesPanel {
         let scene = self.scene.clone();
         let (viewport, cursor) = (self.app.viewport.clone(), self.app.cursor.clone());
         let stack = cx.new(|cx| TraceStack::new(scene, viewport, cursor, window, cx));
+        let layers = layers_for(self.app.trace_view.read(cx).mode());
+        stack.update(cx, |stack, cx| stack.set_layers(layers, cx));
         self._view_subscriptions = vec![
             cx.subscribe_in(&stack, window, Self::on_trace_event),
             cx.subscribe_in(
@@ -811,6 +882,7 @@ impl TracesPanel {
                     .flex_1()
                     .min_h_0()
                     .children(stack)
+                    .children(self.render_consistency_notice(cx))
                     .children(self.render_range_stats(cx)),
             );
         div()
@@ -820,6 +892,14 @@ impl TracesPanel {
             .child(card)
             .into_any_element()
     }
+}
+
+/// The static layers each view mode draws.
+pub fn layers_for(mode: TraceViewMode) -> TraceLayers {
+    TraceLayers::NONE
+        .consistency(mode == TraceViewMode::Consistency)
+        .events(mode == TraceViewMode::Events)
+        .apexes(matches!(mode, TraceViewMode::Lap | TraceViewMode::Corners))
 }
 
 /// The band whose zone is `focus` (the workspace focuses by zone bounds).

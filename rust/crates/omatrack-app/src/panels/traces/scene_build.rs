@@ -15,15 +15,19 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui_kit::SharedString;
+use omatrack_core::events::{EventLap, LapEventKind};
 use omatrack_core::overlay::{OverlayChannel, OverlayGroup, STANDARD_CHANNELS, standard_values};
-use omatrack_core::session::{Analysis, LapStripKind, LoadedLap, MarkerKind};
+use omatrack_core::session::{
+    Analysis, Consistency, LapStripKind, LoadedLap, MarkerKind, analysis_events,
+};
 use omatrack_core::{Lap, UnifiedLap};
 use omatrack_library::Config;
 use omatrack_library::config::{ChannelStyle, TraceColorMode};
 use omatrack_trace::layout::{LaneSizing, lane_height_boost};
+use omatrack_trace::scale::format_distance;
 use omatrack_trace::{
-    Apex, ColorMode, ComplexBand, CornerBand, FractionMap, LaneKind, LaneSeries, LaneStyle,
-    LaneStyles, TraceScene,
+    Apex, ColorMode, ComplexBand, CornerBand, EventMark, EventMarkKind, FractionMap, LaneKind,
+    LaneSeries, LaneSpread, LaneStyle, LaneStyles, TraceScene,
 };
 
 /// Key of the cumulative gap lane (the time delta to the reference).
@@ -180,7 +184,8 @@ pub fn build(analysis: Arc<Analysis>, neighbours: Option<Arc<Neighbours>>) -> Bu
     .with_lap_labels(Some(lap_label(primary)), reference.map(lap_label))
     .with_apexes(apexes)
     .with_approximate_delta(crate::workspace::status::analysis_approximate(&analysis))
-    .with_time_share_delta(crate::workspace::status::analysis_time_share(&analysis));
+    .with_time_share_delta(crate::workspace::status::analysis_time_share(&analysis))
+    .with_events(event_marks(&analysis));
     BuiltScene {
         analysis,
         scene: Arc::new(scene),
@@ -217,6 +222,53 @@ fn apexes(analysis: &Analysis) -> Vec<Apex> {
                     row.reference_speeds.map(|speeds| speeds.apex),
                 )
             })
+        })
+        .collect()
+}
+
+/// `scene` with the primary's session spread on every lane the spread
+/// carries (same key, same primary grid). Series are shared, not copied.
+pub fn with_session_spread(scene: &TraceScene, consistency: &Consistency) -> TraceScene {
+    scene.clone().with_spreads(|key| {
+        let channel = consistency.channel(key)?;
+        Some(Arc::new(LaneSpread::new(
+            channel
+                .laps
+                .iter()
+                .map(|(_, series)| series.clone())
+                .collect(),
+            channel.min.clone(),
+            channel.max.clone(),
+        )))
+    })
+}
+
+/// The driving events of both laps as trace marks (drawn in the Events
+/// view): `P · Brake · 1,234 m`, a note as its corner sentence.
+fn event_marks(analysis: &Analysis) -> Vec<EventMark> {
+    analysis_events(analysis)
+        .into_iter()
+        .map(|event| {
+            let reference = event.lap == EventLap::Reference;
+            let kind = match event.kind {
+                LapEventKind::BrakeOnset => EventMarkKind::BrakeOnset,
+                LapEventKind::LiftOff => EventMarkKind::LiftOff,
+                LapEventKind::Upshift => EventMarkKind::Upshift,
+                LapEventKind::Downshift => EventMarkKind::Downshift,
+                _ => EventMarkKind::Note,
+            };
+            let label = if kind == EventMarkKind::Note {
+                event.label.clone()
+            } else {
+                let role = if reference { "R" } else { "P" };
+                let at = if event.distance.is_finite() {
+                    format!(" · {}", format_distance(event.distance, 1.0))
+                } else {
+                    String::new()
+                };
+                format!("{role} · {}{at}", event.label)
+            };
+            EventMark::new(kind, event.kind.channel(), reference, event.fraction, label)
         })
         .collect()
 }

@@ -21,7 +21,8 @@ use gpui_kit::{
 use omatrack_app::actions::{ResizeLanes, Role, SelectLap, ToggleTraceColorMode, ZoomReset};
 use omatrack_app::panels::TraceMode;
 use omatrack_app::panels::traces::{DELTA_KEY, ToggleLane, TracesPanel};
-use omatrack_trace::{TraceStack, Viewport};
+use omatrack_app::state::TraceViewMode;
+use omatrack_trace::{EventMarkKind, TraceStack, Viewport};
 
 const RATE: f64 = 50.0;
 const DURATION: f64 = 90.0;
@@ -1023,4 +1024,130 @@ async fn one_control_row_under_the_video_drives_the_traces(cx: &mut TestAppConte
         assert!(place.contains("straight after"), "{place}");
     })
     .unwrap();
+}
+
+/// Switch the trace view mode and let the pipeline settle.
+async fn set_view_mode(cx: &mut TestAppContext, f: &Fixture, mode: TraceViewMode) {
+    let trace_view = f.test.app.trace_view.clone();
+    cx.update(|cx| trace_view.update(cx, |view, cx| view.set_mode(mode, cx)));
+    cx.run_until_parked();
+    let panel = f.traces.clone();
+    cx.wait_for(f.window, Duration::from_secs(600), move |_, cx| {
+        !trace_view.read(cx).is_loading()
+            && (mode != TraceViewMode::Consistency || panel.read(cx).scene().has_spread())
+    })
+    .await;
+    cx.update_window(f.window, |_, window, cx| draw(window, cx))
+        .unwrap();
+}
+
+#[gpui_kit::test]
+async fn consistency_loads_the_session_once_and_draws_it_behind_the_lap(cx: &mut TestAppContext) {
+    let f = synthetic_pair(cx).await;
+    let trace_view = f.test.app.trace_view.clone();
+    let stack = f.stack(cx);
+    // Lazy: the lap view loads nothing.
+    assert_eq!(cx.update(|cx| trace_view.read(cx).loads_started()), 0);
+    assert!(!cx.update(|cx| f.traces.read(cx).scene().has_spread()));
+
+    set_view_mode(cx, &f, TraceViewMode::Consistency).await;
+    assert_eq!(cx.update(|cx| trace_view.read(cx).loads_started()), 1);
+    let (spread, lanes, layers) = cx.update(|cx| {
+        let consistency = trace_view.read(cx).spread().unwrap().consistency().clone();
+        let scene = f.traces.read(cx).scene().clone();
+        let lanes: Vec<String> = scene
+            .lanes()
+            .iter()
+            .filter(|lane| lane.spread.is_some())
+            .map(|lane| lane.key.to_string())
+            .collect();
+        (consistency, lanes, stack.read(cx).layers())
+    });
+    // Four timed laps in the recording: the three besides the primary.
+    assert_eq!(spread.lap_count(), 3, "{:?}", spread.lap_ids());
+    assert!(spread.is_meaningful());
+    assert!(lanes.iter().any(|key| key == "speed"), "{lanes:?}");
+    assert!(lanes.iter().any(|key| key == "brake"), "{lanes:?}");
+    assert!(!lanes.iter().any(|key| key == DELTA_KEY));
+    assert!(layers.consistency && !layers.events);
+    assert!(
+        cx.update(|cx| f.traces.read(cx).consistency_notice(cx))
+            .is_none()
+    );
+    assert!(!cx.update(|cx| f.test.app.jobs.read(cx).is_busy()));
+    let config = f.config(cx);
+    assert_eq!(config.trace.view_mode(), TraceViewMode::Consistency);
+
+    // Leaving and re-entering the mode reuses the spread of this lap.
+    set_view_mode(cx, &f, TraceViewMode::Lap).await;
+    assert!(!cx.update(|cx| stack.read(cx).layers()).consistency);
+    set_view_mode(cx, &f, TraceViewMode::Consistency).await;
+    assert_eq!(cx.update(|cx| trace_view.read(cx).loads_started()), 1);
+
+    // The cursor never rebuilds geometry with the spread on.
+    let before = cx.update(|cx| stack.read(cx).static_stats(cx));
+    let plot = f.plot(cx);
+    for fx in [0.2, 0.35, 0.5] {
+        mouse(cx, f.window, at(plot, fx, 0.6), None);
+    }
+    let after = cx.update(|cx| stack.read(cx).static_stats(cx));
+    assert_eq!(after.geometry_builds, before.geometry_builds);
+
+    // Another primary lap: one more load, for that lap.
+    cx.update(|cx| {
+        f.test
+            .app
+            .session
+            .update(cx, |session, cx| session.next_lap(cx))
+    });
+    cx.run_until_parked();
+    let session = f.test.app.session.clone();
+    let panel = f.traces.clone();
+    let view = trace_view.clone();
+    cx.wait_for(f.window, Duration::from_secs(600), move |_, cx| {
+        let primary = session
+            .read(cx)
+            .primary()
+            .and_then(|slot| slot.loaded())
+            .cloned();
+        primary.is_some_and(|lap| view.read(cx).spread_for(&lap).is_some())
+            && panel.read(cx).scene().has_spread()
+    })
+    .await;
+    assert_eq!(cx.update(|cx| trace_view.read(cx).loads_started()), 2);
+}
+
+#[gpui_kit::test]
+async fn events_mark_both_laps_on_their_lanes(cx: &mut TestAppContext) {
+    let f = synthetic_pair(cx).await;
+    let stack = f.stack(cx);
+    let events = cx.update(|cx| f.traces.read(cx).scene().events().clone());
+    let on = |channel: &str, reference: bool| {
+        events
+            .iter()
+            .filter(|mark| mark.channel.as_ref() == channel && mark.reference == reference)
+            .count()
+    };
+    // Two braked corners per lap, each lap: onset, lift, down- and upshift.
+    for reference in [false, true] {
+        assert_eq!(on("brake", reference), 2, "brake onsets ({reference})");
+        assert_eq!(on("throttle", reference), 2, "lifts ({reference})");
+        assert!(on("gear", reference) >= 4, "shifts ({reference})");
+    }
+    assert!(events.windows(2).all(|w| w[0].fraction <= w[1].fraction));
+    let brake = events
+        .iter()
+        .find(|mark| mark.kind == EventMarkKind::BrakeOnset && !mark.reference)
+        .unwrap();
+    assert!(brake.label.starts_with("P · Brake · "), "{}", brake.label);
+    assert!(brake.label.ends_with(" m"), "{}", brake.label);
+
+    set_view_mode(cx, &f, TraceViewMode::Events).await;
+    let layers = cx.update(|cx| stack.read(cx).layers());
+    assert!(layers.events && !layers.consistency);
+    // Events need no session laps.
+    assert_eq!(
+        cx.update(|cx| f.test.app.trace_view.read(cx).loads_started()),
+        0
+    );
 }
