@@ -28,6 +28,9 @@ use omatrack_trace::{
 /// Key of the cumulative Δt lane.
 pub const DELTA_KEY: &str = "delta";
 
+/// Height share of the Δ lane under a lap-time-share alignment, percent.
+const TIME_SHARE_DELTA_PERCENT: f64 = 12.0;
+
 /// Lanes that lead the stack, in this order, when the lap has them.
 const LEADING: &[&str] = &["speed", "throttle", "brake", "gear", "steering"];
 
@@ -160,7 +163,8 @@ pub fn build(analysis: Arc<Analysis>, neighbours: Option<Arc<Neighbours>>) -> Bu
         neighbours.previous.as_ref().map(|lap| lap.label.clone()),
         neighbours.next.as_ref().map(|lap| lap.label.clone()),
     )
-    .with_approximate_delta(crate::workspace::status::analysis_approximate(&analysis));
+    .with_approximate_delta(crate::workspace::status::analysis_approximate(&analysis))
+    .with_time_share_delta(crate::workspace::status::analysis_time_share(&analysis));
     BuiltScene {
         analysis,
         scene: Arc::new(scene),
@@ -300,6 +304,15 @@ pub fn lane_styles(
         let mut style = lane_style(config, &lane.key, pinned.get(&lane.key).copied());
         if let Some(weight) = weights.and_then(|weights| weights.get(&lane.key)) {
             style.sizing.weight = weight * lane_height_boost(&lane.key);
+        }
+        // A time-share Δ is a ramp, not a verdict: a slim lane unless the
+        // user sized it.
+        let sized = config
+            .channels
+            .get(lane.key.as_ref())
+            .is_some_and(|channel| channel.height_percent.is_some());
+        if lane.key.as_ref() == DELTA_KEY && scene.time_share_delta() && !sized {
+            style.sizing.height_percent = TIME_SHARE_DELTA_PERCENT;
         }
         styles.set(lane.key.clone(), style);
     }

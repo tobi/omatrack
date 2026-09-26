@@ -322,13 +322,26 @@ impl TracesPanel {
             Some(CornerSource::Unmatched) => "Corners · GPS off the map".into(),
             None => "Corners".into(),
         };
+        // The readout columns' header sits here, at the top of the lanes'
+        // chrome, on the same spines as every lane's values.
+        let key = self
+            .stack
+            .as_ref()
+            .map(|stack| stack.read(cx).column_key(cx));
         row(
             "trace-ruler-row",
-            div()
-                .text_xs()
-                .text_color(theme.muted_foreground)
-                .truncate()
-                .child(label),
+            gpui_kit::component::v_flex()
+                .w_full()
+                .min_w_0()
+                .gap_0p5()
+                .child(
+                    div()
+                        .text_caption()
+                        .text_color(theme.muted_foreground)
+                        .truncate()
+                        .child(label),
+                )
+                .children(key),
             self.ruler.clone(),
             cx,
         )
@@ -346,6 +359,7 @@ fn row(
     let theme = cx.theme();
     h_flex()
         .id(id)
+        .test_support()
         .w_full()
         .flex_shrink_0()
         .items_stretch()

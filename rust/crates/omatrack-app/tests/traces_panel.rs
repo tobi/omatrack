@@ -831,3 +831,30 @@ async fn real_run4_against_run1_fills_the_lanes(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+async fn a_time_share_pair_says_so_in_a_slim_delta_lane_with_the_key_on_top(
+    cx: &mut TestAppContext,
+) {
+    // The synthetic pair carries no GPS: the map is a share of lap time.
+    let f = synthetic_pair(cx).await;
+    let time_share = cx.update(|cx| f.traces.read(cx).scene().time_share_delta());
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.try_find("delta-time-share").is_some(), time_share);
+        let delta = window.find("lane-delta").bounds();
+        if time_share {
+            let speed = window.find("lane-speed").bounds();
+            assert!(
+                delta.size.height < speed.size.height,
+                "a slim Δ lane: {delta:?} vs {speed:?}"
+            );
+        }
+        // The P / R / Δ column key heads the lanes, in the ruler row.
+        let ruler = window.find("trace-ruler-row").bounds();
+        let key = window.find("readout-key").bounds();
+        assert!(ruler.contains(&key.origin), "{key:?} in {ruler:?}");
+        assert!(key.bottom() <= delta.top() + px(1.));
+    })
+    .unwrap();
+}
