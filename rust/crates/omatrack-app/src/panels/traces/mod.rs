@@ -701,7 +701,6 @@ impl TracesPanel {
         cx: &mut Context<Self>,
     ) {
         match event {
-            TraceEvent::CornerClicked(band) => self.request_focus(*band, window, cx),
             TraceEvent::CornerEdited { id, start, end } => {
                 self.edit_corner(EditSource::Lanes, *id, *start, *end, cx)
             }

@@ -2,12 +2,14 @@
 //!
 //! Composition, top to bottom:
 //!
-//! - a corner row (one quiet button per corner, at the zone's start);
-//! - the lanes: a chrome column (name, unit and mono P/R/Δ readouts at the
-//!   cursor) beside the plot column. The plot column holds the cached
+//! - the lanes: a chrome column (name and unit; mono P/R/Δ readouts only
+//!   while a cursor or hover is active) beside the plot column. The plot column holds the cached
 //!   [`TraceStaticView`] and the overlay element on top of it. Pinned lanes
 //!   sit above the scroll region;
 //! - the shared x-axis.
+//!
+//! Corners are labelled once, by the [`crate::CornerRuler`] above the stack;
+//! the stack paints their zones in the overlay only.
 //!
 //! State ownership: the application owns [`ViewportState`] and
 //! [`CursorState`] and shares them with every view that follows the lap.
@@ -15,7 +17,7 @@
 //! it reports user intent as [`TraceEvent`]s. A cursor move re-renders the
 //! stack (chrome and overlay) but never the static layer.
 //!
-//! Lane chrome, corner buttons and lap-edge labels are positioned with
+//! Lane chrome and lap-edge labels are positioned with
 //! `px(...)` from the resolved lane layout and the viewport mapping: that is
 //! measured runtime geometry (the Coding Guides' documented exception), not
 //! spacing. Everything else uses rem-based helpers and theme tokens. The plot
@@ -31,10 +33,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::base::TestSupportExt as _;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{
-    ActiveTheme as _, Selectable as _, Sizable as _, StyledExt as _, h_flex, v_flex,
-};
+use gpui_kit::component::{ActiveTheme as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::{
     AppContext as _, Bounds, Context, ElementId, Entity, EventEmitter, FocusHandle, Focusable,
     Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Point, Render, Role,
@@ -64,8 +63,6 @@ pub enum TraceEvent {
     RangeSelected(Selection),
     /// The user panned, zoomed or reset the viewport.
     ViewportChanged(Viewport),
-    /// A corner label was clicked (the stack also focuses it).
-    CornerClicked(u32),
     /// A corner zone was dragged in corner editing.
     CornerEdited {
         id: u32,
@@ -456,7 +453,9 @@ impl TraceStack {
             plot_left: 0.0,
             plot_width: width,
             lanes_overflow: layout.overflows(),
-            fit: mode.fit || mode.resizing,
+            // FIT that overflows at the readable minimum scrolls like manual
+            // mode (the wheel scrolls lanes instead of zooming).
+            fit: (mode.fit || mode.resizing) && !layout.overflows(),
             has_data,
             editing_corners: editing,
             corners,
@@ -631,51 +630,7 @@ impl TraceStack {
         }
     }
 
-    fn click_corner(&mut self, id: u32, cx: &mut Context<Self>) {
-        self.focus_corner(id, true, cx);
-        cx.emit(TraceEvent::CornerClicked(id));
-    }
-
     // ---- rendering ----------------------------------------------------------
-
-    fn render_corner_row(
-        &self,
-        width: f32,
-        viewport: &Viewport,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let focused = self.focused_corner;
-        div()
-            .relative()
-            .size_full()
-            .overflow_hidden()
-            .children(self.corners.iter().filter_map(|corner| {
-                let x1 = viewport.x_for_fraction(corner.start, 0.0, width as f64) as f32;
-                let x2 = viewport.x_for_fraction(corner.end, 0.0, width as f64) as f32;
-                if x2 < 0.0 || x1 > width {
-                    return None;
-                }
-                let id = corner.id;
-                Some(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .h_full()
-                        .left(px(x1.max(0.0)))
-                        .child(
-                            Button::new(("corner", id as usize))
-                                .ghost()
-                                .xsmall()
-                                .label(corner.label.clone())
-                                .selected(focused == Some(id))
-                                .tooltip(format!("Focus {}", corner.label))
-                                .on_click(
-                                    cx.listener(move |this, _, _, cx| this.click_corner(id, cx)),
-                                ),
-                        ),
-                )
-            }))
-    }
 
     fn render_chrome(
         &self,
@@ -705,33 +660,70 @@ impl TraceStack {
                     .channels()
                     .filter_map(|i| self.scene.lanes.get(i))
                     .collect();
-                let title: SharedString = channels
+                let title = channels
                     .iter()
                     .map(|l| l.title.as_ref())
                     .collect::<Vec<_>>()
-                    .join(" / ")
-                    .into();
-                let units: Vec<&str> = channels
-                    .iter()
-                    .map(|l| l.unit.as_ref())
-                    .filter(|u| !u.is_empty())
-                    .collect();
+                    .join(" / ");
+                let mut units: Vec<&str> = Vec::new();
+                for unit in channels.iter().map(|l| l.unit.as_ref()) {
+                    if !unit.is_empty() && !units.contains(&unit) {
+                        units.push(unit);
+                    }
+                }
                 let unit: SharedString = units.join(" / ").into();
                 let combined = channels.len() > 1;
-                let mut label = format!("{title}");
-                let rows: Vec<_> = channels
+                let mut label = if unit.is_empty() {
+                    title.clone()
+                } else {
+                    format!("{title}, {unit}")
+                };
+                // A shared lane names each channel in its own hue, so the
+                // overlaid line is findable before any cursor exists.
+                let names: Vec<_> = channels
                     .iter()
                     .enumerate()
                     .map(|(position, lane)| {
-                        let readout = readout_at.map(|f| lane.readout(f, map)).unwrap_or_default();
-                        let style = self.styles.get(&lane.key);
-                        let (primary, reference) =
-                            palette.channel_colors(&lane.key, position == 0, &style);
-                        let text = ReadoutText::new(lane, &readout);
-                        label.push_str(&format!(", {}", text.spoken(lane)));
-                        readout_row(lane, text, combined, primary, reference, palette, muted)
+                        let color = if position == 0 {
+                            foreground
+                        } else {
+                            let style = self.styles.get(&lane.key);
+                            palette.channel_colors(&lane.key, false, &style).0
+                        };
+                        h_flex()
+                            .gap_1()
+                            .min_w_0()
+                            .when(position > 0, |el| {
+                                el.flex_shrink_0().child(div().text_color(muted).child("/"))
+                            })
+                            .child(div().text_color(color).truncate().child(lane.title.clone()))
                     })
                     .collect();
+                // Δ states its symmetric scale: the lane's one number that
+                // matters before a cursor exists.
+                let scale = (root.kind == LaneKind::Delta).then(|| {
+                    let bound = root.y_range.max.abs().max(root.y_range.min.abs());
+                    SharedString::from(format!("±{}", compact_number(bound)))
+                });
+                let rows: Vec<_> = readout_at
+                    .map(|fraction| {
+                        channels
+                            .iter()
+                            .enumerate()
+                            .map(|(position, lane)| {
+                                let readout = lane.readout(fraction, map);
+                                let style = self.styles.get(&lane.key);
+                                let (primary, reference) =
+                                    palette.channel_colors(&lane.key, position == 0, &style);
+                                let text = ReadoutText::new(lane, &readout);
+                                label.push_str(&format!(", {}", text.spoken(lane)));
+                                readout_row(
+                                    lane, text, combined, primary, reference, palette, muted,
+                                )
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 let id = ElementId::Name(format!("lane-{}", root.key).into());
                 // Scroll lanes are placed inside the scroll region, which
                 // clips them where they pass under the pinned lanes.
@@ -758,30 +750,19 @@ impl TraceStack {
                         h_flex()
                             .gap_1()
                             .min_w_0()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_medium()
-                                    .text_color(foreground)
-                                    .truncate()
-                                    .child(title),
-                            )
+                            .text_xs()
+                            .child(h_flex().gap_1().min_w_0().font_medium().children(names))
                             .when(!unit.is_empty(), |el| {
-                                el.child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(muted)
-                                        .flex_shrink_0()
-                                        .child(unit),
-                                )
+                                el.child(div().text_color(muted).flex_shrink_0().child(unit))
                             })
-                            .when(slot.pinned, |el| {
+                            .when_some(scale, |el, scale| {
                                 el.child(
                                     div()
-                                        .text_xs()
-                                        .text_color(muted)
+                                        .ml_auto()
                                         .flex_shrink_0()
-                                        .child("Pinned"),
+                                        .font_family(mono.clone())
+                                        .text_color(muted)
+                                        .child(scale),
                                 )
                             }),
                     )
@@ -937,6 +918,17 @@ fn readout_row(
         })
 }
 
+/// A scale bound without trailing zeros (`0.5`, `2.5`, `10`).
+fn compact_number(value: f64) -> String {
+    let text = format!("{value:.3}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    if text.is_empty() || text == "-" {
+        "0".to_string()
+    } else {
+        text.to_string()
+    }
+}
+
 fn spans(corners: &[CornerBand]) -> Vec<CornerSpan> {
     corners
         .iter()
@@ -952,7 +944,7 @@ impl Render for TraceStack {
         let theme = cx.theme();
         let palette = TracePalette::from_theme(theme);
         let (background, border, muted) = (theme.background, theme.border, theme.muted_foreground);
-        // Keyboard focus shows on the corner row's lower edge: a hairline in
+        // Keyboard focus shows on the axis row's upper edge: a hairline in
         // the ring colour, which no ancestor clip can hide.
         let focus_edge = if self.focus_handle.is_focused(window) {
             theme.ring
@@ -1065,27 +1057,6 @@ impl Render for TraceStack {
             .bg(background)
             .child(
                 h_flex()
-                    .h_6()
-                    .flex_shrink_0()
-                    .items_stretch()
-                    .border_b_1()
-                    .border_color(focus_edge)
-                    .child(
-                        div()
-                            .w_40()
-                            .flex_shrink_0()
-                            .border_r_1()
-                            .border_color(border),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(self.render_corner_row(width, &viewport, cx)),
-                    ),
-            )
-            .child(
-                h_flex()
                     .flex_1()
                     .min_h_0()
                     .items_stretch()
@@ -1103,7 +1074,7 @@ impl Render for TraceStack {
                     .flex_shrink_0()
                     .items_stretch()
                     .border_t_1()
-                    .border_color(border)
+                    .border_color(focus_edge)
                     .child(
                         div()
                             .w_40()

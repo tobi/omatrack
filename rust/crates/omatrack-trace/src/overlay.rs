@@ -34,6 +34,9 @@ use crate::scene::{CornerBand, LaneStyles, TraceScene};
 use crate::stack::TraceStack;
 use crate::state::Selection;
 
+/// Width of the cursor's cap at the plot's top edge, logical pixels.
+const CURSOR_CAP: f32 = 7.0;
+
 /// Everything one overlay frame paints, snapshotted by the stack's render.
 pub(crate) struct TraceOverlay {
     pub stack: WeakEntity<TraceStack>,
@@ -216,16 +219,37 @@ impl TraceOverlay {
             );
         }
 
-        if let Some(hover) = self.hover
-            && Some(hover) != self.cursor
-        {
-            vline(window, x_for(hover), palette.hover);
+        // The hover line, then the cursor on top: a full-height hairline in
+        // the foreground with a cap at the top edge so it reads against dense
+        // traces. The crosshair dots sit where the lane readouts are taken
+        // (hover first, else the cursor), so dots and values always agree.
+        let hover_x = self
+            .hover
+            .filter(|hover| Some(*hover) != self.cursor)
+            .map(x_for);
+        if let Some(x) = hover_x {
+            vline(window, x, palette.hover);
         }
-
         if let Some(cursor) = self.cursor {
             let x = x_for(cursor);
             vline(window, x, palette.cursor);
-            self.paint_dots(bounds, x, cursor, window);
+            if (0.0..=width).contains(&x) {
+                window.paint_quad(fill(
+                    Bounds::new(
+                        bounds.origin + point(px(x.round() - CURSOR_CAP / 2.0), px(0.)),
+                        size(px(CURSOR_CAP), px(2.)),
+                    ),
+                    palette.cursor,
+                ));
+            }
+        }
+        match (self.hover, hover_x) {
+            (Some(hover), Some(x)) => self.paint_dots(bounds, x, hover, window),
+            _ => {
+                if let Some(cursor) = self.cursor {
+                    self.paint_dots(bounds, x_for(cursor), cursor, window);
+                }
+            }
         }
 
         // Overflow indicator at the scroll region's trailing edge.

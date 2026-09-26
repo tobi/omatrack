@@ -12,7 +12,7 @@ use gpui_kit::{
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta,
     ScrollWheelEvent, TestAppContext, TouchPhase, Window, point, px, size,
 };
-use omatrack_trace::layout::LaneSizing;
+use omatrack_trace::layout::{LaneSizing, MIN_LANE_HEIGHT};
 use omatrack_trace::{
     CursorState, LaneStyle, LaneStyles, TraceEvent, TraceStack, Viewport, ViewportState, synthetic,
 };
@@ -352,14 +352,17 @@ fn zoom_rebuilds_geometry_once(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn corner_click_focuses_the_corner(cx: &mut TestAppContext) {
+fn corners_are_labelled_by_the_ruler_not_the_stack(cx: &mut TestAppContext) {
     let f = open(cx);
-    cx.update_window(f.window, |_, window, cx| {
-        window.click(("corner", 5usize), cx)
+    // No duplicate corner button row above the lanes.
+    cx.update_window(f.window, |_, window, _| {
+        assert!(window.try_find(("corner", 5usize)).is_none());
     })
     .unwrap();
+    // Focusing still frames the corner and dims the rest.
+    f.stack
+        .update(cx, |stack, cx| stack.focus_corner(5, false, cx));
     cx.run_until_parked();
-    assert!(f.events.borrow().contains(&TraceEvent::CornerClicked(5)));
     let view = cx.update(|cx| f.viewport.read(cx).viewport());
     let corner = cx.update(|cx| {
         f.stack
@@ -374,6 +377,76 @@ fn corner_click_focuses_the_corner(cx: &mut TestAppContext) {
     assert_eq!(view, Viewport::focus_on(corner.start, corner.end));
     assert_eq!(cx.update(|cx| f.stack.read(cx).focused_corner()), Some(5));
     assert!(cx.update(|cx| f.cursor.read(cx).focus()).is_some());
+}
+
+#[gpui_kit::test]
+fn lane_legends_show_values_only_with_a_cursor(cx: &mut TestAppContext) {
+    let f = open(cx);
+    let label = |cx: &mut TestAppContext| {
+        cx.update_window(f.window, |_, window, _| {
+            window.find("lane-speed").label().unwrap().to_string()
+        })
+        .unwrap()
+    };
+    // No cursor: channel and unit only, no placeholder dashes.
+    let idle = label(cx);
+    assert!(!idle.contains("primary"), "{idle}");
+    assert!(!idle.contains('—'), "{idle}");
+    f.cursor
+        .update(cx, |cursor, cx| cursor.set_fraction(Some(0.4), cx));
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| draw(window, cx))
+        .unwrap();
+    let active = label(cx);
+    assert!(active.starts_with(&idle), "{idle} / {active}");
+    assert!(active.contains("primary"), "{active}");
+    // Hover alone is enough.
+    f.cursor.update(cx, |cursor, cx| {
+        cursor.set_fraction(None, cx);
+        cursor.set_hover(Some(0.2), cx);
+    });
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| draw(window, cx))
+        .unwrap();
+    assert!(label(cx).contains("primary"));
+}
+
+#[gpui_kit::test]
+fn fit_lanes_keep_a_readable_minimum_and_scroll(cx: &mut TestAppContext) {
+    let f = open(cx);
+    // Every lane of the synthetic scene, in a short pane.
+    cx.simulate_window_resize(f.window, size(px(1400.), px(300.)));
+    for _ in 0..3 {
+        cx.update_window(f.window, |_, window, cx| draw(window, cx))
+            .unwrap();
+        cx.run_until_parked();
+    }
+    let layout = cx.update(|cx| f.stack.read(cx).layout().clone());
+    assert!(cx.update(|cx| f.stack.read(cx).is_fit()));
+    assert!(layout.overflows(), "{layout:?}");
+    assert!(
+        layout
+            .slots
+            .iter()
+            .all(|slot| slot.height >= MIN_LANE_HEIGHT - 1e-9),
+        "{layout:?}"
+    );
+    // The wheel scrolls the lanes in FIT too, and leaves the viewport.
+    let view = cx.update(|cx| f.viewport.read(cx).viewport());
+    let plot = plot_bounds(cx, f.window);
+    dispatch(
+        cx,
+        f.window,
+        ScrollWheelEvent {
+            position: at(plot, 0.5, 0.5),
+            delta: ScrollDelta::Lines(point(0., -1.)),
+            modifiers: Modifiers::default(),
+            touch_phase: TouchPhase::Moved,
+        }
+        .to_platform_input(),
+    );
+    assert!(cx.update(|cx| f.stack.read(cx).scroll_offset()) > 0.0);
+    assert_eq!(cx.update(|cx| f.viewport.read(cx).viewport()), view);
 }
 
 #[gpui_kit::test]
