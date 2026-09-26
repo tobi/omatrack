@@ -387,6 +387,10 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   (palette `Show …`) join the right dock as tabs when opened. The selected
   corner is the focused one, else the one under the cursor, else the
   largest loss. Without GPS the map is omitted and the table stands alone.
+  When a lap's usable fixes fall under `panels::map::MIN_GPS_COVERAGE`
+  (90%), both laps are placed on the atlas centerline by share of lap
+  distance instead of drawing broken fragments, and the Map and Time lost
+  panels say `Laps placed on the track outline (GPS dropouts)`.
   **Time loss is placed only by a map that follows the track**
   (`Comparison::places_time_loss`: GPS, pre-corner dampers, Lap distance %,
   manual dampers on a distance base): on a lap-time map the panel says

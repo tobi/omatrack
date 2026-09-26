@@ -686,6 +686,14 @@ impl TimeGoesPanel {
         let map_data = self.map.read(cx).data().clone();
         let has_map = !map_data.is_empty();
         let heat = map_data.is_heat();
+        let outline_note = (has_map && map_data.is_on_outline()).then(|| {
+            div()
+                .id("time-goes-outline-note")
+                .test_support()
+                .text_caption()
+                .text_color(cx.theme().muted_foreground)
+                .child(map::OUTLINE_NOTE)
+        });
         let body = if analysis.reference().is_none() {
             let description = "Pick a reference lap to see where this lap loses time.";
             panel_body(
@@ -729,6 +737,7 @@ impl TimeGoesPanel {
             .when(has_map, |this| {
                 this.child(div().flex_shrink_0().h(map_height).child(self.map.clone()))
             })
+            .children(outline_note)
             .child(body)
             .into_any_element()
     }
