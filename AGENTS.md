@@ -372,10 +372,20 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   `VideoView`. Hot drawing is a custom `Element`
   ([element.md](.agents/skills/gpui-kit/references/gpui/element.md)), not a div
   tree.
-- **Window chrome, top to bottom**: the `TitleBar` (track + event/date,
-  sync selector + confidence, Commands and Preferences; no lap or driver
-  chips), the **filmstrip** (`workspace::Filmstrip`, one full-width `Entity`
-  above the docks), the `DockArea`, the `StatusBar`. The filmstrip has one
+- **Window chrome, top to bottom**: the `TitleBar`, the comparison in one
+  line: track + event/date; the P pill "against" the R pill (role disc,
+  driver, lap, time; a click focuses the left lap list, a small swap
+  button sits between them); the headline lap-time Δ (`s off reference`,
+  gain/loss coloured, never `≈`: it is the laps' own times via
+  `Analysis::lap_time_delta`, exact at any confidence); the sync button
+  (`Synced by lap time % · Low confidence`, warning-tinted outline when
+  LOW/NONE, neutral otherwise) opening the strategy menu; Commands and
+  Preferences. Below 90 rem it drops the event, the Δ words, the sync verb
+  and the Commands label. Then the **filmstrip** (`workspace::Filmstrip`,
+  one full-width `Entity` above the docks), the `DockArea`, the
+  `StatusBar`, kept minimal: jobs and the range readout left, the palette
+  name right; the cursor, its Δ and the sync live elsewhere, never twice.
+  The filmstrip has one
   row per role recording (the primary's, then the reference's; two laps of
   one recording share a row with both roles marked): a fixed gutter (role
   marker, driver/session, selected lap time), the swap button, then

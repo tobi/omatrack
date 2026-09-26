@@ -1,12 +1,12 @@
-//! The status bar: the cursor on the left, sync, jobs and theme on the
-//! right.
+//! The status bar: background jobs and the range readout on the left,
+//! the palette name on the right; what no other surface already says.
 //!
 //! It is its own entity so a cursor move re-renders only this bar (and the
 //! other cursor observers), never the workspace or the static traces.
 
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, Theme, h_flex, separator::Separator,
-    spinner::Spinner, status_bar::StatusBar, tag::Tag, tooltip::Tooltip,
+    ActiveTheme as _, Sizable as _, Theme, h_flex, separator::Separator, spinner::Spinner,
+    status_bar::StatusBar, tooltip::Tooltip,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -152,52 +152,6 @@ pub fn alignment_caution(analysis: &Analysis) -> Option<SharedString> {
     Some(format!("Alignment {confidence} ({basis}): deltas are{time_share}.").into())
 }
 
-/// `Low confidence`, for the confidence badge.
-fn confidence_words(confidence: &str) -> &'static str {
-    match confidence {
-        "HIGH" => "High confidence",
-        "MED" => "Medium confidence",
-        "LOW" => "Low confidence",
-        _ => "Not aligned",
-    }
-}
-
-/// The sync confidence badge of the title bar and the status bar: a
-/// neutral outline tag (never the reference lap's warning hue), with an
-/// alert icon when deltas are approximate, its tooltip naming the basis.
-pub fn confidence_badge(
-    id: &'static str,
-    confidence: &str,
-    summary: SharedString,
-    cx: &App,
-) -> AnyElement {
-    let muted = cx.theme().muted_foreground;
-    let low = approximate(confidence);
-    let spoken = SharedString::from(format!("Sync confidence: {summary}"));
-    div()
-        .id(id)
-        .role(Role::Status)
-        .test_support()
-        .aria_label(spoken)
-        .tooltip(move |window, cx| Tooltip::new(summary.clone()).build(window, cx))
-        .child(
-            Tag::secondary().outline().xsmall().child(
-                h_flex()
-                    .gap_1()
-                    .items_center()
-                    .when(low, |this| {
-                        this.child(
-                            Icon::new(IconName::TriangleAlert)
-                                .xsmall()
-                                .text_color(muted),
-                        )
-                    })
-                    .child(confidence_words(confidence)),
-            ),
-        )
-        .into_any_element()
-}
-
 /// `Δ`, or `Δ≈` for an approximate delta.
 fn delta_mark(approximate: bool) -> &'static str {
     if approximate { "Δ≈" } else { "Δ" }
@@ -223,119 +177,46 @@ fn item(id: &'static str, label: SharedString, content: impl IntoElement) -> Any
 }
 
 impl StatusView {
-    fn render_cursor(&self, cx: &App) -> Vec<AnyElement> {
-        let cursor = self.app.cursor.read(cx);
-        let session = self.app.session.read(cx);
-        let Some(analysis) = session.analysis() else {
-            return vec![item(
-                "status-cursor",
-                "No lap loaded".into(),
-                div()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("No lap loaded"),
-            )];
-        };
-        let Some(fraction) = cursor.readout_fraction() else {
-            return vec![item(
-                "status-cursor",
-                "No cursor".into(),
-                div()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("No cursor"),
-            )];
-        };
-        let text = cursor_text(analysis, fraction);
-        let mut items = vec![item(
-            "status-cursor",
-            text.clone(),
-            div().numeric().child(text),
-        )];
-        if let Some(comparison) = analysis.comparison() {
-            let delta = comparison.time_delta_at(fraction);
-            let finite = delta.is_finite().then_some(delta);
-            let (label, _) = omatrack_ui::format_delta(finite, 3, DeltaSense::LowerIsBetter);
-            // Under LOW sync confidence every delta is approximate (a
-            // 12–15 m turn-in error is typical), and says so.
-            let approximate = approximate(comparison.confidence());
-            let spoken = if approximate {
-                format!("Delta about {label} s")
-            } else {
-                format!("Delta {label} s")
-            };
-            items.push(item(
-                "status-delta",
-                spoken.into(),
-                h_flex()
-                    .gap_1()
-                    .child(delta_mark(approximate))
-                    .child(approx_delta(finite, approximate)),
-            ));
-            if let Some(selection) = cursor.selection() {
-                let range = comparison.time_delta_at(selection.end)
-                    - comparison.time_delta_at(selection.start);
-                let finite = range.is_finite().then_some(range);
-                let primary_min = lowest(
-                    &analysis.primary().unified().speed,
-                    selection.start,
-                    selection.end,
-                );
-                let reference_min = analysis.reference().and_then(|reference| {
-                    lowest(
-                        &reference.unified().speed,
-                        comparison.compare_fraction_for_primary_fraction(selection.start),
-                        comparison.compare_fraction_for_primary_fraction(selection.end),
-                    )
-                });
-                let speeds = format!(
-                    "min {} / {} km/h",
-                    primary_min.map_or("—".to_string(), |v| format!("{v:.0}")),
-                    reference_min.map_or("—".to_string(), |v| format!("{v:.0}")),
-                );
-                let (label, _) = omatrack_ui::format_delta(finite, 3, DeltaSense::LowerIsBetter);
-                items.push(item(
-                    "status-selection",
-                    format!("Range delta {label} s, {speeds}").into(),
-                    h_flex()
-                        .gap_1()
-                        .child("Range")
-                        .child(delta_mark(approximate))
-                        .child(approx_delta(finite, approximate))
-                        .child(div().text_color(cx.theme().muted_foreground).child(speeds)),
-                ));
-            }
-        }
-        items
-    }
-
-    fn render_sync(&self, cx: &App) -> Option<AnyElement> {
-        let session = self.app.session.read(cx);
-        let comparison = session.analysis()?.comparison()?.clone();
-        let anchors = comparison.alignment().gps_anchors;
-        let confidence = comparison.confidence();
-        let text: SharedString = if anchors > 0 {
-            format!("{} · {anchors} anchors", comparison.basis())
-        } else {
-            comparison.basis().to_owned()
-        }
-        .into();
-        let spoken = super::header::sync_summary(
-            comparison.basis(),
-            anchors,
-            confidence,
-            gps_rejection(session.analysis()?).as_deref(),
+    /// The selection's Δt and minimum speeds, while a range is selected:
+    /// the one analysis readout no other surface carries.
+    fn render_selection(&self, cx: &App) -> Option<AnyElement> {
+        let selection = self.app.cursor.read(cx).selection()?;
+        let analysis = self.app.session.read(cx).analysis()?;
+        let comparison = analysis.comparison()?;
+        // Under LOW sync confidence every delta is approximate (a 12–15 m
+        // turn-in error is typical), and says so.
+        let approximate = approximate(comparison.confidence());
+        let range =
+            comparison.time_delta_at(selection.end) - comparison.time_delta_at(selection.start);
+        let finite = range.is_finite().then_some(range);
+        let primary_min = lowest(
+            &analysis.primary().unified().speed,
+            selection.start,
+            selection.end,
         );
-        Some(
+        let reference_min = analysis.reference().and_then(|reference| {
+            lowest(
+                &reference.unified().speed,
+                comparison.compare_fraction_for_primary_fraction(selection.start),
+                comparison.compare_fraction_for_primary_fraction(selection.end),
+            )
+        });
+        let speeds = format!(
+            "min {} / {} km/h",
+            primary_min.map_or("—".to_string(), |v| format!("{v:.0}")),
+            reference_min.map_or("—".to_string(), |v| format!("{v:.0}")),
+        );
+        let (label, _) = omatrack_ui::format_delta(finite, 3, DeltaSense::LowerIsBetter);
+        Some(item(
+            "status-selection",
+            format!("Range delta {label} s, {speeds}").into(),
             h_flex()
-                .id("status-sync")
-                .role(Role::Status)
-                .test_support()
-                .aria_label(spoken.clone())
                 .gap_1()
-                // The confidence badge lives once, in the title bar; the
-                // status bar names the basis and speaks the full summary.
-                .child(div().text_color(cx.theme().muted_foreground).child(text))
-                .into_any_element(),
-        )
+                .child("Range")
+                .child(delta_mark(approximate))
+                .child(approx_delta(finite, approximate))
+                .child(div().text_color(cx.theme().muted_foreground).child(speeds)),
+        ))
     }
 
     fn render_jobs(&self, cx: &App) -> Option<AnyElement> {
@@ -361,25 +242,25 @@ impl Render for StatusView {
         let theme_label = ThemeStatus::global(cx)
             .map(ThemeStatus::label)
             .unwrap_or_default();
-        let theme_name = theme_label.clone();
         let fonts = ThemeFonts::global(cx).cloned();
         let appearance: SharedString = match &fonts {
             Some(fonts) => format!("{theme_label} · {}", fonts.label()).into(),
-            None => theme_label,
+            None => theme_label.clone(),
         };
-        let separator = || Separator::vertical().h_3().into_any_element();
+        // Only what no other surface says: background work and the range
+        // readout on the left, the palette name on the right. The cursor
+        // and its Δ live in the traces and the video bar, the sync basis
+        // and confidence in the title bar.
         let mut bar = StatusBar::new().text_label();
-        for (ix, element) in self.render_cursor(cx).into_iter().enumerate() {
+        let left = self
+            .render_jobs(cx)
+            .into_iter()
+            .chain(self.render_selection(cx));
+        for (ix, element) in left.enumerate() {
             if ix > 0 {
-                bar = bar.left(separator());
+                bar = bar.left(Separator::vertical().h_3().into_any_element());
             }
             bar = bar.left(element);
-        }
-        let mut right = Vec::new();
-        right.extend(self.render_jobs(cx));
-        right.extend(self.render_sync(cx));
-        for element in right {
-            bar = bar.right(element).right(separator());
         }
         bar.right(
             div()
@@ -395,7 +276,7 @@ impl Render for StatusView {
                 })
                 .text_color(cx.theme().muted_foreground)
                 // The palette name only; the fonts are in the tooltip.
-                .child(theme_name),
+                .child(theme_label),
         )
     }
 }

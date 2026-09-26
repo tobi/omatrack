@@ -11,10 +11,9 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::component::{
-    ActiveTheme as _, IndexPath, Root, Theme, WindowExt as _,
+    ActiveTheme as _, Root, Theme, WindowExt as _,
     dock::{DockArea, DockEvent, DockPlacement, DockSkin},
     notification::Notification,
-    select::{SelectEvent, SelectState},
 };
 use gpui_kit::{
     AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
@@ -53,7 +52,11 @@ pub struct Workspace {
     panels: WorkspacePanels,
     filmstrip: Entity<Filmstrip>,
     status: Entity<StatusView>,
-    sync_select: Entity<SelectState<Vec<SyncOption>>>,
+    /// The sync menu of the title bar: automatic, then the strategies
+    /// both laps support; `sync_current` is the one asked for.
+    sync_options: Vec<SyncOption>,
+    sync_current: Option<omatrack_core::alignment::Strategy>,
+    swap_icon: gpui_kit::component::Icon,
     palette: Palette,
     layout_origin: LayoutOrigin,
     layout_save: Option<Task<()>>,
@@ -105,14 +108,6 @@ impl Workspace {
 
         let status = cx.new(|cx| StatusView::new(app.clone(), cx));
         let filmstrip = cx.new(|cx| Filmstrip::new(app.clone(), cx));
-        let sync_select = cx.new(|cx| {
-            SelectState::new(
-                vec![SyncOption::automatic()],
-                Some(IndexPath::default()),
-                window,
-                cx,
-            )
-        });
 
         let subscriptions = vec![
             cx.observe_window_bounds(window, |this: &mut Self, window, cx| {
@@ -149,13 +144,6 @@ impl Workspace {
                     );
                 }
             }),
-            cx.subscribe(&sync_select, |this, _, event, cx| {
-                let SelectEvent::Confirm(value) = event;
-                let request = SyncOption::request((*value).flatten());
-                this.app
-                    .session
-                    .update(cx, |session, cx| session.set_strategy(request, cx));
-            }),
         ];
 
         // A quit inside the layout debounce still saves the layout.
@@ -181,7 +169,9 @@ impl Workspace {
             panels,
             filmstrip,
             status,
-            sync_select,
+            sync_options: vec![SyncOption::automatic()],
+            sync_current: None,
+            swap_icon: header::swap_icon(),
             palette: Palette::default(),
             layout_origin,
             layout_save: None,
@@ -194,7 +184,7 @@ impl Workspace {
             preferences: None,
             _subscriptions: subscriptions,
         };
-        workspace.sync_strategies(window, cx);
+        workspace.sync_strategies(cx);
         workspace
     }
 
@@ -257,7 +247,7 @@ impl Workspace {
             }
             SessionEvent::AnalysisReady => {
                 self.forget_corner_focus(cx);
-                self.sync_strategies(window, cx);
+                self.sync_strategies(cx);
                 self.place_initial_cursor(cx);
             }
             SessionEvent::PrimaryChanged => self.forget_corner_focus(cx),
@@ -312,7 +302,7 @@ impl Workspace {
     }
 
     /// Offer exactly the strategies both laps support.
-    fn sync_strategies(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn sync_strategies(&mut self, cx: &mut Context<Self>) {
         let session = self.app.session.read(cx);
         let available = session
             .analysis()
@@ -334,10 +324,9 @@ impl Workspace {
         let options = std::iter::once(SyncOption::automatic_resolved(resolved))
             .chain(available.into_iter().map(SyncOption::strategy))
             .collect::<Vec<_>>();
-        self.sync_select.update(cx, |select, cx| {
-            select.set_items(options, window, cx);
-            select.set_selected_value(&current, window, cx);
-        });
+        self.sync_options = options;
+        self.sync_current = current;
+        cx.notify();
     }
 
     fn schedule_layout_save(&mut self, cx: &mut Context<Self>) {

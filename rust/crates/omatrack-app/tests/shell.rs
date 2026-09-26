@@ -38,7 +38,10 @@ fn main_window_shows_title_dock_and_status_with_the_built_in_theme(cx: &mut Test
         // The filmstrip takes no space until a lap is chosen.
         assert!(window.try_find("filmstrip-primary").is_none());
         assert!(window.try_find("filmstrip-swap").is_none());
-        assert_eq!(window.find("status-cursor").label(), Some("No lap loaded"));
+        // Without a lap the title bar names no pair and no gap.
+        assert!(window.try_find("header-primary").is_none());
+        assert!(window.try_find("header-delta").is_none());
+        assert!(window.try_find("header-sync").is_none());
         let laps = window.find("laps-panel");
         assert!(laps.visible());
         assert!(laps.bounds().right() <= window.find("traces-panel").bounds().left());

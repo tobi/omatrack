@@ -134,9 +134,8 @@ async fn real_run4_against_run1_through_the_workspace(cx: &mut TestAppContext) {
             "{reference}"
         );
         assert_eq!(window.find("header-track").label(), Some("Road Atlanta"));
-        assert!(window.find("header-confidence").visible());
-        let cursor = window.find("status-cursor").label().unwrap().to_string();
-        assert!(cursor.ends_with("0:00.000"), "{cursor}");
+        assert!(window.find("header-sync").visible());
+        assert!(window.find("header-delta").visible());
     })
     .unwrap();
 

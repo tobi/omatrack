@@ -986,66 +986,175 @@ async fn the_first_analysis_puts_the_cursor_at_lap_start_for_every_readout(
         "the cursor starts where the video and HUD are: lap start"
     );
     cx.update_window(scene.handle, |_, window, _| {
-        let status = window.find("status-cursor").label().unwrap().to_string();
         let inspector = window
             .find("inspector-position")
             .label()
             .unwrap()
             .to_string();
-        assert_eq!(status, inspector, "status bar and inspector agree");
-        assert!(status.starts_with("0 m"), "{status}");
+        assert!(inspector.starts_with("0 m"), "{inspector}");
         let speed = window.find("inspector:speed").label().unwrap().to_string();
         assert!(!speed.ends_with('—'), "a value at lap start: {speed}");
     })
     .unwrap();
 
-    // Clearing the cursor reads as "No cursor" in both places.
+    // Clearing the cursor reads as "No cursor".
     cx.update(|cx| cursor.update(cx, |cursor, cx| cursor.set_fraction(None, cx)));
     cx.run_until_parked();
     cx.update_window(scene.handle, |_, window, cx| {
         window.render_frame(cx);
-        assert_eq!(window.find("status-cursor").label(), Some("No cursor"));
         assert_eq!(window.find("inspector-position").label(), Some("No cursor"));
     })
     .unwrap();
 }
 
 #[gpui_kit::test]
-async fn the_sync_confidence_sits_beside_the_selector_with_its_basis(cx: &mut TestAppContext) {
+async fn the_title_bar_states_the_pair_its_gap_and_its_sync(cx: &mut TestAppContext) {
     let scene = analysed(cx).await;
-    let (basis, anchors, confidence) = cx.update(|cx| {
-        let session = scene.test.app.session.read(cx);
-        let comparison = session.analysis().unwrap().comparison().unwrap().clone();
+    let session = scene.test.app.session.clone();
+    let (basis, anchors, confidence, lap_delta, primary, reference) = cx.update(|cx| {
+        let session = session.read(cx);
+        let analysis = session.analysis().unwrap();
+        let comparison = analysis.comparison().unwrap().clone();
+        let info = |role: Role| {
+            let info = session.slot(role).unwrap().info();
+            format!("{} {}", info.label, info.time)
+        };
         (
             comparison.basis().to_owned(),
             comparison.alignment().gps_anchors,
             comparison.confidence().to_owned(),
+            analysis.lap_time_delta().expect("both laps are timed"),
+            info(Role::Primary),
+            info(Role::Reference),
         )
     });
-    let expected =
-        omatrack_app::workspace::header::sync_summary(&basis, anchors, &confidence, None);
-    assert!(expected.contains(basis.as_str()) && expected.contains(confidence.as_str()));
-    cx.update_window(scene.handle, |_, window, _| {
-        let select = window.find("header-sync");
-        let badge = window.find("header-confidence");
-        assert!(badge.visible());
-        assert_eq!(
-            badge.label().map(str::to_owned),
-            Some(format!("Sync confidence: {expected}"))
-        );
-        // Grouped with the selector, not floated to the far edge.
-        let gap = badge.bounds().left() - select.bounds().right();
+    let summary = omatrack_app::workspace::header::sync_summary(&basis, anchors, &confidence, None);
+    let (delta_text, _) =
+        omatrack_ui::format_delta(Some(lap_delta), 3, omatrack_ui::DeltaSense::LowerIsBetter);
+    let phrase = omatrack_app::workspace::header::lap_time_phrase(lap_delta);
+    cx.update_window(scene.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let track = window.find("header-track").bounds();
+        let p = window.find("header-primary");
+        let r = window.find("header-reference");
         assert!(
-            gap >= px(0.) && gap < px(16.),
-            "badge beside the select: {gap:?}"
+            p.label()
+                .unwrap()
+                .starts_with(&format!("Primary lap {primary}")),
+            "{:?}",
+            p.label()
         );
+        assert!(
+            r.label()
+                .unwrap()
+                .starts_with(&format!("Reference lap {reference}")),
+            "{:?}",
+            r.label()
+        );
+        // The lap-time Δ is exact at any confidence: never `≈`.
+        let delta = window.find("header-delta");
         assert_eq!(
-            window.find("status-sync").label(),
-            Some(expected.as_ref()),
-            "the status bar says the same"
+            delta.label().map(str::to_owned),
+            Some(format!("Lap time {delta_text} {phrase}"))
         );
+        let sync = window.find("header-sync");
+        assert_eq!(
+            sync.label().map(str::to_owned),
+            Some(format!("Reference sync: {summary}"))
+        );
+        // One reading order on one line: track, P against R, Δ, sync.
+        let (p, r, delta, sync) = (p.bounds(), r.bounds(), delta.bounds(), sync.bounds());
+        assert!(track.right() <= p.left());
+        assert!(p.right() < r.left());
+        assert!(r.right() <= delta.left());
+        assert!(delta.right() <= sync.left());
+        for bounds in [p, r, delta, sync] {
+            assert!(bounds.top() >= px(0.) && bounds.bottom() <= track.bottom() + px(12.));
+        }
+        // The filmstrip stays, full width below the title bar.
+        let strip = window.find("filmstrip-primary").bounds();
+        assert!(strip.top() >= sync.bottom());
+        // (Both laps are of one recording here: one row, both roles.)
+        // Nothing the title bar says is repeated in the status bar.
+        for gone in ["status-sync", "status-cursor", "status-delta"] {
+            assert!(window.try_find(gone).is_none(), "{gone}");
+        }
+        assert!(window.find("theme-status").visible());
     })
     .unwrap();
+
+    // The sync button opens the strategy menu; choosing a strategy asks
+    // the session for it.
+    let (choice, title) = cx.update(|cx| {
+        let session = session.read(cx);
+        let analysis = session.analysis().unwrap();
+        let current = analysis.strategy();
+        // Another strategy when there is one; else the one in effect,
+        // asked for explicitly instead of automatically.
+        let available = analysis.available_strategies();
+        let choice = *available
+            .iter()
+            .find(|strategy| Some(**strategy) != current)
+            .or(available.first())
+            .expect("a strategy");
+        (choice, choice.label())
+    });
+    cx.update_window(scene.handle, |_, window, cx| {
+        assert!(window.try_find("popup-menu").is_none());
+        window.click("header-sync", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("popup-menu").is_some(), "the menu opened");
+        let mut menu = window.within("popup-menu");
+        let item = (0..16usize)
+            .find(|ix| {
+                menu.try_find(*ix)
+                    .is_some_and(|item| item.label() == Some(title))
+            })
+            .expect("the strategy is offered");
+        menu.click(item, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|cx| session.read(cx).strategy()),
+        omatrack_core::session::StrategyRequest::Prefer(choice)
+    );
+}
+
+#[gpui_kit::test]
+async fn a_pill_goes_to_the_lap_list_and_the_swap_button_swaps(cx: &mut TestAppContext) {
+    let scene = analysed(cx).await;
+    let session = scene.test.app.session.clone();
+    let workspace = scene.test.workspace.clone();
+    let before = cx.update(|cx| {
+        let session = session.read(cx);
+        (
+            session.primary().unwrap().lap_ref().clone(),
+            session.reference().unwrap().lap_ref().clone(),
+        )
+    });
+    cx.update_window(scene.handle, |_, window, cx| {
+        window.click("header-reference", cx);
+        window.render_frame(cx);
+        let library =
+            workspace.read_with(cx, |w, cx| w.panels().focus_handle(PanelKind::Library, cx));
+        assert!(
+            library.contains_focused(window, cx),
+            "the lap list has focus"
+        );
+        window.click("header-swap", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.wait_for(scene.handle, Duration::from_secs(60), |_, cx| {
+        let session = session.read(cx);
+        !session.is_loading() && session.primary().map(|slot| slot.lap_ref()) == Some(&before.1)
+    })
+    .await;
+    assert_eq!(
+        cx.update(|cx| session.read(cx).reference().unwrap().lap_ref().clone()),
+        before.0
+    );
 }
 
 #[gpui_kit::test]
