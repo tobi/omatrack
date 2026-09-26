@@ -4,8 +4,10 @@
 //! Every driven interval (out, in, flying, fragment) shares the row by
 //! driving time, with a 12 px selectable floor so a fully stopped segment
 //! stays clickable; a pit stop is one fixed 36 px cell however long the car
-//! stood. Stopped time never earns space. The strip carries no tooltips:
-//! the cells are the readout.
+//! stood. Stopped time never earns space. A strip reads in one label
+//! density ([`strip_density`]: label and time, else time, else label for
+//! every timed cell); untimed cells are quieter and their tooltip says what
+//! they are (`Partial lap, not timed`).
 //!
 //! Each cell is a gpui-component [`Button`], so hover, pressed, keyboard
 //! focus, activation and accessibility come from the component system. The
@@ -210,12 +212,35 @@ impl LapStripItem {
         self.time.clone().unwrap_or_else(|| self.label.clone())
     }
 
-    /// The full description of a cell, for its tooltip.
+    /// The full description of a cell, for its tooltip: an untimed cell
+    /// says what it is (`Partial lap, not timed`).
     pub fn tooltip(&self) -> SharedString {
         match &self.time {
             Some(time) => format!("{} · {time}", self.label).into(),
-            None => self.label.clone(),
+            None => match self.label.as_ref() {
+                "Out" => "Out lap, not timed".into(),
+                "In" => "In lap, not timed".into(),
+                "Pit" => "Pit stop".into(),
+                "Frag" => "Partial lap, not timed".into(),
+                _ => self.label.clone(),
+            },
         }
+    }
+
+    /// Whether the cell carries a lap time (a complete lap).
+    pub fn is_timed(&self) -> bool {
+        self.time.is_some()
+    }
+
+    /// The cell's text forms, richest first: label and time, time, label.
+    fn forms(&self) -> [Option<SharedString>; 3] {
+        [
+            self.time
+                .as_ref()
+                .map(|time| SharedString::from(format!("{}  {time}", self.label))),
+            self.time.clone(),
+            Some(self.label.clone()),
+        ]
     }
 
     /// What fits a cell `width` logical pixels wide when one tabular
@@ -224,17 +249,37 @@ impl LapStripItem {
     /// else nothing (the cell keeps its spoken label and tooltip). Never a
     /// clipped or ellipsized fragment.
     pub fn text_for_width(&self, width: f32, char_width: f32) -> Option<SharedString> {
+        self.text_at(0, width, char_width)
+    }
+
+    /// [`Self::text_for_width`] starting at form `density` (0 label and
+    /// time, 1 time, 2 label): the strip's shared density.
+    fn text_at(&self, density: usize, width: f32, char_width: f32) -> Option<SharedString> {
         let fits = |text: &str| text.chars().count() as f32 * char_width + CELL_TEXT_INSET <= width;
-        let labelled = self
-            .time
-            .as_ref()
-            .map(|time| SharedString::from(format!("{}  {time}", self.label)));
-        [labelled.as_ref(), self.time.as_ref(), Some(&self.label)]
+        self.forms()
             .into_iter()
+            .skip(density.min(2))
             .flatten()
             .find(|text| fits(text))
-            .cloned()
     }
+}
+
+/// One label density for a whole strip: the richest form (0 label and
+/// time, 1 time, 2 label) in which every timed cell's text fits its width,
+/// so neighbouring laps never read in two styles (`L2 1:25.084` beside
+/// `1:20.451`).
+pub fn strip_density(items: &[LapStripItem], widths: &[f32], char_width: f32) -> usize {
+    (0..2)
+        .find(|&density| {
+            items.iter().zip(widths).all(|(item, &width)| {
+                !item.is_timed()
+                    || width <= 0.0
+                    || item.forms()[density].as_ref().is_some_and(|text| {
+                        text.chars().count() as f32 * char_width + CELL_TEXT_INSET <= width
+                    })
+            })
+        })
+        .unwrap_or(2)
 }
 
 impl From<&LapStripCell> for LapStripItem {
@@ -456,12 +501,14 @@ impl Element for StripCellsElement {
         let height = bounds.size.height.as_f32();
         let spans = lap_strip_layout(width, &self.items);
         let char_width = window.rem_size().as_f32() * FIGURE_XS_ADVANCE;
+        let widths: Vec<f32> = spans.iter().map(|span| span.width).collect();
+        let density = strip_density(&self.items, &widths, char_width);
         let mut cells = Vec::with_capacity(self.items.len());
         for (item, span) in self.items.iter().zip(spans) {
             if span.width <= 0.0 {
                 continue;
             }
-            let mut cell = self.cell(item, span.width, height, char_width, cx);
+            let mut cell = self.cell(item, span.width, height, char_width, density, cx);
             cell.layout_as_root(
                 size(
                     AvailableSpace::Definite(px(span.width)),
@@ -499,6 +546,7 @@ impl StripCellsElement {
         width: f32,
         height: f32,
         char_width: f32,
+        density: usize,
         cx: &App,
     ) -> AnyElement {
         let theme = cx.theme();
@@ -519,7 +567,8 @@ impl StripCellsElement {
             theme.warning
         } else if item.best {
             theme.success
-        } else if item.pit_stop {
+        } else if item.pit_stop || !item.is_timed() {
+            // Untimed cells (out, in, partial, pit) are quieter.
             theme.muted_foreground
         } else {
             theme.secondary_foreground
@@ -561,7 +610,7 @@ impl StripCellsElement {
             .w(px(width))
             .h(px(height))
             .when(width < 28.0, |b| b.px_0())
-            .when_some(item.text_for_width(width, char_width), |b, text| {
+            .when_some(item.text_at(density, width, char_width), |b, text| {
                 b.child(
                     div()
                         .min_w_0()
@@ -651,6 +700,26 @@ mod tests {
         assert_eq!(in_lap.text_for_width(MIN_CELL, 7.0), None);
         assert_eq!(in_lap.text_for_width(24.0, 7.0).as_deref(), Some("In"));
         assert_eq!(lap.tooltip().as_ref(), "L3 · 1:21.004");
+        assert_eq!(
+            LapStripItem::new(4, "Frag", 30.0).tooltip().as_ref(),
+            "Partial lap, not timed"
+        );
+    }
+
+    #[test]
+    fn a_strip_reads_in_one_density() {
+        let items = [
+            lap(2, 85.0).time("1:25.084"),
+            lap(3, 80.0).time("1:20.451"),
+            LapStripItem::new(4, "In", 10.0),
+        ];
+        // Both fit label and time: the richest form.
+        assert_eq!(strip_density(&items, &[120.0, 120.0, 20.0], 7.0), 0);
+        // One only fits its time: every timed cell shows only its time.
+        assert_eq!(strip_density(&items, &[120.0, 80.0, 20.0], 7.0), 1);
+        assert_eq!(items[0].text_at(1, 120.0, 7.0).as_deref(), Some("1:25.084"));
+        // Too narrow for times: labels.
+        assert_eq!(strip_density(&items, &[120.0, 30.0, 20.0], 7.0), 2);
     }
 
     fn right(span: &CellSpan) -> f32 {
