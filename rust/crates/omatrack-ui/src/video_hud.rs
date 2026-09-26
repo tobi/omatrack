@@ -1,10 +1,12 @@
 //! The telemetry HUD over the video: speed, gear, Δ and the gap bar.
 //!
-//! [`VideoHud`] fills the video area it is placed in (absolutely, `inset_0`)
-//! and draws one card inside it at a normalized position of the *available*
-//! space: `(0, 0)` is the top-left placement, `(1, 1)` the bottom-right, so a
-//! stored position survives window resizes and layout changes
-//! (`video.hud_position` in `omatrack.yml`). The card is draggable; the new
+//! [`VideoHud`] fills the video area it is placed in (absolutely, `inset_0`;
+//! the owner places it in one video pane, never across two) and draws one
+//! slim card inside it at a normalized position of the *available* space,
+//! [`HUD_INSET`] in from every edge: `(0, 0)` is the top-left placement,
+//! `(1, 1)` the bottom-right, the default [`HudPosition::DEFAULT`] the
+//! bottom-left, so a stored position survives window resizes and layout
+//! changes (`video.hud_position` in `omatrack.yml`). The card is draggable; the new
 //! position is reported once, at drag end, through [`VideoHud::on_moved`]
 //! (the owner persists it and passes it back: a controlled value). During
 //! the drag the live position is element-local state keyed by the HUD's id.
@@ -32,10 +34,13 @@ use gpui_kit::{
     Styled as _, Window, canvas, div, relative, rems,
 };
 
-use crate::{DeltaText, MISSING_VALUE};
+use crate::{DeltaText, MISSING_VALUE, Swatch};
 
 /// Range of the gap bar either side of level, metres.
 pub const GAP_RANGE_M: f64 = 8.0;
+
+/// How far the card keeps from the pane's edges, rem.
+pub const HUD_INSET: f32 = 0.5;
 
 /// A normalized placement inside the available space (`0..=1` each way).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -46,8 +51,9 @@ pub struct HudPosition {
 }
 
 impl HudPosition {
-    /// Bottom centre.
-    pub const DEFAULT: HudPosition = HudPosition { x: 0.5, y: 1.0 };
+    /// Bottom-left: clear of the role caption (top-left) and of an inset
+    /// video (bottom-right).
+    pub const DEFAULT: HudPosition = HudPosition { x: 0.0, y: 1.0 };
 
     /// A position clamped into `0..=1`; non-finite coordinates fall back to
     /// the default.
@@ -104,10 +110,10 @@ impl HudVariant {
     /// Card width and height in rem, with and without the gap bar.
     fn card_size(self, gap: bool) -> (Rems, Rems) {
         match (self, gap) {
-            (HudVariant::Compact, false) => (rems(15.), rems(4.5)),
-            (HudVariant::Compact, true) => (rems(15.), rems(6.25)),
-            (HudVariant::Fullscreen, false) => (rems(22.), rems(6.5)),
-            (HudVariant::Fullscreen, true) => (rems(22.), rems(8.75)),
+            (HudVariant::Compact, false) => (rems(16.), rems(2.25)),
+            (HudVariant::Compact, true) => (rems(16.), rems(3.5)),
+            (HudVariant::Fullscreen, false) => (rems(21.), rems(3.25)),
+            (HudVariant::Fullscreen, true) => (rems(21.), rems(4.75)),
         }
     }
 }
@@ -272,58 +278,54 @@ impl RenderOnce for VideoHud {
         );
         let mono = theme.mono_font_family.clone();
 
-        let speed = div().flex_1().min_w_0().child(
-            h_flex()
-                .items_baseline()
-                .gap_1()
+        // One row, `236 km/h │ Gear 6 │ Δ +0.123 s`, baseline-aligned; the
+        // values are mono so they do not jitter while the video plays.
+        let caption = |text: &'static str| div().text_xs().text_color(muted).child(text);
+        let value = |text: SharedString| {
+            div()
                 .font_family(mono.clone())
-                .child(
-                    div()
-                        .font_semibold()
-                        .map(|d| {
-                            if fullscreen {
-                                d.text_3xl()
-                            } else {
-                                d.text_2xl()
-                            }
-                        })
-                        .child(match self.speed {
-                            Some(speed) => SharedString::from(format!("{speed:.0}")),
-                            None => MISSING_VALUE.into(),
-                        }),
-                )
-                .child(div().text_xs().text_color(muted).child("km/h")),
-        );
-        let gear = v_flex()
-            .items_center()
+                .font_semibold()
+                .map(|d| {
+                    if fullscreen {
+                        d.text_2xl()
+                    } else {
+                        d.text_lg()
+                    }
+                })
+                .child(text)
+        };
+        let divider = || {
+            div()
+                .flex_shrink_0()
+                .w_px()
+                .map(|d| if fullscreen { d.h_6() } else { d.h_4() })
+                .bg(border)
+        };
+        let speed = h_flex()
             .flex_shrink_0()
-            .child(div().text_xs().text_color(muted).child("Gear"))
+            .items_baseline()
+            .gap_1()
+            .child(value(match self.speed {
+                Some(speed) => SharedString::from(format!("{speed:.0}")),
+                None => MISSING_VALUE.into(),
+            }))
+            .child(caption("km/h"));
+        let gear = h_flex()
+            .flex_shrink_0()
+            .items_baseline()
+            .gap_1()
+            .child(caption("Gear"))
+            .child(value(format_gear(self.gear)));
+        let delta = h_flex()
+            .flex_1()
+            .min_w_0()
+            .justify_end()
+            .items_baseline()
+            .gap_1()
+            .child(caption("Δ"))
             .child(
                 div()
-                    .font_family(mono.clone())
-                    .font_semibold()
-                    .map(|d| {
-                        if fullscreen {
-                            d.text_2xl()
-                        } else {
-                            d.text_xl()
-                        }
-                    })
-                    .child(format_gear(self.gear)),
-            );
-        let delta = v_flex()
-            .items_end()
-            .flex_shrink_0()
-            .child(div().text_xs().text_color(muted).child("Δ"))
-            .child(
-                div()
-                    .map(|d| {
-                        if fullscreen {
-                            d.text_lg()
-                        } else {
-                            d.text_base()
-                        }
-                    })
+                    .map(|d| if fullscreen { d.text_lg() } else { d.text_sm() })
                     .child(DeltaText::new(self.delta).unit("s")),
             );
 
@@ -402,8 +404,7 @@ impl RenderOnce for VideoHud {
             .top(relative(position.y))
             .w(card_width)
             .h(card_height)
-            .px_3()
-            .py_2()
+            .map(|d| if fullscreen { d.px_4() } else { d.px_2p5() })
             .gap_1()
             .justify_center()
             .overflow_hidden()
@@ -422,10 +423,15 @@ impl RenderOnce for VideoHud {
             })
             .child(
                 h_flex()
-                    .gap_3()
-                    .items_end()
+                    .items_center()
+                    .gap_2()
+                    // The readouts are the primary lap's, whichever video
+                    // the HUD sits on.
+                    .child(Swatch::new(theme.primary))
                     .child(speed)
+                    .child(divider())
                     .child(gear)
+                    .child(divider())
                     .child(delta),
             )
             .children(gap_bar)
@@ -445,14 +451,15 @@ impl RenderOnce for VideoHud {
                 }
             });
 
-        // The area the card's top-left corner can reach: the pane minus the
-        // card. Measured every frame for the drag arithmetic only.
+        // The area the card's top-left corner can reach: the pane inset by
+        // `HUD_INSET`, minus the card. Measured every frame for the drag
+        // arithmetic only.
         let track = div()
             .absolute()
-            .top_0()
-            .left_0()
-            .right(card_width)
-            .bottom(card_height)
+            .top(rems(HUD_INSET))
+            .left(rems(HUD_INSET))
+            .right(rems(card_width.0 + HUD_INSET))
+            .bottom(rems(card_height.0 + HUD_INSET))
             .child(
                 canvas(
                     move |bounds, _, _| track_cell.set(Some(bounds)),
@@ -524,7 +531,7 @@ mod tests {
         assert_eq!(HudPosition::new(-1.0, 2.0), HudPosition::new(0.0, 1.0));
         assert_eq!(
             HudPosition::new(f32::NAN, 0.25),
-            HudPosition::new(0.5, 0.25)
+            HudPosition::new(0.0, 0.25)
         );
         let track = Bounds::new(point(px(10.), px(20.)), size(px(400.), px(200.)));
         let position = HudPosition::new(0.25, 0.5);

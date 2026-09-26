@@ -25,5 +25,6 @@ pub use readout::{
 pub use role_chip::{LapRole, RoleChip};
 pub use swatch::Swatch;
 pub use video_hud::{
-    GAP_RANGE_M, HudPosition, HudVariant, VideoHud, format_gap, format_gear, gap_position,
+    GAP_RANGE_M, HUD_INSET, HudPosition, HudVariant, VideoHud, format_gap, format_gear,
+    gap_position,
 };

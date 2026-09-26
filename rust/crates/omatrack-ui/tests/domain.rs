@@ -13,7 +13,7 @@ use gpui_kit::{
     size,
 };
 use omatrack_ui::{
-    HudPosition, HudVariant, LapRole, LapSelect, LapStrip, LapStripItem, VideoHud,
+    HUD_INSET, HudPosition, HudVariant, LapRole, LapSelect, LapStrip, LapStripItem, VideoHud,
     lap_strip_layout, theme,
 };
 
@@ -318,12 +318,19 @@ fn video_hud_drag_reports_a_normalized_position_at_drag_end(cx: &mut TestAppCont
             )
         })
         .unwrap();
-    // Starts in the top-left corner of the pane.
-    assert!((card.origin.x - pane_bounds.origin.x).abs() < px(0.5));
-    assert!((card.origin.y - pane_bounds.origin.y).abs() < px(0.5));
+    // Starts in the top-left corner of the pane, `HUD_INSET` in from both
+    // edges.
+    let inset = cx
+        .update_window(window, |_, window, _| {
+            gpui_kit::rems(HUD_INSET).to_pixels(window.rem_size())
+        })
+        .unwrap();
+    assert!(inset > px(0.));
+    assert!((card.origin.x - pane_bounds.origin.x - inset).abs() < px(0.5));
+    assert!((card.origin.y - pane_bounds.origin.y - inset).abs() < px(0.5));
 
-    let track_width = pane_bounds.size.width - card.size.width;
-    let track_height = pane_bounds.size.height - card.size.height;
+    let track_width = pane_bounds.size.width - card.size.width - inset * 2.;
+    let track_height = pane_bounds.size.height - card.size.height - inset * 2.;
     let grab = card.center();
     let target = grab + point(track_width * 0.5, track_height * 0.25);
     press(cx, window, grab, false);
