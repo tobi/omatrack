@@ -1,49 +1,52 @@
-//! UI integration tests for the application shell: the real main window in a
-//! headless test platform.
+//! UI integration tests for the application shell: the real main window in
+//! a headless test platform.
 
+mod common;
+
+use gpui_kit::AppContext as _;
 use gpui_kit::component::{
     ActiveTheme as _, ThemeMode, WindowExt as _, notification::Notification,
 };
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{AppContext as _, TestAppContext, px};
-use omatrack_app::{Workspace, main_window_options, open_main_window};
-use omatrack_ui::theme::ThemeSource;
+use gpui_kit::{TestAppContext, px};
+use omatrack_app::{Workspace, main_window_options};
 
 #[gpui_kit::test]
-fn main_window_shows_the_workspace_with_the_built_in_theme(cx: &mut TestAppContext) {
-    cx.update(|cx| omatrack_app::init_with_theme(ThemeSource::none(), cx));
-    let handle = cx.update(open_main_window).expect("main window opens");
+fn main_window_shows_title_dock_and_status_with_the_built_in_theme(cx: &mut TestAppContext) {
+    let sandbox = common::Sandbox::new();
+    let test = common::start(cx, sandbox.options());
 
-    cx.update_window(handle.into(), |_, window, cx| {
+    cx.update_window(test.window.into(), |_, window, cx| {
         window.render_frame(cx);
 
         let status = window.find("theme-status");
         assert!(status.visible());
         assert_eq!(status.label(), Some("Built-in dark"));
 
-        // The dock area fills the space between title bar and status bar,
-        // and holds the welcome panel.
+        // The dock area fills the space between title bar and status bar.
         let dock = window.find("workspace-dock");
         assert!(dock.visible());
         assert!(dock.bounds().size.height > px(0.));
-        let welcome = window.find("welcome");
-        assert!(welcome.visible());
-        assert!(welcome.bounds().top() >= dock.bounds().top());
         assert!(status.bounds().top() >= dock.bounds().bottom());
+        let track = window.find("header-track");
+        assert!(track.bounds().bottom() <= dock.bounds().top());
+        assert_eq!(track.label(), Some("Omatrack"));
+
+        // Without a lap every analysis surface says what to do next.
+        assert_eq!(
+            window.find("header-primary").label(),
+            Some("No primary lap")
+        );
+        assert_eq!(window.find("status-cursor").label(), Some("No lap loaded"));
+        let library = window.find("library-panel");
+        assert!(library.visible());
+        assert!(library.bounds().right() <= window.find("traces-panel").bounds().left());
     })
     .unwrap();
 
-    cx.update(|cx| assert_eq!(cx.theme().mode, ThemeMode::Dark));
-    let workspace = cx
-        .update(|cx| {
-            handle
-                .read(cx)
-                .map(|root| root.view().clone().downcast::<Workspace>().ok())
-        })
-        .unwrap()
-        .expect("Root wraps the Workspace");
     cx.update(|cx| {
-        let area = workspace.read(cx).dock_area().read(cx);
+        assert_eq!(cx.theme().mode, ThemeMode::Dark);
+        let area = test.workspace.read(cx).dock_area().read(cx);
         assert_eq!(area.id().as_ref(), omatrack_app::DOCK_AREA_ID);
         assert_eq!(area.version(), Some(omatrack_app::LAYOUT_VERSION));
     });
@@ -51,9 +54,9 @@ fn main_window_shows_the_workspace_with_the_built_in_theme(cx: &mut TestAppConte
 
 #[gpui_kit::test]
 fn notifications_reach_the_screen(cx: &mut TestAppContext) {
-    cx.update(|cx| omatrack_app::init_with_theme(ThemeSource::none(), cx));
-    let handle = cx.update(open_main_window).expect("main window opens");
-    cx.update_window(handle.into(), |_, window, cx| {
+    let sandbox = common::Sandbox::new();
+    let test = common::start(cx, sandbox.options());
+    cx.update_window(test.window.into(), |_, window, cx| {
         window.render_frame(cx);
         window.push_notification(
             Notification::new()
@@ -64,7 +67,7 @@ fn notifications_reach_the_screen(cx: &mut TestAppContext) {
     })
     .unwrap();
     cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
+    cx.update_window(test.window.into(), |_, window, cx| {
         window.render_frame(cx);
         let notification = window.find("notification");
         assert!(notification.visible(), "the notification layer is mounted");
@@ -73,17 +76,24 @@ fn notifications_reach_the_screen(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn the_welcome_panel_lists_bound_shortcuts(cx: &mut TestAppContext) {
-    cx.update(|cx| omatrack_app::init_with_theme(ThemeSource::none(), cx));
-    let handle = cx.update(open_main_window).expect("main window opens");
-    cx.update_window(handle.into(), |_, window, cx| {
+fn preferences_open_in_a_sheet_and_escape_closes_it(cx: &mut TestAppContext) {
+    let sandbox = common::Sandbox::new();
+    let test = common::start(cx, sandbox.options());
+    cx.update_window(test.window.into(), |_, window, cx| {
+        window.press("ctrl-,", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(test.window.into(), |_, window, cx| {
         window.render_frame(cx);
-        // Bindings resolve against the previous frame; draw twice.
-        window.render_frame(cx);
-        assert!(window.find("welcome").visible());
-        let quit = window.find("shortcut-quit");
-        assert!(quit.visible());
-        assert_eq!(quit.label(), Some("Quit: Ctrl+Q"));
+        assert!(window.find("preferences").visible());
+        assert!(window.has_active_sheet(cx));
+        window.press("escape", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(test.window.into(), |_, window, cx| {
+        assert!(!window.has_active_sheet(cx));
     })
     .unwrap();
 }
