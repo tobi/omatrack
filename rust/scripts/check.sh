@@ -13,8 +13,8 @@ step() { printf '\n==> %s\n' "$*"; }
 step "cargo fmt --all --check"
 cargo fmt --all --check
 
-step "cargo clippy --workspace --all-targets --locked -- -D warnings"
-cargo clippy --workspace --all-targets --locked -- -D warnings
+step "strict Clippy (scripts/lint.sh)"
+scripts/lint.sh
 
 step "cargo test --workspace --locked"
 cargo test --workspace --locked

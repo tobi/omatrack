@@ -66,7 +66,7 @@ use scene_build::{BuiltScene, CornerLink};
 
 /// Show or hide one lane (`channels.<key>.visible`). Dispatched by the
 /// palette and the lane menu; handled app-wide so it works from any focus.
-#[derive(Debug, Clone, PartialEq, gpui_kit::Action)]
+#[derive(Debug, Clone, PartialEq, Eq, gpui_kit::Action)]
 #[action(namespace = omatrack, no_json)]
 pub struct ToggleLane {
     pub key: SharedString,
@@ -130,16 +130,16 @@ pub struct TracesPanel {
     lane_commands: Vec<(SharedString, bool)>,
     menu: Option<LaneMenu>,
     _subscriptions: Vec<Subscription>,
-    _view_subscriptions: Vec<Subscription>,
+    view_subscriptions: Vec<Subscription>,
 }
 
 impl TracesPanel {
-    pub fn new(app: AppState, cx: &mut Context<Self>) -> Self {
+    pub fn new(app: AppState, cx: &mut Context<'_, Self>) -> Self {
         let ruler = cx.new(|cx| CornerRuler::new(app.viewport.clone(), cx));
         let damper = cx.new(|cx| DamperStrip::new(app.cursor.clone(), cx));
         let subscriptions = vec![
             cx.subscribe(&app.session, |this, _, event, cx| {
-                if let SessionEvent::AnalysisReady = event {
+                if matches!(event, SessionEvent::AnalysisReady) {
                     this.request_scene(cx);
                 }
             }),
@@ -176,7 +176,7 @@ impl TracesPanel {
             lane_commands: Vec::new(),
             menu: None,
             _subscriptions: subscriptions,
-            _view_subscriptions: Vec::new(),
+            view_subscriptions: Vec::new(),
         };
         panel.request_scene(cx);
         panel
@@ -255,7 +255,7 @@ impl TracesPanel {
     /// Build the scene of the session's analysis on the background executor.
     /// The current scene stays on screen until the new one lands; a newer
     /// request supersedes (and drops) an older one.
-    fn request_scene(&mut self, cx: &mut Context<Self>) {
+    fn request_scene(&mut self, cx: &mut Context<'_, Self>) {
         let analysis = self.app.session.read(cx).analysis().cloned();
         let Some(analysis) = analysis else {
             self.scene_request += 1;
@@ -276,6 +276,7 @@ impl TracesPanel {
         let work = cx.background_spawn(async move { scene_build::build(analysis, neighbours) });
         self.scene_task = Some(cx.spawn(async move |this, cx| {
             let built = work.await;
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no deferred result; this weak entity/window handle may already be gone.")]
             let _ = this.update(cx, |this, cx| {
                 if this.scene_request == request {
                     this.scene_task = None;
@@ -285,7 +286,7 @@ impl TracesPanel {
         }));
     }
 
-    fn apply_scene(&mut self, built: Option<BuiltScene>, cx: &mut Context<Self>) {
+    fn apply_scene(&mut self, built: Option<BuiltScene>, cx: &mut Context<'_, Self>) {
         // New zones replace whatever was being dragged; without lanes there
         // is nothing left to resize either.
         if self.mode == TraceMode::EditingCorners
@@ -306,7 +307,7 @@ impl TracesPanel {
             stack.update(cx, |stack, cx| stack.set_scene(scene.clone(), cx));
         }
         self.ruler.update(cx, |ruler, cx| {
-            ruler.set_corners(scene.corners().to_vec(), scene.complexes().to_vec(), cx)
+            ruler.set_corners(scene.corners().to_vec(), scene.complexes().to_vec(), cx);
         });
         self.damper
             .update(cx, |strip, cx| strip.set_data(damper.map(Arc::new), cx));
@@ -321,7 +322,7 @@ impl TracesPanel {
     /// Lane styles from `channels.<key>`, this session's pins and a resize
     /// draft; FIT from `trace.fit_channels`. Also keeps the lane commands of
     /// the palette in step.
-    fn restyle(&mut self, cx: &mut Context<Self>) {
+    fn restyle(&mut self, cx: &mut Context<'_, Self>) {
         let preferences = self.app.preferences.read(cx);
         let config = preferences.config();
         let styles = scene_build::lane_styles(
@@ -356,7 +357,7 @@ impl TracesPanel {
     fn register_lane_commands(
         &mut self,
         lanes: &[(SharedString, SharedString, bool)],
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) {
         let current: Vec<(SharedString, bool)> = lanes
             .iter()
@@ -385,7 +386,7 @@ impl TracesPanel {
 
     /// Follow the shared cursor: the focused corner (whoever focused it),
     /// and the selection statistics.
-    fn on_cursor(&mut self, cx: &mut Context<Self>) {
+    fn on_cursor(&mut self, cx: &mut Context<'_, Self>) {
         let cursor = self.app.cursor.read(cx);
         let (selection, focus) = (cursor.selection(), cursor.focus());
         let under_cursor = cursor
@@ -411,10 +412,10 @@ impl TracesPanel {
                     // The viewport is already easing there; this only
                     // retargets it to the same place.
                     Some(band) if current != Some(band) => {
-                        stack.update(cx, |stack, cx| stack.focus_corner(band, true, cx))
+                        stack.update(cx, |stack, cx| stack.focus_corner(band, true, cx));
                     }
                     None if current.is_some() => {
-                        stack.update(cx, |stack, cx| stack.clear_corner_focus(cx))
+                        stack.update(cx, TraceStack::clear_corner_focus);
                     }
                     _ => {}
                 }
@@ -430,7 +431,7 @@ impl TracesPanel {
         }
     }
 
-    fn clear_selection(&mut self, cx: &mut Context<Self>) {
+    fn clear_selection(&mut self, cx: &mut Context<'_, Self>) {
         self.app
             .cursor
             .update(cx, |cursor, cx| cursor.set_selection(None, cx));
@@ -440,7 +441,7 @@ impl TracesPanel {
 
     /// Enter `mode`, or leave it (cancelling) when it is the current one.
     /// Without an analysis there is nothing to edit and nothing happens.
-    pub fn toggle_mode(&mut self, mode: TraceMode, cx: &mut Context<Self>) {
+    pub fn toggle_mode(&mut self, mode: TraceMode, cx: &mut Context<'_, Self>) {
         if self.mode == mode {
             self.leave_mode(cx);
             return;
@@ -468,7 +469,7 @@ impl TracesPanel {
 
     /// Leave the current editor without saving: the lanes and zones return
     /// to what `omatrack.yml` and the analysis say.
-    fn leave_mode(&mut self, cx: &mut Context<Self>) {
+    fn leave_mode(&mut self, cx: &mut Context<'_, Self>) {
         match std::mem::take(&mut self.mode) {
             TraceMode::ResizingLanes => {
                 self.resize = None;
@@ -487,11 +488,11 @@ impl TracesPanel {
         cx.notify();
     }
 
-    fn cancel(&mut self, _: &CancelEdit, _: &mut Window, cx: &mut Context<Self>) {
+    fn cancel(&mut self, _: &CancelEdit, _: &mut Window, cx: &mut Context<'_, Self>) {
         self.leave_mode(cx);
     }
 
-    fn save(&mut self, _: &SaveEdit, _: &mut Window, cx: &mut Context<Self>) {
+    fn save(&mut self, _: &SaveEdit, _: &mut Window, cx: &mut Context<'_, Self>) {
         match self.mode {
             TraceMode::ResizingLanes => self.save_resize(cx),
             TraceMode::EditingCorners => self.save_corners(cx),
@@ -501,7 +502,7 @@ impl TracesPanel {
 
     /// Write the drafted weights to `channels.<key>.weight` and select FIT
     /// (Save keeps the proportions as a fitted layout).
-    fn save_resize(&mut self, cx: &mut Context<Self>) {
+    fn save_resize(&mut self, cx: &mut Context<'_, Self>) {
         let draft = self.resize.take().unwrap_or_default();
         self.mode = TraceMode::Browse;
         self.with_stack(cx, |stack, cx| stack.set_resizing(false, cx));
@@ -517,7 +518,7 @@ impl TracesPanel {
     }
 
     /// Preview every lane at weight 1 (the drag draft is dropped).
-    fn reset_heights(&mut self, cx: &mut Context<Self>) {
+    fn reset_heights(&mut self, cx: &mut Context<'_, Self>) {
         let Some(draft) = self.resize.as_mut() else {
             return;
         };
@@ -533,7 +534,7 @@ impl TracesPanel {
 
     /// Store the edited zones as the track's override and rebuild the
     /// analysis with them.
-    fn save_corners(&mut self, cx: &mut Context<Self>) {
+    fn save_corners(&mut self, cx: &mut Context<'_, Self>) {
         if !self.can_save_corners(cx) {
             return;
         }
@@ -551,13 +552,13 @@ impl TracesPanel {
         self.ruler
             .update(cx, |ruler, cx| ruler.set_editing(false, cx));
         self.app.session.update(cx, |session, cx| {
-            session.set_corner_override(Some(zones), cx)
+            session.set_corner_override(Some(zones), cx);
         });
         cx.notify();
     }
 
     /// Drop the track's corner override and return to Track Atlas zones.
-    fn use_atlas_corners(&mut self, cx: &mut Context<Self>) {
+    fn use_atlas_corners(&mut self, cx: &mut Context<'_, Self>) {
         self.leave_mode(cx);
         self.app
             .session
@@ -587,7 +588,7 @@ impl TracesPanel {
         band: u32,
         start: f64,
         end: f64,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) {
         let Some(draft) = self.corners.as_mut() else {
             return;
@@ -607,7 +608,7 @@ impl TracesPanel {
         cx.notify();
     }
 
-    fn show_corners(&mut self, bands: Vec<CornerBand>, cx: &mut Context<Self>) {
+    fn show_corners(&mut self, bands: Vec<CornerBand>, cx: &mut Context<'_, Self>) {
         let complexes = self.scene.complexes().to_vec();
         let for_stack = bands.clone();
         self.with_stack(cx, |stack, cx| stack.set_corners(for_stack, cx));
@@ -617,8 +618,8 @@ impl TracesPanel {
 
     fn with_stack(
         &self,
-        cx: &mut Context<Self>,
-        f: impl FnOnce(&mut TraceStack, &mut Context<TraceStack>),
+        cx: &mut Context<'_, Self>,
+        f: impl FnOnce(&mut TraceStack, &mut Context<'_, TraceStack>),
     ) {
         if let Some(stack) = &self.stack {
             stack.update(cx, f);
@@ -635,7 +636,7 @@ impl TracesPanel {
         })
     }
 
-    fn toggle_pin(&mut self, key: SharedString, cx: &mut Context<Self>) {
+    fn toggle_pin(&mut self, key: SharedString, cx: &mut Context<'_, Self>) {
         let pinned = !self.is_pinned(&key, cx);
         self.pinned.insert(key, pinned);
         self.restyle(cx);
@@ -645,14 +646,14 @@ impl TracesPanel {
 
     /// The stack needs a window; the panel is created without one, so the
     /// stack and every window-bound subscription start with the first frame.
-    fn ensure_views(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn ensure_views(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         if self.stack.is_some() {
             return;
         }
         let scene = self.scene.clone();
         let (viewport, cursor) = (self.app.viewport.clone(), self.app.cursor.clone());
         let stack = cx.new(|cx| TraceStack::new(scene, viewport, cursor, window, cx));
-        self._view_subscriptions = vec![
+        self.view_subscriptions = vec![
             cx.subscribe_in(&stack, window, Self::on_trace_event),
             cx.subscribe_in(
                 &self.ruler,
@@ -660,7 +661,7 @@ impl TracesPanel {
                 |this, _, event, window, cx| match event {
                     CornerRulerEvent::CornerClicked(band) => this.request_focus(*band, window, cx),
                     CornerRulerEvent::CornerEdited { id, start, end } => {
-                        this.edit_corner(EditSource::Ruler, *id, *start, *end, cx)
+                        this.edit_corner(EditSource::Ruler, *id, *start, *end, cx);
                     }
                     _ => {}
                 },
@@ -675,11 +676,11 @@ impl TracesPanel {
         stack: &Entity<TraceStack>,
         event: &TraceEvent,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) {
         match event {
             TraceEvent::CornerEdited { id, start, end } => {
-                self.edit_corner(EditSource::Lanes, *id, *start, *end, cx)
+                self.edit_corner(EditSource::Lanes, *id, *start, *end, cx);
             }
             TraceEvent::LaneResized { keys, heights } => {
                 let config = self.app.preferences.read(cx).config().clone();
@@ -713,7 +714,7 @@ impl TracesPanel {
 
     /// Focus a corner through the workspace's `FocusCorner` (it owns the
     /// focus and the pre-focus viewport Escape returns to).
-    fn request_focus(&mut self, band: u32, window: &mut Window, cx: &mut Context<Self>) {
+    fn request_focus(&mut self, band: u32, window: &mut Window, cx: &mut Context<'_, Self>) {
         let Some(zone) = self
             .corner_links()
             .iter()
@@ -734,7 +735,7 @@ impl TracesPanel {
         position: Point<Pixels>,
         focus: FocusHandle,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) {
         let pinned = self.is_pinned(&key, cx);
         let panel = cx.entity().downgrade();
@@ -745,6 +746,7 @@ impl TracesPanel {
                     PopupMenuItem::new(if pinned { "Unpin lane" } else { "Pin lane" }).on_click(
                         move |_, _, cx| {
                             let key = pin_key.clone();
+                            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no deferred result; this weak entity/window handle may already be gone.")]
                             let _ = panel.update(cx, |panel, cx| panel.toggle_pin(key, cx));
                         },
                     ),
@@ -772,7 +774,7 @@ impl TracesPanel {
 
     // ---- rendering ----------------------------------------------------------
 
-    fn render_body(&mut self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+    fn render_body(&mut self, cx: &mut Context<'_, Self>) -> gpui_kit::AnyElement {
         if self.built.is_none() || self.scene.is_empty() {
             let preparing = self.app.session.read(cx).analysis().is_some();
             if preparing {
@@ -846,7 +848,7 @@ fn damper_data(analysis: &omatrack_core::session::Analysis) -> Option<DamperStri
 simple_panel!(TracesPanel, PanelKind::Traces);
 
 impl Render for TracesPanel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         self.ensure_views(window, cx);
         let editing = self.mode != TraceMode::Browse;
         let menu = self.menu.as_ref().map(|menu| {
@@ -875,14 +877,15 @@ impl Render for TracesPanel {
     }
 }
 
-/// This panel's app-wide setup: its dock registration (saved layouts
-/// rebuild it by name), the lane visibility command, and the palette
-/// entries of its toolbar commands. Called once from
-/// [`crate::panels::init`].
+/// This panel's app-wide setup: its dock registration (saved layouts rebuild it by
+/// name), the lane visibility command, and the palette entries of its toolbar commands.
+///
+/// Called once from [`crate::panels::init`].
 pub fn init(cx: &mut App) {
+    use crate::actions::{ToggleCornerEdit, ToggleXAxis, ZoomReset};
+
     crate::panels::register(PanelKind::Traces, cx);
     cx.on_action(|action: &ToggleLane, cx| toggle_lane(&action.key, cx));
-    use crate::actions::{ToggleCornerEdit, ToggleXAxis, ZoomReset};
     for spec in [
         CommandSpec::new(
             "x-axis",

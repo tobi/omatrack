@@ -26,8 +26,9 @@ pub const GEAR_SHIFT_SECONDS: f64 = 0.5;
 /// Fewest samples a turn-in search needs.
 pub const MIN_SAMPLES: i32 = 8;
 
-/// Everything the checks need about one lap through one corner. Distances
-/// are metres from the corner start; times seconds; speeds km/h; brake bar;
+/// Everything the checks need about one lap through one corner.
+///
+/// Distances are metres from the corner start; times seconds; speeds km/h; brake bar;
 /// steering degrees. An undetermined value is NaN (or -1 for indices).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CornerMetrics {
@@ -120,7 +121,17 @@ impl Default for CornerMetrics {
 /// Turn-in: find where lateral load starts building, then walk back to where
 /// the steering left its approach baseline. Steering alone is the fallback
 /// without an accelerometer channel.
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
+#[expect(
+    clippy::neg_cmp_op_on_partial_ord,
+    reason = "Negated ordered comparisons deliberately include unordered (NaN) values; preserve that behavior."
+)]
 fn detect_turn_in(lap: &UnifiedLap, first: i32, apex: i32, has_lateral_g: bool) -> i32 {
+    const SUSTAINED: i32 = 3;
+
     let count = apex - first + 1;
     if count < MIN_SAMPLES || lap.steering.len() < (apex + 1) as usize {
         return -1;
@@ -155,7 +166,6 @@ fn detect_turn_in(lap: &UnifiedLap, first: i32, apex: i32, has_lateral_g: bool) 
     let committed_steer = baseline_steer + steer_range * 0.45;
     let lat_range = peak_lat - baseline_lat;
     let lat_threshold = baseline_lat + max(0.12, lat_range * 0.18);
-    const SUSTAINED: i32 = 3;
 
     let mut onset = -1;
     let use_lateral = has_lateral_g && lat_range >= 0.15;
@@ -197,6 +207,12 @@ fn detect_turn_in(lap: &UnifiedLap, first: i32, apex: i32, has_lateral_g: bool) 
     onset
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
 fn near_gear_shift(lap: &UnifiedLap, index: i32, window: i32) -> bool {
     if lap.gear.len() < 2 {
         return false;
@@ -209,6 +225,20 @@ fn near_gear_shift(lap: &UnifiedLap, index: i32, window: i32) -> bool {
 /// Measure one corner of one lap; `start_fraction`/`end_fraction` are lap
 /// fractions. The caller maps a reference zone through the shared
 /// primary -> reference station map first.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep the ported analysis/report stages in source order so numerical and CLI parity remain auditable."
+)]
+#[expect(
+    clippy::neg_cmp_op_on_partial_ord,
+    reason = "Negated ordered comparisons deliberately include unordered (NaN) values; preserve that behavior."
+)]
 pub fn measure_corner(
     lap: &UnifiedLap,
     start_fraction: f64,
@@ -437,7 +467,7 @@ pub fn measure_corner(
     m.combined_grip_early = f64::NAN;
     m.combined_grip_mid = f64::NAN;
     if m.has_lateral_g && turn_in >= 0 && apex_index > turn_in + 1 {
-        let split = (turn_in + apex_index) / 2;
+        let split = i32::midpoint(turn_in, apex_index);
         let average = |from: i32, to: i32| -> f64 {
             let mut sum = 0.0;
             let mut count = 0;

@@ -145,7 +145,7 @@ impl RecordingMetadataForm {
         app: AppState,
         node: &SessionNode,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) -> Self {
         let path = node.file.path().to_path_buf();
         let current = app
@@ -171,7 +171,7 @@ impl RecordingMetadataForm {
             .iter()
             .map(|(_, input)| {
                 cx.subscribe(input, |this, _, event: &InputEvent, cx| {
-                    if let InputEvent::Change = event {
+                    if matches!(event, InputEvent::Change) {
                         this.refresh(cx);
                     }
                 })
@@ -191,6 +191,7 @@ impl RecordingMetadataForm {
                         .unwrap_or_default()
                 })
                 .await;
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no deferred result; this weak entity/window handle may already be gone.")]
             let _ = this.update(cx, |this, cx| {
                 this.folder = Some(folder);
                 this.refresh(cx);
@@ -213,6 +214,14 @@ impl RecordingMetadataForm {
     }
 
     /// The input of `field`.
+    ///
+    /// # Panics
+    /// Panics if construction failed to create an input for every field; callers can
+    /// only pass the fixed field enum.
+    #[expect(
+        clippy::expect_used,
+        reason = "Construction creates one input for every variant of this fixed field enum."
+    )]
     pub fn input(&self, field: MetadataField) -> &Entity<InputState> {
         &self
             .inputs
@@ -252,7 +261,7 @@ impl RecordingMetadataForm {
 
     /// Revalidate the draft and recompute the preview (on input, on a
     /// preferences change, when the folder chain arrives).
-    fn refresh(&mut self, cx: &mut Context<Self>) {
+    fn refresh(&mut self, cx: &mut Context<'_, Self>) {
         self.errors = self
             .inputs
             .iter()
@@ -280,7 +289,7 @@ impl RecordingMetadataForm {
     /// Save the draft as the recording's override (an empty draft removes
     /// it) and rescan so the library shows it. False, with the errors
     /// shown, when a field is invalid; the dialog then stays open.
-    pub fn save(&mut self, cx: &mut Context<Self>) -> bool {
+    pub fn save(&mut self, cx: &mut Context<'_, Self>) -> bool {
         self.refresh(cx);
         if !self.errors.is_empty() {
             return false;
@@ -311,7 +320,7 @@ impl RecordingMetadataForm {
         });
         self.app
             .library
-            .update(cx, |library, cx| library.rescan(cx));
+            .update(cx, super::super::state::library::Library::rescan);
         true
     }
 
@@ -330,7 +339,7 @@ impl RecordingMetadataForm {
 }
 
 impl Render for RecordingMetadataForm {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let theme = cx.theme();
         let fields = self.inputs.iter().map(|(field, input)| {
             let (status, invalid) = self.status(*field);
@@ -411,7 +420,7 @@ pub fn open(
                             .child(Button::new("metadata-save").primary().label("Save")),
                     ),
             )
-            .on_ok(move |_, _, cx| saving.update(cx, |form, cx| form.save(cx)))
+            .on_ok(move |_, _, cx| saving.update(cx, RecordingMetadataForm::save))
     });
     let first = form.read(cx).input(MetadataField::Driver).clone();
     first.update(cx, |input, cx| input.focus(window, cx));

@@ -2,6 +2,8 @@
 //! components in a headless window under `Root`, driven by native pointer
 //! events.
 
+#![cfg(test)]
+
 use std::sync::Arc;
 
 use gpui_kit::component::Root;
@@ -100,7 +102,7 @@ struct Session {
 }
 
 impl Render for Session {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let this = cx.entity().downgrade();
         div().size_full().p_4().child(
             LapStrip::new("lap-strip", self.items.clone())
@@ -163,6 +165,10 @@ fn cell(id: u32) -> (&'static str, u32) {
 }
 
 #[gpui_kit::test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn lap_strip_cells_follow_the_layout(cx: &mut TestAppContext) {
     let (window, _) = open_strip(cx);
     cx.update_window(window, |_, window, _| {
@@ -294,7 +300,7 @@ struct VideoPane {
 }
 
 impl Render for VideoPane {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let this = cx.entity().downgrade();
         div().size_full().p_4().child(
             div()

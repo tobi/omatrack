@@ -1,6 +1,8 @@
 //! UI integration tests for the trace stack: real `TraceStack` in a
 //! headless window under `Root`, driven by native pointer events.
 
+#![cfg(test)]
+
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -49,7 +51,7 @@ fn open(cx: &mut TestAppContext) -> Fixture {
     let sink = events.clone();
     cx.update(|cx| {
         cx.subscribe(&stack, move |_, event: &TraceEvent, _| {
-            sink.borrow_mut().push(event.clone())
+            sink.borrow_mut().push(event.clone());
         })
         .detach();
     });
@@ -287,7 +289,7 @@ fn double_click_resets_the_viewport(cx: &mut TestAppContext) {
         .update(cx, |v, cx| v.set_viewport(Viewport::new(0.3, 0.4), cx));
     cx.run_until_parked();
     cx.update_window(f.window, |_, window, cx| {
-        window.double_click("trace-plot", cx)
+        window.double_click("trace-plot", cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -298,6 +300,10 @@ fn double_click_resets_the_viewport(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn vertical_wheel_scrolls_overflowing_lanes(cx: &mut TestAppContext) {
     let f = open(cx);
     let mut styles = LaneStyles::new();
@@ -374,7 +380,7 @@ fn theme_change_repaints_without_rebuilding_geometry(cx: &mut TestAppContext) {
 fn zoom_rebuilds_geometry_once(cx: &mut TestAppContext) {
     let f = open(cx);
     let before = cx.update(|cx| f.stack.read(cx).static_stats(cx));
-    f.stack.update(cx, |stack, cx| stack.zoom_in(cx));
+    f.stack.update(cx, TraceStack::zoom_in);
     cx.run_until_parked();
     cx.update_window(f.window, |_, window, cx| draw(window, cx))
         .unwrap();
@@ -444,6 +450,10 @@ fn lane_legends_show_values_only_with_a_cursor(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn legend_values_share_column_spines_and_never_clip(cx: &mut TestAppContext) {
     let f = open(cx);
     share_brake_with_throttle(cx, &f);
@@ -642,6 +652,10 @@ fn release(cx: &mut TestAppContext, f: &Fixture, position: Point<Pixels>) {
 }
 
 #[gpui_kit::test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn corner_edit_drag_stays_off_the_static_layer(cx: &mut TestAppContext) {
     let f = open(cx);
     f.stack
@@ -691,6 +705,10 @@ fn corner_edit_drag_stays_off_the_static_layer(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn resize_mode_drags_lane_dividers(cx: &mut TestAppContext) {
     let f = open(cx);
     f.stack.update(cx, |stack, cx| stack.set_resizing(true, cx));

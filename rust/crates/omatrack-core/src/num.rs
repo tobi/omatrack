@@ -29,14 +29,24 @@ pub fn clamp(v: f64, lo: f64, hi: f64) -> f64 {
     }
 }
 
-/// `std::llround` exactly as glibc on x86-64: half away from zero, and
-/// `LLONG_MIN` for NaN, infinities and out-of-range values (the hardware
-/// conversion result). Rust's saturating `as` would disagree on those.
+/// `std::llround` exactly as glibc on x86-64: half away from zero, and `LLONG_MIN` for
+/// NaN, infinities and out-of-range values (the hardware conversion result).
+///
+/// Rust's saturating `as` would disagree on those.
 #[inline]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Reproduce the documented C++ integer conversion, including rounding and overflow bit patterns."
+)]
 pub fn llround(v: f64) -> i64 {
-    let r = v.round();
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "Reproduce the documented C++ integer conversion, including rounding and overflow bit patterns."
+    )]
     const LOW: f64 = i64::MIN as f64;
-    if r.is_nan() || r < LOW || r >= -LOW {
+
+    let r = v.round();
+    if r.is_nan() || !(LOW..-LOW).contains(&r) {
         return i64::MIN;
     }
     r as i64
@@ -44,6 +54,10 @@ pub fn llround(v: f64) -> i64 {
 
 /// `int(std::llround(v))`: the long long truncated to 32 bits.
 #[inline]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Reproduce the documented C++ integer conversion, including rounding and overflow bit patterns."
+)]
 pub fn llround_i32(v: f64) -> i32 {
     llround(v) as i32
 }
@@ -63,6 +77,10 @@ pub fn clamp_i(v: i64, lo: i64, hi: i64) -> i64 {
 /// `int(x)` of a double as x86-64 compiles it (`cvttsd2si`): truncation
 /// toward zero, `INT_MIN` for NaN and out-of-range values.
 #[inline]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Reproduce the documented C++ integer conversion, including rounding and overflow bit patterns."
+)]
 pub fn trunc_i32(v: f64) -> i32 {
     if v.is_nan() || v <= -2_147_483_649.0 || v >= 2_147_483_648.0 {
         return i32::MIN;

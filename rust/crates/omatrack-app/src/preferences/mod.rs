@@ -162,7 +162,7 @@ impl PreferencesSection {
 }
 
 /// A labelled option of a preference `Select`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choice<T> {
     value: T,
     title: SharedString,
@@ -205,7 +205,7 @@ pub struct PreferencesView {
 }
 
 impl PreferencesView {
-    pub fn new(app: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(app: AppState, window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
         let x_axis = cx.new(|cx| {
             SelectState::new(
                 vec![
@@ -271,7 +271,7 @@ impl PreferencesView {
             // The palette and other surfaces edit the same settings while
             // the screen is open: keep the selects in step with the document.
             cx.subscribe_in(&app.preferences, window, |this, _, event, window, cx| {
-                if let PreferencesEvent::Changed = event {
+                if matches!(event, PreferencesEvent::Changed) {
                     this.sync_selects(window, cx);
                 }
             }),
@@ -306,7 +306,7 @@ impl PreferencesView {
         &mut self,
         section: PreferencesSection,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) {
         self.section = section;
         self.focus_nav(window, cx);
@@ -323,14 +323,14 @@ impl PreferencesView {
         self.nav_focus.is_focused(window)
     }
 
-    fn step_section(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
+    fn step_section(&mut self, step: isize, window: &mut Window, cx: &mut Context<'_, Self>) {
         let next = self.section.step(step);
         if next != self.section {
             self.select_section(next, window, cx);
         }
     }
 
-    fn sync_selects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn sync_selects(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         let video = self.app.preferences.read(cx).config().video.clone();
         let axis = self.app.preferences.read(cx).config().trace.x_axis();
         let strategy = video.reference_sync();
@@ -353,7 +353,7 @@ impl PreferencesView {
     }
 
     /// The default x axis is the one the traces show: change both.
-    fn set_x_axis(&mut self, axis: XAxis, cx: &mut Context<Self>) {
+    fn set_x_axis(&mut self, axis: XAxis, cx: &mut Context<'_, Self>) {
         let trace_axis = match axis {
             XAxis::Distance => omatrack_trace::XAxis::Distance,
             XAxis::Time => omatrack_trace::XAxis::Time,
@@ -368,7 +368,7 @@ impl PreferencesView {
         });
     }
 
-    fn render_nav(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_nav(&self, window: &Window, cx: &mut Context<'_, Self>) -> AnyElement {
         let focused = self.is_nav_focused(window);
         let theme = cx.theme();
         let ring = theme.ring;
@@ -441,10 +441,10 @@ impl PreferencesView {
             .key_context(PREFERENCES_NAV_CONTEXT)
             .track_focus(&self.nav_focus)
             .on_action(cx.listener(|this, _: &PrevPreferencesSection, window, cx| {
-                this.step_section(-1, window, cx)
+                this.step_section(-1, window, cx);
             }))
             .on_action(cx.listener(|this, _: &NextPreferencesSection, window, cx| {
-                this.step_section(1, window, cx)
+                this.step_section(1, window, cx);
             }))
             .h_full()
             .flex_none()
@@ -458,20 +458,20 @@ impl PreferencesView {
             .into_any_element()
     }
 
-    fn render_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_page(&mut self, cx: &mut Context<'_, Self>) -> AnyElement {
         match self.section {
             PreferencesSection::Library => self.render_library(cx),
             PreferencesSection::Traces => self.render_traces(cx),
             PreferencesSection::Video => self.render_video(cx),
             PreferencesSection::Drivers => self.render_drivers(cx),
             PreferencesSection::Tracks => self.render_tracks(cx),
-            PreferencesSection::Appearance => self.render_appearance(cx),
+            PreferencesSection::Appearance => Self::render_appearance(cx),
         }
     }
 }
 
 impl Render for PreferencesView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let page = self.render_page(cx);
         let nav = self.render_nav(window, cx);
         h_flex()

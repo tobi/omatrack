@@ -1,7 +1,7 @@
 //! Whether a bound video is provably the one its telemetry describes.
 //!
 //! Sync applies a video's clock only to a trusted video: the recording
-//! itself (an AiM MP4) or a companion whose BLAKE3 matches the catalog.
+//! itself (an `AiM` MP4) or a companion whose BLAKE3 matches the catalog.
 //! Anything else keeps playing but does not drive or follow the cursor, and
 //! the panel says why — never a silent seek on a clock that may not apply.
 //! Hashing reads the whole file, so it runs on a worker ([`check`]).

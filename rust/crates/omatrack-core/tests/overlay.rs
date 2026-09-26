@@ -1,5 +1,7 @@
 //! The channel-source seam: both providers put channels on the lap grid.
 
+#![cfg(test)]
+
 use omatrack_core::overlay::{ChannelProvider, SourceChannels, StandardChannels};
 use omatrack_core::{ChannelOverrides, RawChannel, Recording};
 
@@ -26,6 +28,10 @@ fn recording() -> Recording {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn standard_channels_follow_the_lap_grid() {
     let rec = recording();
     let lap = rec.unify_lap(0.0, 2.0, &ChannelOverrides::new());
@@ -46,6 +52,10 @@ fn standard_channels_follow_the_lap_grid() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn source_channels_resample_through_the_source_clock() {
     let rec = recording();
     let lap = rec.unify_lap(0.5, 2.0, &ChannelOverrides::new());

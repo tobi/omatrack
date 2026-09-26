@@ -196,7 +196,7 @@ pub struct TimeGoesPanel {
 }
 
 impl TimeGoesPanel {
-    pub fn new(app: AppState, cx: &mut Context<Self>) -> Self {
+    pub fn new(app: AppState, cx: &mut Context<'_, Self>) -> Self {
         let map = cx.new(|cx| TrackMap::new(app.cursor.clone(), cx));
         let subscriptions = vec![
             cx.observe(&app.session, |this, _, cx| this.sync_analysis(cx)),
@@ -235,7 +235,7 @@ impl TimeGoesPanel {
         self.lines.iter().find(|line| &line.id == id)
     }
 
-    fn sync_analysis(&mut self, cx: &mut Context<Self>) {
+    fn sync_analysis(&mut self, cx: &mut Context<'_, Self>) {
         let analysis = self.app.session.read(cx).analysis().cloned();
         let same = match (&analysis, &self.shown) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
@@ -245,12 +245,11 @@ impl TimeGoesPanel {
         if !same {
             let data = analysis
                 .as_deref()
-                .map(|analysis| {
+                .map_or_else(TrackMapData::new, |analysis| {
                     let rate = analysis.loss_rate();
                     map::map_layers(analysis)
                         .with_heat((!rate.is_empty()).then(|| Arc::<[f64]>::from(rate)))
-                })
-                .unwrap_or_else(TrackMapData::new);
+                });
             self.map.update(cx, |map, cx| {
                 map.set_data(Arc::new(data), cx);
                 map.set_focused_corner(None, cx);
@@ -268,7 +267,7 @@ impl TimeGoesPanel {
         cx.notify();
     }
 
-    fn on_map_event(&mut self, event: &TrackMapEvent, cx: &mut Context<Self>) {
+    fn on_map_event(&mut self, event: &TrackMapEvent, cx: &mut Context<'_, Self>) {
         match event {
             TrackMapEvent::MapHover(fraction) => {
                 let fraction = *fraction;
@@ -288,7 +287,7 @@ impl TimeGoesPanel {
 
     /// Derive the selected corner from the cursor (see the module docs);
     /// notify only when it changes.
-    fn follow_cursor(&mut self, cx: &mut Context<Self>) {
+    fn follow_cursor(&mut self, cx: &mut Context<'_, Self>) {
         let cursor = self.app.cursor.read(cx);
         let (focus, fraction) = (cursor.focus(), cursor.fraction());
         let selected = focus
@@ -331,7 +330,7 @@ impl TimeGoesPanel {
             .is_some_and(crate::workspace::status::analysis_approximate)
     }
 
-    fn render_header(&self, palette: &TracePalette, heat: bool, cx: &App) -> impl IntoElement {
+    fn render_header(palette: &TracePalette, heat: bool, cx: &App) -> impl IntoElement {
         let theme = cx.theme();
         let key = |color: Hsla, label: &'static str| {
             h_flex()
@@ -364,7 +363,15 @@ impl TimeGoesPanel {
             })
     }
 
-    fn render_table(&self, palette: &TracePalette, cx: &mut Context<Self>) -> impl IntoElement {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
+    fn render_table(&self, palette: &TracePalette, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let theme = cx.theme();
         let approximate = self.approximate();
         let worst = self
@@ -499,7 +506,7 @@ impl TimeGoesPanel {
     }
 
     /// Why nothing is ranked: the map does not place time loss.
-    fn render_unplaced(&self, analysis: &Analysis, cx: &App) -> impl IntoElement {
+    fn render_unplaced(analysis: &Analysis, cx: &App) -> impl IntoElement {
         let theme = cx.theme();
         let gap = analysis
             .lap_time_delta()
@@ -562,6 +569,10 @@ impl TimeGoesPanel {
         )
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
     fn render_card(&self, cx: &App) -> Option<impl IntoElement> {
         let line = self.selected()?.clone();
         let theme = cx.theme();
@@ -600,7 +611,7 @@ impl TimeGoesPanel {
         let paragraph = placed
             .then_some(split)
             .into_iter()
-            .chain(line.notes().map(|note| note.to_string()))
+            .chain(line.notes().map(ToString::to_string))
             .collect::<Vec<_>>()
             .join(" ");
         let loss_color = if line.dt > 0.0 {
@@ -640,7 +651,7 @@ impl TimeGoesPanel {
                                 .text_heading()
                                 .font_semibold()
                                 .text_color(theme.foreground)
-                                .child(line.name.clone()),
+                                .child(line.name),
                         )
                         .children(headline.map(|headline| {
                             div().numeric().text_color(loss_color).child(headline)
@@ -676,7 +687,7 @@ impl TimeGoesPanel {
         &self,
         analysis: &Analysis,
         window: &Window,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) -> AnyElement {
         // Measured runtime geometry: the window's height caps the map.
         let map_height = (window.rem_size() * MAP_REMS)
@@ -707,7 +718,7 @@ impl TimeGoesPanel {
         } else if !analysis.time_loss_placed() {
             v_flex()
                 .gap_3()
-                .child(self.render_unplaced(analysis, cx))
+                .child(Self::render_unplaced(analysis, cx))
                 .children(self.render_card(cx))
                 .into_any_element()
         } else {
@@ -725,7 +736,7 @@ impl TimeGoesPanel {
             .px_3()
             .py_2()
             .gap_3()
-            .child(self.render_header(&palette, heat, cx))
+            .child(Self::render_header(&palette, heat, cx))
             .when(has_map, |this| {
                 this.child(div().flex_shrink_0().h(map_height).child(self.map.clone()))
             })
@@ -749,7 +760,7 @@ impl gpui_kit::component::dock::Panel for TimeGoesPanel {
         Some(PanelKind::TimeGoes.title().into())
     }
 
-    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn title(&mut self, _: &mut Window, _: &mut Context<'_, Self>) -> impl IntoElement {
         PanelKind::TimeGoes.title()
     }
 
@@ -768,7 +779,7 @@ impl gpui_kit::Focusable for TimeGoesPanel {
 }
 
 impl Render for TimeGoesPanel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let root = div()
             .id("time-goes-panel")
             .test_support()

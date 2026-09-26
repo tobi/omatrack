@@ -1,10 +1,18 @@
 //! cfmt against the C library it must match byte for byte: random specs and
 //! values, exact ties, non-finite spellings and byte-width string padding.
-#![allow(unsafe_code)]
+#![cfg(test)]
+#![expect(
+    unsafe_code,
+    reason = "The independent formatting oracle calls libc snprintf directly."
+)]
 
 use omatrack_core::cfmt::{Arg, fixed, sprintf};
 use std::ffi::CString;
 
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "Exercise C printf with bounded buffers and deliberate integer bit patterns and floating-point rounding."
+)]
 fn c_double(spec: &str, value: f64) -> String {
     let spec = CString::new(spec).unwrap();
     let mut buffer = vec![0u8; 1024];
@@ -20,6 +28,10 @@ fn c_double(spec: &str, value: f64) -> String {
     String::from_utf8(buffer[..n as usize].to_vec()).unwrap()
 }
 
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "Exercise C printf with bounded buffers and deliberate integer bit patterns and floating-point rounding."
+)]
 fn c_long_long(spec: &str, value: i64) -> String {
     let spec = CString::new(spec).unwrap();
     let mut buffer = vec![0u8; 128];
@@ -44,9 +56,17 @@ impl Rng {
         self.0 ^= self.0 >> 27;
         self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
     }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Exercise C printf with bounded buffers and deliberate integer bit patterns and floating-point rounding."
+    )]
     fn pick<'a, T>(&mut self, items: &'a [T]) -> &'a T {
         &items[(self.next() % items.len() as u64) as usize]
     }
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "Exercise C printf with bounded buffers and deliberate integer bit patterns and floating-point rounding."
+    )]
     fn value(&mut self) -> f64 {
         match self.next() % 6 {
             // Arbitrary bit patterns (incl. subnormals, huge values).
@@ -130,6 +150,10 @@ fn exact_ties_round_like_glibc() {
 }
 
 #[test]
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "Exercise C printf with bounded buffers and deliberate integer bit patterns and floating-point rounding."
+)]
 fn integers_match_snprintf() {
     let mut rng = Rng(42);
     for _ in 0..5_000 {

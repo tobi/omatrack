@@ -37,6 +37,12 @@ impl VideoMap {
     }
 
     /// Presentation time (s) of file-relative telemetry time (s).
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        reason = "The media clock uses seconds while VideoClock uses nanoseconds; nonnegative values are rounded at this boundary."
+    )]
     pub fn presentation_at(&self, telemetry: f64) -> Option<f64> {
         if !telemetry.is_finite() {
             return None;
@@ -53,6 +59,12 @@ impl VideoMap {
     }
 
     /// File-relative telemetry time (s) of a presentation time (s).
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        reason = "The media clock uses seconds while VideoClock uses nanoseconds; nonnegative values are rounded at this boundary."
+    )]
     pub fn telemetry_at(&self, presentation: f64) -> Option<f64> {
         if !presentation.is_finite() {
             return None;
@@ -181,6 +193,12 @@ impl LapTimeline {
 mod tests {
     use super::*;
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+    )]
     fn lap(seconds: f64, start: f64) -> Arc<UnifiedLap> {
         let count = (seconds * 50.0) as usize + 1;
         Arc::new(UnifiedLap {
@@ -191,6 +209,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn offset_map_round_trips_through_the_lap() {
         let timeline = LapTimeline::from_unified(3, lap(60.0, 100.0), VideoMap::Offset(2.5));
         // Lap start: telemetry 100 s, video 102.5 s.

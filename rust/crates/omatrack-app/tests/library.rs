@@ -1,6 +1,8 @@
 //! UI integration tests for the library panel: keyboard navigation of the
 //! session tree sets the primary and the reference lap.
 
+#![cfg(test)]
+
 mod common;
 
 use gpui_kit::AppContext as _;
@@ -12,7 +14,7 @@ use omatrack_app::state::LapRef;
 /// forward (and focuses its tree).
 fn show_library(test: &common::TestApp, cx: &mut TestAppContext) {
     cx.update_window(test.window.into(), |_, window, cx| {
-        window.press("ctrl-6", cx)
+        window.press("ctrl-6", cx);
     })
     .unwrap();
     cx.run_until_parked();

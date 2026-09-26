@@ -13,7 +13,7 @@ use gpui_kit::{Context, SharedString, Task};
 pub struct JobId(u64);
 
 /// One running job (presentation snapshot).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Job {
     id: JobId,
     label: SharedString,
@@ -52,6 +52,10 @@ impl JobHandle {
 impl Drop for JobHandle {
     fn drop(&mut self) {
         // Unbounded: only fails once `Jobs` itself is gone.
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "This unbounded completion channel closes only after the Jobs entity is dropped."
+        )]
         let _ = self.ended.try_send(self.id);
     }
 }
@@ -66,7 +70,7 @@ pub struct Jobs {
 }
 
 impl Jobs {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(cx: &mut Context<'_, Self>) -> Self {
         let (ended, dropped) = async_channel::unbounded::<JobId>();
         let reaper = cx.spawn(async move |this, cx| {
             while let Ok(id) = dropped.recv().await {
@@ -83,7 +87,11 @@ impl Jobs {
         }
     }
 
-    pub fn start(&mut self, label: impl Into<SharedString>, cx: &mut Context<Self>) -> JobHandle {
+    pub fn start(
+        &mut self,
+        label: impl Into<SharedString>,
+        cx: &mut Context<'_, Self>,
+    ) -> JobHandle {
         self.next += 1;
         let id = JobId(self.next);
         self.running.push(Job {
@@ -98,7 +106,13 @@ impl Jobs {
         }
     }
 
-    pub fn set_progress(&mut self, id: JobId, done: usize, total: usize, cx: &mut Context<Self>) {
+    pub fn set_progress(
+        &mut self,
+        id: JobId,
+        done: usize,
+        total: usize,
+        cx: &mut Context<'_, Self>,
+    ) {
         if let Some(job) = self.running.iter_mut().find(|job| job.id == id)
             && job.progress != Some((done, total))
         {
@@ -108,11 +122,12 @@ impl Jobs {
     }
 
     /// End the job now (its handle's drop is then a no-op).
-    pub fn finish(&mut self, job: JobHandle, cx: &mut Context<Self>) {
+    pub fn finish(&mut self, job: JobHandle, cx: &mut Context<'_, Self>) {
         self.remove(job.id, cx);
+        drop(job);
     }
 
-    fn remove(&mut self, id: JobId, cx: &mut Context<Self>) {
+    fn remove(&mut self, id: JobId, cx: &mut Context<'_, Self>) {
         let before = self.running.len();
         self.running.retain(|job| job.id != id);
         if self.running.len() != before {

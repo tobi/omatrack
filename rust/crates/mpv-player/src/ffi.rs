@@ -271,7 +271,7 @@ impl MpvHandle {
                 userdata,
                 name.as_ptr(),
                 sys::mpv_format_MPV_FORMAT_FLAG,
-                (&mut flag as *mut c_int).cast::<c_void>(),
+                (&raw mut flag).cast::<c_void>(),
             )
         })
     }
@@ -292,7 +292,7 @@ impl MpvHandle {
                 userdata,
                 name.as_ptr(),
                 sys::mpv_format_MPV_FORMAT_DOUBLE,
-                (&mut number as *mut f64).cast::<c_void>(),
+                (&raw mut number).cast::<c_void>(),
             )
         })
     }
@@ -307,7 +307,7 @@ impl MpvHandle {
                 self.ptr(),
                 name.as_ptr(),
                 sys::mpv_format_MPV_FORMAT_DOUBLE,
-                (&mut value as *mut f64).cast::<c_void>(),
+                (&raw mut value).cast::<c_void>(),
             )
         })?;
         Ok(value)
@@ -323,7 +323,7 @@ impl MpvHandle {
                 self.ptr(),
                 name.as_ptr(),
                 sys::mpv_format_MPV_FORMAT_INT64,
-                (&mut value as *mut i64).cast::<c_void>(),
+                (&raw mut value).cast::<c_void>(),
             )
         })?;
         Ok(value)
@@ -353,7 +353,7 @@ impl MpvHandle {
         let _serialized = self
             .wait_lock
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // SAFETY: valid handle; calls are serialized by `wait_lock`. The
         // returned pointer is never NULL and stays valid until the next
         // mpv_wait_event on this handle, which cannot happen before this
@@ -416,16 +416,16 @@ unsafe fn convert_event(event: &sys::mpv_event) -> RawEvent {
                 PropertyValue::Unavailable
             } else {
                 match property.format {
-                    // SAFETY: FLAG data points to an `int`.
                     sys::mpv_format_MPV_FORMAT_FLAG => {
+                        // SAFETY: non-null FLAG data points to an `int` valid until the next event.
                         PropertyValue::Flag(unsafe { *property.data.cast::<c_int>() } != 0)
                     }
-                    // SAFETY: DOUBLE data points to a `double`.
                     sys::mpv_format_MPV_FORMAT_DOUBLE => {
+                        // SAFETY: non-null DOUBLE data points to a `double` valid until the next event.
                         PropertyValue::Double(unsafe { *property.data.cast::<f64>() })
                     }
-                    // SAFETY: INT64 data points to an `int64_t`.
                     sys::mpv_format_MPV_FORMAT_INT64 => {
+                        // SAFETY: non-null INT64 data points to an `int64_t` valid until the next event.
                         PropertyValue::Int64(unsafe { *property.data.cast::<i64>() })
                     }
                     _ => PropertyValue::Unavailable,
@@ -523,7 +523,7 @@ impl SwRenderContext {
         // SAFETY: valid handle; `params` is a 0-terminated array whose API
         // type points to the NUL-terminated "sw" string, alive for the call.
         check(unsafe {
-            sys::mpv_render_context_create(&mut raw, handle.ptr(), params.as_mut_ptr())
+            sys::mpv_render_context_create(&raw mut raw, handle.ptr(), params.as_mut_ptr())
         })?;
         let raw = NonNull::new(raw)
             .ok_or_else(|| MpvError::local("mpv_render_context_create returned NULL"))?;
@@ -538,9 +538,7 @@ impl SwRenderContext {
     /// signal (never call mpv).
     pub(crate) fn set_update_callback(&mut self, callback: impl Fn() + Send + Sync + 'static) {
         let boxed: Box<UpdateCallback> = Box::new(Box::new(callback));
-        let context = (&*boxed as *const UpdateCallback)
-            .cast_mut()
-            .cast::<c_void>();
+        let context = (&raw const *boxed).cast_mut().cast::<c_void>();
         // SAFETY: valid context; the trampoline matches `mpv_render_update_fn`
         // and `context` points to a heap allocation stored in `self.callback`
         // below, which outlives the registration (cleared in Drop first).
@@ -549,7 +547,7 @@ impl SwRenderContext {
                 self.raw.as_ptr(),
                 Some(update_trampoline),
                 context,
-            )
+            );
         };
         // Replacing an older callback is safe: mpv has switched to the new
         // context pointer before this assignment drops the old box.
@@ -575,20 +573,27 @@ impl SwRenderContext {
         if width == 0 || height == 0 {
             return Err(MpvError::local("empty render target"));
         }
+        let mut size: [c_int; 2] = [
+            c_int::try_from(width)
+                .map_err(|_| MpvError::local("render width exceeds libmpv's integer range"))?,
+            c_int::try_from(height)
+                .map_err(|_| MpvError::local("render height exceeds libmpv's integer range"))?,
+        ];
         let row = width as usize * 4;
         if stride < row || stride % 4 != 0 {
             return Err(MpvError::local(format!(
                 "stride {stride} too small for width {width}"
             )));
         }
-        let needed = stride * height as usize;
+        let needed = stride
+            .checked_mul(height as usize)
+            .ok_or_else(|| MpvError::local("render target byte size overflows"))?;
         if buffer.len() < needed {
             return Err(MpvError::local(format!(
                 "buffer of {} bytes, need {needed}",
                 buffer.len()
             )));
         }
-        let mut size: [c_int; 2] = [width as c_int, height as c_int];
         let mut format = *b"bgr0\0";
         let mut stride_value: usize = stride;
         let mut params = [
@@ -602,7 +607,7 @@ impl SwRenderContext {
             },
             sys::mpv_render_param {
                 type_: sys::mpv_render_param_type_MPV_RENDER_PARAM_SW_STRIDE,
-                data: (&mut stride_value as *mut usize).cast::<c_void>(),
+                data: (&raw mut stride_value).cast::<c_void>(),
             },
             sys::mpv_render_param {
                 type_: sys::mpv_render_param_type_MPV_RENDER_PARAM_SW_POINTER,
@@ -631,7 +636,7 @@ impl SwRenderContext {
         let mut params = [
             sys::mpv_render_param {
                 type_: sys::mpv_render_param_type_MPV_RENDER_PARAM_SKIP_RENDERING,
-                data: (&mut skip as *mut c_int).cast::<c_void>(),
+                data: (&raw mut skip).cast::<c_void>(),
             },
             sys::mpv_render_param {
                 type_: 0,
@@ -697,6 +702,10 @@ impl AlignedBuffer {
 
 /// The libmpv client API version the linked library reports, as
 /// `(major, minor)`.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "libmpv packs two 16-bit API version components into an unsigned long."
+)]
 pub fn client_api_version() -> (u32, u32) {
     // SAFETY: mpv_client_api_version takes no arguments and has no
     // preconditions.

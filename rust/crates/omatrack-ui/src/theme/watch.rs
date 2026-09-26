@@ -79,6 +79,10 @@ impl PaletteWatcher {
                 if let Err(error) = event {
                     log::warn!("Omarchy theme watcher error: {error}");
                 }
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "Bounded wakeups coalesce when full; a closed receiver means the consumer has gone away."
+                )]
                 let _ = sender.try_send(());
             }
         })?;
@@ -122,7 +126,9 @@ impl PaletteWatcher {
             if desired.get(path) == Some(old) {
                 true
             } else {
-                let _ = self.watcher.unwatch(path);
+                if let Err(error) = self.watcher.unwatch(path) {
+                    log::debug!("could not remove theme watch {}: {error}", path.display());
+                }
                 false
             }
         });
@@ -133,7 +139,7 @@ impl PaletteWatcher {
                         self.paths.insert(path, identity);
                     }
                     Err(error) => {
-                        log::warn!("Cannot watch Omarchy path {}: {error}", path.display())
+                        log::warn!("Cannot watch Omarchy path {}: {error}", path.display());
                     }
                 }
             }

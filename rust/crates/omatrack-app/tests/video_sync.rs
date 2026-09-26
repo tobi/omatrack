@@ -11,6 +11,8 @@
 //! - `real_*` (ignored; `OMATRACK_FIXTURES`): Run4's and Run1's fastest laps
 //!   through libmpv with a null audio output. The recordings are read-only.
 
+#![cfg(test)]
+
 mod common;
 
 use std::sync::Arc;
@@ -47,6 +49,12 @@ const RATE: f64 = 50.0;
 
 /// A lap of `seconds` at 50 Hz whose speed shape repeats every lap; the
 /// reference is `slowdown` times slower everywhere.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn unified(seconds: f64, start: f64, slowdown: f64) -> Arc<UnifiedLap> {
     let count = (seconds * slowdown * RATE) as usize + 1;
     let time: Vec<f64> = (0..count).map(|i| i as f64 / RATE).collect();
@@ -96,6 +104,12 @@ const FIRST_LAP_START: f64 = 5.0;
 const DURATION: f64 = 70.0;
 
 /// A synthetic recording: out, laps 1-3 of 20 s, in.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn recording() -> Arc<Recording> {
     let count = (DURATION * RATE) as usize;
     let mut speed = Vec::with_capacity(count);
@@ -383,7 +397,7 @@ fn mock(cx: &mut TestAppContext, lap_id: i32) -> Mock {
         video.update(cx, |video, cx| {
             video.attach_external_clock(bound_clock, VideoMap::Offset(VIDEO_OFFSET), cx);
             video.bind(Some(&bound_lap), cx);
-        })
+        });
     });
     cx.run_until_parked();
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
@@ -411,7 +425,7 @@ fn video_at(mock: &Mock, fraction: f64, cx: &mut TestAppContext) -> f64 {
 
 fn play(mock: &Mock, cx: &mut TestAppContext) {
     let video = mock.video();
-    cx.update(|cx| video.update(cx, |video, cx| video.toggle_play(cx)));
+    cx.update(|cx| video.update(cx, VideoController::toggle_play));
     cx.run_until_parked();
     assert!(cx.update(|cx| video.read(cx).is_playing()));
 }
@@ -492,7 +506,7 @@ fn the_cursor_follows_the_mock_clock_and_leaves_the_static_traces_alone(cx: &mut
 
     // Pausing stops the pull.
     let video = mock.video();
-    cx.update(|cx| video.update(cx, |video, cx| video.toggle_play(cx)));
+    cx.update(|cx| video.update(cx, VideoController::toggle_play));
     cx.run_until_parked();
     mock.frame(cx);
     assert!(!cx.update(|cx| panel.read(cx).is_pulling()));
@@ -536,7 +550,7 @@ fn an_explicit_cursor_jump_seeks_the_video(cx: &mut TestAppContext) {
 
     // Left/Right seek 2 s and the cursor follows while paused.
     let video = mock.video();
-    cx.update(|cx| video.update(cx, |video, cx| video.toggle_play(cx)));
+    cx.update(|cx| video.update(cx, VideoController::toggle_play));
     cx.update(|cx| video.update(cx, |video, cx| video.seek_by(-2.0, cx)));
     cx.run_until_parked();
     let back = mock.cursor(cx).unwrap();
@@ -664,7 +678,7 @@ fn select_pair(mock: &Mock, cx: &mut TestAppContext) {
         session.update(cx, |session, cx| {
             session.set_primary(primary.into(), 3, cx);
             session.set_reference(reference.into(), 3, cx);
-        })
+        });
     });
     cx.run_until_parked();
 }
@@ -733,8 +747,11 @@ fn the_stage_controls_hide_after_two_idle_seconds_and_come_back_on_input(cx: &mu
     let panel = enter_stage(&mock, cx);
     let visible = |cx: &mut TestAppContext| cx.update(|cx| panel.read(cx).controls_visible());
     assert!(visible(cx), "the controls show on entering");
-    cx.executor()
-        .advance_clock(CONTROLS_HIDE_AFTER - Duration::from_millis(200));
+    cx.executor().advance_clock(
+        CONTROLS_HIDE_AFTER
+            .checked_sub(Duration::from_millis(200))
+            .unwrap(),
+    );
     cx.run_until_parked();
     assert!(visible(cx), "not before the idle time");
     cx.executor().advance_clock(Duration::from_millis(400));
@@ -802,7 +819,7 @@ fn the_telemetry_band_shows_only_on_the_stage_and_its_drag_end_persists(cx: &mut
 
     // The HUD toggle hides and restores the band.
     cx.update_window(mock.handle, |_, window, cx| {
-        window.click("video-stage-hud", cx)
+        window.click("video-stage-hud", cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -982,7 +999,7 @@ fn per_lap_playback_counts_down_into_the_next_lap(cx: &mut TestAppContext) {
     mock.set_clock(video_at(&mock, 1.0, cx) + 0.1);
     mock.frame(cx);
     assert_eq!(cx.update(|cx| video.read(cx).countdown()), Some(3));
-    cx.update(|cx| video.update(cx, |video, cx| video.toggle_play(cx)));
+    cx.update(|cx| video.update(cx, VideoController::toggle_play));
     assert_eq!(cx.update(|cx| video.read(cx).countdown()), None);
 }
 
@@ -991,11 +1008,11 @@ fn continuous_playback_adopts_the_next_lap_without_seeking(cx: &mut TestAppConte
     let mock = mock(cx, 1);
     let video = mock.video();
     let viewport = mock.test.app.viewport.clone();
-    cx.update(|cx| video.update(cx, |video, cx| video.toggle_continuous(cx)));
+    cx.update(|cx| video.update(cx, VideoController::toggle_continuous));
     cx.update(|cx| {
         viewport.update(cx, |viewport, cx| {
-            viewport.set_viewport(Viewport::new(0.4, 0.6), cx)
-        })
+            viewport.set_viewport(Viewport::new(0.4, 0.6), cx);
+        });
     });
     play(&mock, cx);
     // Past 70%: the next lap is prefetched; the playhead holds at 33%.
@@ -1051,9 +1068,9 @@ fn a_video_without_a_verified_identity_never_drives_the_cursor(cx: &mut TestAppC
         IdentityStatus::Untrusted { .. }
     ));
     let lap = load_lap(
-        recording.clone(),
+        recording,
         2,
-        &LoadOptions::default().with_video_path(Some(onboard.clone())),
+        &LoadOptions::default().with_video_path(Some(onboard)),
         &AtomicBool::new(false),
     )
     .unwrap();
@@ -1071,7 +1088,7 @@ fn a_video_without_a_verified_identity_never_drives_the_cursor(cx: &mut TestAppC
             .expect("a warning says why")
     });
     // A cursor jump does nothing to it, and the badge says why.
-    let cursor = test.app.cursor.clone();
+    let cursor = test.app.cursor;
     cx.update(|cx| cursor.update(cx, |cursor, cx| cursor.set_fraction(Some(0.5), cx)));
     cx.run_until_parked();
     assert_eq!(cx.update(|cx| cursor.read(cx).fraction()), Some(0.5));
@@ -1120,7 +1137,11 @@ fn settle(
 }
 
 #[gpui_kit::test]
-#[ignore]
+#[ignore = "requires private telemetry/video fixtures; set OMATRACK_FIXTURES"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Exercise the complete workflow in order, keeping its setup and state assertions together."
+)]
 fn real_run4_video_drives_the_cursor_and_run1_follows_the_map(cx: &mut TestAppContext) {
     // libmpv runs its own threads; the test waits on them.
     cx.executor().allow_parking();
@@ -1136,7 +1157,7 @@ fn real_run4_video_drives_the_cursor_and_run1_follows_the_map(cx: &mut TestAppCo
     let test = common::start(cx, options);
     let handle: AnyWindowHandle = test.window.into();
     let library = test.app.library.clone();
-    cx.update(|cx| library.update(cx, |library, cx| library.rescan(cx)));
+    cx.update(|cx| library.update(cx, omatrack_app::state::Library::rescan));
     settle(cx, "the library scan", Duration::from_secs(600), |cx| {
         cx.update(|cx| {
             let library = library.read(cx);
@@ -1161,7 +1182,7 @@ fn real_run4_video_drives_the_cursor_and_run1_follows_the_map(cx: &mut TestAppCo
     let video = test.app.video.clone();
     cx.update(|cx| {
         cx.subscribe(&video, move |_, event: &VideoEvent, _| {
-            sink.borrow_mut().push(event.clone())
+            sink.borrow_mut().push(event.clone());
         })
         .detach();
     });
@@ -1170,7 +1191,7 @@ fn real_run4_video_drives_the_cursor_and_run1_follows_the_map(cx: &mut TestAppCo
         session.update(cx, |session, cx| {
             session.set_primary(run4.id.clone().into(), run4_best, cx);
             session.set_reference(run1.id.clone().into(), run1_best, cx);
-        })
+        });
     });
     settle(
         cx,
@@ -1205,7 +1226,7 @@ fn real_run4_video_drives_the_cursor_and_run1_follows_the_map(cx: &mut TestAppCo
     );
 
     // Seek the primary to the lap midpoint (an explicit cursor jump).
-    let cursor = test.app.cursor.clone();
+    let cursor = test.app.cursor;
     cx.update(|cx| cursor.update(cx, |cursor, cx| cursor.set_fraction(Some(0.5), cx)));
     let frame = 1.0 / 60.0;
     settle(cx, "both seeks to land", Duration::from_secs(60), |cx| {
@@ -1251,7 +1272,7 @@ fn real_run4_video_drives_the_cursor_and_run1_follows_the_map(cx: &mut TestAppCo
     // time. The pull happens between two clock readings, so the cursor must
     // lie between the fractions at those readings (one video frame of slack
     // for mpv's own time-pos corrections).
-    cx.update(|cx| video.update(cx, |video, cx| video.toggle_play(cx)));
+    cx.update(|cx| video.update(cx, VideoController::toggle_play));
     let expected = |cx: &mut TestAppContext| {
         cx.update(|cx| {
             let video = video.read(cx);
@@ -1292,7 +1313,7 @@ fn real_run4_video_drives_the_cursor_and_run1_follows_the_map(cx: &mut TestAppCo
         "the cursor left the video's time by {:.4} s",
         worst * duration
     );
-    cx.update(|cx| video.update(cx, |video, cx| video.toggle_play(cx)));
+    cx.update(|cx| video.update(cx, VideoController::toggle_play));
     cx.run_until_parked();
 
     // X swaps the roles: the players are exchanged (no file reopens), the
@@ -1307,7 +1328,7 @@ fn real_run4_video_drives_the_cursor_and_run1_follows_the_map(cx: &mut TestAppCo
     cx.update(|cx| cursor.update(cx, |cursor, cx| cursor.set_fraction(Some(0.3), cx)));
     cx.run_until_parked();
     events.borrow_mut().clear();
-    cx.update(|cx| session.update(cx, |session, cx| session.swap(cx)));
+    cx.update(|cx| session.update(cx, omatrack_app::state::Session::swap));
     settle(cx, "the swapped pair", Duration::from_secs(600), |cx| {
         cx.update(|cx| {
             let video = video.read(cx);
@@ -1350,7 +1371,7 @@ fn real_run4_video_drives_the_cursor_and_run1_follows_the_map(cx: &mut TestAppCo
 
     // The identity check result is reported.
     events.borrow_mut().clear();
-    cx.update(|cx| video.update(cx, |video, cx| video.verify_identity(cx)));
+    cx.update(|cx| video.update(cx, VideoController::verify_identity));
     settle(cx, "the identity checks", Duration::from_secs(600), |_| {
         events
             .borrow()

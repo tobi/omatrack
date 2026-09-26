@@ -2,7 +2,7 @@
 //! (interface text) and Geist Mono (numerics).
 //!
 //! gpui-component names the virtual `.SystemUIFont`, which on Linux lands on
-//! whatever fontconfig happens to resolve (often Liberation or DejaVu Sans)
+//! whatever fontconfig happens to resolve (often Liberation or `DejaVu` Sans)
 //! and a monospace family that is frequently missing. Omatrack instead ships
 //! two families embedded in the binary and registers them at startup, so the
 //! interface looks the same on every machine that has not chosen otherwise.
@@ -133,7 +133,7 @@ impl ConfiguredFonts {
     }
 
     /// Later configuration wins, slot by slot.
-    fn merge(&mut self, later: ConfiguredFonts) {
+    fn merge(&mut self, later: Self) {
         if later.system_ui.is_some() {
             self.system_ui = later.system_ui;
         }
@@ -331,14 +331,16 @@ impl ThemeFonts {
                         .iter()
                         .find(|name| name.eq_ignore_ascii_case(wanted))
                 })
-                .map(|name| FontFamily {
-                    name: name.clone().into(),
-                    origin: FontOrigin::Desktop,
-                })
-                .unwrap_or_else(|| FontFamily {
-                    name: bundled.to_owned().into(),
-                    origin: FontOrigin::Bundled,
-                })
+                .map_or_else(
+                    || FontFamily {
+                        name: bundled.to_owned().into(),
+                        origin: FontOrigin::Bundled,
+                    },
+                    |name| FontFamily {
+                        name: name.clone().into(),
+                        origin: FontOrigin::Desktop,
+                    },
+                )
         };
         Self {
             ui: pick(configured.ui(), BUNDLED_UI_FAMILY),

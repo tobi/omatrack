@@ -49,9 +49,8 @@ impl RawChannel {
         duration_sec: f64,
         samples: Vec<f64>,
     ) -> Self {
-        let cell = OnceLock::new();
         let count = samples.len() as u64;
-        let _ = cell.set(Arc::<[f64]>::from(samples));
+        let cell = OnceLock::from(Arc::<[f64]>::from(samples));
         Self {
             name: name.to_string(),
             unit: unit.to_string(),
@@ -182,6 +181,10 @@ fn parse_path(open_path: &Path, index_only: bool) -> Result<Box<dyn TelemetrySou
 
 /// Upstream laps (`read_source_metadata`) with the C++ id assignment:
 /// preserve a unique source number, else the lowest unused id.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
 fn source_laps(source: &dyn TelemetrySource) -> Vec<Lap> {
     let raw: Vec<_> = read_source_metadata(source)
         .laps
@@ -194,16 +197,15 @@ fn source_laps(source: &dyn TelemetrySource) -> Vec<Lap> {
     for lap in raw {
         let fits = i32::try_from(lap.number).ok();
         let preserved = fits.filter(|number| !used.contains(number));
-        let id = match preserved {
-            Some(number) => number,
-            None => {
-                while used.contains(&next_fallback) {
-                    next_fallback += 1;
-                }
-                let id = next_fallback;
+        let id = if let Some(number) = preserved {
+            number
+        } else {
+            while used.contains(&next_fallback) {
                 next_fallback += 1;
-                id
             }
+            let id = next_fallback;
+            next_fallback += 1;
+            id
         };
         used.insert(id);
         let duration_ns = if lap.duration_ns > 0 {
@@ -242,6 +244,10 @@ fn format_name(source: &dyn TelemetrySource, is_extension: bool) -> &'static str
 }
 
 /// Every decoded sample of one channel, in chunk (= time) order.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Source u64 sample counts use native-size buffers on the supported 64-bit hosts."
+)]
 fn decode_all(source: &dyn TelemetrySource, index: usize) -> Vec<f64> {
     let Some(channel) = source.channels().get(index) else {
         return Vec::new();
@@ -262,13 +268,21 @@ fn decode_all(source: &dyn TelemetrySource, index: usize) -> Vec<f64> {
 
 impl Recording {
     /// Open for analysis: every channel decoded.
+    ///
+    /// # Errors
+    /// Returns `OpenError` for an invalid path, source I/O or decoder failure. A panic
+    /// from an upstream parser is caught and converted to this error.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, OpenError> {
         Self::open_impl(path.as_ref(), false)
     }
 
-    /// Open a bounded metadata view for library indexing. AiM retains
+    /// Open a bounded metadata view for library indexing. `AiM` retains
     /// complete lap signals but omits the video-frame index; channels decode
     /// on first use.
+    ///
+    /// # Errors
+    /// Returns `OpenError` for an invalid path, source I/O or decoder failure. A panic
+    /// from an upstream parser is caught and converted to this error.
     pub fn open_index(path: impl AsRef<Path>) -> Result<Self, OpenError> {
         Self::open_impl(path.as_ref(), true)
     }
@@ -284,6 +298,11 @@ impl Recording {
         }
     }
 
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+    )]
     fn build(path: &str, index_only: bool) -> Result<Self, OpenError> {
         let source = parse_path(Path::new(path), index_only).map_err(OpenError)?;
         let src = source.as_ref();
@@ -328,7 +347,7 @@ impl Recording {
         let mut channels = Vec::with_capacity(src.channels().len());
         for (index, channel) in src.channels().iter().enumerate() {
             let first = channel.chunks.first();
-            let period = first.map(|chunk| chunk.sample_period_ns).unwrap_or(0);
+            let period = first.map_or(0, |chunk| chunk.sample_period_ns);
             let mut raw = RawChannel {
                 name: c_string_value(&channel.name),
                 unit: c_string_value(&channel.unit),
@@ -336,13 +355,13 @@ impl Recording {
                 sample_count: channel.sample_count,
                 frequency_hz: if period > 0 { 1e9 / period as f64 } else { 0.0 },
                 duration_sec: channel.duration_ns as f64 / 1e9,
-                start_ns: first.map(|chunk| chunk.time_base_ns).unwrap_or(0),
+                start_ns: first.map_or(0, |chunk| chunk.time_base_ns),
                 samples: OnceLock::new(),
             };
             if !index_only && channel.sample_count > 0 {
                 let decoded = decode_all(src, index);
                 raw.sample_count = decoded.len() as u64;
-                let _ = raw.samples.set(Arc::from(decoded));
+                raw.samples = OnceLock::from(Arc::from(decoded));
             }
             channels.push(raw);
         }
@@ -376,6 +395,10 @@ impl Recording {
     }
 
     /// First usable GPS week/iTOW pair, projected back to file t = 0.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+    )]
     fn utc_from_gps_clock(&self) -> i64 {
         let mapping = self.map_channels(&ChannelOverrides::new());
         let (Some(&week), Some(&itow)) = (mapping.get("gps_week"), mapping.get("gps_itow")) else {
@@ -487,6 +510,10 @@ impl Recording {
     }
 
     /// Offset satisfying presentation time = telemetry time + offset.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+    )]
     pub fn video_presentation_offset_sec(&self) -> Option<f64> {
         self.video_clock
             .presentation_offset_ns
@@ -494,6 +521,11 @@ impl Recording {
     }
 
     /// Exact player presentation time at file-relative telemetry time.
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+    )]
     pub fn video_presentation_time(&self, time_sec: f64) -> Option<f64> {
         let source = self.source.as_ref()?;
         if !time_sec.is_finite() || time_sec < 0.0 {
@@ -506,6 +538,10 @@ impl Recording {
     }
 
     /// Presentation-order video frame at file-relative telemetry time.
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+    )]
     pub fn video_frame_at(&self, time_sec: f64) -> Option<u64> {
         let source = self.source.as_ref()?;
         if !time_sec.is_finite() || time_sec < 0.0 {
@@ -516,6 +552,16 @@ impl Recording {
 
     /// Sample a channel at file-relative seconds through the source clock.
     /// Linear by default; `linear = false` for ordinals such as gear.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+    )]
+    #[expect(
+        clippy::neg_cmp_op_on_partial_ord,
+        reason = "Negated ordered comparisons deliberately include unordered (NaN) values; preserve that behavior."
+    )]
     pub fn sample_at(&self, index: usize, time_sec: f64, linear: bool) -> Option<f64> {
         if index >= self.channels.len() || !time_sec.is_finite() || time_sec < 0.0 {
             return None;
@@ -551,6 +597,10 @@ impl Recording {
     }
 
     /// Sample at integer file-relative nanoseconds (overlay joins).
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+    )]
     pub fn sample_at_ns(&self, index: usize, time_ns: u64, linear: bool) -> Option<f64> {
         if index >= self.channels.len() {
             return None;
@@ -581,6 +631,12 @@ impl Recording {
 
     /// The channel's source-clock series on a uniform grid at its own rounded
     /// frequency, edges held (the lap detectors' input).
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+    )]
     fn detector_series(&self, index: Option<usize>) -> (Vec<f64>, i32) {
         let Some(index) = index else {
             return (Vec::new(), 0);
@@ -589,7 +645,7 @@ impl Recording {
         if !channel.has_samples() || channel.duration_sec <= 0.0 {
             return (Vec::new(), 0);
         }
-        let frequency = (crate::num::llround(channel.frequency_hz) as i32).max(1);
+        let frequency = (llround(channel.frequency_hz) as i32).max(1);
         let count = (channel.duration_sec * f64::from(frequency)).ceil() as usize;
         let mut values = vec![0.0; count];
         let mut sampled = false;
@@ -648,7 +704,12 @@ impl Recording {
     /// Reliable format-neutral laps: upstream's list when it has one, else
     /// the beacon / lap-number / lap-time / lap-distance heuristics.
     pub fn detect_laps(&self) -> Vec<Lap> {
-        use crate::laps::*;
+        use crate::laps::{
+            build_laps_from_splits, lap_number_carries_state, mark_short_crossings_incomplete,
+            pds_apply_lap_distance_coverage, pds_apply_previous_lap_times, pds_beacon_splits,
+            pds_distance_splits, pds_lap_number_splits, pds_lap_time_splits,
+            pds_last_lap_time_splits, select_lap_splits,
+        };
         let lap_distance_id = self.first_channel(&["lap distance corrected", "lap distance"], true);
         let (lap_distance, distance_freq) = self.detector_series(lap_distance_id);
 

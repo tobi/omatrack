@@ -32,11 +32,13 @@ impl AppOptions {
         }
     }
 
+    #[must_use]
     pub fn theme(mut self, theme: ThemeSource) -> Self {
         self.theme = theme;
         self
     }
 
+    #[must_use]
     pub fn state(mut self, state: StateOptions) -> Self {
         self.state = state;
         self
@@ -100,6 +102,9 @@ pub fn main_window_options(cx: &App) -> WindowOptions {
 
 /// Open the main window with [`Workspace`] under the component `Root`.
 /// Requires [`init`] (or [`init_with`]) first.
+///
+/// # Errors
+/// Returns the platform error if GPUI cannot create the main window.
 pub fn open_main_window(cx: &mut App) -> anyhow::Result<WindowHandle<Root>> {
     let options = main_window_options(cx);
     cx.open_window(options, |window, cx| {
@@ -112,7 +117,7 @@ pub fn open_main_window(cx: &mut App) -> anyhow::Result<WindowHandle<Root>> {
 pub(crate) fn quit(cx: &mut App) {
     if let Some(state) = AppState::try_global(cx) {
         let preferences = state.preferences.clone();
-        preferences.update(cx, |preferences, cx| preferences.flush(cx));
+        preferences.update(cx, super::state::preferences::Preferences::flush);
     }
     cx.quit();
 }

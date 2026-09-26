@@ -45,24 +45,28 @@ impl Default for FollowPolicy {
 
 impl FollowPolicy {
     /// Sets [`FollowPolicy::hard_seek_threshold`].
+    #[must_use]
     pub fn hard_seek_threshold(mut self, seconds: f64) -> Self {
         self.hard_seek_threshold = seconds;
         self
     }
 
     /// Sets [`FollowPolicy::max_rate_delta`].
+    #[must_use]
     pub fn max_rate_delta(mut self, delta: f64) -> Self {
         self.max_rate_delta = delta;
         self
     }
 
     /// Sets [`FollowPolicy::correction_gain`].
+    #[must_use]
     pub fn correction_gain(mut self, gain: f64) -> Self {
         self.correction_gain = gain;
         self
     }
 
     /// Sets [`FollowPolicy::deadband`].
+    #[must_use]
     pub fn deadband(mut self, seconds: f64) -> Self {
         self.deadband = seconds;
         self
@@ -217,6 +221,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn target_rate_carries_through_when_aligned() {
         let mut follower = follower();
         let policy = FollowPolicy::default();
@@ -265,6 +273,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn speed_never_drops_below_the_minimum() {
         let mut follower = follower();
         let policy = FollowPolicy::default()

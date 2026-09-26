@@ -163,13 +163,11 @@ impl PlaybackClock {
         let _writer = inner
             .writer
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut sample = self.sample();
         change(&mut sample);
-        let nanos = now
-            .saturating_duration_since(inner.origin)
-            .as_nanos()
-            .min(u128::from(u64::MAX)) as u64;
+        let nanos = u64::try_from(now.saturating_duration_since(inner.origin).as_nanos())
+            .unwrap_or(u64::MAX);
         let flags = (if sample.paused { FLAG_PAUSED } else { 0 })
             | (if sample.seeking { FLAG_SEEKING } else { 0 });
 
@@ -286,6 +284,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn paused_clock_holds_its_position() {
         let clock = PlaybackClock::new();
         let t0 = Instant::now();
@@ -318,6 +320,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn estimate_is_clamped_to_the_duration_and_zero() {
         let clock = PlaybackClock::new();
         let t0 = Instant::now();
@@ -330,6 +336,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn seeking_holds_the_target_and_bumps_the_generation() {
         let clock = PlaybackClock::new();
         let t0 = Instant::now();
@@ -347,6 +357,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn non_finite_observations_are_ignored() {
         let clock = PlaybackClock::new();
         let t0 = Instant::now();
@@ -358,6 +372,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn concurrent_readers_see_consistent_samples() {
         let clock = PlaybackClock::new();
         let writer = clock.clone();

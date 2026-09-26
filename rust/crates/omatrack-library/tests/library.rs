@@ -1,5 +1,7 @@
 //! Index cache, catalog and scans on temporary folders (no fixtures).
 
+#![cfg(test)]
+
 mod common;
 
 use common::{FakeLocation, summary, utc_ns};
@@ -154,6 +156,10 @@ fn record(path: &str, laps: &[f64], utc: i64, meta: EffectiveMetadata) -> Catalo
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn catalog_groups_track_date_session_laps() {
     // 02:30 UTC on 3 Sep is 22:30 on 2 Sep in Georgia: the venue's day.
     let late = utc_ns("2026-09-03T02:30:00Z");
@@ -327,7 +333,7 @@ fn scans_are_stable_and_hit_the_cache() {
     let mut updates = Vec::new();
 
     let first = scan_library(&locations, &cache, &config, &Cancel::new(), &mut |p| {
-        updates.push(p)
+        updates.push(p);
     })
     .unwrap();
     assert_eq!(first.cache_misses, 2);

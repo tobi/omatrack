@@ -3,9 +3,11 @@
 //! temporary folder, so the whole scan → load → analysis → scene pipeline
 //! runs), driven by native pointer and keyboard events.
 //!
-//! The `real_` test runs the same panel on the AiM recordings (read-only);
+//! The `real_` test runs the same panel on the `AiM` recordings (read-only);
 //! run it with
 //! `OMATRACK_FIXTURES=~/Documents/Telemetry/26T07_PLM cargo test -p omatrack-app --test traces_panel -- --include-ignored real_`.
+
+#![cfg(test)]
 
 mod common;
 
@@ -62,6 +64,12 @@ fn sample(t: f64, shift: f64) -> [f64; 5] {
 }
 
 /// One MTJ recording (`*.telemetry.jsonl`), per TELEMETRY.md.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn write_recording(path: &Path, driver: &str, shift: f64) {
     let ns = |seconds: f64| (seconds * 1e9).round() as i64;
     let count = (DURATION * RATE) as usize;
@@ -76,7 +84,7 @@ fn write_recording(path: &Path, driver: &str, shift: f64) {
         .enumerate()
         .map(|(number, bounds)| {
             let complete = number > 0 && number + 2 < BOUNDARIES.len();
-            serde_json::json!([number, ns(bounds[0]), ns(bounds[1]), complete as i32])
+            serde_json::json!([number, ns(bounds[0]), ns(bounds[1]), i32::from(complete)])
         })
         .collect();
     let mut lines = vec![
@@ -103,7 +111,7 @@ fn write_recording(path: &Path, driver: &str, shift: f64) {
 }
 
 struct Fixture {
-    _sandbox: common::Sandbox,
+    sandbox: common::Sandbox,
     test: common::TestApp,
     window: AnyWindowHandle,
     traces: Entity<TracesPanel>,
@@ -124,8 +132,8 @@ impl Fixture {
 
     fn config(&self, cx: &mut TestAppContext) -> omatrack_library::Config {
         let preferences = self.test.app.preferences.clone();
-        cx.update(|cx| preferences.update(cx, |preferences, cx| preferences.flush(cx)));
-        self._sandbox.read_config()
+        cx.update(|cx| preferences.update(cx, omatrack_app::state::Preferences::flush));
+        self.sandbox.read_config()
     }
 }
 
@@ -145,7 +153,7 @@ async fn open_pair(
     let test = common::start(cx, sandbox.options());
     let window: AnyWindowHandle = test.window.into();
     let library = test.app.library.clone();
-    cx.update(|cx| library.update(cx, |library, cx| library.rescan(cx)));
+    cx.update(|cx| library.update(cx, omatrack_app::state::Library::rescan));
     cx.run_until_parked();
     cx.wait_for(window, Duration::from_secs(600), |_, cx| {
         let library = library.read(cx);
@@ -161,7 +169,7 @@ async fn open_pair(
                 .cloned()
                 .unwrap_or_else(|| panic!("{name} is in the library"));
             let lap = node.best_lap_id.expect("a best lap");
-            (node.id.clone(), lap)
+            (node.id, lap)
         };
         (find(primary), find(reference))
     });
@@ -196,7 +204,7 @@ async fn open_pair(
         cx.run_until_parked();
     }
     Fixture {
-        _sandbox: sandbox,
+        sandbox,
         test,
         window,
         traces,
@@ -382,7 +390,7 @@ async fn the_wheel_zooms_the_shared_viewport(cx: &mut TestAppContext) {
     assert!(view.span() < 1.0 && view != Viewport::FULL, "{view:?}");
     // Whole lap (the tools menu, the palette, ctrl-0) is ZoomReset.
     cx.update_window(f.window, |_, window, cx| {
-        window.dispatch_action(Box::new(ZoomReset), cx)
+        window.dispatch_action(Box::new(ZoomReset), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -501,9 +509,13 @@ async fn h_and_j_focus_corners_in_the_left_half(cx: &mut TestAppContext) {
 
 /// Enter resize mode (the tools menu's `Resize lanes…`) and drag the
 /// first divider down.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn drag_first_divider(cx: &mut TestAppContext, f: &Fixture) {
     cx.update_window(f.window, |_, window, cx| {
-        window.dispatch_action(Box::new(ResizeLanes), cx)
+        window.dispatch_action(Box::new(ResizeLanes), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -521,7 +533,7 @@ fn drag_first_divider(cx: &mut TestAppContext, f: &Fixture) {
     let plot = f.plot(cx);
     let divider = plot.origin + point(plot.size.width * 0.5, px(bottom as f32));
     cx.update_window(f.window, |_, window, cx| {
-        window.drag(divider, divider + point(px(0.), px(40.)), cx)
+        window.drag(divider, divider + point(px(0.), px(40.)), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -555,14 +567,14 @@ async fn reset_heights_previews_and_saves_equal_weights(cx: &mut TestAppContext)
     let stack = f.stack(cx);
     let dragged = cx.update(|cx| stack.read(cx).layout().slots[1].height);
     cx.update_window(f.window, |_, window, cx| {
-        window.click("trace-reset-heights", cx)
+        window.click("trace-reset-heights", cx);
     })
     .unwrap();
     cx.run_until_parked();
     let reset = cx.update(|cx| stack.read(cx).layout().slots[1].height);
     assert!((reset - dragged).abs() > 1.0, "the preview drops the drag");
     cx.update_window(f.window, |_, window, cx| {
-        window.click("trace-mode-save", cx)
+        window.click("trace-mode-save", cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -642,6 +654,14 @@ async fn lanes_hide_and_show_through_the_lane_command(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
+#[expect(
+    clippy::manual_midpoint,
+    reason = "Keep the test oracle's bounded floating-point operation order explicit."
+)]
 async fn clicking_a_ruler_corner_focuses_it(cx: &mut TestAppContext) {
     let f = synthetic_pair(cx).await;
     let corner = cx.update(|cx| f.traces.read(cx).scene().corners()[1].clone());
@@ -664,6 +684,10 @@ async fn clicking_a_ruler_corner_focuses_it(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 async fn corner_edits_save_to_the_track_and_rebuild_the_analysis(cx: &mut TestAppContext) {
     let f = synthetic_pair(cx).await;
     let corner = cx.update(|cx| f.traces.read(cx).scene().corners()[0].clone());
@@ -686,7 +710,7 @@ async fn corner_edits_save_to_the_track_and_rebuild_the_analysis(cx: &mut TestAp
         ruler.origin.y + ruler.size.height * 0.5,
     );
     cx.update_window(f.window, |_, window, cx| {
-        window.drag(edge, edge - point(px(30.), px(0.)), cx)
+        window.drag(edge, edge - point(px(30.), px(0.)), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -820,7 +844,7 @@ fn fixtures() -> String {
 }
 
 #[gpui_kit::test]
-#[ignore]
+#[ignore = "requires private telemetry/video fixtures; set OMATRACK_FIXTURES"]
 async fn real_run4_against_run1_fills_the_lanes(cx: &mut TestAppContext) {
     let sandbox = common::Sandbox::new();
     let folder = std::path::PathBuf::from(fixtures());
@@ -844,6 +868,10 @@ async fn real_run4_against_run1_fills_the_lanes(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 async fn a_time_share_pair_keeps_a_readable_delta_lane_with_the_key_on_top(
     cx: &mut TestAppContext,
 ) {
@@ -877,6 +905,10 @@ async fn a_time_share_pair_keeps_a_readable_delta_lane_with_the_key_on_top(
 }
 
 #[gpui_kit::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Exercise the complete workflow in order, keeping its setup and state assertions together."
+)]
 async fn one_control_row_under_the_video_drives_the_traces(cx: &mut TestAppContext) {
     use omatrack_app::panels::PanelKind;
     use omatrack_trace::XAxis;
@@ -925,7 +957,7 @@ async fn one_control_row_under_the_video_drives_the_traces(cx: &mut TestAppConte
     assert_ne!(axis(cx), start);
     cx.update_window(f.window, |_, window, cx| {
         window.render_frame(cx);
-        window.click(other, cx)
+        window.click(other, cx);
     })
     .unwrap();
     cx.run_until_parked();

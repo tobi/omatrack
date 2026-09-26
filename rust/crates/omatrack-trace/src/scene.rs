@@ -74,6 +74,10 @@ impl YRange {
     /// `TraceLaneLayout::rangeFor`), or symmetric about zero with 8% headroom
     /// rounded up to a readable bound ([`nice_ceiling`]), so a Δ lane's
     /// scale reads as "±0.5 s" rather than "±0.4371 s".
+    #[expect(
+        clippy::neg_cmp_op_on_partial_ord,
+        reason = "Negated ordered comparisons deliberately include unordered (NaN) values; preserve that behavior."
+    )]
     pub fn auto(primary: &[f64], reference: Option<&[f64]>, symmetric: bool) -> Self {
         let mut min = f64::INFINITY;
         let mut max = f64::NEG_INFINITY;
@@ -110,6 +114,12 @@ const DELTA_WINDOW_PADDING: f64 = 0.08;
 
 /// First and last sample index of a uniform lap-fraction grid of `len`
 /// samples that `viewport` shows (one sample of margin each side).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Clamped lap fractions map to indices in resident sample buffers; interpolation intentionally uses f64."
+)]
 fn visible_indices(len: usize, viewport: Viewport) -> Option<(usize, usize)> {
     let last = (len - 1) as f64;
     let start = (viewport.start.clamp(0.0, 1.0) * last).floor();
@@ -121,6 +131,7 @@ fn visible_indices(len: usize, viewport: Viewport) -> Option<(usize, usize)> {
 }
 
 /// Default peak fill opacities (the fill fades to nothing at the baseline).
+///
 /// Pedal and area fills stay light so the reference outline reads through
 /// them; the Δ gain/loss fill is the lane's message and is stronger.
 pub const PEDAL_FILL: f32 = 0.16;
@@ -148,10 +159,11 @@ pub fn nice_ceiling(value: f64) -> f64 {
     10.0 * decade
 }
 
-/// The factor a channel's samples are multiplied by for display: `%`
-/// channels stored as a `0..=1` fraction (throttle, driver throttle,
-/// clutch) read as percent. `max` is the largest sample (or range bound).
-/// The one rule for every readout (lane legends, inspector).
+/// The factor a channel's samples are multiplied by for display: `%` channels stored as
+/// a `0..=1` fraction (throttle, driver throttle, clutch) read as percent.
+///
+/// `max` is the largest sample (or range bound). The one rule for every readout (lane
+/// legends, inspector).
 pub fn display_scale(unit: &str, max: f64) -> f64 {
     if unit == "%" && max <= 1.5 {
         100.0
@@ -201,6 +213,7 @@ impl LaneSeries {
         }
     }
 
+    #[must_use]
     pub fn with_unit(mut self, unit: impl Into<SharedString>) -> Self {
         self.unit = unit.into();
         self
@@ -216,6 +229,10 @@ impl LaneSeries {
     /// inside a zoomed corner stays readable; every other lane keeps its
     /// whole-lap range.
     /// One pass over the visible samples, no allocation.
+    #[expect(
+        clippy::neg_cmp_op_on_partial_ord,
+        reason = "Negated ordered comparisons deliberately include unordered (NaN) values; preserve that behavior."
+    )]
     pub fn range_in(&self, viewport: Viewport) -> YRange {
         if self.kind != LaneKind::Delta || self.primary.len() < 2 {
             return self.y_range;
@@ -265,6 +282,7 @@ impl LaneSeries {
     }
 
     /// Set the reference and re-derive an auto range over both laps.
+    #[must_use]
     pub fn with_reference(mut self, reference: Option<Arc<[f64]>>) -> Self {
         self.y_range = YRange::auto(
             &self.primary,
@@ -275,11 +293,13 @@ impl LaneSeries {
         self
     }
 
+    #[must_use]
     pub fn with_y_range(mut self, range: YRange) -> Self {
         self.y_range = range;
         self
     }
 
+    #[must_use]
     pub fn with_neighbours(
         mut self,
         previous: Option<Arc<[f64]>>,
@@ -292,6 +312,12 @@ impl LaneSeries {
 
     /// Values at a primary lap fraction: primary, reference through `map`,
     /// and their difference. Held (step) values use the sample in force.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        reason = "Clamped lap fractions map to indices in resident sample buffers; interpolation intentionally uses f64."
+    )]
     pub fn readout(&self, fraction: f64, map: Option<&dyn FractionMap>) -> Readout {
         let sample = |values: &[f64], at: f64| -> f64 {
             if self.kind == LaneKind::Step {
@@ -430,22 +456,26 @@ impl TraceScene {
             ..Self::default()
         }
     }
+    #[must_use]
     pub fn with_lanes(mut self, lanes: Vec<LaneSeries>) -> Self {
         self.lanes = lanes;
         self.generation = next_generation();
         self
     }
+    #[must_use]
     pub fn with_map(mut self, map: Option<Arc<dyn FractionMap>>) -> Self {
         self.map = map;
         self.generation = next_generation();
         self
     }
+    #[must_use]
     pub fn with_corners(mut self, corners: Vec<CornerBand>, complexes: Vec<ComplexBand>) -> Self {
         self.corners = corners;
         self.complexes = complexes;
         self.generation = next_generation();
         self
     }
+    #[must_use]
     pub fn with_neighbour_labels(
         mut self,
         previous: Option<SharedString>,
@@ -458,6 +488,7 @@ impl TraceScene {
     }
 
     /// Mark the Δ lane as approximate (LOW alignment confidence).
+    #[must_use]
     pub fn with_approximate_delta(mut self, approximate: bool) -> Self {
         self.approximate_delta = approximate;
         self.generation = next_generation();
@@ -469,6 +500,7 @@ impl TraceScene {
     }
 
     /// Mark the Δ lane as a lap-time-share estimate (no station alignment).
+    #[must_use]
     pub fn with_time_share_delta(mut self, time_share: bool) -> Self {
         self.time_share_delta = time_share;
         self.generation = next_generation();
@@ -594,22 +626,27 @@ impl LaneStyle {
         }
     }
 
+    #[must_use]
     pub fn with_color(mut self, color: Option<Hsla>) -> Self {
         self.color = color;
         self
     }
+    #[must_use]
     pub fn with_reference_color(mut self, color: Option<Hsla>) -> Self {
         self.reference_color = color;
         self
     }
+    #[must_use]
     pub fn with_stroke_width(mut self, width: f32) -> Self {
         self.stroke_width = width.clamp(0.5, 4.0);
         self
     }
+    #[must_use]
     pub fn with_fill_opacity(mut self, opacity: Option<f32>) -> Self {
         self.fill_opacity = opacity.map(|o| o.clamp(0.0, 1.0));
         self
     }
+    #[must_use]
     pub fn with_sizing(mut self, sizing: LaneSizing) -> Self {
         self.sizing = sizing;
         self
@@ -636,6 +673,7 @@ impl LaneStyles {
     pub fn new() -> Self {
         Self::default()
     }
+    #[must_use]
     pub fn with(mut self, key: impl Into<SharedString>, style: LaneStyle) -> Self {
         self.styles.insert(key.into(), style);
         self
@@ -663,7 +701,7 @@ mod tests {
     #[test]
     fn a_delta_lane_ranges_to_the_view_with_zero_in_it() {
         // A ramp from 0 to +2 s over the lap.
-        let ramp: Arc<[f64]> = (0..=100).map(|i| i as f64 * 0.02).collect();
+        let ramp: Arc<[f64]> = (0..=100).map(|i| f64::from(i) * 0.02).collect();
         let lane = LaneSeries::new("delta", "Δt", LaneKind::Delta, ramp);
         let whole = lane.range_in(Viewport::FULL);
         assert!(whole.min <= 0.0 && whole.max >= 2.0, "{whole:?}");
@@ -683,7 +721,7 @@ mod tests {
         assert!(head.min <= 0.0 && head.max >= 0.2, "{head:?}");
         assert!((lane.change_in(tail) - 0.2).abs() < 1e-9);
         // Other lanes keep their whole-lap range.
-        let speed: Arc<[f64]> = (0..=100).map(|i| i as f64).collect();
+        let speed: Arc<[f64]> = (0..=100).map(f64::from).collect();
         let speed = LaneSeries::new("speed", "Speed", LaneKind::Line, speed);
         assert_eq!(speed.range_in(tail), speed.y_range);
     }
@@ -697,8 +735,8 @@ mod tests {
 
     #[test]
     fn readout_goes_through_the_map() {
-        let primary: Arc<[f64]> = (0..=100).map(|i| i as f64).collect();
-        let reference: Arc<[f64]> = (0..=100).map(|i| i as f64 * 2.0).collect();
+        let primary: Arc<[f64]> = (0..=100).map(f64::from).collect();
+        let reference: Arc<[f64]> = (0..=100).map(|i| f64::from(i) * 2.0).collect();
         let lane = LaneSeries::new("speed", "Speed", LaneKind::Line, primary)
             .with_reference(Some(reference));
         let r = lane.readout(0.5, Some(&Shift(0.1)));
@@ -709,6 +747,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn step_readout_holds_the_value() {
         let gear: Arc<[f64]> = Arc::from(vec![1.0, 2.0, 3.0]);
         let lane = LaneSeries::new("gear", "Gear", LaneKind::Step, gear);
@@ -730,6 +772,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn nice_ceilings() {
         for (value, bound) in [
             (0.9, 1.0),
@@ -747,6 +793,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn default_styles() {
         let styles = LaneStyles::new();
         assert!(!styles.get("brake").sizing.combine_with_previous);

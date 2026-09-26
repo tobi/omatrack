@@ -1,7 +1,9 @@
-//! The whole application on the real AiM recordings (read-only). Ignored by
+//! The whole application on the real `AiM` recordings (read-only). Ignored by
 //! default; run with
 //! `OMATRACK_FIXTURES=~/Documents/Telemetry/26T07_PLM cargo test -p omatrack-app -- --include-ignored real_`.
 //! Every configuration and cache write goes to temporary XDG roots.
+
+#![cfg(test)]
 
 mod common;
 
@@ -21,7 +23,11 @@ fn fixtures() -> String {
 }
 
 #[gpui_kit::test]
-#[ignore]
+#[ignore = "requires private telemetry/video fixtures; set OMATRACK_FIXTURES"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Exercise the complete workflow in order, keeping its setup and state assertions together."
+)]
 async fn real_run4_against_run1_through_the_workspace(cx: &mut TestAppContext) {
     let sandbox = common::Sandbox::new();
     sandbox.write_config(&format!(
@@ -33,7 +39,7 @@ async fn real_run4_against_run1_through_the_workspace(cx: &mut TestAppContext) {
 
     // Scan the library.
     let library = test.app.library.clone();
-    cx.update(|cx| library.update(cx, |library, cx| library.rescan(cx)));
+    cx.update(|cx| library.update(cx, omatrack_app::state::Library::rescan));
     // Background work runs when the test executor parks; `wait_for` alone
     // only advances the test clock.
     cx.run_until_parked();
@@ -147,7 +153,7 @@ async fn real_run4_against_run1_through_the_workspace(cx: &mut TestAppContext) {
             cursor.set_selection(Some(Selection::new(0.25, 0.35)), cx);
         });
         viewport.update(cx, |viewport, cx| {
-            viewport.set_viewport(Viewport::new(0.2, 0.6), cx)
+            viewport.set_viewport(Viewport::new(0.2, 0.6), cx);
         });
     });
     cx.update_window(handle, |_, window, cx| window.press("x", cx))

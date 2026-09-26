@@ -20,7 +20,15 @@ use gpui_kit::{
 };
 use omatrack_core::format_lap_time;
 
-use crate::actions::*;
+use crate::actions::{
+    ComposeLayout1, ComposeLayout2, ComposeLayout3, ComposeLayout4, ComposeLayout5, ExitFullscreen,
+    FocusCorner, FocusPanel1, FocusPanel2, FocusPanel3, FocusPanel4, FocusPanel5, FocusPanel6,
+    NextCorner, NextLap, OpenFolder, OpenPreferences, PrevCorner, PrevLap, Quit, Rescan,
+    ResetLayout, ResizeLanes, Role, SeekBack, SeekForward, SelectLap, ShowChannels, ShowInspector,
+    ShowMap, SwapRoles, ToggleContinuous, ToggleCornerEdit, ToggleFit, ToggleInspector,
+    ToggleLibrary, ToggleMute, TogglePlay, ToggleSlowMotion, ToggleVideoFullscreen, ToggleXAxis,
+    ZoomIn, ZoomOut, ZoomReset,
+};
 use crate::state::AppState;
 
 /// Where a registered command appears in the palette.
@@ -83,6 +91,7 @@ impl CommandSpec {
     }
 
     /// Extra search terms besides the title.
+    #[must_use]
     pub fn keywords<I, S>(mut self, keywords: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -142,6 +151,10 @@ pub fn register(cx: &mut App, spec: CommandSpec) {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "One declarative registry keeps all action bindings and command metadata together."
+)]
 pub(crate) fn init(cx: &mut App) {
     use CommandCategory::{Commands, Layouts, Panels};
     let specs = [

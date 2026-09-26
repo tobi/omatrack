@@ -59,7 +59,7 @@ const DELTA_KEY: &str = "delta";
 const DELTA_TITLE: &str = super::traces::DELTA_TITLE;
 
 /// Show or hide one channel's lane (palette: `Show channel Speed`).
-#[derive(Debug, Clone, PartialEq, gpui_kit::Action)]
+#[derive(Debug, Clone, PartialEq, Eq, gpui_kit::Action)]
 #[action(namespace = omatrack, no_json)]
 pub struct ToggleChannel {
     pub key: SharedString,
@@ -72,6 +72,8 @@ gpui_kit::actions!(
         ResetChannelStyles
     ]
 );
+
+impl Eq for ResetChannelStyles {}
 
 /// Which list the table shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,29 +206,29 @@ enum Col {
 }
 
 impl Col {
-    fn of(list: ChannelList) -> &'static [Col] {
+    fn of(list: ChannelList) -> &'static [Self] {
         match list {
-            ChannelList::Channels => &[Col::Visible, Col::Channel, Col::Unit],
-            ChannelList::Source => &[Col::Visible, Col::Channel, Col::Unit, Col::Rate],
+            ChannelList::Channels => &[Self::Visible, Self::Channel, Self::Unit],
+            ChannelList::Source => &[Self::Visible, Self::Channel, Self::Unit, Self::Rate],
         }
     }
 
     fn title(self, list: ChannelList) -> &'static str {
         match (self, list) {
-            (Col::Visible, ChannelList::Channels) => "Show",
-            (Col::Visible, ChannelList::Source) => "Load",
-            (Col::Channel, _) => "Channel",
-            (Col::Unit, _) => "Unit",
-            (Col::Rate, _) => "Rate Hz",
+            (Self::Visible, ChannelList::Channels) => "Show",
+            (Self::Visible, ChannelList::Source) => "Load",
+            (Self::Channel, _) => "Channel",
+            (Self::Unit, _) => "Unit",
+            (Self::Rate, _) => "Rate Hz",
         }
     }
 
     fn width(self) -> f32 {
         match self {
-            Col::Visible => 3.5,
-            Col::Channel => 11.0,
-            Col::Unit => 4.0,
-            Col::Rate => 4.5,
+            Self::Visible => 3.5,
+            Self::Channel => 11.0,
+            Self::Unit => 4.0,
+            Self::Rate => 4.5,
         }
     }
 }
@@ -285,14 +287,14 @@ impl TableDelegate for ChannelTable {
         &mut self,
         col_ix: usize,
         _: &mut Window,
-        cx: &mut Context<TableState<Self>>,
+        cx: &mut Context<'_, TableState<Self>>,
     ) -> impl IntoElement {
         let col = Col::of(self.list)[col_ix];
         div()
             .size_full()
             .flex()
             .items_center()
-            .when(col == Col::Rate, |this| this.justify_end())
+            .when(col == Col::Rate, gpui_kit::Styled::justify_end)
             .text_color(cx.theme().muted_foreground)
             .child(col.title(self.list))
     }
@@ -301,7 +303,7 @@ impl TableDelegate for ChannelTable {
         &mut self,
         row_ix: usize,
         _: &mut Window,
-        _: &mut Context<TableState<Self>>,
+        _: &mut Context<'_, TableState<Self>>,
     ) -> Stateful<Div> {
         let key = self
             .entries
@@ -316,7 +318,7 @@ impl TableDelegate for ChannelTable {
         row_ix: usize,
         col_ix: usize,
         _: &mut Window,
-        cx: &mut Context<TableState<Self>>,
+        cx: &mut Context<'_, TableState<Self>>,
     ) -> impl IntoElement {
         let Some(entry) = self.entries.get(row_ix) else {
             return div().into_any_element();
@@ -383,7 +385,7 @@ impl TableDelegate for ChannelTable {
     fn render_empty(
         &mut self,
         _: &mut Window,
-        _: &mut Context<TableState<Self>>,
+        _: &mut Context<'_, TableState<Self>>,
     ) -> impl IntoElement {
         match self.list {
             ChannelList::Channels => empty_state(
@@ -496,11 +498,11 @@ pub struct ChannelsPanel {
     /// The controls show stale values (a selection or preference change):
     /// the next render re-synchronises them.
     controls_stale: bool,
-    _subscriptions: Vec<Subscription>,
+    subscriptions: Vec<Subscription>,
 }
 
 impl ChannelsPanel {
-    pub fn new(app: AppState, cx: &mut Context<Self>) -> Self {
+    pub fn new(app: AppState, cx: &mut Context<'_, Self>) -> Self {
         let subscriptions = vec![
             cx.observe(&app.session, |this, _, cx| this.sync_channels(cx)),
             cx.observe(&app.preferences, |this, _, cx| this.preferences_changed(cx)),
@@ -520,7 +522,7 @@ impl ChannelsPanel {
             source_recording: None,
             query: String::new(),
             controls_stale: true,
-            _subscriptions: subscriptions,
+            subscriptions,
         };
         panel.sync_channels(cx);
         panel
@@ -542,7 +544,7 @@ impl ChannelsPanel {
     }
 
     /// Select a channel of the Channels list by key.
-    pub fn select_channel(&mut self, key: &str, cx: &mut Context<Self>) {
+    pub fn select_channel(&mut self, key: &str, cx: &mut Context<'_, Self>) {
         if self.list != ChannelList::Channels {
             self.set_list(ChannelList::Channels, cx);
         }
@@ -560,7 +562,7 @@ impl ChannelsPanel {
     }
 
     /// Rebuild the channel lists from the session's primary lap.
-    fn sync_channels(&mut self, cx: &mut Context<Self>) {
+    fn sync_channels(&mut self, cx: &mut Context<'_, Self>) {
         let session = self.app.session.read(cx);
         let primary = session.primary().and_then(|slot| slot.loaded()).cloned();
         let recording = primary.as_ref().map(|lap| lap.recording().clone());
@@ -611,7 +613,7 @@ impl ChannelsPanel {
         cx.notify();
     }
 
-    fn preferences_changed(&mut self, cx: &mut Context<Self>) {
+    fn preferences_changed(&mut self, cx: &mut Context<'_, Self>) {
         // A newly opted-in source channel joins the Channels list.
         self.sync_channels(cx);
         if let Some(table) = &self.table {
@@ -640,7 +642,7 @@ impl ChannelsPanel {
         }
     }
 
-    fn set_list(&mut self, list: ChannelList, cx: &mut Context<Self>) {
+    fn set_list(&mut self, list: ChannelList, cx: &mut Context<'_, Self>) {
         if self.list == list {
             return;
         }
@@ -650,7 +652,7 @@ impl ChannelsPanel {
         cx.notify();
     }
 
-    fn set_query(&mut self, query: String, cx: &mut Context<Self>) {
+    fn set_query(&mut self, query: &str, cx: &mut Context<'_, Self>) {
         let query = query.trim().to_lowercase();
         if query == self.query {
             return;
@@ -662,7 +664,7 @@ impl ChannelsPanel {
 
     /// Push the current list (filtered) into the table, keeping the
     /// selected channel.
-    fn refresh_table(&mut self, cx: &mut Context<Self>) {
+    fn refresh_table(&mut self, cx: &mut Context<'_, Self>) {
         let Some(table) = self.table.clone() else {
             return;
         };
@@ -702,14 +704,22 @@ impl ChannelsPanel {
     }
 
     /// Move keyboard focus from the panel onto its table.
-    fn focus_table(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn focus_table(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         if let Some(table) = &self.table {
             let handle = gpui_kit::Focusable::focus_handle(table.read(cx), cx);
             window.focus(&handle, cx);
         }
     }
 
-    fn ensure_controls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
+    fn ensure_controls(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         if self.controls.is_some() {
             return;
         }
@@ -731,7 +741,7 @@ impl ChannelsPanel {
             .sortable(false)
             .loop_selection(false)
         });
-        let number = |window: &mut Window, cx: &mut Context<Self>, number: StyleNumber| {
+        let number = |window: &mut Window, cx: &mut Context<'_, Self>, number: StyleNumber| {
             let (min, max) = number.range();
             cx.new(|cx| {
                 InputState::new(window, cx)
@@ -767,9 +777,9 @@ impl ChannelsPanel {
         let mut subscriptions = vec![
             cx.subscribe_in(&table, window, Self::on_table_event),
             cx.subscribe_in(&controls.search, window, |this, state, event, _, cx| {
-                if let InputEvent::Change = event {
+                if matches!(event, InputEvent::Change) {
                     let query = state.read(cx).value().to_string();
-                    this.set_query(query, cx);
+                    this.set_query(&query, cx);
                 }
             }),
             cx.subscribe_in(&controls.color, window, |this, _, event, _, cx| {
@@ -821,17 +831,17 @@ impl ChannelsPanel {
                 }),
             );
         }
-        self._subscriptions.extend(subscriptions);
+        self.subscriptions.extend(subscriptions);
         self.table = Some(table);
         // Ctrl+N may have focused the panel before its table existed;
         // keyboard focus belongs on the rows.
         let own = self.focus_handle.clone();
-        self._subscriptions
+        self.subscriptions
             .push(cx.on_focus(&own, window, |this, window, cx| {
-                this.focus_table(window, cx)
+                this.focus_table(window, cx);
             }));
         if own.is_focused(window) {
-            cx.defer_in(window, |this, window, cx| this.focus_table(window, cx));
+            cx.defer_in(window, Self::focus_table);
         }
         self.controls = Some(controls);
         self.refresh_table(cx);
@@ -842,7 +852,7 @@ impl ChannelsPanel {
         table: &Entity<TableState<ChannelTable>>,
         event: &TableEvent,
         _: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) {
         if let TableEvent::SelectRow(ix) = event {
             let ix = *ix;
@@ -873,7 +883,7 @@ impl ChannelsPanel {
             .cloned()
     }
 
-    fn edit(&mut self, cx: &mut Context<Self>, edit: impl FnOnce(&mut Config, &str)) {
+    fn edit(&mut self, cx: &mut Context<'_, Self>, edit: impl FnOnce(&mut Config, &str)) {
         let Some(key) = self.selected(cx).cloned() else {
             return;
         };
@@ -882,13 +892,13 @@ impl ChannelsPanel {
         });
     }
 
-    fn write_number(&mut self, number: StyleNumber, value: f64, cx: &mut Context<Self>) {
+    fn write_number(&mut self, number: StyleNumber, value: f64, cx: &mut Context<'_, Self>) {
         if value.is_finite() {
             self.edit(cx, |config, key| number.write(config, key, value));
         }
     }
 
-    fn write_color(&mut self, reference: bool, color: Option<Hsla>, cx: &mut Context<Self>) {
+    fn write_color(&mut self, reference: bool, color: Option<Hsla>, cx: &mut Context<'_, Self>) {
         let hex = color.map(|color| color.to_hex());
         self.edit(cx, |config, key| {
             let channel = config.channels.entry(key.to_string()).or_default();
@@ -902,7 +912,11 @@ impl ChannelsPanel {
 
     /// Bring every control to the selected channel's stored style. A text
     /// field the user is typing in keeps its text.
-    fn sync_controls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
+    fn sync_controls(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         if !std::mem::take(&mut self.controls_stale) {
             return;
         }
@@ -941,7 +955,15 @@ impl ChannelsPanel {
         }
     }
 
-    fn render_editor(&self, entry: &ChannelEntry, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
+    fn render_editor(
+        &self,
+        entry: &ChannelEntry,
+        cx: &mut Context<'_, Self>,
+    ) -> gpui_kit::AnyElement {
         let Some(controls) = &self.controls else {
             return div().into_any_element();
         };
@@ -1096,7 +1118,7 @@ impl gpui_kit::component::dock::Panel for ChannelsPanel {
         Some(PanelKind::Channels.title().into())
     }
 
-    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn title(&mut self, _: &mut Window, _: &mut Context<'_, Self>) -> impl IntoElement {
         PanelKind::Channels.title()
     }
 }
@@ -1114,7 +1136,7 @@ impl gpui_kit::Focusable for ChannelsPanel {
 }
 
 impl Render for ChannelsPanel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         self.ensure_controls(window, cx);
         self.sync_controls(window, cx);
         let root = div()

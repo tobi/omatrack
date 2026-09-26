@@ -17,9 +17,10 @@ use omatrack_core::playback::{
 
 use super::timeline::LapTimeline;
 
-/// A running reference further than this from its mapped station (s) is
-/// hard-sought even between jumps (`corners` and `gps` pacing; `recording`
-/// deliberately drifts until the next lap start, jump or pause).
+/// Hard-seek distance from the reference's mapped station, in seconds.
+///
+/// Applies even between jumps under `corners` and `gps` pacing. The `recording` mode
+/// deliberately drifts until the next lap start, jump or pause.
 pub const REFERENCE_DRIFT_SECONDS: f64 = 1.5;
 /// The reference picture renders at most this many frames per second.
 pub const REFERENCE_MAX_FPS: f64 = 30.0;
@@ -141,16 +142,19 @@ impl PacerInput {
         }
     }
 
+    #[must_use]
     pub fn paused(mut self, paused: bool) -> Self {
         self.primary_paused = paused;
         self
     }
 
+    #[must_use]
     pub fn clock_rate(mut self, rate: f64) -> Self {
         self.clock_rate = rate;
         self
     }
 
+    #[must_use]
     pub fn force(mut self, force: bool) -> Self {
         self.force = force;
         self

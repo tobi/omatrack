@@ -1,6 +1,8 @@
 //! Exit codes and argument handling (byte-level output parity against the
 //! C++ oracle lives in rust/parity/run.sh).
 
+#![cfg(test)]
+
 use omatrack_cli::{is_command, main_with, usage};
 use std::ffi::OsString;
 

@@ -61,6 +61,8 @@ gpui_kit::actions!(
     ]
 );
 
+impl Eq for FocusSelectedCorner {}
+
 /// One corner as the table shows it (plain data, no entity handles).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CornerLine {
@@ -227,6 +229,10 @@ impl Col {
     }
 
     /// The sort key of a line in this column; NaN sorts last either way.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "Corner order and note counts are bounded by in-memory rows, well within f64's exact integer range."
+    )]
     fn sort_value(self, line: &CornerLine) -> f64 {
         match self {
             Self::Order | Self::Corner => line.order as f64,
@@ -383,14 +389,14 @@ impl CornerTable {
         });
     }
 
-    fn render_number(&self, text: SharedString) -> Div {
+    fn render_number(text: SharedString) -> Div {
         h_flex().w_full().justify_end().numeric().child(text)
     }
 
     /// Width of a speed cell's delta slot, rems ("+12.3" in small tabular figures).
     const SUB_DELTA_REMS: f32 = 2.75;
 
-    fn render_speed(&self, (primary, reference): (f64, f64), cx: &App) -> Div {
+    fn render_speed((primary, reference): (f64, f64), cx: &App) -> Div {
         h_flex()
             .w_full()
             .justify_end()
@@ -418,9 +424,9 @@ impl CornerTable {
 
     /// A signed position delta (metres, + = the primary's event is later).
     /// Later is not better or worse by itself, so it stays uncoloured.
-    fn render_metres(&self, value: f64) -> Div {
+    fn render_metres(value: f64) -> Div {
         let (text, _) = format_delta(Some(value), 0, DeltaSense::LowerIsBetter);
-        self.render_number(text)
+        Self::render_number(text)
     }
 }
 
@@ -462,7 +468,7 @@ impl TableDelegate for CornerTable {
         col_ix: usize,
         sort: ColumnSort,
         window: &mut Window,
-        cx: &mut Context<TableState<Self>>,
+        cx: &mut Context<'_, TableState<Self>>,
     ) {
         self.sort = (Col::ALL[col_ix], sort);
         self.apply_sort();
@@ -481,7 +487,7 @@ impl TableDelegate for CornerTable {
         &mut self,
         col_ix: usize,
         _: &mut Window,
-        cx: &mut Context<TableState<Self>>,
+        cx: &mut Context<'_, TableState<Self>>,
     ) -> impl IntoElement {
         let col = Col::ALL[col_ix];
         let title: SharedString = if col == Col::Dt && self.approximate {
@@ -493,7 +499,7 @@ impl TableDelegate for CornerTable {
             .size_full()
             .flex()
             .items_center()
-            .when(col.is_numeric(), |this| this.justify_end())
+            .when(col.is_numeric(), gpui_kit::Styled::justify_end)
             .text_color(cx.theme().muted_foreground)
             .child(title)
     }
@@ -502,7 +508,7 @@ impl TableDelegate for CornerTable {
         &mut self,
         row_ix: usize,
         _: &mut Window,
-        _: &mut Context<TableState<Self>>,
+        _: &mut Context<'_, TableState<Self>>,
     ) -> Stateful<Div> {
         let id = self
             .lines
@@ -517,15 +523,14 @@ impl TableDelegate for CornerTable {
         row_ix: usize,
         col_ix: usize,
         _: &mut Window,
-        cx: &mut Context<TableState<Self>>,
+        cx: &mut Context<'_, TableState<Self>>,
     ) -> impl IntoElement {
         let Some(line) = self.lines.get(row_ix) else {
             return div().into_any_element();
         };
         let theme = cx.theme();
         match Col::ALL[col_ix] {
-            Col::Order => self
-                .render_number((line.order + 1).to_string().into())
+            Col::Order => Self::render_number((line.order + 1).to_string().into())
                 .text_color(theme.muted_foreground)
                 .into_any_element(),
             Col::Corner => div()
@@ -544,18 +549,18 @@ impl TableDelegate for CornerTable {
                         .muted(self.approximate),
                 )
                 .into_any_element(),
-            Col::Entry => self.render_speed(line.speeds[0], cx).into_any_element(),
-            Col::Min => self.render_speed(line.speeds[1], cx).into_any_element(),
-            Col::Exit => self.render_speed(line.speeds[2], cx).into_any_element(),
-            Col::Brake => self.render_metres(line.brake).into_any_element(),
-            Col::TurnIn => self.render_metres(line.turn_in).into_any_element(),
-            Col::Throttle => self.render_metres(line.throttle).into_any_element(),
+            Col::Entry => Self::render_speed(line.speeds[0], cx).into_any_element(),
+            Col::Min => Self::render_speed(line.speeds[1], cx).into_any_element(),
+            Col::Exit => Self::render_speed(line.speeds[2], cx).into_any_element(),
+            Col::Brake => Self::render_metres(line.brake).into_any_element(),
+            Col::TurnIn => Self::render_metres(line.turn_in).into_any_element(),
+            Col::Throttle => Self::render_metres(line.throttle).into_any_element(),
             Col::Consistency => {
                 let text: SharedString = match line.consistency {
                     Some(spread) => format!("±{spread:.1}").into(),
                     None => MISSING_VALUE.into(),
                 };
-                self.render_number(text).into_any_element()
+                Self::render_number(text).into_any_element()
             }
             Col::Notes => {
                 let count = line.notes.len();
@@ -577,7 +582,7 @@ impl TableDelegate for CornerTable {
         row_ix: usize,
         menu: PopupMenu,
         _: &mut Window,
-        _: &mut Context<TableState<Self>>,
+        _: &mut Context<'_, TableState<Self>>,
     ) -> PopupMenu {
         let Some(line) = self.lines.get(row_ix) else {
             return menu;
@@ -593,7 +598,7 @@ impl TableDelegate for CornerTable {
     fn render_empty(
         &mut self,
         _: &mut Window,
-        _: &mut Context<TableState<Self>>,
+        _: &mut Context<'_, TableState<Self>>,
     ) -> impl IntoElement {
         empty_state(
             IconName::Inbox,
@@ -628,10 +633,10 @@ impl TableDelegate for CornerTable {
             Col::Brake => delta(line.brake, 0),
             Col::TurnIn => delta(line.turn_in, 0),
             Col::Throttle => delta(line.throttle, 0),
-            Col::Consistency => line
-                .consistency
-                .map(|spread| format!("±{spread:.1}"))
-                .unwrap_or_else(|| MISSING_VALUE.to_string()),
+            Col::Consistency => line.consistency.map_or_else(
+                || MISSING_VALUE.to_string(),
+                |spread| format!("±{spread:.1}"),
+            ),
             Col::Notes => line.notes.len().to_string(),
         }
     }
@@ -683,11 +688,11 @@ pub struct CornersPanel {
     consistency: Option<ConsistencyResult>,
     consistency_task: Option<(Arc<AtomicBool>, Task<()>)>,
     renders: usize,
-    _subscriptions: Vec<Subscription>,
+    subscriptions: Vec<Subscription>,
 }
 
 impl CornersPanel {
-    pub fn new(app: AppState, cx: &mut Context<Self>) -> Self {
+    pub fn new(app: AppState, cx: &mut Context<'_, Self>) -> Self {
         let subscriptions = vec![
             cx.observe(&app.session, |this, _, cx| this.sync_analysis(cx)),
             // Cursor motion must not re-render this panel: only a change of
@@ -704,7 +709,7 @@ impl CornersPanel {
             consistency: None,
             consistency_task: None,
             renders: 0,
-            _subscriptions: subscriptions,
+            subscriptions,
         };
         panel.sync_analysis(cx);
         panel
@@ -731,7 +736,7 @@ impl CornersPanel {
     }
 
     /// Rebuild the table when the session's analysis changed identity.
-    fn sync_analysis(&mut self, cx: &mut Context<Self>) {
+    fn sync_analysis(&mut self, cx: &mut Context<'_, Self>) {
         let analysis = self.app.session.read(cx).analysis().cloned();
         let same = match (&analysis, &self.shown) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
@@ -743,7 +748,7 @@ impl CornersPanel {
             cx.notify();
             return;
         }
-        self.shown = analysis.clone();
+        self.shown.clone_from(&analysis);
         self.consistency = None;
         if let Some((cancel, _)) = self.consistency_task.take() {
             cancel.store(true, Ordering::Relaxed);
@@ -756,7 +761,7 @@ impl CornersPanel {
     }
 
     /// Push the shown analysis into the table, keeping the selection.
-    fn refresh_table(&mut self, cx: &mut Context<Self>) {
+    fn refresh_table(&mut self, cx: &mut Context<'_, Self>) {
         let Some(table) = self.table.clone() else {
             return;
         };
@@ -803,23 +808,22 @@ impl CornersPanel {
 
     /// Put the table's selected row back on the selected corner (after a
     /// rebuild), else on the first row.
-    fn reselect(&mut self, cx: &mut Context<Self>) {
+    fn reselect(&mut self, cx: &mut Context<'_, Self>) {
         let Some(table) = self.table.clone() else {
             return;
         };
         table.update(cx, |table, cx| {
             match table.delegate_mut().selection_target() {
                 Some(ix) if table.selected_row() != Some(ix) => table.set_selected_row(ix, cx),
-                Some(_) => {}
                 None if table.selected_row().is_some() => table.clear_selection(cx),
-                None => {}
+                Some(_) | None => {}
             }
         });
     }
 
     /// Follow a corner focus from anywhere (J/H, the palette, the ruler):
     /// select its row. Only a change of focus does any work.
-    fn follow_focus(&mut self, cx: &mut Context<Self>) {
+    fn follow_focus(&mut self, cx: &mut Context<'_, Self>) {
         let focus = self.app.cursor.read(cx).focus();
         if focus == self.followed_focus {
             return;
@@ -852,7 +856,7 @@ impl CornersPanel {
         cx.notify();
     }
 
-    fn measure_consistency(&mut self, analysis: Arc<Analysis>, cx: &mut Context<Self>) {
+    fn measure_consistency(&mut self, analysis: Arc<Analysis>, cx: &mut Context<'_, Self>) {
         if analysis.rows().is_empty() {
             return;
         }
@@ -885,6 +889,7 @@ impl CornersPanel {
         });
         let task = cx.spawn(async move |this, cx| {
             let result = work.await;
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no deferred result; this weak entity/window handle may already be gone.")]
             let _ = this.update(cx, |this, cx| {
                 let current = this
                     .shown
@@ -913,14 +918,14 @@ impl CornersPanel {
 
     /// Create the table state (first render).
     /// Move keyboard focus from the panel onto its table.
-    fn focus_table(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn focus_table(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         if let Some(table) = &self.table {
             let handle = gpui_kit::Focusable::focus_handle(table.read(cx), cx);
             window.focus(&handle, cx);
         }
     }
 
-    fn ensure_table(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn ensure_table(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         if self.table.is_some() {
             return;
         }
@@ -932,27 +937,31 @@ impl CornersPanel {
                 .loop_selection(false)
         });
         let subscription = cx.subscribe_in(&table, window, Self::on_table_event);
-        self._subscriptions.push(subscription);
+        self.subscriptions.push(subscription);
         self.table = Some(table);
         // Ctrl+N may have focused the panel before its table existed;
         // keyboard focus belongs on the rows.
         let own = self.focus_handle.clone();
-        self._subscriptions
+        self.subscriptions
             .push(cx.on_focus(&own, window, |this, window, cx| {
-                this.focus_table(window, cx)
+                this.focus_table(window, cx);
             }));
         if own.is_focused(window) {
-            cx.defer_in(window, |this, window, cx| this.focus_table(window, cx));
+            cx.defer_in(window, Self::focus_table);
         }
         self.refresh_table(cx);
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "GPUI subscription callbacks require the receiving entity even when this event only uses the context."
+    )]
     fn on_table_event(
         &mut self,
         table: &Entity<TableState<CornerTable>>,
         event: &TableEvent,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) {
         match event {
             TableEvent::SelectRow(ix) => {
@@ -1009,6 +1018,10 @@ impl CornersPanel {
             .cloned()
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
     fn render_notes(&self, cx: &App) -> impl IntoElement {
         let theme = cx.theme();
         let has_reference = self
@@ -1068,28 +1081,25 @@ impl CornersPanel {
                                 )
                             }),
                     )
-                    .when_some(
-                        caution.clone().filter(|_| has_reference),
-                        |this, caution| {
-                            this.child(
-                                h_flex()
-                                    .id("corner-alignment-caution")
-                                    .test_support()
-                                    .aria_label(caution.clone())
-                                    .items_start()
-                                    .gap_1()
-                                    .text_label()
-                                    .text_color(theme.muted_foreground)
-                                    .child(
-                                        Icon::new(IconName::TriangleAlert)
-                                            .xsmall()
-                                            .flex_shrink_0()
-                                            .mt_0p5(),
-                                    )
-                                    .child(div().flex_1().min_w_0().child(caution)),
-                            )
-                        },
-                    )
+                    .when_some(caution.filter(|_| has_reference), |this, caution| {
+                        this.child(
+                            h_flex()
+                                .id("corner-alignment-caution")
+                                .test_support()
+                                .aria_label(caution.clone())
+                                .items_start()
+                                .gap_1()
+                                .text_label()
+                                .text_color(theme.muted_foreground)
+                                .child(
+                                    Icon::new(IconName::TriangleAlert)
+                                        .xsmall()
+                                        .flex_shrink_0()
+                                        .mt_0p5(),
+                                )
+                                .child(div().flex_1().min_w_0().child(caution)),
+                        )
+                    })
                     .children(line.notes.iter().map(|(severity, text)| {
                         h_flex()
                             .items_start()
@@ -1119,13 +1129,12 @@ impl CornersPanel {
             .child(body)
     }
 
-    fn render_source(&self, analysis: &Analysis, cx: &App) -> Option<impl IntoElement> {
+    fn render_source(analysis: &Analysis, cx: &App) -> Option<impl IntoElement> {
         let text = match analysis.corner_source() {
-            CornerSource::Atlas => return None,
             CornerSource::User => "Your corner zones for this track.",
             CornerSource::Generated => "Corners detected from braking; no Track Atlas layout.",
             CornerSource::Reference => "Track Atlas corners carried over from the reference lap.",
-            CornerSource::Unmatched => return None,
+            CornerSource::Atlas | CornerSource::Unmatched => return None,
         };
         Some(
             div()
@@ -1153,7 +1162,7 @@ impl gpui_kit::component::dock::Panel for CornersPanel {
         Some(PanelKind::Corners.title().into())
     }
 
-    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn title(&mut self, _: &mut Window, _: &mut Context<'_, Self>) -> impl IntoElement {
         PanelKind::Corners.title()
     }
 }
@@ -1172,7 +1181,7 @@ impl gpui_kit::Focusable for CornersPanel {
 }
 
 impl Render for CornersPanel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         self.renders += 1;
         self.ensure_table(window, cx);
         let root = div()
@@ -1229,7 +1238,7 @@ impl Render for CornersPanel {
                 .test_support()
                 .aria_label(label)
                 .size_full()
-                .children(self.render_source(&analysis, cx))
+                .children(Self::render_source(&analysis, cx))
                 .child(
                     div()
                         .flex_1()
@@ -1283,6 +1292,10 @@ pub fn init(cx: &mut App) {
 mod tests {
     use super::*;
 
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+    )]
     fn line(order: usize, dt: f64) -> CornerLine {
         CornerLine {
             order,

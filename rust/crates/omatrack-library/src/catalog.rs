@@ -164,14 +164,15 @@ pub fn session_start(
 
 /// `yyyy-mm-dd`, or `unknown`.
 pub fn date_key(date: Option<Date>) -> String {
-    date.map(|date| date.to_string())
-        .unwrap_or_else(|| "unknown".to_string())
+    date.map_or_else(|| "unknown".to_string(), |date| date.to_string())
 }
 
 /// `Wed 2 Sep 2026`, or `Unknown date`.
 pub fn date_heading(date: Option<Date>) -> String {
-    date.map(|date| date.strftime("%a %-d %b %Y").to_string())
-        .unwrap_or_else(|| "Unknown date".to_string())
+    date.map_or_else(
+        || "Unknown date".to_string(),
+        |date| date.strftime("%a %-d %b %Y").to_string(),
+    )
 }
 
 /// A URL-safe slug for a track without an atlas slug.
@@ -202,6 +203,10 @@ pub fn path_hash(path: &Path) -> String {
 /// One lap row (plain data).
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "These are independent flags in a snapshot/input record, not mutually exclusive lifecycle states."
+)]
 pub struct LapNode {
     pub id: String,
     pub lap_id: i32,
@@ -336,19 +341,23 @@ impl LibraryFilter {
         Self::default()
     }
     /// Case-insensitive substring over track, driver, session and file name.
+    #[must_use]
     pub fn query(mut self, query: impl Into<String>) -> Self {
         self.query = query.into();
         self
     }
     /// Track slug.
+    #[must_use]
     pub fn track(mut self, slug: Option<String>) -> Self {
         self.track = slug;
         self
     }
+    #[must_use]
     pub fn year(mut self, year: Option<i16>) -> Self {
         self.year = year;
         self
     }
+    #[must_use]
     pub fn driver(mut self, driver: Option<String>) -> Self {
         self.driver = driver;
         self
@@ -410,26 +419,24 @@ fn lap_nodes(
     (nodes, best, best_time)
 }
 
+type DateGroups = BTreeMap<String, (Option<Date>, Vec<SessionNode>)>;
+type TrackGroups = BTreeMap<String, (String, DateGroups)>;
+
 impl LibrarySnapshot {
     /// Group records into the tree: tracks by name, days oldest first,
     /// sessions by start time, laps in recording order. Canonicalizes each
     /// path for its id: run it off the UI thread.
     pub fn build(records: Vec<CatalogRecord>) -> Self {
         // slug -> (name, date key -> (date, sessions))
-        let mut tracks: BTreeMap<
-            String,
-            (String, BTreeMap<String, (Option<Date>, Vec<SessionNode>)>),
-        > = BTreeMap::new();
+        let mut tracks = TrackGroups::new();
         for record in records {
             let metadata = record.metadata;
             let name = metadata
                 .track_name()
-                .map(str::to_string)
-                .unwrap_or_else(|| "Unknown track".to_string());
+                .map_or_else(|| "Unknown track".to_string(), str::to_string);
             let slug = metadata
                 .track_slug()
-                .map(str::to_string)
-                .unwrap_or_else(|| slugify(&name));
+                .map_or_else(|| slugify(&name), str::to_string);
             let start = session_start(
                 &record.summary,
                 Some(metadata.track_slug().unwrap_or(&name)),
@@ -609,6 +616,7 @@ impl LibrarySnapshot {
 
     /// The tree restricted to recordings matching `filter`; empty tracks
     /// and days are dropped. Ids are unchanged.
+    #[must_use]
     pub fn filtered(&self, filter: &LibraryFilter) -> Self {
         if filter.is_empty() {
             return self.clone();

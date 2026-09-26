@@ -1,6 +1,8 @@
-//! Real-recording checks against copied AiM MP4s (read-only). Ignored by
+//! Real-recording checks against copied `AiM` MP4s (read-only). Ignored by
 //! default; run with
 //! `OMATRACK_FIXTURES=~/Documents/Telemetry/26T07_PLM cargo test -- --include-ignored real_`.
+
+#![cfg(test)]
 
 use omatrack_core::alignment::{self, Options};
 use omatrack_core::corners::zones::{StationMapper, atlas_corner_zones};
@@ -11,7 +13,7 @@ fn mp4s() -> Vec<PathBuf> {
     let Ok(root) = std::env::var("OMATRACK_FIXTURES") else {
         panic!("set OMATRACK_FIXTURES to a folder of copied AiM MP4 recordings");
     };
-    let mut files: Vec<PathBuf> = walk(PathBuf::from(root))
+    let mut files: Vec<PathBuf> = walk(&PathBuf::from(root))
         .into_iter()
         .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("mp4")))
         .collect();
@@ -20,12 +22,12 @@ fn mp4s() -> Vec<PathBuf> {
     files
 }
 
-fn walk(dir: PathBuf) -> Vec<PathBuf> {
+fn walk(dir: &std::path::Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+    for entry in std::fs::read_dir(dir).unwrap().flatten() {
         let path = entry.path();
         if path.is_dir() {
-            out.extend(walk(path));
+            out.extend(walk(&path));
         } else {
             out.push(path);
         }
@@ -34,7 +36,11 @@ fn walk(dir: PathBuf) -> Vec<PathBuf> {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requires private telemetry/video fixtures; set OMATRACK_FIXTURES"]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn real_every_mp4_opens_with_laps_and_unifies() {
     for path in mp4s() {
         let recording = Recording::open(&path).unwrap();
@@ -70,7 +76,7 @@ fn real_every_mp4_opens_with_laps_and_unifies() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requires private telemetry/video fixtures; set OMATRACK_FIXTURES"]
 fn real_run1_fastest_lap_is_lap_8() {
     let path = mp4s()
         .into_iter()
@@ -92,7 +98,7 @@ fn real_run1_fastest_lap_is_lap_8() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requires private telemetry/video fixtures; set OMATRACK_FIXTURES"]
 fn real_index_open_agrees_with_full_open() {
     for path in mp4s() {
         let full = Recording::open(&path).unwrap();
@@ -124,7 +130,7 @@ fn real_index_open_agrees_with_full_open() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requires private telemetry/video fixtures; set OMATRACK_FIXTURES"]
 fn real_atlas_corners_map_through_gps() {
     let path = mp4s()[0].clone();
     let recording = Recording::open(&path).unwrap();
@@ -149,7 +155,7 @@ fn real_atlas_corners_map_through_gps() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requires private telemetry/video fixtures; set OMATRACK_FIXTURES"]
 fn real_alignment_basis_between_drivers() {
     let files = mp4s();
     let open = |i: usize| {

@@ -1,6 +1,8 @@
 //! The session model on synthetic recordings: load pipeline stages, cancel,
 //! corner sources, the comparison, swapping roles and manual offsets.
 
+#![cfg(test)]
+
 use omatrack_core::alignment::Strategy;
 use omatrack_core::corners::{CornerZone, ZoneSource};
 use omatrack_core::laps::LapKind;
@@ -89,6 +91,12 @@ fn sample_at(t: f64) -> Sample {
     s
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn recording() -> Arc<Recording> {
     let count = (DURATION * RATE) as usize;
     let mut columns: [Vec<f64>; 7] = Default::default();
@@ -133,6 +141,10 @@ fn not_cancelled() -> AtomicBool {
 }
 
 #[test]
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn load_lap_runs_every_stage() {
     let recording = recording();
     let lap = load_lap(
@@ -345,6 +357,10 @@ fn a_lap_time_base_places_no_time_loss() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn swapping_twice_restores_the_analysis() {
     let (analysis, cancel) = pair(StrategyRequest::Prefer(Strategy::ManualDampers), 0.001);
     let comparison = analysis.comparison().unwrap();
@@ -382,6 +398,10 @@ fn swapping_twice_restores_the_analysis() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn manual_offset_rebuilds_only_the_delta_side() {
     let (analysis, cancel) = pair(StrategyRequest::Prefer(Strategy::ManualDampers), 0.0);
     let moved = analysis.with_manual_offset(0.01, &cancel).unwrap();

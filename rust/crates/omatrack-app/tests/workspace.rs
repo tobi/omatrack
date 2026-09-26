@@ -1,6 +1,8 @@
 //! UI integration tests for the dock workspace: the default layout, dock
 //! toggles and layout persistence through `omatrack.yml`.
 
+#![cfg(test)]
+
 mod common;
 
 use gpui_kit::AppContext as _;
@@ -77,7 +79,7 @@ fn ctrl_b_and_ctrl_j_toggle_the_docks(cx: &mut TestAppContext) {
         })
     };
     cx.update_window(test.window.into(), |_, window, cx| {
-        window.press("ctrl-b", cx)
+        window.press("ctrl-b", cx);
     })
     .unwrap();
     assert!(!open(DockPlacement::Left, cx));
@@ -93,7 +95,7 @@ fn ctrl_b_and_ctrl_j_toggle_the_docks(cx: &mut TestAppContext) {
     .unwrap();
     assert!(open(DockPlacement::Left, cx));
     cx.update_window(test.window.into(), |_, window, cx| {
-        window.press("ctrl-j", cx)
+        window.press("ctrl-j", cx);
     })
     .unwrap();
     assert!(!open(DockPlacement::Right, cx));
@@ -104,15 +106,15 @@ fn the_layout_round_trips_through_preferences(cx: &mut TestAppContext) {
     let sandbox = common::Sandbox::new();
     let test = common::start(cx, sandbox.options());
     cx.update_window(test.window.into(), |_, window, cx| {
-        window.press("ctrl-b", cx)
+        window.press("ctrl-b", cx);
     })
     .unwrap();
     // The save is debounced; let it run, then write the document.
     cx.executor()
         .advance_clock(std::time::Duration::from_secs(1));
     cx.run_until_parked();
-    let preferences = test.app.preferences.clone();
-    cx.update(|cx| preferences.update(cx, |preferences, cx| preferences.flush(cx)));
+    let preferences = test.app.preferences;
+    cx.update(|cx| preferences.update(cx, omatrack_app::state::Preferences::flush));
 
     let saved = sandbox.read_config();
     let layout = saved.workspace.layout.expect("workspace.layout is saved");
@@ -297,7 +299,7 @@ fn focusing_a_moved_panel_opens_its_current_dock(cx: &mut TestAppContext) {
     });
     cx.update_window(test.window.into(), |_, window, cx| {
         window.focus(&traces, cx);
-        window.press("ctrl-4", cx)
+        window.press("ctrl-4", cx);
     })
     .unwrap();
     cx.run_until_parked();

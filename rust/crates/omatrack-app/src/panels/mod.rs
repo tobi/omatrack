@@ -281,7 +281,7 @@ macro_rules! simple_panel {
             fn title(
                 &mut self,
                 _: &mut gpui_kit::Window,
-                _: &mut gpui_kit::Context<Self>,
+                _: &mut gpui_kit::Context<'_, Self>,
             ) -> impl gpui_kit::IntoElement {
                 $kind.title()
             }

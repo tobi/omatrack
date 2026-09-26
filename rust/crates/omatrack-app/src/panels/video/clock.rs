@@ -16,7 +16,7 @@ use omatrack_ui::{MISSING_VALUE, TypeScale as _};
 
 use crate::state::AppState;
 
-pub struct LapClock {
+pub(super) struct LapClock {
     app: AppState,
     shown: Option<(i64, i64)>,
     text: SharedString,
@@ -24,7 +24,7 @@ pub struct LapClock {
 }
 
 impl LapClock {
-    pub fn new(app: AppState, cx: &mut Context<Self>) -> Self {
+    pub(super) fn new(app: AppState, cx: &mut Context<'_, Self>) -> Self {
         let subscriptions = vec![
             cx.observe(&app.cursor, |_, _, cx| cx.notify()),
             cx.observe(&app.video, |_, _, cx| cx.notify()),
@@ -38,6 +38,10 @@ impl LapClock {
     }
 
     /// The lap time at the cursor and the lap length, ms.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "The displayed clock intentionally rounds seconds to integer milliseconds and formats them as f64."
+    )]
     fn times(&self, cx: &gpui_kit::App) -> Option<(i64, i64)> {
         let video = self.app.video.read(cx);
         let timeline = video.timeline(crate::actions::Role::Primary)?;
@@ -53,7 +57,11 @@ impl LapClock {
 }
 
 impl Render for LapClock {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "The displayed clock intentionally rounds seconds to integer milliseconds and formats them as f64."
+    )]
+    fn render(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let times = self.times(cx);
         if times != self.shown {
             self.shown = times;

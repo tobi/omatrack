@@ -234,7 +234,7 @@ impl EventPump<'_> {
         true
     }
 
-    /// Reads the display size directly. START_FILE clears the mirrored size,
+    /// Reads the display size directly. `START_FILE` clears the mirrored size,
     /// and mpv sends no property change when the next file has the same
     /// size, so the observed values alone would leave it at zero.
     fn refresh_video_size(&mut self) {

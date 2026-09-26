@@ -77,15 +77,15 @@ pub fn print_usage(program: &std::ffi::OsStr) {
 pub fn run(args: &[OsString], program: &std::ffi::OsStr) -> i32 {
     let arg = |i: usize| args[i].as_os_str();
     let command = args.first().map(|a| a.as_bytes()).unwrap_or_default();
-    // argc counts the program name too.
-    let argc = args.len() + 1;
+    // argument_count counts the program name too.
+    let argument_count = args.len() + 1;
     match command {
-        b"parse" if argc == 3 => return commands::parse::run(arg(1)),
-        b"unify" if argc == 5 && arg(2).as_bytes() == b"--output" => {
+        b"parse" if argument_count == 3 => return commands::parse::run(arg(1)),
+        b"unify" if argument_count == 5 && arg(2).as_bytes() == b"--output" => {
             return commands::unify::run(arg(1), arg(3));
         }
-        b"compare" if argc == 4 => return commands::compare::run(arg(1), arg(2)),
-        b"corners" if argc >= 3 => return commands::corners::run_args(args, program),
+        b"compare" if argument_count == 4 => return commands::compare::run(arg(1), arg(2)),
+        b"corners" if argument_count >= 3 => return commands::corners::run_args(args, program),
         _ => {}
     }
     print_usage(program);
@@ -93,6 +93,10 @@ pub fn run(args: &[OsString], program: &std::ffi::OsStr) -> i32 {
 }
 
 /// The standalone `omatrack-cli` entry point (`main` of the test binary).
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "The command entrypoint consumes its captured argv; callers relinquish the owned argument vector."
+)]
 pub fn main_with(args: Vec<OsString>) -> i32 {
     let program = args.first().cloned().unwrap_or_default();
     if args.len() == 2 && (args[1] == "--version" || args[1] == "-V") {

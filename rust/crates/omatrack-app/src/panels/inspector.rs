@@ -70,6 +70,12 @@ impl InspectorChannel {
         self.has_data
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        reason = "Clamped lap fractions map to indices in resident sample buffers; interpolation intentionally uses f64."
+    )]
     fn value(&self, values: &[f64], fraction: f64) -> f64 {
         if self.stepped && values.len() > 1 {
             let ix = (fraction.clamp(0.0, 1.0) * (values.len() - 1) as f64).round() as usize;
@@ -82,11 +88,9 @@ impl InspectorChannel {
 /// Decimals for a channel's readout, by unit.
 fn decimals(key: &str, unit: &str) -> usize {
     match (key, unit) {
-        ("gear", _) => 0,
-        (_, "%" | "rpm" | "m") => 0,
-        (_, "g") => 2,
+        ("gear", _) | (_, "%" | "rpm" | "m") => 0,
+        (_, "g" | "l") => 2,
         (_, "°") => 6,
-        (_, "l") => 2,
         _ => 1,
     }
 }
@@ -153,7 +157,7 @@ pub struct InspectorPanel {
 }
 
 impl InspectorPanel {
-    pub fn new(app: AppState, cx: &mut Context<Self>) -> Self {
+    pub fn new(app: AppState, cx: &mut Context<'_, Self>) -> Self {
         let subscriptions = vec![
             cx.observe(&app.session, |this, _, cx| this.sync_analysis(cx)),
             cx.observe(&app.cursor, |_, _, cx| cx.notify()),
@@ -181,7 +185,7 @@ impl InspectorPanel {
         self.renders
     }
 
-    fn sync_analysis(&mut self, cx: &mut Context<Self>) {
+    fn sync_analysis(&mut self, cx: &mut Context<'_, Self>) {
         let analysis = self.app.session.read(cx).analysis().cloned();
         let same = match (&analysis, &self.shown) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
@@ -207,12 +211,7 @@ impl InspectorPanel {
         })
     }
 
-    fn render_header(
-        &self,
-        analysis: &Analysis,
-        probe: Option<Probe>,
-        cx: &App,
-    ) -> impl IntoElement {
+    fn render_header(analysis: &Analysis, probe: Option<Probe>, cx: &App) -> impl IntoElement {
         let theme = cx.theme();
         // The status bar's cursor text, so the two never disagree.
         let position: SharedString = match probe {
@@ -264,10 +263,10 @@ impl InspectorPanel {
                         )
                     }),
             )
-            .child(self.render_columns(has_reference, cx))
+            .child(Self::render_columns(has_reference, cx))
     }
 
-    fn render_columns(&self, has_reference: bool, cx: &App) -> impl IntoElement {
+    fn render_columns(has_reference: bool, cx: &App) -> impl IntoElement {
         let theme = cx.theme();
         let role = |role: LapRole| {
             h_flex()
@@ -314,7 +313,7 @@ impl gpui_kit::component::dock::Panel for InspectorPanel {
         Some(PanelKind::Inspector.title().into())
     }
 
-    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn title(&mut self, _: &mut Window, _: &mut Context<'_, Self>) -> impl IntoElement {
         PanelKind::Inspector.title()
     }
 }
@@ -328,7 +327,11 @@ impl gpui_kit::Focusable for InspectorPanel {
 }
 
 impl Render for InspectorPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
+    fn render(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         self.renders += 1;
         let root = div()
             .id("inspector-panel")
@@ -482,7 +485,7 @@ impl Render for InspectorPanel {
             v_flex()
                 .size_full()
                 .text_body()
-                .child(self.render_header(&analysis, probe, cx))
+                .child(Self::render_header(&analysis, probe, cx))
                 .child(list)
                 .when(probe.is_none(), |this| {
                     this.child(
@@ -519,6 +522,10 @@ mod tests {
     use super::*;
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn fraction_pedals_read_as_percent_like_the_lane_legend() {
         let values: Arc<[f64]> = Arc::from(vec![0.0, 0.99, 1.0]);
         let channel = InspectorChannel {

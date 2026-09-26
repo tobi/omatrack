@@ -1,6 +1,8 @@
 //! UI integration tests for the application shell: the real main window in
 //! a headless test platform.
 
+#![cfg(test)]
+
 mod common;
 
 use gpui_kit::AppContext as _;

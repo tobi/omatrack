@@ -12,9 +12,9 @@
 //! - submit: the CPU copies GPUI's `paint_path` makes of those paths
 //!   (translate-clone, scale to device pixels, scene insert clone);
 //! - hover: the per-cursor overlay work (readouts and crosshair dots for
-//!   every lane), the Qt "TraceCursorOverlay::benchmarkGeometry" number.
+//!   every lane), the Qt "`TraceCursorOverlay::benchmarkGeometry`" number.
 //!
-//! With `OMATRACK_FIXTURES` set, the fastest laps of the Run4/Run1 AiM
+//! With `OMATRACK_FIXTURES` set, the fastest laps of the Run4/Run1 `AiM`
 //! recordings replace the synthetic laps (read-only).
 //!
 //! Run: `cargo run --release --locked -p omatrack-trace --example trace_bench`
@@ -38,11 +38,17 @@ struct Stats {
     p95: f64,
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "The benchmark uses bounded synthetic sample counts, pixel projections and floating-point timing statistics."
+)]
 fn stats(samples: &mut [f64]) -> Stats {
     let cold = samples[0];
     let avg = samples.iter().sum::<f64>() / samples.len() as f64;
-    let worst = samples.iter().cloned().fold(0.0, f64::max);
-    samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let worst = samples.iter().copied().fold(0.0, f64::max);
+    samples.sort_by(f64::total_cmp);
     let p95 = samples[(samples.len() as f64 * 0.95) as usize - 1];
     Stats {
         avg,
@@ -53,6 +59,10 @@ fn stats(samples: &mut [f64]) -> Stats {
 }
 
 /// The zoom sweep: log-spaced 1× → 10,000× and back, about a drifting anchor.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "The benchmark uses bounded synthetic sample counts, pixel projections and floating-point timing statistics."
+)]
 fn sweep() -> Vec<Viewport> {
     let half = FRAMES / 2;
     (0..FRAMES)
@@ -71,6 +81,10 @@ fn sweep() -> Vec<Viewport> {
         .collect()
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep benchmark fixture selection and validation in one setup path."
+)]
 fn real_scene() -> Option<TraceScene> {
     use omatrack_core::alignment::Strategy;
     use omatrack_core::{ChannelOverrides, Comparison, Recording, fastest_lap_index};
@@ -108,7 +122,7 @@ fn real_scene() -> Option<TraceScene> {
     ));
     let arc = |v: &[f64]| -> Arc<[f64]> { v.into() };
     let gear = |lap: &omatrack_core::UnifiedLap| -> Arc<[f64]> {
-        lap.gear.iter().map(|&g| g as f64).collect()
+        lap.gear.iter().map(|&g| f64::from(g)).collect()
     };
     let pair = |key: &'static str, title: &'static str, kind, p: Arc<[f64]>, r: Arc<[f64]>| {
         LaneSeries::new(key, title, kind, p).with_reference(Some(r))
@@ -191,6 +205,11 @@ struct Row {
     paths: usize,
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "The benchmark uses bounded synthetic sample counts, pixel projections and floating-point timing statistics."
+)]
 fn run(scene: &TraceScene, label: &str, width: f32, height: f32) -> Row {
     let styles = LaneStyles::new();
     let sizing: Vec<_> = scene
@@ -198,7 +217,7 @@ fn run(scene: &TraceScene, label: &str, width: f32, height: f32) -> Row {
         .iter()
         .map(|lane| styles.get(&lane.key).sizing)
         .collect();
-    let layout = layout_lanes(&sizing, LayoutMode::default(), height as f64, 0.0);
+    let layout = layout_lanes(&sizing, LayoutMode::default(), f64::from(height), 0.0);
     // Each frame builds geometry cold for the new viewport, like Qt's
     // benchmark (which rebuilt the whole scene into scratch builders).
     let mut geometries: Vec<ChannelGeometry> = scene
@@ -224,7 +243,8 @@ fn run(scene: &TraceScene, label: &str, width: f32, height: f32) -> Row {
                 geometries[index].prepare(&input, &mut scratch);
             }
         }
-        geometry_ms.push(started.elapsed().as_secs_f64() * 1e3);
+        let geometry_elapsed = started.elapsed().as_secs_f64() * 1e3;
+        geometry_ms.push(geometry_elapsed);
 
         // GPUI's paint_path: translate-clone (ours), scale to device pixels
         // and a clone into the scene (GPUI's).
@@ -244,14 +264,15 @@ fn run(scene: &TraceScene, label: &str, width: f32, height: f32) -> Row {
                 }
             }
         }
-        submit_ms.push(started.elapsed().as_secs_f64() * 1e3);
+        let submit_elapsed = started.elapsed().as_secs_f64() * 1e3;
+        submit_ms.push(submit_elapsed);
         vertices.push(frame_vertices);
         if std::env::var("TRACE_BENCH_FRAMES").is_ok() {
             eprintln!(
                 "{:.6} {:.3} {:.3} {}",
                 viewport.span(),
-                geometry_ms.last().unwrap(),
-                submit_ms.last().unwrap(),
+                geometry_elapsed,
+                submit_elapsed,
                 frame_vertices
             );
         }
@@ -261,12 +282,16 @@ fn run(scene: &TraceScene, label: &str, width: f32, height: f32) -> Row {
         geometry: stats(&mut geometry_ms),
         submit: stats(&mut submit_ms),
         vertices_avg: vertices.iter().sum::<usize>() as f64 / vertices.len() as f64,
-        vertices_max: vertices.iter().cloned().max().unwrap_or(0),
+        vertices_max: vertices.iter().copied().max().unwrap_or(0),
         lanes: layout.slots.len(),
         paths,
     }
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "The benchmark uses bounded synthetic sample counts, pixel projections and floating-point timing statistics."
+)]
 fn hover(scene: &TraceScene, height: f32) -> (f64, f64) {
     let styles = LaneStyles::new();
     let sizing: Vec<_> = scene
@@ -274,7 +299,7 @@ fn hover(scene: &TraceScene, height: f32) -> (f64, f64) {
         .iter()
         .map(|l| styles.get(&l.key).sizing)
         .collect();
-    let layout = layout_lanes(&sizing, LayoutMode::default(), height as f64, 0.0);
+    let layout = layout_lanes(&sizing, LayoutMode::default(), f64::from(height), 0.0);
     let map = scene.map();
     let frames = 5000;
     let mut samples = Vec::with_capacity(frames);
@@ -300,7 +325,7 @@ fn hover(scene: &TraceScene, height: f32) -> (f64, f64) {
     }
     std::hint::black_box(sink);
     let avg = samples.iter().sum::<f64>() / samples.len() as f64;
-    let worst = samples.iter().cloned().fold(0.0, f64::max);
+    let worst = samples.iter().copied().fold(0.0, f64::max);
     (avg, worst)
 }
 
@@ -310,7 +335,13 @@ fn hover(scene: &TraceScene, height: f32) -> (f64, f64) {
 /// vertices into the new scene). Measured at the full lap and at a deep zoom
 /// to separate the replay cost from the view cost. GPUI's test platform has
 /// no GPU and a stub text system: this is CPU shape, not a native frame time.
-fn headless_cursor_frames(scene: TraceScene) -> Vec<(String, f64, f64, usize)> {
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "The benchmark uses bounded synthetic sample counts, pixel projections and floating-point timing statistics."
+)]
+fn headless_cursor_frames(
+    scene: TraceScene,
+) -> Result<Vec<CursorFrameRow>, Box<dyn std::error::Error>> {
     use gpui_kit::component::Root;
     use gpui_kit::{AnyWindowHandle, AppContext as _, TestAppContext, size};
     use omatrack_trace::{CursorState, TraceStack, ViewportState};
@@ -326,7 +357,7 @@ fn headless_cursor_frames(scene: TraceScene) -> Vec<(String, f64, f64, usize)> {
         stack = Some(view.clone());
         Root::new(view, window, cx)
     });
-    let stack = stack.unwrap();
+    let stack = stack.ok_or("headless benchmark window did not construct a trace stack")?;
     let window: AnyWindowHandle = handle.into();
     let mut rows = Vec::new();
     for (label, view) in [
@@ -338,8 +369,7 @@ fn headless_cursor_frames(scene: TraceScene) -> Vec<(String, f64, f64, usize)> {
             cx.update_window(window, |_, window, cx| {
                 window.refresh();
                 window.draw(cx).clear(cx);
-            })
-            .unwrap();
+            })?;
             cx.run_until_parked();
         }
         let renders_before = cx.update(|cx| stack.read(cx).static_rebuilds(cx));
@@ -350,13 +380,12 @@ fn headless_cursor_frames(scene: TraceScene) -> Vec<(String, f64, f64, usize)> {
             cursor.update(&mut cx, |c, cx| c.set_fraction(Some(fraction), cx));
             cx.run_until_parked();
             let started = Instant::now();
-            cx.update_window(window, |_, window, cx| window.draw(cx).clear(cx))
-                .unwrap();
+            cx.update_window(window, |_, window, cx| window.draw(cx).clear(cx))?;
             samples.push(started.elapsed().as_secs_f64() * 1e3);
         }
         let renders_after = cx.update(|cx| stack.read(cx).static_rebuilds(cx));
         let avg = samples.iter().sum::<f64>() / samples.len() as f64;
-        let worst = samples.iter().cloned().fold(0.0, f64::max);
+        let worst = samples.iter().copied().fold(0.0, f64::max);
         rows.push((
             label.to_string(),
             avg,
@@ -364,10 +393,12 @@ fn headless_cursor_frames(scene: TraceScene) -> Vec<(String, f64, f64, usize)> {
             renders_after - renders_before,
         ));
     }
-    rows
+    Ok(rows)
 }
 
-fn main() {
+type CursorFrameRow = (String, f64, f64, usize);
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (scene, source) = match real_scene() {
         Some(scene) => (scene, "real AiM laps (OMATRACK_FIXTURES)"),
         None => (synthetic::scene(), "synthetic 90 s laps"),
@@ -416,7 +447,7 @@ fn main() {
     println!(
         "hover (overlay readouts + dots, all lanes): avg {hover_avg:.4} ms, worst {hover_worst:.4} ms"
     );
-    for (label, avg, worst, renders) in headless_cursor_frames(scene.clone()) {
+    for (label, avg, worst, renders) in headless_cursor_frames(scene)? {
         println!(
             "headless cursor frame draw, {label} (stack re-render + cached static replay, test platform): avg {avg:.3} ms, worst {worst:.3} ms, static renders over 300 frames: {renders}"
         );
@@ -434,6 +465,7 @@ fn main() {
         "Qt precedent: 5.92 ms avg / 9.50 ms worst (7 lanes); 8.29 ms median frame, 8-lane 10,000x sweep; hover 0.057 ms"
     );
     if !(pass_geometry && pass_hover) {
-        std::process::exit(1);
+        return Err("geometry or hover exceeded the benchmark budget".into());
     }
+    Ok(())
 }

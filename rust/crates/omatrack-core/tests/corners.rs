@@ -1,6 +1,8 @@
 //! Port of tests/CornerAnalysisTest.cpp: synthetic 50 Hz corners whose shape
 //! is obvious by construction, and the notes a driver would read.
 
+#![cfg(test)]
+
 use omatrack_core::UnifiedLap;
 use omatrack_core::corners::{
     CornerContext, CornerNote, NoteSeverity, REGISTRY, auto_generate_corners, checks,
@@ -49,6 +51,12 @@ impl Default for Shape {
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn make_lap(shape: Shape) -> UnifiedLap {
     const RATE: i32 = 50;
     const DURATION: f64 = 20.0;
@@ -69,15 +77,16 @@ fn make_lap(shape: Shape) -> UnifiedLap {
             let phase = (f - shape.apex) / (1.0 - shape.apex);
             speed = shape.apex_speed + (shape.entry_speed - shape.apex_speed) * phase;
         }
-        let mut brake = 0.0;
-        if f >= shape.brake_start && f < shape.apex {
+        let brake = if f >= shape.brake_start && f < shape.apex {
             let since = t - shape.brake_start * DURATION;
             let ramp = (since / shape.brake_ramp_seconds.max(0.02)).min(1.0);
             let release = (1.0
                 - (since - shape.brake_ramp_seconds).max(0.0) / shape.trail_seconds.max(0.05))
             .max(0.0);
-            brake = shape.peak_brake_bar * ramp * release;
-        }
+            shape.peak_brake_bar * ramp * release
+        } else {
+            0.0
+        };
         let mut throttle = 1.0;
         let lift_time = shape.brake_start * DURATION - shape.lift_lead_seconds;
         if t >= lift_time && f < shape.throttle_on {
@@ -99,13 +108,13 @@ fn make_lap(shape: Shape) -> UnifiedLap {
                 ((t - steer_start) / (shape.apex * DURATION - steer_start).max(0.05)).min(1.0);
             steering = shape.max_steering * phase;
         }
-        let mut gear = shape.gear_in;
-        if f >= shape.brake_start {
+        let gear = if f >= shape.brake_start {
             let since = t - shape.brake_start * DURATION;
             let phase = ((since - shape.gear_shift_delay_seconds).max(0.0) / 0.6).min(1.0);
-            gear =
-                shape.gear_in - (phase * f64::from(shape.gear_in - shape.gear_apex)).round() as i32;
-        }
+            shape.gear_in - (phase * f64::from(shape.gear_in - shape.gear_apex)).round() as i32
+        } else {
+            shape.gear_in
+        };
         lap.time.push(t);
         lap.speed.push(speed);
         lap.throttle.push(throttle);

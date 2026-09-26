@@ -63,7 +63,7 @@ impl IntoElement for TraceOverlay {
     }
 }
 
-fn modifiers(m: &gpui_kit::Modifiers) -> KeyModifiers {
+fn modifiers(m: gpui_kit::Modifiers) -> KeyModifiers {
     KeyModifiers::new(m.shift, m.control, m.alt, m.platform)
 }
 
@@ -72,7 +72,7 @@ fn button(button: MouseButton) -> Option<PointerButton> {
         MouseButton::Left => Some(PointerButton::Left),
         MouseButton::Middle => Some(PointerButton::Middle),
         MouseButton::Right => Some(PointerButton::Right),
-        _ => None,
+        MouseButton::Navigate(_) => None,
     }
 }
 
@@ -111,7 +111,7 @@ impl Element for TraceOverlay {
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        _: &mut (),
+        (): &mut (),
         window: &mut Window,
         cx: &mut App,
     ) -> Hitbox {
@@ -119,9 +119,9 @@ impl Element for TraceOverlay {
             self.measured.set(Some(bounds));
             let stack = self.stack.clone();
             window.defer(cx, move |_, cx| {
-                stack
-                    .update(cx, |stack, cx| stack.set_plot_bounds(bounds, cx))
-                    .ok();
+                #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no input/deferred update; the weak entity handle may already be gone.")]
+                let _ = stack
+                    .update(cx, |stack, cx| stack.set_plot_bounds(bounds, cx));
             });
         }
         window.insert_hitbox(bounds, HitboxBehavior::Normal)
@@ -132,7 +132,7 @@ impl Element for TraceOverlay {
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        _: &mut (),
+        (): &mut (),
         hitbox: &mut Hitbox,
         window: &mut Window,
         _: &mut App,
@@ -151,6 +151,14 @@ impl Element for TraceOverlay {
 }
 
 impl TraceOverlay {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
     fn paint_marks(&self, bounds: Bounds<Pixels>, window: &mut Window) {
         let palette = &self.palette;
         let width = bounds.size.width.as_f32();
@@ -159,7 +167,8 @@ impl TraceOverlay {
             return;
         }
         let x_for = |fraction: f64| -> f32 {
-            self.viewport.x_for_fraction(fraction, 0.0, width as f64) as f32
+            self.viewport
+                .x_for_fraction(fraction, 0.0, f64::from(width)) as f32
         };
         let column = |window: &mut Window, left: f32, right: f32, color| {
             let left = left.clamp(0.0, width);
@@ -270,6 +279,10 @@ impl TraceOverlay {
         }
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
     fn paint_dots(&self, bounds: Bounds<Pixels>, x: f32, cursor: f64, window: &mut Window) {
         if !(0.0..=bounds.size.width.as_f32()).contains(&x) {
             return;
@@ -326,7 +339,7 @@ impl TraceOverlay {
         let origin = bounds.origin;
         let local = move |position: Point<Pixels>| -> (f64, f64) {
             let p = position - origin;
-            (p.x.as_f32() as f64, p.y.as_f32() as f64)
+            (f64::from(p.x.as_f32()), f64::from(p.y.as_f32()))
         };
 
         let stack = self.stack.clone();
@@ -339,11 +352,11 @@ impl TraceOverlay {
                 return;
             };
             let (x, y) = local(event.position);
-            stack
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no input/deferred update; the weak entity handle may already be gone.")]
+            let _ = stack
                 .update(cx, |stack, cx| {
-                    stack.pointer_down(x, y, button, event.click_count, event.position, window, cx)
-                })
-                .ok();
+                    stack.pointer_down(x, y, button, event.click_count, event.position, window, cx);
+                });
             // The press is fully owned by the trace gesture. Letting it bubble
             // lets ancestors move focus again, and every GPUI focus change
             // refreshes the window (a static-layer repaint per press).
@@ -358,9 +371,9 @@ impl TraceOverlay {
             }
             let (x, y) = local(event.position);
             let inside = hit.is_hovered(window);
-            stack
-                .update(cx, |stack, cx| stack.pointer_move(x, y, inside, cx))
-                .ok();
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no input/deferred update; the weak entity handle may already be gone.")]
+            let _ = stack
+                .update(cx, |stack, cx| stack.pointer_move(x, y, inside, cx));
         });
 
         let stack = self.stack.clone();
@@ -372,9 +385,9 @@ impl TraceOverlay {
                 return;
             };
             let (x, _) = local(event.position);
-            stack
-                .update(cx, |stack, cx| stack.pointer_up(x, button, cx))
-                .ok();
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no input/deferred update; the weak entity handle may already be gone.")]
+            let _ = stack
+                .update(cx, |stack, cx| stack.pointer_up(x, button, cx));
         });
 
         let stack = self.stack.clone();
@@ -385,14 +398,14 @@ impl TraceOverlay {
             let (x, _) = local(event.position);
             let delta = match event.delta {
                 ScrollDelta::Pixels(p) => {
-                    WheelDelta::pixels(p.x.as_f32() as f64, p.y.as_f32() as f64)
+                    WheelDelta::pixels(f64::from(p.x.as_f32()), f64::from(p.y.as_f32()))
                 }
-                ScrollDelta::Lines(p) => WheelDelta::lines(p.x as f64, p.y as f64),
+                ScrollDelta::Lines(p) => WheelDelta::lines(f64::from(p.x), f64::from(p.y)),
             };
-            let modifiers = modifiers(&event.modifiers);
-            stack
-                .update(cx, |stack, cx| stack.wheel(x, delta, modifiers, cx))
-                .ok();
+            let modifiers = modifiers(event.modifiers);
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no input/deferred update; the weak entity handle may already be gone.")]
+            let _ = stack
+                .update(cx, |stack, cx| stack.wheel(x, delta, modifiers, cx));
             cx.stop_propagation();
         });
     }

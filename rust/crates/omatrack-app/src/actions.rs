@@ -67,6 +67,56 @@ gpui_kit::actions!(
     ]
 );
 
+impl Eq for Quit {}
+impl Eq for OpenFolder {}
+impl Eq for Rescan {}
+impl Eq for TogglePalette {}
+impl Eq for OpenPreferences {}
+impl Eq for ClosePreferences {}
+impl Eq for PrevPreferencesSection {}
+impl Eq for NextPreferencesSection {}
+impl Eq for ToggleLibrary {}
+impl Eq for ToggleInspector {}
+impl Eq for ResetLayout {}
+impl Eq for FocusPanel1 {}
+impl Eq for FocusPanel2 {}
+impl Eq for FocusPanel3 {}
+impl Eq for FocusPanel4 {}
+impl Eq for FocusPanel5 {}
+impl Eq for FocusPanel6 {}
+impl Eq for ShowChannels {}
+impl Eq for ShowMap {}
+impl Eq for ShowInspector {}
+impl Eq for TogglePlay {}
+impl Eq for SeekBack {}
+impl Eq for SeekForward {}
+impl Eq for ToggleMute {}
+impl Eq for ToggleVideoFullscreen {}
+impl Eq for ExitFullscreen {}
+impl Eq for ComposeLayout1 {}
+impl Eq for ComposeLayout2 {}
+impl Eq for ComposeLayout3 {}
+impl Eq for ComposeLayout4 {}
+impl Eq for ComposeLayout5 {}
+impl Eq for ToggleSlowMotion {}
+impl Eq for ToggleContinuous {}
+impl Eq for SwapRoles {}
+impl Eq for ToggleCornerEdit {}
+impl Eq for PrevCorner {}
+impl Eq for NextCorner {}
+impl Eq for ZoomIn {}
+impl Eq for ZoomOut {}
+impl Eq for ZoomReset {}
+impl Eq for PrevLap {}
+impl Eq for NextLap {}
+impl Eq for ToggleXAxis {}
+impl Eq for ToggleFit {}
+impl Eq for ResizeLanes {}
+impl Eq for SaveEdit {}
+impl Eq for CancelEdit {}
+impl Eq for SetPrimary {}
+impl Eq for SetReference {}
+
 /// The side of a comparison a lap is loaded into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Role {
@@ -76,7 +126,7 @@ pub enum Role {
 
 /// Load one lap of a library recording into a role. `session` is the
 /// catalog session id (`trk:<slug>/d:<date>/s:<hash>`), `lap` the lap id.
-#[derive(Debug, Clone, PartialEq, gpui_kit::Action)]
+#[derive(Debug, Clone, PartialEq, Eq, gpui_kit::Action)]
 #[action(namespace = omatrack, no_json)]
 pub struct SelectLap {
     pub session: SharedString,
@@ -86,14 +136,14 @@ pub struct SelectLap {
 
 /// Focus one corner of the current analysis by its zone id (`T5`, an atlas
 /// range id).
-#[derive(Debug, Clone, PartialEq, gpui_kit::Action)]
+#[derive(Debug, Clone, PartialEq, Eq, gpui_kit::Action)]
 #[action(namespace = omatrack, no_json)]
 pub struct FocusCorner {
     pub id: SharedString,
 }
 
 /// Show a library recording in the platform file manager.
-#[derive(Debug, Clone, PartialEq, gpui_kit::Action)]
+#[derive(Debug, Clone, PartialEq, Eq, gpui_kit::Action)]
 #[action(namespace = omatrack, no_json)]
 pub struct RevealRecording {
     pub session: SharedString,

@@ -7,6 +7,8 @@
 //! exist, so a load fails, but the session keeps the lap each role asked
 //! for, which is what these tests observe.
 
+#![cfg(test)]
+
 mod common;
 
 use gpui_kit::test::TestWindowExt as _;
@@ -79,7 +81,9 @@ fn select(
     cx.run_until_parked();
 }
 
-fn roles(event: &Event, cx: &mut TestAppContext) -> (Option<(String, i32)>, Option<(String, i32)>) {
+type SelectedLap = Option<(String, i32)>;
+
+fn roles(event: &Event, cx: &mut TestAppContext) -> (SelectedLap, SelectedLap) {
     cx.update(|cx| {
         let session = event.test.app.session.read(cx);
         let of = |slot: Option<&omatrack_app::state::RoleSlot>| {
@@ -226,13 +230,16 @@ fn out_and_in_laps_wait_behind_a_counted_disclosure(cx: &mut TestAppContext) {
     select(event.handle, &event.ada, 5, Role::Reference, cx);
     cx.update(|cx| {
         event.laps.update(cx, |laps, cx| {
-            laps.toggle_disclosure(&SharedString::from(ada.clone()), cx)
-        })
+            laps.toggle_disclosure(&SharedString::from(ada.clone()), cx);
+        });
     });
     cx.update(|cx| {
         let laps = event.laps.read(cx);
         let group = laps.group(&ada).unwrap();
-        let shown: Vec<i32> = laps.visible_laps(group).map(|line| line.lap()).collect();
+        let shown: Vec<i32> = laps
+            .visible_laps(group)
+            .map(omatrack_app::panels::laps::LapLine::lap)
+            .collect();
         assert_eq!(shown, [2, 3, 4, 5]);
     });
 }
@@ -270,7 +277,7 @@ fn enter_sets_the_primary_and_alt_enter_the_reference(cx: &mut TestAppContext) {
     })
     .unwrap();
     cx.run_until_parked();
-    assert_eq!(roles(&event, cx).0, Some((ada.clone(), 2)), "Enter set L2");
+    assert_eq!(roles(&event, cx).0, Some((ada, 2)), "Enter set L2");
 
     // Down walks past the disclosure onto the next group; Enter opens it.
     let grace = SharedString::from(event.grace.id.clone());

@@ -1,6 +1,8 @@
 //! `omatrack2 <command>` must behave exactly like `omatrack-cli <command>`:
 //! same stdout, stderr and exit code, before any window system starts.
 
+#![cfg(test)]
+
 use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
 use std::process::{Command, Output};

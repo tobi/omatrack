@@ -1,7 +1,8 @@
-//! GPS-to-centerline station mapping (port of `src/core/TrackAtlasSpatial`
-//! plus the app's GeoJSON centerline parser). Maps Track Atlas station
-//! fractions onto one GPS lap: project fixes onto the layout centerline,
-//! bin by station, and make the station -> lap-fraction map monotonic with
+//! GPS-to-centerline station mapping (port of `src/core/TrackAtlasSpatial` plus the
+//! app's `GeoJSON` centerline parser).
+//!
+//! Maps Track Atlas station fractions onto one GPS lap: project fixes onto the layout
+//! centerline, bin by station, and make the station -> lap-fraction map monotonic with
 //! pool-adjacent-violators so one noisy fix cannot reverse a corner.
 
 use crate::num::{clamp, llround, max, min};
@@ -45,8 +46,8 @@ pub fn has_positional_gps(lap: &UnifiedLap) -> bool {
     valid >= 10 && ((max_lat - min_lat) > 1e-5 || (max_lon - min_lon) > 1e-5)
 }
 
-/// Longest LineString in a GeoJSON FeatureCollection (or a bare
-/// LineString), as (lon, lat) points; empty unless it has >= 4 valid points.
+/// Longest `LineString` in a `GeoJSON` `FeatureCollection` (or a bare
+/// `LineString`), as (lon, lat) points; empty unless it has >= 4 valid points.
 pub fn parse_centerline(geojson: &str) -> Vec<Point> {
     let Ok(document) = serde_json::from_str::<serde_json::Value>(geojson) else {
         return Vec::new();
@@ -103,12 +104,40 @@ struct Projection {
 
 /// Station -> lap-fraction map from projecting GPS fixes onto a
 /// centerline. Empty when the lap or the centerline is unsuitable.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep the ported analysis/report stages in source order so numerical and CLI parity remain auditable."
+)]
 pub fn spatial_station_map(lap: &UnifiedLap, centerline: &[Point]) -> Vec<Point> {
+    const METERS_PER_DEGREE: f64 = 111_319.490_793_273_57;
+    const RADIANS_PER_DEGREE: f64 = std::f64::consts::PI / 180.0;
+    struct Anchor {
+        station: f64,
+        fraction: f64,
+    }
+    const STATION_BINS: i64 = 500;
+    struct Row {
+        station: f64,
+        fraction: f64,
+        weight: f64,
+    }
+    // Pool-adjacent-violators: a monotonic station -> time map.
+    struct Block {
+        first: usize,
+        last: usize,
+        weighted_fraction: f64,
+        weight: f64,
+    }
+
     if !has_positional_gps(lap) || centerline.len() < 3 {
         return Vec::new();
     }
-    const METERS_PER_DEGREE: f64 = 111_319.490_793_273_57;
-    const RADIANS_PER_DEGREE: f64 = std::f64::consts::PI / 180.0;
     let mut reference_latitude = 0.0;
     for point in centerline {
         reference_latitude += point.y;
@@ -175,10 +204,6 @@ pub fn spatial_station_map(lap: &UnifiedLap, centerline: &[Point]) -> Vec<Point>
         best
     };
 
-    struct Anchor {
-        station: f64,
-        fraction: f64,
-    }
     let mut anchors: Vec<Anchor> = Vec::new();
     let stride = (lap.gps_lat.len() / 2500).max(1);
     let mut minimum_station: f64 = 1.0;
@@ -248,28 +273,26 @@ pub fn spatial_station_map(lap: &UnifiedLap, centerline: &[Point]) -> Vec<Point>
         return Vec::new();
     }
 
-    const STATION_BINS: i64 = 500;
     let mut by_station: Vec<Vec<f64>> = vec![Vec::new(); STATION_BINS as usize + 1];
     for anchor in &anchors {
         let bin = crate::num::clamp_i(
-            llround(anchor.station * STATION_BINS as f64) as i32 as i64,
+            i64::from(llround(anchor.station * STATION_BINS as f64) as i32),
             0,
             STATION_BINS,
         );
         by_station[bin as usize].push(anchor.fraction);
-    }
-    struct Row {
-        station: f64,
-        fraction: f64,
-        weight: f64,
     }
     let mut rows: Vec<Row> = vec![Row {
         station: 0.0,
         fraction: 0.0,
         weight: 1.0,
     }];
-    for bin in 1..STATION_BINS as usize {
-        let fractions = &mut by_station[bin];
+    for (bin, fractions) in by_station
+        .iter_mut()
+        .enumerate()
+        .take(STATION_BINS as usize)
+        .skip(1)
+    {
         if fractions.is_empty() {
             continue;
         }
@@ -289,13 +312,6 @@ pub fn spatial_station_map(lap: &UnifiedLap, centerline: &[Point]) -> Vec<Point>
         return Vec::new();
     }
 
-    // Pool-adjacent-violators: a monotonic station -> time map.
-    struct Block {
-        first: usize,
-        last: usize,
-        weighted_fraction: f64,
-        weight: f64,
-    }
     let mut blocks: Vec<Block> = Vec::new();
     for (row_index, row) in rows.iter().enumerate() {
         blocks.push(Block {

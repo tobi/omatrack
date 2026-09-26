@@ -33,9 +33,10 @@ jobs:
 
       - name: Rust toolchain
         run: |
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy
-          rustup default stable
+          # With no explicit name, rustup installs rust/rust-toolchain.toml.
+          rustup toolchain install --profile minimal --component rustfmt,clippy
           rustc --version
+          cargo clippy --version
 
       - uses: actions/cache@v4
         with:
@@ -43,14 +44,14 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             rust/target
-          key: cargo-${{ runner.os }}-${{ hashFiles('rust/Cargo.lock') }}
+          key: cargo-${{ runner.os }}-${{ hashFiles('rust/Cargo.lock', 'rust/rust-toolchain.toml') }}
           restore-keys: cargo-${{ runner.os }}-
 
       - name: Format
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: scripts/lint.sh
 
       # real_* tests are #[ignore]d and need private fixtures; the parity
       # baseline is local-only. Both are covered by scripts/check.sh.

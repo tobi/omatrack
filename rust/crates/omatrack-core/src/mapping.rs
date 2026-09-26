@@ -156,7 +156,7 @@ pub fn speed_unit_factor(unit: &str) -> Option<f64> {
 pub fn brake_unit_factor(unit: &str) -> Option<f64> {
     match unit {
         "bar" => Some(1.0),
-        "psi" => Some(0.0689476),
+        "psi" => Some(0.068_947_6),
         "kpa" => Some(0.01),
         "mpa" => Some(10.0),
         "pa" => Some(0.00001),
@@ -182,7 +182,7 @@ pub fn lower_trimmed(value: &str) -> String {
     }
     let lowered: Vec<u8> = bytes[start..end]
         .iter()
-        .map(|b| b.to_ascii_lowercase())
+        .map(u8::to_ascii_lowercase)
         .collect();
     String::from_utf8(lowered).unwrap_or_default()
 }
@@ -223,6 +223,11 @@ pub fn score_channel_match(channel: &str, alias: &str, alias_priority: i32) -> i
 }
 
 /// Map canonical concepts to channel indices.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "Alias priorities are indices into the small, compile-time standard-channel alias list."
+)]
 pub fn map_channels(channels: &[RawChannel], overrides: &ChannelOverrides) -> ChannelMapping {
     let mut mapping = ChannelMapping::new();
     let normalized: Vec<String> = channels
@@ -288,10 +293,11 @@ pub fn map_channels(channels: &[RawChannel], overrides: &ChannelOverrides) -> Ch
     mapping
 }
 
-/// Convert one raw GPS coordinate sample to degrees, east-positive, from the
-/// channel's declared unit: `rad`; angular minutes (`min`, `arcmin`,
-/// `arcminute`) in the reader's west-positive longitude convention; anything
-/// else is already degrees.
+/// Convert a raw GPS coordinate to degrees, east-positive.
+///
+/// The declared unit selects the conversion: `rad`; angular minutes (`min`, `arcmin`,
+/// `arcminute`) in the reader's west-positive longitude convention; anything else is
+/// already degrees.
 pub fn gps_coordinate_degrees(raw: f64, unit: &str, longitude: bool) -> f64 {
     if unit == "rad" {
         return raw * (180.0 / std::f64::consts::PI);
@@ -302,10 +308,12 @@ pub fn gps_coordinate_degrees(raw: f64, unit: &str, longitude: bool) -> f64 {
     raw
 }
 
-/// Most frequent positive numeric code in a driver-ID series; ties go to the
-/// earlier one. Float32-backed values (sample type code 6) are reduced to
-/// their seven significant decimal digits so codes such as 2.1 do not expose
-/// binary storage noise. Returns 0 when no positive finite value exists.
+/// Most frequent positive numeric code in a driver-ID series; ties go to the earlier
+/// one.
+///
+/// Float32-backed values (sample type code 6) are reduced to their seven significant
+/// decimal digits so codes such as 2.1 do not expose binary storage noise. Returns 0
+/// when no positive finite value exists.
 ///
 /// The C++ does the reduction in x87 `long double`; here the decimal is
 /// rounded exactly (shortest `{:.6e}` round trip), which is the value that
@@ -323,12 +331,11 @@ pub fn dominant_driver_id(values: &[f64], sample_type_code: u32) -> f64 {
         if sample_type_code == 6 {
             candidate = format!("{candidate:.6e}").parse().unwrap_or(candidate);
         }
-        match index_of.get(&candidate.to_bits()) {
-            Some(&slot) => counts[slot].1 += 1,
-            None => {
-                index_of.insert(candidate.to_bits(), counts.len());
-                counts.push((candidate, 1, index));
-            }
+        if let Some(&slot) = index_of.get(&candidate.to_bits()) {
+            counts[slot].1 += 1;
+        } else {
+            index_of.insert(candidate.to_bits(), counts.len());
+            counts.push((candidate, 1, index));
         }
     }
     counts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));

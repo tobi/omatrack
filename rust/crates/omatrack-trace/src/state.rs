@@ -16,7 +16,7 @@ use crate::scale::{Viewport, XAxis};
 pub const FOCUS_ANIMATION: Duration = Duration::from_millis(140);
 const FRAME: Duration = Duration::from_millis(8);
 
-/// OutCubic easing: fast start, gentle landing.
+/// `OutCubic` easing: fast start, gentle landing.
 pub fn out_cubic(t: f64) -> f64 {
     let t = t.clamp(0.0, 1.0);
     1.0 - (1.0 - t).powi(3)
@@ -66,12 +66,12 @@ impl ViewportState {
     }
 
     /// Replace the viewport, cancelling any animation.
-    pub fn set_viewport(&mut self, viewport: Viewport, cx: &mut Context<Self>) {
+    pub fn set_viewport(&mut self, viewport: Viewport, cx: &mut Context<'_, Self>) {
         self.stop_animation();
         self.apply(viewport, cx);
     }
 
-    fn apply(&mut self, viewport: Viewport, cx: &mut Context<Self>) {
+    fn apply(&mut self, viewport: Viewport, cx: &mut Context<'_, Self>) {
         if viewport != self.viewport {
             self.viewport = viewport;
             cx.notify();
@@ -83,50 +83,50 @@ impl ViewportState {
         self.animation_task = None;
     }
 
-    pub fn set_axis(&mut self, axis: XAxis, cx: &mut Context<Self>) {
+    pub fn set_axis(&mut self, axis: XAxis, cx: &mut Context<'_, Self>) {
         if axis != self.axis {
             self.axis = axis;
             cx.notify();
         }
     }
 
-    pub fn toggle_axis(&mut self, cx: &mut Context<Self>) {
+    pub fn toggle_axis(&mut self, cx: &mut Context<'_, Self>) {
         self.set_axis(self.axis.toggled(), cx);
     }
 
     /// Zoom by `factor` (<1 zooms in) about a lap fraction.
-    pub fn zoom_about(&mut self, anchor: f64, factor: f64, cx: &mut Context<Self>) {
+    pub fn zoom_about(&mut self, anchor: f64, factor: f64, cx: &mut Context<'_, Self>) {
         let next = self.viewport.zoom_about(anchor, factor);
         self.set_viewport(next, cx);
     }
 
     /// Keyboard zoom step about `anchor` (the cursor), or the view centre.
-    pub fn zoom_in(&mut self, anchor: Option<f64>, cx: &mut Context<Self>) {
+    pub fn zoom_in(&mut self, anchor: Option<f64>, cx: &mut Context<'_, Self>) {
         let anchor = anchor.unwrap_or((self.viewport.start + self.viewport.end) * 0.5);
         self.zoom_about(anchor, 0.5, cx);
     }
 
-    pub fn zoom_out(&mut self, anchor: Option<f64>, cx: &mut Context<Self>) {
+    pub fn zoom_out(&mut self, anchor: Option<f64>, cx: &mut Context<'_, Self>) {
         let anchor = anchor.unwrap_or((self.viewport.start + self.viewport.end) * 0.5);
         self.zoom_about(anchor, 2.0, cx);
     }
 
     /// Pan by a lap-fraction distance.
-    pub fn pan_by(&mut self, delta: f64, cx: &mut Context<Self>) {
+    pub fn pan_by(&mut self, delta: f64, cx: &mut Context<'_, Self>) {
         let next = self.viewport.pan_by(delta);
         self.set_viewport(next, cx);
     }
 
     /// Back to the whole lap.
-    pub fn reset(&mut self, cx: &mut Context<Self>) {
+    pub fn reset(&mut self, cx: &mut Context<'_, Self>) {
         self.set_viewport(Viewport::FULL, cx);
     }
 
     /// Place a corner zone in the left half of the workspace. With `animate`
-    /// the viewport eases there over 140 ms (OutCubic) unless the platform
+    /// the viewport eases there over 140 ms (`OutCubic`) unless the platform
     /// asks for reduced motion; an interrupted animation restarts from the
     /// currently shown viewport, never from its old endpoint.
-    pub fn focus(&mut self, start: f64, end: f64, animate: bool, cx: &mut Context<Self>) {
+    pub fn focus(&mut self, start: f64, end: f64, animate: bool, cx: &mut Context<'_, Self>) {
         let target = Viewport::focus_on(start, end);
         if !animate || cx.reduce_motion() || target == self.viewport {
             self.set_viewport(target, cx);
@@ -140,7 +140,7 @@ impl ViewportState {
         self.animation_task = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(FRAME).await;
-                let Ok(running) = this.update(cx, |state, cx| state.step_animation(cx)) else {
+                let Ok(running) = this.update(cx, Self::step_animation) else {
                     break;
                 };
                 if !running {
@@ -151,7 +151,7 @@ impl ViewportState {
     }
 
     /// Advance the animation; false when it has landed.
-    fn step_animation(&mut self, cx: &mut Context<Self>) -> bool {
+    fn step_animation(&mut self, cx: &mut Context<'_, Self>) -> bool {
         let Some(animation) = &self.animation else {
             return false;
         };
@@ -231,7 +231,7 @@ impl CursorState {
         self.focus
     }
 
-    pub fn set_fraction(&mut self, fraction: Option<f64>, cx: &mut Context<Self>) {
+    pub fn set_fraction(&mut self, fraction: Option<f64>, cx: &mut Context<'_, Self>) {
         let fraction = fraction
             .filter(|f| f.is_finite())
             .map(|f| f.clamp(0.0, 1.0));
@@ -241,7 +241,7 @@ impl CursorState {
         }
     }
 
-    pub fn set_hover(&mut self, hover: Option<f64>, cx: &mut Context<Self>) {
+    pub fn set_hover(&mut self, hover: Option<f64>, cx: &mut Context<'_, Self>) {
         let hover = hover.filter(|f| f.is_finite());
         if hover != self.hover {
             self.hover = hover;
@@ -249,14 +249,14 @@ impl CursorState {
         }
     }
 
-    pub fn set_selection(&mut self, selection: Option<Selection>, cx: &mut Context<Self>) {
+    pub fn set_selection(&mut self, selection: Option<Selection>, cx: &mut Context<'_, Self>) {
         if selection != self.selection {
             self.selection = selection;
             cx.notify();
         }
     }
 
-    pub fn set_focus(&mut self, focus: Option<Selection>, cx: &mut Context<Self>) {
+    pub fn set_focus(&mut self, focus: Option<Selection>, cx: &mut Context<'_, Self>) {
         if focus != self.focus {
             self.focus = focus;
             cx.notify();
@@ -264,7 +264,11 @@ impl CursorState {
     }
 
     /// Move the cursor by `steps` samples of an `n`-sample lap.
-    pub fn step(&mut self, steps: i64, samples: usize, cx: &mut Context<Self>) {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "Cursor motion converts sample counts and signed steps to lap fractions; extreme steps clamp to the lap endpoints."
+    )]
+    pub fn step(&mut self, steps: i64, samples: usize, cx: &mut Context<'_, Self>) {
         if samples < 2 {
             return;
         }
@@ -280,6 +284,10 @@ mod tests {
     use gpui_kit::{AppContext as _, TestAppContext};
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn out_cubic_shape() {
         assert_eq!(out_cubic(0.0), 0.0);
         assert_eq!(out_cubic(1.0), 1.0);

@@ -2,6 +2,8 @@
 //! a headless window over a synthetic library of MTJ recordings (so the
 //! scan → load → strip pipeline runs), driven by native pointer events.
 
+#![cfg(test)]
+
 mod common;
 
 use std::path::Path;
@@ -21,6 +23,12 @@ const BOUNDARIES: [f64; 7] = [0.0, 5.0, 25.1, 45.0, 65.0, 85.0, 90.0];
 
 /// One MTJ recording (`*.telemetry.jsonl`): a steady lap with one braked
 /// corner, `shift` km/h faster than the first driver.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn write_recording(path: &Path, driver: &str, shift: f64) {
     let ns = |seconds: f64| (seconds * 1e9).round() as i64;
     let count = (DURATION * RATE) as usize;
@@ -38,7 +46,7 @@ fn write_recording(path: &Path, driver: &str, shift: f64) {
         .enumerate()
         .map(|(number, bounds)| {
             let complete = number > 0 && number + 2 < BOUNDARIES.len();
-            serde_json::json!([number, ns(bounds[0]), ns(bounds[1]), complete as i32])
+            serde_json::json!([number, ns(bounds[0]), ns(bounds[1]), i32::from(complete)])
         })
         .collect();
     let lines = [
@@ -78,7 +86,7 @@ async fn library(cx: &mut TestAppContext) -> Fixture {
     let test = common::start(cx, sandbox.options());
     let window: AnyWindowHandle = test.window.into();
     let library = test.app.library.clone();
-    cx.update(|cx| library.update(cx, |library, cx| library.rescan(cx)));
+    cx.update(|cx| library.update(cx, omatrack_app::state::Library::rescan));
     cx.run_until_parked();
     cx.wait_for(window, Duration::from_secs(600), |_, cx| {
         let library = library.read(cx);
@@ -91,8 +99,10 @@ async fn library(cx: &mut TestAppContext) -> Fixture {
             snapshot
                 .sessions()
                 .find(|node| node.file_name().contains(name))
-                .map(|node| SharedString::from(node.id.clone()))
-                .unwrap_or_else(|| panic!("{name} is in the library"))
+                .map_or_else(
+                    || panic!("{name} is in the library"),
+                    |node| SharedString::from(node.id.clone()),
+                )
         };
         (find("Run1"), find("Run2"))
     });
@@ -115,7 +125,7 @@ impl Fixture {
             role,
         };
         cx.update_window(self.window, |_, window, cx| {
-            window.dispatch_action(Box::new(action), cx)
+            window.dispatch_action(Box::new(action), cx);
         })
         .unwrap();
         self.settle(cx).await;
@@ -174,6 +184,10 @@ impl Fixture {
     }
 
     /// Click (or right-click) the cell of `lap` on `session`'s row.
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+    )]
     fn click_cell(&self, cx: &mut TestAppContext, session: &SharedString, lap: i32, right: bool) {
         let strip = ElementId::Name(format!("filmstrip-{session}").into());
         cx.update_window(self.window, |_, window, cx| {
@@ -254,7 +268,7 @@ async fn a_click_selects_that_rows_lap_and_keeps_the_viewport(cx: &mut TestAppCo
     let cursor = f.test.app.cursor.clone();
     cx.update(|cx| {
         viewport.update(cx, |viewport, cx| {
-            viewport.set_viewport(Viewport::new(0.2, 0.6), cx)
+            viewport.set_viewport(Viewport::new(0.2, 0.6), cx);
         });
         cursor.update(cx, |cursor, cx| cursor.set_fraction(Some(0.4), cx));
     });

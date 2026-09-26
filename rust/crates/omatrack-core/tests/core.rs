@@ -1,6 +1,8 @@
 //! Port of tests/CoreTest.cpp: the analysis core on synthetic data.
 //! (MTX sidecar and `.telemetry` writer cases are out of scope for the port.)
 
+#![cfg(test)]
+
 use omatrack_core::laps::*;
 use omatrack_core::mapping::*;
 use omatrack_core::meta::{session_meta_from_filename, utc_start_ns_from_gps};
@@ -32,6 +34,10 @@ fn none() -> ChannelOverrides {
 // ── normalizeChannelName / GPS units ────────────────────────────────
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn gps_coordinate_units_share_one_rule() {
     assert!((gps_coordinate_degrees(29.19 * 60.0, "min", false) - 29.19).abs() < 1e-9);
     assert!((gps_coordinate_degrees(81.07 * 60.0, "min", true) + 81.07).abs() < 1e-9);
@@ -65,9 +71,9 @@ fn format_lap_time_cases() {
     assert_eq!(format_lap_time(60000.0), "1:00.000");
     assert_eq!(format_lap_time(23450.0), "0:23.450");
     assert_eq!(format_lap_time(0.0), "0:00.000");
-    assert_eq!(format_lap_time(183550.0), "3:03.550");
+    assert_eq!(format_lap_time(183_550.0), "3:03.550");
     assert_eq!(format_lap_time(83551.0), "1:23.551");
-    assert_eq!(format_lap_time(600000.0), "10:00.000");
+    assert_eq!(format_lap_time(600_000.0), "10:00.000");
     assert_eq!(format_lap_time(59999.0), "0:59.999");
 }
 
@@ -95,6 +101,10 @@ fn session_meta_from_filename_cases() {
 // ── resample ────────────────────────────────────────────────────────
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn resample_cases() {
     assert!(resample(&[], 100.0, 50.0, 1.0).is_empty());
     let v = [1.0, 2.0, 3.0, 4.0, 5.0];
@@ -120,12 +130,8 @@ fn resample_cases() {
 #[test]
 fn beacon_splits() {
     let mut v = vec![0.0; 50];
-    for i in 10..13 {
-        v[i] = 1.0;
-    }
-    for i in 30..33 {
-        v[i] = 1.0;
-    }
+    v[10..13].fill(1.0);
+    v[30..33].fill(1.0);
     assert_eq!(pds_beacon_splits(&v, 10), vec![1.0, 3.0]);
     assert!(pds_beacon_splits(&[], 10).is_empty());
     assert!(pds_beacon_splits(&[1.0, 0.0, 1.0], 0).is_empty());
@@ -134,6 +140,10 @@ fn beacon_splits() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn lap_time_splits() {
     let mut v: Vec<f64> = (0..900).map(|i| f64::from(i) / 10.0).collect();
     v.extend((0..900).map(|i| f64::from(i) / 10.0));
@@ -203,6 +213,10 @@ fn lap_number_splits() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn distance_splits() {
     let mut v: Vec<f64> = (0..500).map(|i| f64::from(i) * 10.0).collect();
     v.extend((0..500).map(|i| f64::from(i) * 10.0));
@@ -273,30 +287,34 @@ fn build_laps_from_splits_cases() {
 fn mark_short_crossings_rejects_authoritative_out_laps() {
     let mut laps = vec![
         lap(1, 0.0, 18.0, 18000.0, true),
-        lap(2, 18.0, 118.0, 100000.0, true),
-        lap(3, 118.0, 218.0, 100000.0, true),
+        lap(2, 18.0, 118.0, 100_000.0, true),
+        lap(3, 118.0, 218.0, 100_000.0, true),
     ];
     mark_short_crossings_incomplete(&mut laps);
     assert!(!laps[0].complete && laps[1].complete && laps[2].complete);
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn previous_lap_times() {
     let mut previous = vec![0.0; 131];
-    previous[128] = 117831.0;
+    previous[128] = 117_831.0;
     let confirmed =
-        pds_apply_previous_lap_times(&[lap(0, 10.0, 128.0, 118000.0, true)], &previous, 1, true);
+        pds_apply_previous_lap_times(&[lap(0, 10.0, 128.0, 118_000.0, true)], &previous, 1, true);
     assert!(confirmed[0].complete);
-    assert_eq!(confirmed[0].time_ms, 117831.0);
+    assert_eq!(confirmed[0].time_ms, 117_831.0);
 
     let out = pds_apply_previous_lap_times(
-        &[lap(11, 1507.5, 1635.0, 127500.0, false)],
-        &vec![116172.0; 1636],
+        &[lap(11, 1507.5, 1635.0, 127_500.0, false)],
+        &vec![116_172.0; 1636],
         1,
         true,
     );
     assert!(!out[0].complete);
-    assert_eq!(out[0].time_ms, 127500.0);
+    assert_eq!(out[0].time_ms, 127_500.0);
 
     let mut previous = vec![0.0; 513];
     previous[510] = 30500.0;
@@ -310,24 +328,28 @@ fn previous_lap_times() {
 }
 
 #[test]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+)]
 fn lap_distance_coverage() {
     let laps = [
         lap(0, 0.0, 99.0, 99000.0, true),
         lap(1, 101.0, 200.0, 99000.0, true),
     ];
     let mut position = vec![0.0; 201];
-    for i in 0..=99 {
-        position[i] = i as f64;
+    for (i, value) in position.iter_mut().enumerate().take(100) {
+        *value = i as f64;
     }
-    for i in 100..=200 {
-        position[i] = 40.0 + (i - 100) as f64 * 0.2;
+    for (i, value) in position.iter_mut().enumerate().skip(100) {
+        *value = 40.0 + (i - 100) as f64 * 0.2;
     }
     let checked = pds_apply_lap_distance_coverage(&laps, &position, 1);
     assert!(checked[0].complete && !checked[1].complete);
 
     let laps = [
-        lap(0, 0.0, 100.0, 100000.0, true),
-        lap(1, 100.0, 200.0, 100000.0, true),
+        lap(0, 0.0, 100.0, 100_000.0, true),
+        lap(1, 100.0, 200.0, 100_000.0, true),
     ];
     let cumulative: Vec<f64> = (0..=200).map(f64::from).collect();
     let checked = pds_apply_lap_distance_coverage(&laps, &cumulative, 1);
@@ -348,11 +370,11 @@ fn lap_distance_coverage() {
         lap(3, 120.0, 160.0, 40000.0, true),
     ];
     let mut position = vec![0.0; 161];
-    for i in 0..=120 {
-        position[i] = (i % 41) as f64;
+    for (i, value) in position.iter_mut().enumerate().take(121) {
+        *value = (i % 41) as f64;
     }
-    for i in 121..=160 {
-        position[i] = i as f64;
+    for (i, value) in position.iter_mut().enumerate().skip(121) {
+        *value = i as f64;
     }
     let checked = pds_apply_lap_distance_coverage(&laps, &position, 1);
     assert!(checked.iter().all(|l| l.complete));
@@ -378,8 +400,8 @@ fn long_head_and_tail_fragments_remain_incomplete() {
     let mut source = src(vec![]);
     source.set_source_laps(vec![
         lap(1, 0.0, 60.0, 60000.0, false),
-        lap(2, 60.0, 160.0, 100000.0, true),
-        lap(3, 160.0, 260.0, 100000.0, true),
+        lap(2, 60.0, 160.0, 100_000.0, true),
+        lap(3, 160.0, 260.0, 100_000.0, true),
         lap(4, 260.0, 330.0, 70000.0, false),
     ]);
     let laps = source.detect_laps();
@@ -407,6 +429,10 @@ fn score_channel_match_cases() {
 // ── dominantDriverId ────────────────────────────────────────────────
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn dominant_driver_id_cases() {
     assert_eq!(dominant_driver_id(&[0.0, 3.0, 3.0, 3.0, 5.0, 5.0], 0), 3.0);
     assert_eq!(dominant_driver_id(&[0.0, 7.0, 7.0, 9.0, 9.0], 0), 7.0);
@@ -420,7 +446,7 @@ fn dominant_driver_id_cases() {
     assert_eq!(dominant_driver_id(&[0.0, 2.5, 2.5, 3.75], 0), 2.5);
     let f = f64::from(2.1f32);
     assert_eq!(dominant_driver_id(&[f, f, 3.0], 6), 2.1);
-    let code = 2.12345678901234;
+    let code = 2.123_456_789_012_34;
     assert_eq!(dominant_driver_id(&[code, code, 3.0], 7), code);
     assert_eq!(dominant_driver_id(&[f64::NAN, f64::INFINITY, 4.5], 0), 4.5);
 }
@@ -569,6 +595,10 @@ fn map_channels_finds_concepts() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn map_driving_channels_without_confusing_engine_and_vehicle_speed() {
     let c = |name: &str, unit: &str, value: f64| ch(name, unit, 2.0, 1.0, vec![value, value]);
     let s = src(vec![
@@ -604,6 +634,10 @@ fn map_speed_rejects_angular_units_and_ambiguous_substring() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn map_speed_falls_back_to_ground_velocity() {
     for name in ["GPS Speed", "velocity kmh"] {
         let s = src(vec![
@@ -657,6 +691,10 @@ fn map_channels_skips_empty_and_unknown() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn detect_driver_id_cases() {
     let s = src(vec![ch(
         "DriverID",
@@ -721,6 +759,10 @@ fn unify_one(name: &str, unit: &str, samples: Vec<f64>) -> omatrack_core::Unifie
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn unify_lap_units_and_encodings() {
     let lap = unify_one("Gear", "", vec![6.0, 1.0]);
     assert!(lap.gear.len() > 2 && lap.gear.iter().all(|g| *g == 6 || *g == 1));
@@ -768,6 +810,10 @@ fn unify_lap_units_and_encodings() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn unify_lap_multi_channel_normalization() {
     let s = src(vec![
         ch("Throttle Pos", "%", 2.0, 1.0, vec![75.0, 75.0]),
@@ -803,7 +849,7 @@ fn unify_lap_multi_channel_normalization() {
         (lap.speed[25], lap.throttle[25], lap.gps_lon[25]),
         (100.0, 0.5, 2.0)
     );
-    assert!((lap.gps_lat[25] - 57.29577951308232).abs() < 1e-9);
+    assert!((lap.gps_lat[25] - 57.295_779_513_082_32).abs() < 1e-9);
 
     let s = src(vec![
         ch("Damper Travel FL", "", 2.0, 1.0, vec![12.0, 12.0]),
@@ -829,6 +875,10 @@ fn unify_lap_rejects_degenerate_bounds() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn default_constructed_source_is_safe() {
     let s = src(vec![]);
     assert!(s.channels().is_empty() && s.source_laps().is_empty());
@@ -896,8 +946,8 @@ fn detect_laps_marks_authoritative_short_laps_incomplete() {
     let mut s = src(vec![]);
     s.set_source_laps(vec![
         lap(1, 0.0, 20.0, 20000.0, true),
-        lap(2, 20.0, 120.0, 100000.0, true),
-        lap(3, 120.0, 220.0, 100000.0, true),
+        lap(2, 20.0, 120.0, 100_000.0, true),
+        lap(3, 120.0, 220.0, 100_000.0, true),
     ]);
     let laps = s.detect_laps();
     assert_eq!(laps.len(), 3);
@@ -947,12 +997,12 @@ fn open_reports_unsupported_and_missing_files() {
 #[test]
 fn gps_week_and_itow_become_utc_at_t0() {
     assert_eq!(
-        utc_start_ns_from_gps(2429.0, 493904000.0, 0.0),
-        1785517886000000000
+        utc_start_ns_from_gps(2429.0, 493_904_000.0, 0.0),
+        1_785_517_886_000_000_000
     );
     assert_eq!(
-        utc_start_ns_from_gps(2429.0, 493904000.0, 2.0),
-        1785517884000000000
+        utc_start_ns_from_gps(2429.0, 493_904_000.0, 2.0),
+        1_785_517_884_000_000_000
     );
     assert_eq!(utc_start_ns_from_gps(-1.0, 1.0, 0.0), -1);
 }
@@ -997,6 +1047,10 @@ fn monotonic_view() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+)]
 fn monotonic_fractions() {
     let y = [0.0, 10.0, 20.0, 30.0];
     assert_eq!(

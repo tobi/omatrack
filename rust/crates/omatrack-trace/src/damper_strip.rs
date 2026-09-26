@@ -100,6 +100,7 @@ impl DamperStripData {
 
     /// The shared primary → reference map, with `offset` (primary lap
     /// fraction, as `Comparison::manual_offset`) already applied inside it.
+    #[must_use]
     pub fn with_map(mut self, map: Option<Arc<dyn FractionMap>>, offset: f64) -> Self {
         self.map = map;
         self.offset = if offset.is_finite() { offset } else { 0.0 };
@@ -167,6 +168,16 @@ pub fn clamp_window(seconds: f64, lap_seconds: f64) -> f64 {
 
 /// Autoscale of one trace over the window: 8% padding, a unit span around a
 /// flat signal (port of the Qt `range` lambda). Returns `(low, span)`.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Clamped lap fractions map to indices in resident sample buffers; interpolation intentionally uses f64."
+)]
+#[expect(
+    clippy::neg_cmp_op_on_partial_ord,
+    reason = "Negated ordered comparisons deliberately include unordered (NaN) values; preserve that behavior."
+)]
 pub fn window_range(values: &[f64], from: f64, to: f64) -> (f64, f64) {
     let mut lo = f64::INFINITY;
     let mut hi = f64::NEG_INFINITY;
@@ -219,7 +230,7 @@ pub struct DamperStrip {
 impl EventEmitter<DamperStripEvent> for DamperStrip {}
 
 impl DamperStrip {
-    pub fn new(cursor: Entity<CursorState>, cx: &mut Context<Self>) -> Self {
+    pub fn new(cursor: Entity<CursorState>, cx: &mut Context<'_, Self>) -> Self {
         let subscriptions = vec![cx.observe(&cursor, |_, _, cx| cx.notify())];
         Self {
             cursor,
@@ -234,7 +245,7 @@ impl DamperStrip {
 
     /// Replace the traces and the committed alignment. A pending preview is
     /// dropped unless a drag is still in progress.
-    pub fn set_data(&mut self, data: Option<Arc<DamperStripData>>, cx: &mut Context<Self>) {
+    pub fn set_data(&mut self, data: Option<Arc<DamperStripData>>, cx: &mut Context<'_, Self>) {
         self.data = data;
         if self.drag.is_none() {
             self.draft = None;
@@ -257,7 +268,7 @@ impl DamperStrip {
         self.window_seconds
     }
 
-    pub fn set_window_seconds(&mut self, seconds: f64, cx: &mut Context<Self>) {
+    pub fn set_window_seconds(&mut self, seconds: f64, cx: &mut Context<'_, Self>) {
         let seconds = clamp_window(seconds, self.lap_seconds());
         if (seconds - self.window_seconds).abs() > 1e-9 {
             self.window_seconds = seconds;
@@ -266,7 +277,7 @@ impl DamperStrip {
     }
 
     /// Multiply the window by `factor` (<1 zooms in), clamped to 1 s … lap.
-    pub fn zoom(&mut self, factor: f64, cx: &mut Context<Self>) {
+    pub fn zoom(&mut self, factor: f64, cx: &mut Context<'_, Self>) {
         if factor.is_finite() && factor > 0.0 {
             self.set_window_seconds(self.window_seconds * factor, cx);
         }
@@ -286,7 +297,7 @@ impl DamperStrip {
     }
 
     /// Request an absolute offset in seconds.
-    pub fn set_offset_seconds(&mut self, seconds: f64, cx: &mut Context<Self>) {
+    pub fn set_offset_seconds(&mut self, seconds: f64, cx: &mut Context<'_, Self>) {
         let Some(data) = &self.data else {
             return;
         };
@@ -295,17 +306,17 @@ impl DamperStrip {
     }
 
     /// Move the reference by `steps` 20 ms samples (negative: earlier).
-    pub fn nudge(&mut self, steps: i32, cx: &mut Context<Self>) {
-        let seconds = self.offset_seconds() + steps as f64 * NUDGE_SECONDS;
+    pub fn nudge(&mut self, steps: i32, cx: &mut Context<'_, Self>) {
+        let seconds = self.offset_seconds() + f64::from(steps) * NUDGE_SECONDS;
         self.set_offset_seconds(seconds, cx);
     }
 
     /// Back to no manual offset.
-    pub fn reset_offset(&mut self, cx: &mut Context<Self>) {
+    pub fn reset_offset(&mut self, cx: &mut Context<'_, Self>) {
         self.request(0.0, cx);
     }
 
-    fn request(&mut self, fraction: f64, cx: &mut Context<Self>) {
+    fn request(&mut self, fraction: f64, cx: &mut Context<'_, Self>) {
         if !fraction.is_finite() || self.data.is_none() {
             return;
         }
@@ -327,7 +338,7 @@ impl DamperStrip {
         window_fraction(self.window_seconds, self.lap_seconds())
     }
 
-    fn pointer_down(&mut self, x: f64, click_count: usize, cx: &mut Context<Self>) {
+    fn pointer_down(&mut self, x: f64, click_count: usize, cx: &mut Context<'_, Self>) {
         if self.data.is_none() {
             return;
         }
@@ -344,7 +355,7 @@ impl DamperStrip {
         cx.notify();
     }
 
-    fn pointer_move(&mut self, x: f64, width: f64, cx: &mut Context<Self>) {
+    fn pointer_move(&mut self, x: f64, width: f64, cx: &mut Context<'_, Self>) {
         let Some(mut drag) = self.drag else {
             return;
         };
@@ -358,13 +369,13 @@ impl DamperStrip {
         self.request(drag.from_offset + shift, cx);
     }
 
-    fn pointer_up(&mut self, cx: &mut Context<Self>) {
+    fn pointer_up(&mut self, cx: &mut Context<'_, Self>) {
         if self.drag.take().is_some() {
             cx.notify();
         }
     }
 
-    fn wheel(&mut self, delta: WheelDelta, cx: &mut Context<Self>) {
+    fn wheel(&mut self, delta: WheelDelta, cx: &mut Context<'_, Self>) {
         let motion = if delta.y.abs() >= delta.x.abs() {
             delta.y
         } else {
@@ -392,7 +403,11 @@ pub fn format_offset(seconds: f64) -> String {
 }
 
 impl Render for DamperStrip {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
+    fn render(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let theme = cx.theme();
         let palette = TracePalette::from_theme(theme);
         let (muted, foreground, border) = (theme.muted_foreground, theme.foreground, theme.border);
@@ -568,11 +583,11 @@ impl Element for DamperPlot {
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        _: &mut (),
+        (): &mut (),
         window: &mut Window,
         _: &mut App,
     ) -> Hitbox {
-        self.build(bounds, window.scale_factor() as f64);
+        self.build(bounds, f64::from(window.scale_factor()));
         window.insert_hitbox(bounds, HitboxBehavior::Normal)
     }
 
@@ -581,7 +596,7 @@ impl Element for DamperPlot {
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        _: &mut (),
+        (): &mut (),
         hitbox: &mut Hitbox,
         window: &mut Window,
         _: &mut App,
@@ -630,8 +645,8 @@ impl DamperPlot {
         let Some(data) = &self.data else {
             return;
         };
-        let width = bounds.size.width.as_f32() as f64;
-        let height = bounds.size.height.as_f32() as f64;
+        let width = f64::from(bounds.size.width.as_f32());
+        let height = f64::from(bounds.size.height.as_f32());
         if width < 2.0 || height < 4.0 {
             return;
         }
@@ -666,9 +681,9 @@ impl DamperPlot {
 
     fn register_input(&self, bounds: Bounds<Pixels>, hitbox: Hitbox, window: &mut Window) {
         let origin = bounds.origin;
-        let width = bounds.size.width.as_f32() as f64;
+        let width = f64::from(bounds.size.width.as_f32());
         let local_x =
-            move |position: gpui_kit::Point<Pixels>| (position.x - origin.x).as_f32() as f64;
+            move |position: gpui_kit::Point<Pixels>| f64::from((position.x - origin.x).as_f32());
 
         let strip = self.strip.clone();
         let hit = hitbox.clone();
@@ -680,9 +695,9 @@ impl DamperPlot {
                 return;
             }
             let x = local_x(event.position);
-            strip
-                .update(cx, |strip, cx| strip.pointer_down(x, event.click_count, cx))
-                .ok();
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no input/deferred update; the weak entity handle may already be gone.")]
+            let _ = strip
+                .update(cx, |strip, cx| strip.pointer_down(x, event.click_count, cx));
             cx.stop_propagation();
         });
 
@@ -692,9 +707,9 @@ impl DamperPlot {
                 return;
             }
             let x = local_x(event.position);
-            strip
-                .update(cx, |strip, cx| strip.pointer_move(x, width, cx))
-                .ok();
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no input/deferred update; the weak entity handle may already be gone.")]
+            let _ = strip
+                .update(cx, |strip, cx| strip.pointer_move(x, width, cx));
         });
 
         let strip = self.strip.clone();
@@ -702,7 +717,8 @@ impl DamperPlot {
             if phase != DispatchPhase::Bubble || event.button != MouseButton::Left {
                 return;
             }
-            strip.update(cx, |strip, cx| strip.pointer_up(cx)).ok();
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no input/deferred update; the weak entity handle may already be gone.")]
+            let _ = strip.update(cx, DamperStrip::pointer_up);
         });
 
         let strip = self.strip.clone();
@@ -712,11 +728,12 @@ impl DamperPlot {
             }
             let delta = match event.delta {
                 ScrollDelta::Pixels(p) => {
-                    WheelDelta::pixels(p.x.as_f32() as f64, p.y.as_f32() as f64)
+                    WheelDelta::pixels(f64::from(p.x.as_f32()), f64::from(p.y.as_f32()))
                 }
-                ScrollDelta::Lines(p) => WheelDelta::lines(p.x as f64, p.y as f64),
+                ScrollDelta::Lines(p) => WheelDelta::lines(f64::from(p.x), f64::from(p.y)),
             };
-            strip.update(cx, |strip, cx| strip.wheel(delta, cx)).ok();
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no input/deferred update; the weak entity handle may already be gone.")]
+            let _ = strip.update(cx, |strip, cx| strip.wheel(delta, cx));
             cx.stop_propagation();
         });
     }
@@ -727,6 +744,10 @@ mod tests {
     use super::*;
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn window_clamps_from_one_second_to_the_lap() {
         assert_eq!(clamp_window(6.0, 90.0), 6.0);
         assert_eq!(clamp_window(0.2, 90.0), MIN_WINDOW_SECONDS);
@@ -743,7 +764,7 @@ mod tests {
     #[test]
     fn each_trace_autoscales_to_its_window() {
         let values: Vec<f64> = (0..=100)
-            .map(|i| if i < 50 { 10.0 } else { i as f64 })
+            .map(|i| if i < 50 { 10.0 } else { f64::from(i) })
             .collect();
         // First half is flat at 10: a unit span around it.
         assert_eq!(window_range(&values, 0.0, 0.4), (9.5, 1.0));

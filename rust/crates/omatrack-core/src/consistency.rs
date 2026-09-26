@@ -67,6 +67,12 @@ fn available(lap: &UnifiedLap, key: &str) -> bool {
 }
 
 /// A channel sampled at a lap fraction: interpolated, gear nearest.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
 fn sample(lap: &UnifiedLap, key: &str, fraction: f64) -> f64 {
     let fraction = fraction.clamp(0.0, 1.0);
     if key == "gear" {
@@ -178,10 +184,18 @@ fn cancelled(cancel: &AtomicBool) -> Result<(), SessionError> {
     }
 }
 
-/// Build the confidence bands of `primary` over `laps` (port of
-/// `loadSessionConfidence` after its source open). Each lap is mapped onto
-/// the primary grid through the default comparison alignment; laps that do
-/// not align are skipped.
+/// Build the confidence bands of `primary` over `laps` (port of `loadSessionConfidence`
+/// after its source open).
+///
+/// Each lap is mapped onto the primary grid through the default comparison alignment;
+/// laps that do not align are skipped.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
+///
+/// # Errors
+/// Returns `SessionError::Cancelled` when the cancellation flag is set during the work.
 pub fn trace_confidence<'a>(
     primary: &UnifiedLap,
     laps: impl IntoIterator<Item = &'a UnifiedLap>,
@@ -311,6 +325,10 @@ impl Default for CornerConsistency {
 /// Measure a corner given as absolute lap distances (metres) on every lap
 /// (port of `loadCornerConsistency` and its result reduction). Each lap
 /// locates the corner by its own distance axis.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+)]
 pub fn corner_consistency<'a>(
     laps: impl IntoIterator<Item = &'a UnifiedLap>,
     start_distance: f64,
@@ -363,6 +381,10 @@ pub struct SessionLaps {
 impl SessionLaps {
     /// Unify `lap_ids` of `recording` (unknown ids and empty laps are
     /// skipped). `reuse` supplies laps that are already unified.
+    ///
+    /// # Errors
+    /// Returns `SessionError::Cancelled` when the cancellation flag is set during the
+    /// work.
     pub fn load(
         recording: &Recording,
         laps: &[Lap],
@@ -391,6 +413,10 @@ impl SessionLaps {
 
     /// The laps both analyses need for `primary`: the fastest half of its
     /// session's representative laps (the corner quarter is a subset).
+    ///
+    /// # Errors
+    /// Returns `SessionError::Cancelled` when the cancellation flag is set during the
+    /// work.
     pub fn for_primary(primary: &LoadedLap, cancel: &AtomicBool) -> Result<Self, SessionError> {
         // No lap has id i32::MIN: this is the fastest half, primary included.
         let ids = confidence_lap_ids(primary.laps(), i32::MIN);
@@ -427,6 +453,10 @@ impl SessionLaps {
 
     /// Trace confidence for `primary` over this session's fastest half,
     /// without the primary lap. Fewer than two such laps yield no bands.
+    ///
+    /// # Errors
+    /// Returns `SessionError::Cancelled` when the cancellation flag is set during the
+    /// work.
     pub fn trace_confidence(
         &self,
         primary: &LoadedLap,

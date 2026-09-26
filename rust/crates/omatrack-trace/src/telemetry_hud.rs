@@ -198,6 +198,12 @@ pub struct LapSample {
 }
 
 impl LapSample {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        reason = "Clamped lap fractions map to indices in resident sample buffers; interpolation intentionally uses f64."
+    )]
     fn at(lap: &UnifiedLap, fraction: f64, data: &TelemetryHudData) -> Self {
         let value = |values: &[f64]| {
             (values.len() >= 2)
@@ -366,6 +372,7 @@ impl TelemetryHud {
     }
 
     /// The playhead's share of the window ([`marker`]).
+    #[must_use]
     pub fn marker(mut self, marker: f64) -> Self {
         self.marker = marker.clamp(0.0, 1.0);
         self
@@ -373,6 +380,7 @@ impl TelemetryHud {
 
     /// Signed along-track metres to the reference car; `Some` only when both
     /// GPS fixes are better than 1 m.
+    #[must_use]
     pub fn gap(mut self, metres: Option<f64>) -> Self {
         self.gap = metres.filter(|m| m.is_finite());
         self
@@ -416,12 +424,12 @@ impl Element for TelemetryHud {
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        _: &mut (),
+        (): &mut (),
         window: &mut Window,
         _: &mut App,
     ) -> HudSample {
         let sample = self.data.sample(self.fraction);
-        self.build(bounds, window.scale_factor() as f64, &sample);
+        self.build(bounds, f64::from(window.scale_factor()), &sample);
         sample
     }
 
@@ -430,7 +438,7 @@ impl Element for TelemetryHud {
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        _: &mut (),
+        (): &mut (),
         sample: &mut HudSample,
         window: &mut Window,
         cx: &mut App,
@@ -441,8 +449,16 @@ impl Element for TelemetryHud {
 
 impl TelemetryHud {
     /// Decimate and mesh the window and the notches into the buffers.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
     fn build(&self, bounds: Bounds<Pixels>, dpr: f64, sample: &HudSample) {
-        let s = bounds.size.width.as_f32() as f64 / 1000.0;
+        let s = f64::from(bounds.size.width.as_f32()) / 1000.0;
         let mut buffers = self.buffers.borrow_mut();
         let TelemetryHudBuffers {
             points,
@@ -480,10 +496,10 @@ impl TelemetryHud {
         let inset = 3.0 * s;
         let lane = |top: f32| {
             PlotRect::new(
-                GRAPH[0] as f64 * s,
-                top as f64 * s + inset,
-                GRAPH[2] as f64 * s,
-                SUB_LANE as f64 * s - 2.0 * inset,
+                f64::from(GRAPH[0]) * s,
+                f64::from(top) * s + inset,
+                f64::from(GRAPH[2]) * s,
+                f64::from(SUB_LANE) * s - 2.0 * inset,
             )
         };
         let (throttle_rect, brake_rect) = (lane(GRAPH[1]), lane(GRAPH[1] + SUB_LANE + SUB_GAP));
@@ -536,7 +552,7 @@ impl TelemetryHud {
         stroke(points, bold, primary_brake);
 
         // Ring notches: from the rim inwards, at the steering angle.
-        let centre = (DIAL[0] as f64 * s, DIAL[1] as f64 * s);
+        let centre = (f64::from(DIAL[0]) * s, f64::from(DIAL[1]) * s);
         let mut draw_notch = |steering: Option<f64>, width: f64, sink: &mut PathBuffer| {
             let Some(steering) = steering else {
                 return;
@@ -544,7 +560,7 @@ impl TelemetryHud {
             let angle = steering.clamp(-STEERING_LIMIT, STEERING_LIMIT).to_radians();
             let (dx, dy) = (angle.sin(), -angle.cos());
             let at = |radius: f32| {
-                let r = radius as f64 * s;
+                let r = f64::from(radius) * s;
                 PathPoint::new(centre.0 + dx * r, centre.1 + dy * r)
             };
             notch.clear();
@@ -588,6 +604,18 @@ impl TelemetryHud {
         }
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "Use conventional x/y/w/h coordinate names in this geometry calculation."
+    )]
     fn paint_frame(
         &self,
         bounds: Bounds<Pixels>,
@@ -923,6 +951,10 @@ pub fn format_live_delta(seconds: f64) -> SharedString {
 mod tests {
     use super::*;
 
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+    )]
     fn lap(throttle: f64, brake: f64, speed: f64, gear: i32, steering: f64) -> Arc<UnifiedLap> {
         let n = 101;
         let time: Vec<f64> = (0..n).map(|i| i as f64 * 0.02).collect();
@@ -939,6 +971,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn the_band_follows_the_qt_size_rule() {
         let (w, h) = hud_size(1920.);
         assert!((w - 650.).abs() < 1e-3, "{w}");
@@ -953,6 +989,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn scales_are_scanned_once_and_pedals_normalize() {
         // Throttle in percent, brake in bar.
         let data = TelemetryHudData::new(lap(80.0, 60.0, 200.0, 5, 30.0), None);
@@ -971,12 +1011,16 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn deltas_compare_with_the_reference_through_the_map() {
         let primary = lap(1.0, 10.0, 210.0, 5, 0.0);
         let reference = lap(1.0, 40.0, 204.0, 4, -90.0);
         let comparison = Arc::new(Comparison::new(
             primary.clone(),
-            reference.clone(),
+            reference,
             omatrack_core::alignment::Strategy::LapPercentage,
             Vec::new(),
             0.0,
@@ -993,6 +1037,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "Assert exact stored, clamped or unchanged values; an epsilon would weaken this regression check."
+    )]
     fn the_window_stays_inside_the_lap() {
         // Mid-lap: the playhead at the marker.
         assert!((window_start(0.5, MARKER) - (0.5 - MARKER * WINDOW_FRACTION)).abs() < 1e-12);

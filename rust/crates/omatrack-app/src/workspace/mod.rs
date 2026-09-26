@@ -23,7 +23,15 @@ use gpui_kit::{
 use omatrack_trace::{Selection, Viewport};
 use omatrack_ui::theme::ThemeStatus;
 
-use crate::actions::*;
+use crate::actions::{
+    ClosePreferences, ComposeLayout1, ComposeLayout2, ComposeLayout3, ComposeLayout4,
+    ComposeLayout5, ExitFullscreen, FocusCorner, FocusPanel1, FocusPanel2, FocusPanel3,
+    FocusPanel4, FocusPanel5, FocusPanel6, NextCorner, NextLap, OpenFolder, OpenPreferences,
+    PrevCorner, PrevLap, Rescan, ResetLayout, ResizeLanes, RevealRecording, Role, SeekBack,
+    SeekForward, SelectLap, ShowChannels, ShowInspector, ShowMap, SwapRoles, ToggleContinuous,
+    ToggleCornerEdit, ToggleFit, ToggleInspector, ToggleLibrary, ToggleMute, TogglePalette,
+    TogglePlay, ToggleSlowMotion, ToggleVideoFullscreen, ToggleXAxis, ZoomIn, ZoomOut, ZoomReset,
+};
 use crate::commands::Palette;
 use crate::keymap::WORKSPACE_CONTEXT;
 use crate::panels::{PanelKind, TraceMode, WorkspacePanels};
@@ -93,7 +101,7 @@ struct PreferencesScreen {
 impl Workspace {
     /// Build the workspace from the installed [`AppState`], restoring the
     /// saved dock layout (or the default one).
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
         let app = AppState::global(cx).clone();
         let (dock_area, skin) = DockSkin::dock_area(DOCK_AREA_ID, Some(LAYOUT_VERSION), window, cx);
         let panels = WorkspacePanels::new(&app, window, cx);
@@ -117,7 +125,7 @@ impl Workspace {
             cx.observe_global::<ThemeStatus>(|_, cx| cx.notify()),
             cx.observe(&app.session, |_, _, cx| cx.notify()),
             cx.subscribe(&dock_area, |this, _, event, cx| {
-                if let DockEvent::LayoutChanged = event {
+                if matches!(event, DockEvent::LayoutChanged) {
                     this.schedule_layout_save(cx);
                 }
             }),
@@ -151,7 +159,7 @@ impl Workspace {
             this.save_layout(cx);
             this.app
                 .preferences
-                .update(cx, |preferences, cx| preferences.flush(cx));
+                .update(cx, super::state::preferences::Preferences::flush);
             async {}
         })
         .detach();
@@ -230,7 +238,7 @@ impl Workspace {
         _: &Entity<crate::state::Session>,
         event: &SessionEvent,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) {
         match event {
             SessionEvent::LoadFailed { role, message } => {
@@ -255,12 +263,16 @@ impl Workspace {
         }
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "GPUI subscription callbacks require the receiving entity even when this event only uses the context."
+    )]
     fn on_library_event(
         &mut self,
         _: &Entity<crate::state::Library>,
         event: &LibraryEvent,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) {
         if let LibraryEvent::ScanFinished {
             unreadable,
@@ -292,7 +304,7 @@ impl Workspace {
     /// the lap start, where the video and HUD already are, so the traces,
     /// inspector and status bar agree. A cursor that exists (a lap change,
     /// a swap, a later analysis) is never moved.
-    fn place_initial_cursor(&mut self, cx: &mut Context<Self>) {
+    fn place_initial_cursor(&mut self, cx: &mut Context<'_, Self>) {
         let has_lap = self.app.session.read(cx).analysis().is_some();
         if has_lap && self.app.cursor.read(cx).fraction().is_none() {
             self.app
@@ -302,7 +314,7 @@ impl Workspace {
     }
 
     /// Offer exactly the strategies both laps support.
-    fn sync_strategies(&mut self, cx: &mut Context<Self>) {
+    fn sync_strategies(&mut self, cx: &mut Context<'_, Self>) {
         let session = self.app.session.read(cx);
         let available = session
             .analysis()
@@ -329,15 +341,16 @@ impl Workspace {
         cx.notify();
     }
 
-    fn schedule_layout_save(&mut self, cx: &mut Context<Self>) {
+    fn schedule_layout_save(&mut self, cx: &mut Context<'_, Self>) {
         self.layout_save = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(LAYOUT_SAVE_DEBOUNCE).await;
-            let _ = this.update(cx, |this, cx| this.save_layout(cx));
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no deferred result; this weak entity/window handle may already be gone.")]
+            let _ = this.update(cx, Self::save_layout);
         }));
     }
 
     /// Write the current dock layout to `workspace.layout` now.
-    pub fn save_layout(&mut self, cx: &mut Context<Self>) {
+    pub fn save_layout(&mut self, cx: &mut Context<'_, Self>) {
         self.layout_save = None;
         let Some(layout) = layout::encode(self.dock_area.read(cx), cx) else {
             return;
@@ -347,7 +360,7 @@ impl Workspace {
         });
     }
 
-    pub(crate) fn toggle_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn toggle_palette(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         let keys = self.focus_handle.clone();
         self.palette.toggle(&keys, window, cx);
     }
@@ -355,7 +368,7 @@ impl Workspace {
     /// Show the Preferences screen in place of the dock area (which stays
     /// alive behind it) and focus its section list. Already open, only the
     /// focus moves.
-    pub fn open_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn open_preferences(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         if let Some(screen) = &self.preferences {
             screen
                 .view
@@ -378,7 +391,7 @@ impl Workspace {
 
     /// Leave the Preferences screen and return focus to where it was
     /// (the traces when that is unknown).
-    pub fn close_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn close_preferences(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         let Some(screen) = self.preferences.take() else {
             return;
         };
@@ -394,7 +407,7 @@ impl Workspace {
         self.preferences.as_ref().map(|screen| &screen.view)
     }
 
-    fn focus_panel(&mut self, kind: PanelKind, window: &mut Window, cx: &mut Context<Self>) {
+    fn focus_panel(&mut self, kind: PanelKind, window: &mut Window, cx: &mut Context<'_, Self>) {
         // A panel is behind the Preferences screen or the video stage:
         // leave them for the panel.
         if self.preferences.take().is_some() {
@@ -428,7 +441,7 @@ impl Workspace {
 
     /// Keep the default layout's docks fitted to the window width (the
     /// traces keep at least half of it). Stops once the user toggles a dock.
-    fn fit_docks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn fit_docks(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         let width = window.viewport_size().width;
         if !self.fit_docks || self.last_fit_width == Some(width) {
             return;
@@ -441,7 +454,7 @@ impl Workspace {
         &mut self,
         placement: DockPlacement,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) {
         self.fit_docks = false;
         self.dock_area
@@ -450,7 +463,7 @@ impl Workspace {
 
     /// Focus corner `ix` of the analysis: centered in the left half with the
     /// 140 ms motion, its zone kept bright.
-    fn focus_corner(&mut self, ix: usize, cx: &mut Context<Self>) {
+    fn focus_corner(&mut self, ix: usize, cx: &mut Context<'_, Self>) {
         let Some(zone) = self
             .app
             .session
@@ -466,7 +479,7 @@ impl Workspace {
             self.pre_focus_cursor = self.app.cursor.read(cx).fraction();
         }
         self.app.viewport.update(cx, |viewport, cx| {
-            viewport.focus(zone.start, zone.end, true, cx)
+            viewport.focus(zone.start, zone.end, true, cx);
         });
         // The cursor moves to the corner so every readout (legends,
         // inspector, HUD, video) describes the corner being looked at.
@@ -478,7 +491,7 @@ impl Workspace {
 
     /// Drop the corner focus (its zone may not exist in a new analysis);
     /// the viewport stays where it is.
-    fn forget_corner_focus(&mut self, cx: &mut Context<Self>) {
+    fn forget_corner_focus(&mut self, cx: &mut Context<'_, Self>) {
         self.focused_corner = None;
         self.pre_focus_viewport = None;
         self.pre_focus_cursor = None;
@@ -491,7 +504,7 @@ impl Workspace {
 
     /// Leave the corner focus and return to the viewport it started from.
     /// False when no corner is focused.
-    fn unfocus_corner(&mut self, cx: &mut Context<Self>) -> bool {
+    fn unfocus_corner(&mut self, cx: &mut Context<'_, Self>) -> bool {
         let Some(viewport) = self.pre_focus_viewport.take() else {
             return false;
         };
@@ -510,7 +523,7 @@ impl Workspace {
 
     /// Focus the next (`step` 1) or previous (-1) corner (see
     /// [`step_corner_ix`]).
-    fn step_corner(&mut self, step: isize, cx: &mut Context<Self>) {
+    fn step_corner(&mut self, step: isize, cx: &mut Context<'_, Self>) {
         let Some(starts) = self.app.session.read(cx).analysis().map(|analysis| {
             analysis
                 .corners()
@@ -526,7 +539,7 @@ impl Workspace {
         }
     }
 
-    fn zoom(&mut self, factor: Option<f64>, cx: &mut Context<Self>) {
+    fn zoom(&mut self, factor: Option<f64>, cx: &mut Context<'_, Self>) {
         let anchor = self.app.cursor.read(cx).fraction();
         self.app.viewport.update(cx, |viewport, cx| match factor {
             Some(factor) if factor < 1.0 => viewport.zoom_in(anchor, cx),
@@ -540,7 +553,7 @@ impl Workspace {
     /// black. The dock layout is not touched (the video panel renders on the
     /// stage instead of in its dock), and the window enters fullscreen as a
     /// best effort (a headless or tiling session may refuse).
-    fn toggle_video_fullscreen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn toggle_video_fullscreen(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         if self.stage.is_some() {
             self.exit_video_fullscreen(window, cx);
             return;
@@ -573,7 +586,7 @@ impl Workspace {
     /// Leave the stage: the chrome returns with its dock layout as it was,
     /// focus goes back to where it was (the video panel when unknown), and
     /// the window leaves fullscreen if the stage put it there.
-    fn exit_video_fullscreen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn exit_video_fullscreen(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         let Some(stage) = self.stage.take() else {
             if window.is_fullscreen() {
                 window.toggle_fullscreen();
@@ -593,7 +606,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn set_trace_mode(&mut self, mode: TraceMode, window: &mut Window, cx: &mut Context<Self>) {
+    fn set_trace_mode(&mut self, mode: TraceMode, window: &mut Window, cx: &mut Context<'_, Self>) {
         self.panels
             .traces
             .update(cx, |traces, cx| traces.toggle_mode(mode, cx));
@@ -603,10 +616,13 @@ impl Workspace {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One declarative registry keeps all action bindings and command metadata together."
+    )]
     fn register_actions(
-        &self,
         root: gpui_kit::Stateful<gpui_kit::Div>,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) -> gpui_kit::Stateful<gpui_kit::Div> {
         root.on_action(
             cx.listener(|this, _: &TogglePalette, window, cx| this.toggle_palette(window, cx)),
@@ -614,26 +630,24 @@ impl Workspace {
         .on_action(
             cx.listener(|this, _: &OpenPreferences, window, cx| this.open_preferences(window, cx)),
         )
-        .on_action(
-            cx.listener(|this, _: &ClosePreferences, window, cx| {
-                this.close_preferences(window, cx)
-            }),
-        )
+        .on_action(cx.listener(|this, _: &ClosePreferences, window, cx| {
+            this.close_preferences(window, cx);
+        }))
         .on_action(cx.listener(|this, _: &OpenFolder, _, cx| {
             this.app
                 .library
-                .update(cx, |library, cx| library.prompt_add_folder(cx))
+                .update(cx, super::state::library::Library::prompt_add_folder);
         }))
         .on_action(cx.listener(|this, _: &Rescan, _, cx| {
             this.app
                 .library
-                .update(cx, |library, cx| library.rescan(cx))
+                .update(cx, super::state::library::Library::rescan);
         }))
         .on_action(cx.listener(|this, _: &ToggleLibrary, window, cx| {
-            this.toggle_dock(DockPlacement::Left, window, cx)
+            this.toggle_dock(DockPlacement::Left, window, cx);
         }))
         .on_action(cx.listener(|this, _: &ToggleInspector, window, cx| {
-            this.toggle_dock(DockPlacement::Right, window, cx)
+            this.toggle_dock(DockPlacement::Right, window, cx);
         }))
         .on_action(cx.listener(|this, _: &ResetLayout, window, cx| {
             layout::apply_default(&this.dock_area, &this.panels, window, cx);
@@ -646,63 +660,65 @@ impl Workspace {
             );
         }))
         .on_action(cx.listener(|this, _: &FocusPanel1, window, cx| {
-            this.focus_panel(PanelKind::Laps, window, cx)
+            this.focus_panel(PanelKind::Laps, window, cx);
         }))
         .on_action(cx.listener(|this, _: &FocusPanel2, window, cx| {
-            this.focus_panel(PanelKind::Traces, window, cx)
+            this.focus_panel(PanelKind::Traces, window, cx);
         }))
         .on_action(cx.listener(|this, _: &FocusPanel3, window, cx| {
-            this.focus_panel(PanelKind::Video, window, cx)
+            this.focus_panel(PanelKind::Video, window, cx);
         }))
         .on_action(cx.listener(|this, _: &FocusPanel4, window, cx| {
-            this.focus_panel(PanelKind::Corners, window, cx)
+            this.focus_panel(PanelKind::Corners, window, cx);
         }))
         .on_action(cx.listener(|this, _: &FocusPanel5, window, cx| {
-            this.focus_panel(PanelKind::TimeGoes, window, cx)
+            this.focus_panel(PanelKind::TimeGoes, window, cx);
         }))
         .on_action(cx.listener(|this, _: &FocusPanel6, window, cx| {
-            this.focus_panel(PanelKind::Library, window, cx)
+            this.focus_panel(PanelKind::Library, window, cx);
         }))
         .on_action(cx.listener(|this, _: &ShowChannels, window, cx| {
-            this.focus_panel(PanelKind::Channels, window, cx)
+            this.focus_panel(PanelKind::Channels, window, cx);
         }))
-        .on_action(
-            cx.listener(|this, _: &ShowMap, window, cx| {
-                this.focus_panel(PanelKind::Map, window, cx)
-            }),
-        )
+        .on_action(cx.listener(|this, _: &ShowMap, window, cx| {
+            this.focus_panel(PanelKind::Map, window, cx);
+        }))
         .on_action(cx.listener(|this, _: &ShowInspector, window, cx| {
-            this.focus_panel(PanelKind::Inspector, window, cx)
+            this.focus_panel(PanelKind::Inspector, window, cx);
         }))
         // Playback.
         .on_action(cx.listener(|this, _: &TogglePlay, _, cx| {
-            this.app.video.update(cx, |video, cx| video.toggle_play(cx))
+            this.app
+                .video
+                .update(cx, super::state::video::VideoController::toggle_play);
         }))
         .on_action(cx.listener(|this, _: &SeekBack, _, cx| {
             this.app.video.update(cx, |video, cx| {
-                video.seek_by(-crate::state::video::SEEK_STEP, cx)
-            })
+                video.seek_by(-crate::state::video::SEEK_STEP, cx);
+            });
         }))
         .on_action(cx.listener(|this, _: &SeekForward, _, cx| {
             this.app.video.update(cx, |video, cx| {
-                video.seek_by(crate::state::video::SEEK_STEP, cx)
-            })
+                video.seek_by(crate::state::video::SEEK_STEP, cx);
+            });
         }))
         .on_action(cx.listener(|this, _: &ToggleMute, _, cx| {
-            this.app.video.update(cx, |video, cx| video.toggle_mute(cx))
+            this.app
+                .video
+                .update(cx, super::state::video::VideoController::toggle_mute);
         }))
         .on_action(cx.listener(|this, _: &ToggleSlowMotion, _, cx| {
             this.app
                 .video
-                .update(cx, |video, cx| video.toggle_slow_motion(cx))
+                .update(cx, super::state::video::VideoController::toggle_slow_motion);
         }))
         .on_action(cx.listener(|this, _: &ToggleContinuous, _, cx| {
             this.app
                 .video
-                .update(cx, |video, cx| video.toggle_continuous(cx))
+                .update(cx, super::state::video::VideoController::toggle_continuous);
         }))
         .on_action(cx.listener(|this, _: &ToggleVideoFullscreen, window, cx| {
-            this.toggle_video_fullscreen(window, cx)
+            this.toggle_video_fullscreen(window, cx);
         }))
         // Escape: leave fullscreen first, then a corner focus.
         .on_action(cx.listener(|this, _: &ExitFullscreen, window, cx| {
@@ -714,42 +730,42 @@ impl Workspace {
                 cx.propagate();
             }
         }))
-        .on_action(
-            cx.listener(|this, _: &ComposeLayout1, _, cx| {
-                this.set_compose(ComposeLayout::Split, cx)
-            }),
-        )
+        .on_action(cx.listener(|this, _: &ComposeLayout1, _, cx| {
+            this.set_compose(ComposeLayout::Split, cx);
+        }))
         .on_action(cx.listener(|this, _: &ComposeLayout2, _, cx| {
-            this.set_compose(ComposeLayout::PrimaryWithReferenceInset, cx)
+            this.set_compose(ComposeLayout::PrimaryWithReferenceInset, cx);
         }))
         .on_action(cx.listener(|this, _: &ComposeLayout3, _, cx| {
-            this.set_compose(ComposeLayout::ReferenceWithPrimaryInset, cx)
+            this.set_compose(ComposeLayout::ReferenceWithPrimaryInset, cx);
         }))
         .on_action(cx.listener(|this, _: &ComposeLayout4, _, cx| {
-            this.set_compose(ComposeLayout::PrimaryOnly, cx)
+            this.set_compose(ComposeLayout::PrimaryOnly, cx);
         }))
         .on_action(cx.listener(|this, _: &ComposeLayout5, _, cx| {
-            this.set_compose(ComposeLayout::ReferenceOnly, cx)
+            this.set_compose(ComposeLayout::ReferenceOnly, cx);
         }))
         // Laps and traces.
         .on_action(cx.listener(|this, _: &SwapRoles, _, cx| {
-            this.app.session.update(cx, |session, cx| session.swap(cx))
+            this.app
+                .session
+                .update(cx, super::state::session::Session::swap);
         }))
         .on_action(cx.listener(|this, _: &PrevLap, _, cx| {
             this.app
                 .session
-                .update(cx, |session, cx| session.prev_lap(cx))
+                .update(cx, super::state::session::Session::prev_lap);
         }))
         .on_action(cx.listener(|this, _: &NextLap, _, cx| {
             this.app
                 .session
-                .update(cx, |session, cx| session.next_lap(cx))
+                .update(cx, super::state::session::Session::next_lap);
         }))
         .on_action(cx.listener(|this, action: &SelectLap, _, cx| {
             let lap_ref = LapRef::new(action.session.clone(), action.lap);
             this.app
                 .session
-                .update(cx, |session, cx| session.set_lap(action.role, lap_ref, cx))
+                .update(cx, |session, cx| session.set_lap(action.role, lap_ref, cx));
         }))
         .on_action(cx.listener(|this, action: &RevealRecording, _, cx| {
             let source = this.app.library.read(cx).source(&action.session);
@@ -776,7 +792,7 @@ impl Workspace {
         .on_action(cx.listener(|this, _: &ToggleXAxis, _, cx| {
             this.app
                 .viewport
-                .update(cx, |viewport, cx| viewport.toggle_axis(cx));
+                .update(cx, omatrack_trace::ViewportState::toggle_axis);
             let axis = match this.app.viewport.read(cx).axis() {
                 omatrack_trace::XAxis::Distance => omatrack_library::config::XAxis::Distance,
                 omatrack_trace::XAxis::Time => omatrack_library::config::XAxis::Time,
@@ -794,14 +810,14 @@ impl Workspace {
             });
         }))
         .on_action(cx.listener(|this, _: &ResizeLanes, window, cx| {
-            this.set_trace_mode(TraceMode::ResizingLanes, window, cx)
+            this.set_trace_mode(TraceMode::ResizingLanes, window, cx);
         }))
         .on_action(cx.listener(|this, _: &ToggleCornerEdit, window, cx| {
-            this.set_trace_mode(TraceMode::EditingCorners, window, cx)
+            this.set_trace_mode(TraceMode::EditingCorners, window, cx);
         }))
     }
 
-    fn set_compose(&mut self, layout: ComposeLayout, cx: &mut Context<Self>) {
+    fn set_compose(&mut self, layout: ComposeLayout, cx: &mut Context<'_, Self>) {
         self.app
             .video
             .update(cx, |video, cx| video.set_layout(layout, cx));
@@ -820,7 +836,7 @@ impl Focusable for Workspace {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         // gpui-component 0.6.6's `Root` does not mount its overlay layers; the
         // window's first view renders them, above everything else.
         let sheets = Root::render_sheet_layer(window, cx);
@@ -830,8 +846,7 @@ impl Render for Workspace {
             .id("workspace")
             .key_context(WORKSPACE_CONTEXT)
             .track_focus(&self.focus_handle);
-        let root = self
-            .register_actions(root, cx)
+        let root = Self::register_actions(root, cx)
             .relative()
             .flex()
             .flex_col()

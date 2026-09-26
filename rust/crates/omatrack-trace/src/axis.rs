@@ -24,11 +24,15 @@ pub struct TraceAxis {
 
 impl TraceAxis {
     /// Place `ticks` for `viewport` across a plot `width` logical pixels wide.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
     pub fn new(ticks: &[Tick], viewport: &Viewport, width: f32) -> Self {
         let ticks = ticks
             .iter()
             .filter_map(|tick| {
-                let x = viewport.x_for_fraction(tick.fraction, 0.0, width as f64) as f32;
+                let x = viewport.x_for_fraction(tick.fraction, 0.0, f64::from(width)) as f32;
                 (x >= 0.0 && x < width - 24.0).then(|| (x, SharedString::from(tick.label.clone())))
             })
             .collect();
@@ -54,7 +58,7 @@ impl RenderOnce for TraceAxis {
                     .h_full()
                     .flex()
                     .items_center()
-                    .when(x > 0.0, |el| el.pl_1())
+                    .when(x > 0.0, gpui_kit::Styled::pl_1)
                     .child(label)
             }))
     }

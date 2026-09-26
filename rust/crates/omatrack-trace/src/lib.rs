@@ -32,7 +32,7 @@
 //!   (progress window, pedals, steering dial, gear, speed, gap).
 //! - [`synthetic`]: deterministic laps for tests and `examples/trace_bench`.
 //!
-//! # Rendering contract (docs/TRACE_RENDERING.md)
+//! # Rendering contract (`docs/TRACE_RENDERING.md`)
 //!
 //! - Decimation keeps source-ordered extrema per device column; a
 //!   non-finite sample lifts the pen even mid-column; the reference is

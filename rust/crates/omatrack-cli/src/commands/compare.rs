@@ -4,7 +4,7 @@ use crate::Out;
 use omatrack_core::report::compare_telemetry_sources;
 use std::ffi::OsStr;
 
-pub fn run(left_path: &OsStr, right_path: &OsStr) -> i32 {
+pub(crate) fn run(left_path: &OsStr, right_path: &OsStr) -> i32 {
     let Some(left) = super::open(left_path) else {
         return 1;
     };

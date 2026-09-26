@@ -1,6 +1,8 @@
-//! The primary video on a real AiM recording (read-only), with libmpv and a
+//! The primary video on a real `AiM` recording (read-only), with libmpv and a
 //! null audio output. Ignored by default; run with
 //! `OMATRACK_FIXTURES=~/Documents/Telemetry/26T07_PLM cargo test -p omatrack-app -- --include-ignored real_`.
+
+#![cfg(test)]
 
 mod common;
 
@@ -11,7 +13,7 @@ use gpui_kit::test::TestWindowExt as _;
 use omatrack_app::state::VideoAvailability;
 
 #[gpui_kit::test]
-#[ignore]
+#[ignore = "requires private telemetry/video fixtures; set OMATRACK_FIXTURES"]
 fn real_primary_video_binds_and_mute_persists(cx: &mut TestAppContext) {
     // libmpv runs its own threads; the test waits on them.
     cx.executor().allow_parking();
@@ -27,7 +29,7 @@ fn real_primary_video_binds_and_mute_persists(cx: &mut TestAppContext) {
         .audio_output(Some("null".to_string()));
     let test = common::start(cx, options);
     let library = test.app.library.clone();
-    cx.update(|cx| library.update(cx, |library, cx| library.rescan(cx)));
+    cx.update(|cx| library.update(cx, omatrack_app::state::Library::rescan));
     cx.run_until_parked();
     let run1 = cx.update(|cx| {
         library
@@ -41,8 +43,8 @@ fn real_primary_video_binds_and_mute_persists(cx: &mut TestAppContext) {
     let session = test.app.session.clone();
     cx.update(|cx| {
         session.update(cx, |session, cx| {
-            session.set_primary(run1.id.clone().into(), 8, cx)
-        })
+            session.set_primary(run1.id.clone().into(), 8, cx);
+        });
     });
     cx.run_until_parked();
     let video = test.app.video.clone();
@@ -89,7 +91,7 @@ fn real_primary_video_binds_and_mute_persists(cx: &mut TestAppContext) {
 /// A file libmpv cannot open is reported, not left as a black pane: `load`
 /// only queues the file, so the failure arrives through the player events.
 #[gpui_kit::test]
-#[ignore]
+#[ignore = "requires private telemetry/video fixtures; set OMATRACK_FIXTURES"]
 fn real_an_unplayable_video_is_reported(cx: &mut TestAppContext) {
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -114,7 +116,7 @@ fn real_an_unplayable_video_is_reported(cx: &mut TestAppContext) {
                 seen.borrow_mut().push(message.to_string());
             }
         })
-        .detach()
+        .detach();
     });
     cx.update(|cx| video.update(cx, |video, cx| video.open_file(broken.clone(), 0.0, cx)));
     cx.run_until_parked();
@@ -147,7 +149,7 @@ fn real_an_unplayable_video_is_reported(cx: &mut TestAppContext) {
 /// (no "no video" flash, no reload of the same file); a lap of another
 /// recording says it is loading until its video binds.
 #[gpui_kit::test]
-#[ignore]
+#[ignore = "requires private telemetry/video fixtures; set OMATRACK_FIXTURES"]
 fn real_stepping_laps_keeps_the_video_bound(cx: &mut TestAppContext) {
     use std::cell::Cell;
     use std::rc::Rc;
@@ -167,7 +169,7 @@ fn real_stepping_laps_keeps_the_video_bound(cx: &mut TestAppContext) {
         .audio_output(Some("null".to_string()));
     let test = common::start(cx, options);
     let library = test.app.library.clone();
-    cx.update(|cx| library.update(cx, |library, cx| library.rescan(cx)));
+    cx.update(|cx| library.update(cx, omatrack_app::state::Library::rescan));
     cx.run_until_parked();
     let (run1, run4) = cx.update(|cx| {
         let snapshot = library.read(cx).snapshot().clone();
@@ -184,8 +186,8 @@ fn real_stepping_laps_keeps_the_video_bound(cx: &mut TestAppContext) {
     let video = test.app.video.clone();
     cx.update(|cx| {
         session.update(cx, |session, cx| {
-            session.set_primary(run1.id.clone().into(), 8, cx)
-        })
+            session.set_primary(run1.id.clone().into(), 8, cx);
+        });
     });
     cx.run_until_parked();
     let run1_video = run1.file.path().to_path_buf();
@@ -202,11 +204,11 @@ fn real_stepping_laps_keeps_the_video_bound(cx: &mut TestAppContext) {
                 seen.set(seen.get() + 1);
             }
         })
-        .detach()
+        .detach();
     });
 
     // [ : L7 of the same recording. While it loads the video stays.
-    cx.update(|cx| session.update(cx, |session, cx| session.prev_lap(cx)));
+    cx.update(|cx| session.update(cx, omatrack_app::state::Session::prev_lap));
     cx.update(|cx| {
         let session = session.read(cx);
         assert!(session.primary().unwrap().is_loading(), "L7 is loading");
@@ -235,8 +237,8 @@ fn real_stepping_laps_keeps_the_video_bound(cx: &mut TestAppContext) {
     let run4_best = run4.best_lap_id.unwrap();
     cx.update(|cx| {
         session.update(cx, |session, cx| {
-            session.set_primary(run4.id.clone().into(), run4_best, cx)
-        })
+            session.set_primary(run4.id.clone().into(), run4_best, cx);
+        });
     });
     cx.update_window(test.window.into(), |_, window, cx| {
         window.render_frame(cx);
@@ -255,7 +257,7 @@ fn real_stepping_laps_keeps_the_video_bound(cx: &mut TestAppContext) {
 /// Seeking the primary video moves the shared cursor: the video is the
 /// recording itself, so its clock drives the telemetry.
 #[gpui_kit::test]
-#[ignore]
+#[ignore = "requires private telemetry/video fixtures; set OMATRACK_FIXTURES"]
 fn real_seeking_the_primary_moves_the_cursor(cx: &mut TestAppContext) {
     cx.executor().allow_parking();
     let root = std::env::var("OMATRACK_FIXTURES")
@@ -273,10 +275,10 @@ fn real_seeking_the_primary_moves_the_cursor(cx: &mut TestAppContext) {
         .audio_output(Some("null".to_string()));
     let test = common::start(cx, options);
     let library = test.app.library.clone();
-    cx.update(|cx| library.update(cx, |library, cx| library.rescan(cx)));
+    cx.update(|cx| library.update(cx, omatrack_app::state::Library::rescan));
     cx.run_until_parked();
     let video = test.app.video.clone();
-    let cursor = test.app.cursor.clone();
+    let cursor = test.app.cursor;
     for _ in 0..50 {
         if cx.update(|cx| video.read(cx).is_synced()) {
             break;

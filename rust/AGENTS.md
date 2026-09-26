@@ -28,7 +28,7 @@ Minimum reading, every time (paths relative to `../.agents/skills/`):
   "Architecture at a glance", "Rules for coding agents", "Common failure
   modes" and "Implementation checklist" always; the whole guide for a new
   crate, module or feature; the section for the change otherwise
-  (`grep -n '^## '` lists them).
+  (`rg -n '^## '` lists them).
 - `gpui-kit/references/conventions.md`, `recipes.md` and `usage.md` when
   choosing or wiring a component.
 - `gpui-kit/references/gpui/<topic>.md` for every GPUI mechanism touched:
@@ -48,8 +48,15 @@ Never invent a `gpui-kit` API: verify signatures in the registry sources
 
 ## Gates
 
+Follow [CLIPPY.md](CLIPPY.md). Workspace lints deny `all`, `pedantic`,
+`nursery` and selected restrictions. Fix causes; any intentional exception
+uses a narrowly scoped `#[expect(..., reason = "...")]`. Do not weaken the
+gate to make generated code pass. Every crate inherits `[lints] workspace = true`.
+The Rust/Clippy/rustfmt version is pinned in `rust-toolchain.toml`.
+
 ```sh
-scripts/check.sh      # fmt, clippy -D warnings, tests (--locked), real_*, parity
+scripts/lint.sh       # strict Clippy, all targets/features, --locked, -D warnings
+scripts/check.sh      # fmt, scripts/lint.sh, tests (--locked), real_*, parity
 ./parity/run.sh       # CLI against the frozen baseline: 89 cases, 0 diffs
 scripts/screenshot.sh # headless visual check; run unsandboxed
 ```

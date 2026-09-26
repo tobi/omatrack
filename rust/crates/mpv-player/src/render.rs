@@ -39,6 +39,11 @@ pub const WIDTH_ALIGNMENT: u32 = 16;
 /// CPU never scales up what the GPU can scale for free). The width is capped
 /// at `max_width` and rounded down to a multiple of [`WIDTH_ALIGNMENT`]; the
 /// height follows the aspect ratio. Returns `None` for an empty request.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "Render dimensions are positive and rounded to whole device pixels; float-to-u32 saturation is intentional."
+)]
 pub fn render_size(
     requested: Size<DevicePixels>,
     video: Option<(u32, u32)>,
@@ -116,7 +121,7 @@ pub fn copy_opaque(source: &[u8], width: u32, height: u32, stride: usize) -> Vec
                 source.as_ptr().add(y * stride),
                 destination.add(y * row),
                 row,
-            )
+            );
         };
     }
     // SAFETY: every byte in `0..len` was written by `opaque_copy` above.
@@ -145,6 +150,14 @@ pub fn force_opaque(pixels: &mut [u8]) {
 /// # Safety
 /// `source` must be readable and `destination` writable for `len` bytes, and
 /// the two regions must be either identical or non-overlapping.
+#[expect(
+    clippy::cast_ptr_alignment,
+    reason = "Every widened pointer is accessed only with read_unaligned/write_unaligned; no aligned reference is created."
+)]
+#[expect(
+    clippy::many_single_char_names,
+    reason = "The eight independent machine words are deliberately unrolled as a through h in this pixel-copy kernel."
+)]
 unsafe fn opaque_copy(source: *const u8, destination: *mut u8, len: usize) {
     // Alpha is the byte at offset 3 of each pixel; a native-endian mask built
     // from bytes is correct on any endianness.
@@ -215,6 +228,10 @@ pub struct RenderStats {
 
 impl RenderStats {
     /// Average milliseconds per frame inside mpv's software renderer.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "Frame counts become floating-point divisors for approximate timing diagnostics."
+    )]
     pub fn average_render_ms(&self) -> f64 {
         if self.frames == 0 {
             0.0
@@ -224,6 +241,10 @@ impl RenderStats {
     }
 
     /// Average milliseconds per frame spent in the BGRA conversion.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "Frame counts become floating-point divisors for approximate timing diagnostics."
+    )]
     pub fn average_convert_ms(&self) -> f64 {
         if self.frames == 0 {
             0.0
@@ -265,7 +286,7 @@ impl RenderControl {
     fn lock(&self) -> MutexGuard<'_, RenderRequest> {
         self.request
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Called from mpv's threads: only records and signals.
@@ -355,11 +376,11 @@ impl BufferPool {
         if self
             .buffer
             .as_ref()
-            .is_none_or(|buffer| buffer.len() < len || buffer.len() > len * 2)
+            .is_some_and(|buffer| buffer.len() < len || buffer.len() > len * 2)
         {
             self.buffer = Some(AlignedBuffer::new(len));
         }
-        self.buffer.as_mut().expect("allocated above")
+        self.buffer.get_or_insert_with(|| AlignedBuffer::new(len))
     }
 }
 
@@ -373,7 +394,7 @@ fn render_loop(mut context: SwRenderContext, control: &RenderControl, shared: &S
                 request = control
                     .wake
                     .wait(request)
-                    .unwrap_or_else(|poison| poison.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
             }
             if request.stop {
                 break;
@@ -457,7 +478,7 @@ fn skip(context: &mut SwRenderContext, frame_due: bool, shared: &Shared) {
     shared
         .stats
         .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .skipped += 1;
 }
 
@@ -491,7 +512,7 @@ fn render_frame(
         let mut stats = shared
             .stats
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         stats.frames += 1;
         stats.render_time += render_time;
         stats.convert_time += converted - rendered;
@@ -568,6 +589,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+    )]
     fn copy_opaque_forces_alpha_and_drops_row_padding() {
         let width = 3;
         let height = 2;
@@ -592,7 +617,7 @@ mod tests {
     fn convert_timing_probe() {
         for (width, height) in [(960u32, 540u32), (1920, 1080)] {
             let source = vec![0x40u8; width as usize * 4 * height as usize];
-            let started = std::time::Instant::now();
+            let started = Instant::now();
             let rounds = 20;
             for _ in 0..rounds {
                 std::hint::black_box(copy_opaque(&source, width, height, width as usize * 4));
@@ -631,6 +656,11 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+    )]
     fn force_opaque_touches_only_alpha() {
         let mut pixels: Vec<u8> = (0..(64 * 3 + 8)).map(|value| value as u8).collect();
         let original = pixels.clone();

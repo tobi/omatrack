@@ -1,9 +1,9 @@
-//! Typed Track Atlas model over the embedded `motorsport-track-atlas`
-//! catalog: facilities, layouts, centerlines, and the two corner scopes the
-//! product treats as first class — individual `corner_ranges` and grouped
-//! `corner_complexes` (never flattened into each other).
+//! Typed Track Atlas model over the embedded `motorsport-track-atlas` catalog.
 //!
-//! Track Atlas data is ODbL; the app shows [`ATTRIBUTION`].
+//! Facilities, layouts, centerlines, and the two first-class corner scopes: individual
+//! `corner_ranges` and grouped `corner_complexes`, never flattened into each other.
+//!
+//! Track Atlas data is `ODbL`; the app shows [`ATTRIBUTION`].
 
 use crate::atlas_spatial::{self, Point};
 use crate::unify::UnifiedLap;

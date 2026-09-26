@@ -48,13 +48,13 @@ impl TypeStep {
     /// The step as a share of the rem.
     pub const fn rems(self) -> f32 {
         match self {
-            TypeStep::Caption => 0.6875,
-            TypeStep::Label => 0.75,
-            TypeStep::Body => 0.8125,
-            TypeStep::Title => 0.875,
-            TypeStep::Heading => 1.0,
-            TypeStep::Display => 1.25,
-            TypeStep::Stage => 2.5,
+            Self::Caption => 0.6875,
+            Self::Label => 0.75,
+            Self::Body => 0.8125,
+            Self::Title => 0.875,
+            Self::Heading => 1.0,
+            Self::Display => 1.25,
+            Self::Stage => 2.5,
         }
     }
 
@@ -77,48 +77,57 @@ pub fn tabular_figures() -> FontFeatures {
 /// The type scale on any styled element.
 pub trait TypeScale: Styled + Sized {
     /// Text size of one [`TypeStep`].
+    #[must_use]
     fn text_step(self, step: TypeStep) -> Self {
         self.text_size(rems(step.rems()))
     }
 
     /// 11 px: axis ticks, ruler and map labels, secondary cell text.
+    #[must_use]
     fn text_caption(self) -> Self {
         self.text_step(TypeStep::Caption)
     }
 
     /// 12 px: lane legends and readouts, status bar, table metadata.
+    #[must_use]
     fn text_label(self) -> Self {
         self.text_step(TypeStep::Label)
     }
 
     /// 13 px: tables, inspector, notes.
+    #[must_use]
     fn text_body(self) -> Self {
         self.text_step(TypeStep::Body)
     }
 
     /// 14 px: panel and section titles.
+    #[must_use]
     fn text_title(self) -> Self {
         self.text_step(TypeStep::Title)
     }
 
     /// 16 px: the heading of a surface.
+    #[must_use]
     fn text_heading(self) -> Self {
         self.text_step(TypeStep::Heading)
     }
 
     /// 20 px: the video HUD's primary figures.
+    #[must_use]
     fn text_display(self) -> Self {
         self.text_step(TypeStep::Display)
     }
 
     /// 40 px: the fullscreen stage's live delta, the one number read from
     /// across the room.
+    #[must_use]
     fn text_stage(self) -> Self {
         self.text_step(TypeStep::Stage)
     }
 
     /// Tabular figures in the interface family: every number, so values
     /// align in columns and do not jitter as they change.
+    #[must_use]
     fn numeric(self) -> Self {
         self.font_features(tabular_figures())
     }

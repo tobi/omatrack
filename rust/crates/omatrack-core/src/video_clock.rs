@@ -1,5 +1,5 @@
 //! Exact telemetry-to-player time mapping, copied from the recording so it
-//! outlives the decoded source (port of `VideoClock` in TelemetryEngine).
+//! outlives the decoded source (port of `VideoClock` in `TelemetryEngine`).
 //!
 //! Telemetry time is integer nanoseconds relative to the file's first
 //! sample; player time is MP4 presentation time; the only conversion is
@@ -28,6 +28,10 @@ pub struct VideoClock {
 }
 
 /// `time + offset` without wrapping; `None` on overflow/underflow.
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "The branch checks the signed offset is nonnegative before adding its magnitude."
+)]
 pub fn shifted_time(time: u64, offset: i64) -> Option<u64> {
     if offset >= 0 {
         time.checked_add(offset as u64)

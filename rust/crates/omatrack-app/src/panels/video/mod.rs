@@ -78,7 +78,7 @@ use overlay::{StageOverlay, VideoOverlay, lap_caption};
 
 /// The fullscreen controls hide this long after the last pointer motion or
 /// key press (the Qt stage's 1.8 s, rounded up).
-pub const CONTROLS_HIDE_AFTER: Duration = Duration::from_millis(2000);
+pub const CONTROLS_HIDE_AFTER: Duration = Duration::from_secs(2);
 /// Height of the fullscreen controls, rem.
 const CONTROLS_REMS: f32 = 2.75;
 /// Height of the fullscreen delta lane over the pictures, rem.
@@ -97,6 +97,11 @@ gpui_kit::actions!(
         PaceReferenceByRecording,
     ]
 );
+
+impl Eq for VerifyVideoIdentity {}
+impl Eq for PaceReferenceByCorners {}
+impl Eq for PaceReferenceByGps {}
+impl Eq for PaceReferenceByRecording {}
 
 /// The short name of a composition on the transport bar.
 pub fn layout_short_label(layout: ComposeLayout) -> &'static str {
@@ -173,7 +178,7 @@ struct Stage {
 }
 
 impl VideoPanel {
-    pub fn new(app: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(app: AppState, window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
         let overlay = cx.new(|cx| VideoOverlay::new(app.clone(), cx));
         let clock = cx.new(|cx| LapClock::new(app.clone(), cx));
         let subscriptions = vec![
@@ -191,7 +196,7 @@ impl VideoPanel {
             cx.observe(&app.session, |_, _, cx| cx.notify()),
             // The letterbox is painted by the video element from a colour it
             // holds; follow theme changes (Omarchy hot reload) into it.
-            cx.observe_global::<Theme>(|this, cx| this.sync_letterbox(cx)),
+            cx.observe_global::<Theme>(Self::sync_letterbox),
         ];
         let mut panel = Self {
             app,
@@ -244,41 +249,38 @@ impl VideoPanel {
         &mut self,
         filmstrip: Option<Entity<Filmstrip>>,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) {
-        match filmstrip {
-            Some(filmstrip) => {
-                if self.stage.is_some() {
-                    return;
-                }
-                filmstrip.update(cx, |strip, cx| strip.set_on_stage(true, cx));
-                // Keys (Space, arrows, 1-5) hide the pointer until it moves.
-                let cursor_mode = cx.cursor_hide_mode();
-                cx.set_cursor_hide_mode(CursorHideMode::OnTypingAndAction);
-                self.stage = Some(Stage {
-                    filmstrip,
-                    controls: true,
-                    hovered: false,
-                    hide: None,
-                    hud: true,
-                    cursor_mode,
-                    // Any keystroke (after its action ran) brings hidden
-                    // controls back; key-down listeners never see bound keys.
-                    _keys: cx.observe_keystrokes(|this, _, _, cx| this.reveal_controls(cx)),
-                });
-                self.reveal_controls(cx);
+        if let Some(filmstrip) = filmstrip {
+            if self.stage.is_some() {
+                return;
             }
-            None => {
-                let Some(stage) = self.stage.take() else {
-                    return;
-                };
-                stage
-                    .filmstrip
-                    .update(cx, |strip, cx| strip.set_on_stage(false, cx));
-                cx.set_cursor_hide_mode(stage.cursor_mode);
-                self.overlay
-                    .update(cx, |overlay, cx| overlay.set_stage(None, cx));
-            }
+            filmstrip.update(cx, |strip, cx| strip.set_on_stage(true, cx));
+            // Keys (Space, arrows, 1-5) hide the pointer until it moves.
+            let cursor_mode = cx.cursor_hide_mode();
+            cx.set_cursor_hide_mode(CursorHideMode::OnTypingAndAction);
+            self.stage = Some(Stage {
+                filmstrip,
+                controls: true,
+                hovered: false,
+                hide: None,
+                hud: true,
+                cursor_mode,
+                // Any keystroke (after its action ran) brings hidden
+                // controls back; key-down listeners never see bound keys.
+                _keys: cx.observe_keystrokes(|this, _, _, cx| this.reveal_controls(cx)),
+            });
+            self.reveal_controls(cx);
+        } else {
+            let Some(stage) = self.stage.take() else {
+                return;
+            };
+            stage
+                .filmstrip
+                .update(cx, |strip, cx| strip.set_on_stage(false, cx));
+            cx.set_cursor_hide_mode(stage.cursor_mode);
+            self.overlay
+                .update(cx, |overlay, cx| overlay.set_stage(None, cx));
         }
         self.sync_letterbox(cx);
         self.ensure_pull(window, cx);
@@ -301,7 +303,7 @@ impl VideoPanel {
     }
 
     /// Show or hide the stage's telemetry band.
-    pub fn toggle_hud(&mut self, cx: &mut Context<Self>) {
+    pub fn toggle_hud(&mut self, cx: &mut Context<'_, Self>) {
         if let Some(stage) = self.stage.as_mut() {
             stage.hud = !stage.hud;
             cx.notify();
@@ -309,7 +311,7 @@ impl VideoPanel {
     }
 
     /// Show the stage controls and restart their hide timer.
-    pub fn reveal_controls(&mut self, cx: &mut Context<Self>) {
+    pub fn reveal_controls(&mut self, cx: &mut Context<'_, Self>) {
         let Some(stage) = self.stage.as_mut() else {
             return;
         };
@@ -319,6 +321,7 @@ impl VideoPanel {
         }
         stage.hide = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(CONTROLS_HIDE_AFTER).await;
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no deferred result; this weak entity/window handle may already be gone.")]
             let _ = this.update(cx, |this, cx| {
                 if let Some(stage) = this.stage.as_mut()
                     && stage.controls
@@ -332,7 +335,7 @@ impl VideoPanel {
         }));
     }
 
-    fn set_controls_hovered(&mut self, hovered: bool, cx: &mut Context<Self>) {
+    fn set_controls_hovered(&mut self, hovered: bool, cx: &mut Context<'_, Self>) {
         let Some(stage) = self.stage.as_mut() else {
             return;
         };
@@ -343,7 +346,12 @@ impl VideoPanel {
         }
     }
 
-    fn on_video_event(&mut self, event: &VideoEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_video_event(
+        &mut self,
+        event: &VideoEvent,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         match event {
             VideoEvent::SourceChanged => self.sync_views(window, cx),
             VideoEvent::IdentityChecked {
@@ -369,7 +377,7 @@ impl VideoPanel {
     /// Schedule the next display-frame pull while the primary plays. Each
     /// pull maps the primary clock to the cursor (the controller notifies
     /// only `CursorState`) and schedules the next.
-    fn ensure_pull(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn ensure_pull(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         if self.pumping || !self.app.video.read(cx).is_playing() {
             return;
         }
@@ -383,7 +391,7 @@ impl VideoPanel {
         });
     }
 
-    fn sync_views(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn sync_views(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         let (primary, reference) = {
             let video = self.app.video.read(cx);
             (video.frame_source(), video.reference_frame_source())
@@ -424,7 +432,7 @@ impl VideoPanel {
     }
 
     /// Only views on screen report a size, so a hidden player stops drawing.
-    fn sync_visibility(&mut self, cx: &mut Context<Self>) {
+    fn sync_visibility(&mut self, cx: &mut Context<'_, Self>) {
         let video = self.app.video.read(cx);
         let layout = video.layout().effective(video.is_dual());
         for (role, view) in [
@@ -440,7 +448,7 @@ impl VideoPanel {
         }
     }
 
-    fn sync_letterbox(&mut self, cx: &mut Context<Self>) {
+    fn sync_letterbox(&mut self, cx: &mut Context<'_, Self>) {
         let letterbox = if self.stage.is_some() {
             gpui_kit::black()
         } else {
@@ -457,7 +465,7 @@ impl VideoPanel {
     // ── transport bar ───────────────────────────────────────────────
 
     /// Play/pause (cancels a running countdown).
-    fn render_play(&self, cx: &mut Context<Self>) -> Button {
+    fn render_play(&self, cx: &mut Context<'_, Self>) -> Button {
         let video = self.app.video.read(cx);
         let playing = video.is_playing();
         let counting = video.countdown().is_some();
@@ -481,11 +489,13 @@ impl VideoPanel {
             .disabled(!can_play)
             .tooltip_with_action(play_label, &TogglePlay, Some(WORKSPACE_CONTEXT))
             .on_click(cx.listener(|this, _, _, cx| {
-                this.app.video.update(cx, |video, cx| video.toggle_play(cx));
+                this.app
+                    .video
+                    .update(cx, super::super::state::video::VideoController::toggle_play);
             }))
     }
 
-    fn render_mute(&self, cx: &mut Context<Self>) -> Button {
+    fn render_mute(&self, cx: &mut Context<'_, Self>) -> Button {
         let muted = self.app.video.read(cx).is_muted(cx);
         let mute_label = if muted { "Unmute" } else { "Mute" };
         Button::new("video-mute")
@@ -499,12 +509,14 @@ impl VideoPanel {
             .accessibility_label(mute_label)
             .tooltip_with_action(mute_label, &ToggleMute, Some(WORKSPACE_CONTEXT))
             .on_click(cx.listener(|this, _, _, cx| {
-                this.app.video.update(cx, |video, cx| video.toggle_mute(cx));
+                this.app
+                    .video
+                    .update(cx, super::super::state::video::VideoController::toggle_mute);
             }))
     }
 
     /// The clock rate: the selected segment is the one playing.
-    fn render_rate(&self, cx: &mut Context<Self>) -> ButtonGroup {
+    fn render_rate(&self, cx: &mut Context<'_, Self>) -> ButtonGroup {
         let slow = self.app.video.read(cx).is_slow_motion();
         ButtonGroup::new("video-rate")
             .xsmall()
@@ -513,7 +525,7 @@ impl VideoPanel {
                 Button::new("video-rate-normal")
                     .label("1×")
                     .selected(!slow)
-                    .when(!slow, |button| button.primary())
+                    .when(!slow, gpui_kit::component::button::ButtonVariants::primary)
                     .accessibility_label("Normal speed")
                     .tooltip_with_action(
                         "Normal speed",
@@ -525,7 +537,7 @@ impl VideoPanel {
                 Button::new("video-slow-motion")
                     .label("0.25×")
                     .selected(slow)
-                    .when(slow, |button| button.primary())
+                    .when(slow, gpui_kit::component::button::ButtonVariants::primary)
                     .accessibility_label("Slow motion")
                     .tooltip_with_action(
                         "Slow motion, quarter speed",
@@ -536,15 +548,16 @@ impl VideoPanel {
             .on_click(cx.listener(move |this, selected: &Vec<usize>, _, cx| {
                 let wants_slow = selected.first() == Some(&1);
                 if wants_slow != slow {
-                    this.app
-                        .video
-                        .update(cx, |video, cx| video.toggle_slow_motion(cx));
+                    this.app.video.update(
+                        cx,
+                        super::super::state::video::VideoController::toggle_slow_motion,
+                    );
                 }
             }))
     }
 
     /// Lap-end behaviour: pause and count in, or play through.
-    fn render_mode(&self, cx: &mut Context<Self>) -> ButtonGroup {
+    fn render_mode(&self, cx: &mut Context<'_, Self>) -> ButtonGroup {
         let continuous = self.app.video.read(cx).is_continuous(cx);
         // Selection is neutral, like `Distance | Time`: colour is for lap
         // roles and Δ.
@@ -574,9 +587,10 @@ impl VideoPanel {
             .on_click(cx.listener(move |this, selected: &Vec<usize>, _, cx| {
                 let wants_continuous = selected.first() == Some(&1);
                 if wants_continuous != continuous {
-                    this.app
-                        .video
-                        .update(cx, |video, cx| video.toggle_continuous(cx));
+                    this.app.video.update(
+                        cx,
+                        super::super::state::video::VideoController::toggle_continuous,
+                    );
                 }
             }))
     }
@@ -611,7 +625,7 @@ impl VideoPanel {
             button
                 .tooltip_with_action(label, &ToggleVideoFullscreen, Some(WORKSPACE_CONTEXT))
                 .on_click(|_, window, cx| {
-                    window.dispatch_action(Box::new(ToggleVideoFullscreen), cx)
+                    window.dispatch_action(Box::new(ToggleVideoFullscreen), cx);
                 })
         }
     }
@@ -625,7 +639,11 @@ impl VideoPanel {
     /// row serves the video and the traces, so the centre carries no
     /// toolbars of its own. Every control dispatches the action of its key
     /// and names that key in its tooltip.
-    fn render_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
+    fn render_bar(&self, window: &Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let dual = self.app.video.read(cx).is_dual();
         let layout = self.app.video.read(cx).layout().effective(dual);
         let play = self.render_play(cx);
@@ -740,7 +758,7 @@ impl VideoPanel {
 
     /// Quarter speed on or off (the docked row's one rate control; the
     /// fullscreen stage keeps `1× | 0.25×`).
-    fn render_slow_toggle(&self, cx: &mut Context<Self>) -> Button {
+    fn render_slow_toggle(&self, cx: &mut Context<'_, Self>) -> Button {
         let slow = self.app.video.read(cx).is_slow_motion();
         Button::new("video-slow-motion")
             .outline()
@@ -755,14 +773,15 @@ impl VideoPanel {
                 Some(WORKSPACE_CONTEXT),
             )
             .on_click(cx.listener(|this, _, _, cx| {
-                this.app
-                    .video
-                    .update(cx, |video, cx| video.toggle_slow_motion(cx));
+                this.app.video.update(
+                    cx,
+                    super::super::state::video::VideoController::toggle_slow_motion,
+                );
             }))
     }
 
     /// The traces' x-axis (`t`): distance or time.
-    fn render_axis(&self, cx: &mut Context<Self>) -> ButtonGroup {
+    fn render_axis(&self, cx: &mut Context<'_, Self>) -> ButtonGroup {
         let axis = self.app.viewport.read(cx).axis();
         let has_data = self.app.session.read(cx).analysis().is_some();
         let keys = self.focus_handle.clone();
@@ -800,7 +819,7 @@ impl VideoPanel {
 
     /// The traces' less frequent tools, behind one icon: fit, lane sizing,
     /// corner editing and zoom (each also on its key and in the palette).
-    fn render_traces_menu(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_traces_menu(&self, cx: &mut Context<'_, Self>) -> impl IntoElement + use<> {
         let has_data = self.app.session.read(cx).analysis().is_some();
         let focus = self.focus_handle.clone();
         let preferences = self.app.preferences.clone();
@@ -827,6 +846,10 @@ impl VideoPanel {
     /// The chips that need attention: a degraded reference sync (a healthy
     /// one is silent; the title bar states the alignment), identity checks
     /// and a missing reference video.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Render the cursor caption and video/sync badges from the same state snapshot in one control row."
+    )]
     fn render_status(&self, cx: &App) -> impl IntoElement {
         let video = self.app.video.read(cx);
         let session = self.app.session.read(cx);
@@ -834,10 +857,7 @@ impl VideoPanel {
         let sync = dual
             .then(|| (video.sync_state(), video.reference_playback(cx)))
             .filter(|(state, _)| matches!(state, SyncState::NoMap | SyncState::Best));
-        let warnings: Vec<(Role, SharedString)> = [Role::Primary, Role::Reference]
-            .into_iter()
-            .filter_map(|role| video.identity(role).warning().map(|w| (role, w.clone())))
-            .collect();
+
         let checking = [Role::Primary, Role::Reference]
             .into_iter()
             .any(|role| video.identity(role).is_checking());
@@ -915,19 +935,28 @@ impl VideoPanel {
                         .child(Tag::secondary().small().child("Verifying video…")),
                 )
             })
-            .children(warnings.into_iter().map(|(role, warning)| {
-                let (id, text) = match role {
-                    Role::Primary => ("video-identity-warning", "Video not verified"),
-                    Role::Reference => ("reference-identity-warning", "Reference not verified"),
-                };
-                let tooltip = warning.clone();
-                div()
-                    .id(id)
-                    .test_support()
-                    .aria_label(warning)
-                    .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-                    .child(Tag::warning().small().child(text))
-            }))
+            .children(
+                [Role::Primary, Role::Reference]
+                    .into_iter()
+                    .filter_map(|role| video.identity(role).warning().map(|w| (role, w.clone())))
+                    .map(|(role, warning)| {
+                        let (id, text) = match role {
+                            Role::Primary => ("video-identity-warning", "Video not verified"),
+                            Role::Reference => {
+                                ("reference-identity-warning", "Reference not verified")
+                            }
+                        };
+                        let tooltip = warning.clone();
+                        div()
+                            .id(id)
+                            .test_support()
+                            .aria_label(warning)
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(tooltip.clone()).build(window, cx)
+                            })
+                            .child(Tag::warning().small().child(text))
+                    }),
+            )
     }
 
     // ── stage ───────────────────────────────────────────────────────
@@ -1080,6 +1109,10 @@ impl VideoPanel {
 
     /// The width / height of `role`'s picture: the latest frame's (the
     /// backend renders at the video's aspect), else 16:9 until one arrives.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
     fn picture_aspect(&self, role: Role, cx: &App) -> f32 {
         let view = match role {
             Role::Primary => self.primary_view.as_ref(),
@@ -1133,7 +1166,7 @@ impl VideoPanel {
                     .border_color(theme.border)
                     .rounded(theme.radius)
                     .shadow_md()
-                    .when_some(view, |this, view| this.child(view))
+                    .when_some(view, gpui_kit::ParentElement::child)
                     .children(self.render_caption(role, true, cx))
                     .into_any_element();
             }
@@ -1146,7 +1179,7 @@ impl VideoPanel {
             .h_full()
             .max_w_full()
             .aspect_ratio(aspect)
-            .when_some(view, |this, view| this.child(view))
+            .when_some(view, gpui_kit::ParentElement::child)
             .children(self.render_caption(role, false, cx))
             .children(inset);
         div()
@@ -1228,7 +1261,7 @@ impl VideoPanel {
 
     /// The whole-window stage: pictures composed on black, the telemetry
     /// layer, the countdown, the filmstrip lane and the floating controls.
-    fn render_fullscreen(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_fullscreen(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> AnyElement {
         let Some(stage) = self.stage.as_ref() else {
             return div().into_any_element();
         };
@@ -1339,13 +1372,17 @@ impl VideoPanel {
                     .rounded(theme.radius)
                     .shadow_lg()
             })
-            .when_some(view, |this, view| this.child(view))
+            .when_some(view, gpui_kit::ParentElement::child)
             .into_any_element()
     }
 
     /// The floating transport controls: play, ±2 s, layouts 1-5, rate,
     /// lap-end mode, HUD and mute, the lap clock and Exit.
-    fn render_stage_controls(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
+    fn render_stage_controls(&mut self, cx: &mut Context<'_, Self>) -> AnyElement {
         let dual = self.app.video.read(cx).is_dual();
         let current = self.app.video.read(cx).layout().effective(dual);
         let hud = self.is_hud_shown();
@@ -1382,7 +1419,10 @@ impl VideoPanel {
                     )))
                     .label(layout.key())
                     .selected(selected)
-                    .when(selected, |button| button.primary())
+                    .when(
+                        selected,
+                        gpui_kit::component::button::ButtonVariants::primary,
+                    )
                     .accessibility_label(spoken.clone())
                     .tooltip_with_action(
                         spoken,
@@ -1522,18 +1562,23 @@ impl BasePanel for VideoPanel {
         false
     }
 
-    fn set_active(&mut self, active: bool, _: &mut Window, cx: &mut Context<Self>) {
+    fn set_active(&mut self, active: bool, _: &mut Window, cx: &mut Context<'_, Self>) {
         self.active = active;
         self.sync_visibility(cx);
     }
 
-    fn on_added_to(&mut self, group: WeakEntity<TabGroup>, _: &mut Window, _: &mut Context<Self>) {
+    fn on_added_to(
+        &mut self,
+        group: WeakEntity<TabGroup>,
+        _: &mut Window,
+        _: &mut Context<'_, Self>,
+    ) {
         self.group = Some(group);
     }
 
     /// Zoomed (`F`), the other panels leave the screen: keep keyboard focus
     /// on the video so Space, the arrows and Escape keep working.
-    fn set_zoomed(&mut self, zoomed: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn set_zoomed(&mut self, zoomed: bool, window: &mut Window, cx: &mut Context<'_, Self>) {
         if zoomed && !self.focus_handle.contains_focused(window, cx) {
             window.focus(&self.focus_handle, cx);
         }
@@ -1546,7 +1591,7 @@ impl Panel for VideoPanel {
         Some(PanelKind::Video.title().into())
     }
 
-    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn title(&mut self, _: &mut Window, _: &mut Context<'_, Self>) -> impl IntoElement {
         PanelKind::Video.title()
     }
 
@@ -1564,7 +1609,7 @@ impl Focusable for VideoPanel {
 }
 
 impl Render for VideoPanel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         if self.stage.is_some() {
             return self.render_fullscreen(window, cx);
         }
@@ -1592,8 +1637,9 @@ impl Render for VideoPanel {
 /// rebuild it by name), its palette commands and their handlers. Called
 /// once from [`crate::panels::init`].
 pub fn init(cx: &mut App) {
-    crate::panels::register(PanelKind::Video, cx);
     use CommandCategory::Commands;
+
+    crate::panels::register(PanelKind::Video, cx);
     for spec in [
         CommandSpec::new(
             "verify-video",
@@ -1629,28 +1675,31 @@ pub fn init(cx: &mut App) {
     // Palette entries dispatch from the dialog, outside any panel: handle
     // them at the application level.
     cx.on_action(|_: &VerifyVideoIdentity, cx| {
-        with_video(cx, |video, cx| video.verify_identity(cx))
+        with_video(
+            cx,
+            super::super::state::video::VideoController::verify_identity,
+        );
     });
     cx.on_action(|_: &PaceReferenceByCorners, cx| {
         with_video(cx, |video, cx| {
-            video.set_reference_playback(ReferencePlayback::Corners, cx)
-        })
+            video.set_reference_playback(ReferencePlayback::Corners, cx);
+        });
     });
     cx.on_action(|_: &PaceReferenceByGps, cx| {
         with_video(cx, |video, cx| {
-            video.set_reference_playback(ReferencePlayback::Gps, cx)
-        })
+            video.set_reference_playback(ReferencePlayback::Gps, cx);
+        });
     });
     cx.on_action(|_: &PaceReferenceByRecording, cx| {
         with_video(cx, |video, cx| {
-            video.set_reference_playback(ReferencePlayback::Recording, cx)
-        })
+            video.set_reference_playback(ReferencePlayback::Recording, cx);
+        });
     });
 }
 
 fn with_video(
     cx: &mut App,
-    f: impl FnOnce(&mut crate::state::VideoController, &mut Context<crate::state::VideoController>),
+    f: impl FnOnce(&mut crate::state::VideoController, &mut Context<'_, crate::state::VideoController>),
 ) {
     if let Some(video) = AppState::try_global(cx).map(|state| state.video.clone()) {
         video.update(cx, f);

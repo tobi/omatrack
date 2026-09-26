@@ -4,6 +4,8 @@
 //! while the 100 ms debounce runs on GPUI's test clock, so the wait loop
 //! advances both.
 
+#![cfg(test)]
+
 use std::{fs, path::Path, time::Duration};
 
 use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode, ThemeRegistry};
@@ -76,14 +78,14 @@ fn an_existing_palette_applies_before_the_first_frame(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         theme::install(ThemeSource::system_from_home(home.path()), cx);
-        assert_eq!(cx.theme().primary, accent(0x7aa2f7));
-        assert_eq!(cx.theme().chart_1, accent(0x7aa2f7));
-        assert_eq!(cx.theme().background, accent(0x1a1b26));
+        assert_eq!(cx.theme().primary, accent(0x007a_a2f7));
+        assert_eq!(cx.theme().chart_1, accent(0x007a_a2f7));
+        assert_eq!(cx.theme().background, accent(0x001a_1b26));
         assert!(cx.theme().is_dark());
         // The Base layer (scrollbars, resize handles) was reprojected too.
         assert_eq!(
             gpui_kit::base::Theme::global(cx).tokens.colors.primary,
-            accent(0x7aa2f7)
+            accent(0x007a_a2f7)
         );
     });
     let status = status(cx);
@@ -110,7 +112,7 @@ fn follows_writes_symlink_swaps_and_ignores_corruption(cx: &mut TestAppContext) 
     let first = themes.path().join("first");
     write_theme(&first, TOKYO);
     std::os::unix::fs::symlink(&first, current.join("theme")).unwrap();
-    wait_until(cx, "first palette", |cx| primary(cx) == accent(0x7aa2f7));
+    wait_until(cx, "first palette", |cx| primary(cx) == accent(0x007a_a2f7));
     assert!(matches!(status(cx).origin(), ThemeOrigin::Omarchy(_)));
 
     // An Omarchy theme switch replaces the `theme` symlink atomically.
@@ -118,7 +120,7 @@ fn follows_writes_symlink_swaps_and_ignores_corruption(cx: &mut TestAppContext) 
     write_theme(&second, &TOKYO.replace("#7aa2f7", "#bb9af7"));
     std::os::unix::fs::symlink(&second, current.join("next")).unwrap();
     fs::rename(current.join("next"), current.join("theme")).unwrap();
-    wait_until(cx, "symlink swap", |cx| primary(cx) == accent(0xbb9af7));
+    wait_until(cx, "symlink swap", |cx| primary(cx) == accent(0x00bb_9af7));
 
     // A corrupted palette keeps the theme that is showing.
     fs::write(second.join("colors.toml"), "background = 'broken").unwrap();
@@ -127,7 +129,7 @@ fn follows_writes_symlink_swaps_and_ignores_corruption(cx: &mut TestAppContext) 
         cx.run_until_parked();
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert_eq!(primary(cx), accent(0xbb9af7));
+    assert_eq!(primary(cx), accent(0x00bb_9af7));
     assert!(matches!(status(cx).origin(), ThemeOrigin::Omarchy(_)));
 
     // An atomic save of a fixed palette recovers, and the name follows.
@@ -136,7 +138,7 @@ fn follows_writes_symlink_swaps_and_ignores_corruption(cx: &mut TestAppContext) 
     fs::rename(&staged, second.join("colors.toml")).unwrap();
     fs::write(current.join("theme.name"), "Custom").unwrap();
     wait_until(cx, "atomic save", |cx| {
-        primary(cx) == accent(0x123456) && status(cx).label().as_ref() == "Omarchy · Custom"
+        primary(cx) == accent(0x0012_3456) && status(cx).label().as_ref() == "Omarchy · Custom"
     });
 
     // Removing the theme returns to the built-in look.
@@ -164,11 +166,11 @@ fn the_state_directory_beats_legacy_while_it_exists(cx: &mut TestAppContext) {
     write_theme(&state.join("theme"), &TOKYO.replace("#7aa2f7", "#9ece6a"));
     fs::write(state.join("theme.name"), "Current").unwrap();
     wait_until(cx, "state wins", |cx| {
-        status(cx).label().as_ref() == "Omarchy · Current" && primary(cx) == accent(0x9ece6a)
+        status(cx).label().as_ref() == "Omarchy · Current" && primary(cx) == accent(0x009e_ce6a)
     });
 
     fs::remove_dir_all(&state).unwrap();
     wait_until(cx, "legacy again", |cx| {
-        status(cx).label().as_ref() == "Omarchy · Legacy" && primary(cx) == accent(0x7aa2f7)
+        status(cx).label().as_ref() == "Omarchy · Legacy" && primary(cx) == accent(0x007a_a2f7)
     });
 }

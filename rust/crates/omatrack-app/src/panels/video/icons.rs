@@ -26,7 +26,7 @@ gpui_kit::assets::icon_assets!(
 
 /// The bar's icons.
 #[derive(Clone)]
-pub struct VideoIcons {
+pub(super) struct VideoIcons {
     pub volume: Icon,
     pub muted: Icon,
     pub split: Icon,
@@ -38,7 +38,7 @@ pub struct VideoIcons {
 }
 
 impl VideoIcons {
-    pub fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             volume: icon(IconName::Volume2),
             muted: icon(IconName::VolumeX),

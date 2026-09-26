@@ -1,6 +1,8 @@
 //! UI integration tests for the keymap: single keys work from the trace
 //! workspace and never fire while a text field has focus.
 
+#![cfg(test)]
+
 mod common;
 
 use gpui_kit::AppContext as _;
@@ -23,7 +25,7 @@ fn select_pair(test: &common::TestApp, cx: &mut TestAppContext) -> (LapRef, LapR
         session.update(cx, |session, cx| {
             session.set_primary(p.session().clone(), p.lap(), cx);
             session.set_reference(r.session().clone(), r.lap(), cx);
-        })
+        });
     });
     cx.run_until_parked();
     (primary, reference)
@@ -62,10 +64,7 @@ fn x_and_equals_work_from_the_traces_panel(cx: &mut TestAppContext) {
     })
     .unwrap();
     cx.run_until_parked();
-    assert_eq!(
-        roles(&test, cx),
-        (Some(reference.clone()), Some(primary.clone()))
-    );
+    assert_eq!(roles(&test, cx), (Some(reference), Some(primary)));
 
     assert_eq!(viewport(&test, cx), Viewport::FULL);
     cx.update_window(test.window.into(), |_, window, cx| window.press("=", cx))
@@ -76,7 +75,7 @@ fn x_and_equals_work_from_the_traces_panel(cx: &mut TestAppContext) {
         .unwrap();
     assert!(viewport(&test, cx).span() > zoomed.span());
     cx.update_window(test.window.into(), |_, window, cx| {
-        window.press("ctrl-0", cx)
+        window.press("ctrl-0", cx);
     })
     .unwrap();
     assert_eq!(viewport(&test, cx), Viewport::FULL);
@@ -90,7 +89,7 @@ fn single_keys_type_into_the_library_search(cx: &mut TestAppContext) {
 
     // The Library is the tab behind the Laps sidebar: bring it forward.
     cx.update_window(test.window.into(), |_, window, cx| {
-        window.press("ctrl-6", cx)
+        window.press("ctrl-6", cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -115,7 +114,7 @@ fn single_keys_type_into_the_palette(cx: &mut TestAppContext) {
     let (primary, reference) = select_pair(&test, cx);
 
     cx.update_window(test.window.into(), |_, window, cx| {
-        window.press("ctrl-k", cx)
+        window.press("ctrl-k", cx);
     })
     .unwrap();
     cx.run_until_parked();

@@ -23,9 +23,10 @@ use crate::state::AppState;
 use omatrack_ui::TypeScale as _;
 
 impl PreferencesView {
-    pub(super) fn render_library(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_library(&self, cx: &mut Context<'_, Self>) -> AnyElement {
         let scanning = self.app.library.read(cx).is_scanning();
-        let folders = self
+
+        let mut rows = self
             .app
             .preferences
             .read(cx)
@@ -39,9 +40,6 @@ impl PreferencesView {
                     folder.is_enabled(),
                 )
             })
-            .collect::<Vec<_>>();
-        let mut rows = folders
-            .into_iter()
             .map(|(id, name, target, enabled)| {
                 let remove_name = name.clone();
                 let remove_id = id.clone();
@@ -64,7 +62,7 @@ impl PreferencesView {
                                 remove_name.clone(),
                                 window,
                                 cx,
-                            )
+                            );
                         })),
                     cx,
                 )
@@ -93,7 +91,7 @@ impl PreferencesView {
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.app
                             .library
-                            .update(cx, |library, cx| library.prompt_add_folder(cx));
+                            .update(cx, super::super::state::library::Library::prompt_add_folder);
                     })),
             )
             .child(
@@ -106,7 +104,7 @@ impl PreferencesView {
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.app
                             .library
-                            .update(cx, |library, cx| library.rescan(cx));
+                            .update(cx, super::super::state::library::Library::rescan);
                     })),
             )
             .into_any_element();
@@ -128,7 +126,7 @@ impl PreferencesView {
         )
     }
 
-    pub(super) fn render_traces(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_traces(&self, cx: &mut Context<'_, Self>) -> AnyElement {
         let fit = self
             .app
             .preferences
@@ -175,7 +173,11 @@ impl PreferencesView {
         )
     }
 
-    pub(super) fn render_video(&self, cx: &mut Context<Self>) -> AnyElement {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep the declarative video preference groups and their typed control bindings together."
+    )]
+    pub(super) fn render_video(&self, cx: &mut Context<'_, Self>) -> AnyElement {
         let video = self.app.preferences.read(cx).config().video.clone();
         let muted = video.is_muted();
         let continuous = video.is_continuous_playback();
@@ -190,7 +192,7 @@ impl PreferencesView {
                     let wanted = *muted;
                     let video = this.app.video.clone();
                     if video.read(cx).is_muted(cx) != wanted {
-                        video.update(cx, |video, cx| video.toggle_mute(cx));
+                        video.update(cx, super::super::state::video::VideoController::toggle_mute);
                     }
                 })),
             cx,
@@ -205,7 +207,10 @@ impl PreferencesView {
                     let wanted = *continuous;
                     let video = this.app.video.clone();
                     if video.read(cx).is_continuous(cx) != wanted {
-                        video.update(cx, |video, cx| video.toggle_continuous(cx));
+                        video.update(
+                            cx,
+                            super::super::state::video::VideoController::toggle_continuous,
+                        );
                     }
                 })),
             cx,
@@ -276,7 +281,7 @@ impl PreferencesView {
         )
     }
 
-    pub(super) fn render_drivers(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_drivers(&self, cx: &mut Context<'_, Self>) -> AnyElement {
         let editor = div()
             .px_4()
             .py_3()
@@ -299,8 +304,8 @@ impl PreferencesView {
         )
     }
 
-    pub(super) fn render_tracks(&self, cx: &mut Context<Self>) -> AnyElement {
-        let overrides = self
+    pub(super) fn render_tracks(&self, cx: &mut Context<'_, Self>) -> AnyElement {
+        let mut rows = self
             .app
             .preferences
             .read(cx)
@@ -309,9 +314,6 @@ impl PreferencesView {
             .iter()
             .filter(|(_, track)| !track.corner_zones().is_empty())
             .map(|(key, track)| (key.clone(), track_title(key), track.corner_zones().len()))
-            .collect::<Vec<_>>();
-        let mut rows = overrides
-            .into_iter()
             .map(|(key, name, count)| {
                 let reset_key = key.clone();
                 let reset_name = name.clone();
@@ -330,7 +332,7 @@ impl PreferencesView {
                                 reset_name.clone(),
                                 window,
                                 cx,
-                            )
+                            );
                         })),
                     cx,
                 )
@@ -379,7 +381,7 @@ impl PreferencesView {
         )
     }
 
-    pub(super) fn render_appearance(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_appearance(cx: &mut Context<'_, Self>) -> AnyElement {
         let status = ThemeStatus::global(cx).cloned();
         let (theme_name, source, location) = match &status {
             Some(status) => match status.origin() {
@@ -450,7 +452,7 @@ impl PreferencesView {
         id: String,
         name: SharedString,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) {
         let app = self.app.clone();
         window.open_alert_dialog(cx, move |alert, _, _| {
@@ -473,7 +475,8 @@ impl PreferencesView {
                             config.remove_location(&id);
                         });
                     });
-                    app.library.update(cx, |library, cx| library.rescan(cx));
+                    app.library
+                        .update(cx, super::super::state::library::Library::rescan);
                     true
                 })
         });
@@ -484,7 +487,7 @@ impl PreferencesView {
         key: String,
         name: SharedString,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) {
         let app = self.app.clone();
         window.open_alert_dialog(cx, move |alert, _, _| {
@@ -513,8 +516,10 @@ fn track_title(key: &str) -> SharedString {
     let spaced = key.replace('_', " ");
     omatrack_core::track::find_track(&spaced)
         .or_else(|| omatrack_core::track::find_track(key))
-        .map(|track| SharedString::from(track.name.to_string()))
-        .unwrap_or_else(|| spaced.into())
+        .map_or_else(
+            || spaced.into(),
+            |track| SharedString::from(track.name.to_string()),
+        )
 }
 
 /// Drop the corner edits of `tracks.<key>`. When the primary lap is on

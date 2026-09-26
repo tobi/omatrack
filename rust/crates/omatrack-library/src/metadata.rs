@@ -66,23 +66,23 @@ pub struct EffectiveMetadata {
 }
 
 impl EffectiveMetadata {
-    fn text(field: &Option<Sourced<String>>) -> Option<&str> {
-        field.as_ref().map(|sourced| sourced.value.as_str())
+    fn text(field: &Sourced<String>) -> &str {
+        field.value.as_str()
     }
     pub fn track_name(&self) -> Option<&str> {
-        Self::text(&self.track_name)
+        self.track_name.as_ref().map(Self::text)
     }
     pub fn track_slug(&self) -> Option<&str> {
-        Self::text(&self.track_slug)
+        self.track_slug.as_ref().map(Self::text)
     }
     pub fn driver(&self) -> Option<&str> {
-        Self::text(&self.driver)
+        self.driver.as_ref().map(Self::text)
     }
     pub fn session(&self) -> Option<&str> {
-        Self::text(&self.session)
+        self.session.as_ref().map(Self::text)
     }
     pub fn event(&self) -> Option<&str> {
-        Self::text(&self.event)
+        self.event.as_ref().map(Self::text)
     }
 }
 
@@ -114,12 +114,14 @@ impl<'a> MetadataSources<'a> {
     }
 
     /// Layer 4: the recording's parsed summary.
+    #[must_use]
     pub fn with_summary(mut self, summary: Option<&'a RecordingSummary>) -> Self {
         self.summary = summary;
         self
     }
 
     /// The recording's event date (`yyyy-mm-dd`) for `track_assignments`.
+    #[must_use]
     pub fn with_event_date(mut self, event_date: Option<&'a str>) -> Self {
         self.event_date = event_date;
         self
@@ -358,8 +360,7 @@ fn class_word(text: &str) -> Option<usize> {
     Some(
         chars
             .find(|(_, c)| !(c.is_ascii_uppercase() || c.is_ascii_digit() || *c == '-'))
-            .map(|(i, _)| i)
-            .unwrap_or(text.len()),
+            .map_or(text.len(), |(i, _)| i),
     )
 }
 

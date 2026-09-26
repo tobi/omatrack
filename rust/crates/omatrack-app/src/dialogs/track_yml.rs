@@ -145,7 +145,7 @@ impl TrackYmlForm {
         app: AppState,
         directory: PathBuf,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) -> Self {
         let inputs = FolderField::ALL
             .into_iter()
@@ -162,7 +162,7 @@ impl TrackYmlForm {
             .iter()
             .map(|(_, input)| {
                 cx.subscribe(input, |this, _, event: &InputEvent, cx| {
-                    if let InputEvent::Change = event {
+                    if matches!(event, InputEvent::Change) {
                         this.validate(cx);
                     }
                 })
@@ -173,8 +173,9 @@ impl TrackYmlForm {
         let load = cx.spawn_in(window, async move |this, cx| {
             let (document, inherited) =
                 cx.background_spawn(async move { read_folder(&path) }).await;
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no deferred result; this weak entity/window handle may already be gone.")]
             let _ = this.update_in(cx, |this, window, cx| {
-                this.apply_loaded(document, inherited, window, cx)
+                this.apply_loaded(document, inherited, window, cx);
             });
         });
 
@@ -194,6 +195,14 @@ impl TrackYmlForm {
     }
 
     /// The input of `field`.
+    ///
+    /// # Panics
+    /// Panics if construction failed to create an input for every field; callers can
+    /// only pass the fixed field enum.
+    #[expect(
+        clippy::expect_used,
+        reason = "Construction creates one input for every variant of this fixed field enum."
+    )]
     pub fn input(&self, field: FolderField) -> &Entity<InputState> {
         &self
             .inputs
@@ -223,7 +232,7 @@ impl TrackYmlForm {
         document: Document,
         inherited: Mapping,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) {
         if let Document::Ready { document, .. } = &document {
             for (field, input) in &self.inputs {
@@ -247,7 +256,7 @@ impl TrackYmlForm {
         self.validate(cx);
     }
 
-    fn validate(&mut self, cx: &mut Context<Self>) {
+    fn validate(&mut self, cx: &mut Context<'_, Self>) {
         self.errors = self
             .inputs
             .iter()
@@ -279,7 +288,7 @@ impl TrackYmlForm {
     /// the dialog and rescan. Returns true only when there is nothing to
     /// write (the dialog closes at once); a write closes it when it
     /// succeeds and shows the error when it fails.
-    pub fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    pub fn save(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> bool {
         self.validate(cx);
         let Document::Ready { document, exists } = &self.document else {
             return false;
@@ -310,13 +319,14 @@ impl TrackYmlForm {
             let result = cx
                 .background_spawn(async move { track_yml::update(&directory, &owned) })
                 .await;
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no deferred result; this weak entity/window handle may already be gone.")]
             let _ = this.update_in(cx, |this, window, cx| {
                 this.saving = false;
                 match result {
                     Ok(_) => {
                         this.app
                             .library
-                            .update(cx, |library, cx| library.rescan(cx));
+                            .update(cx, super::super::state::library::Library::rescan);
                         window.close_dialog(cx);
                     }
                     Err(error) => {
@@ -366,7 +376,7 @@ fn read_folder(directory: &Path) -> (Document, Mapping) {
 }
 
 impl Render for TrackYmlForm {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let theme = cx.theme();
         let notice: Option<(SharedString, bool)> = match &self.document {
             Document::Loading => Some(("Reading TRACK.yml…".into(), false)),
@@ -445,10 +455,10 @@ pub fn open(
 ) -> Entity<TrackYmlForm> {
     let title = SharedString::from(format!(
         "TRACK.yml · {}",
-        directory
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| directory.display().to_string())
+        directory.file_name().map_or_else(
+            || directory.display().to_string(),
+            |name| name.to_string_lossy().into_owned()
+        )
     ));
     let form = cx.new(|cx| TrackYmlForm::new(app.clone(), directory, window, cx));
     let body = form.clone();

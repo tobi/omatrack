@@ -11,6 +11,11 @@ impl Recording {
     /// `[start, end]`, probed on the SOURCE clock at about 4 Hz (at most
     /// 4096 bins). Gaps and unknown samples are not assumed stopped; `None`
     /// when nothing was observed or speed is not mapped.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        reason = "Preserve the C++ port's sample-index widths and rounding at this numerical boundary; verified by parity."
+    )]
     pub fn stopped_duration(
         &self,
         start_time: f64,
@@ -45,7 +50,7 @@ impl Recording {
                 continue;
             };
             let value = value * factor;
-            if !value.is_finite() || value < 0.0 || value > 540.0 {
+            if !value.is_finite() || !(0.0..=540.0).contains(&value) {
                 continue;
             }
             observed = true;

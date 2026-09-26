@@ -6,11 +6,11 @@
 use std::fs;
 use std::path::Path;
 
-fn main() {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")?;
     let manifest = Path::new(&manifest_dir).join("../../Cargo.toml");
     println!("cargo:rerun-if-changed={}", manifest.display());
-    let text = fs::read_to_string(&manifest).expect("read workspace Cargo.toml");
+    let text = fs::read_to_string(&manifest)?;
     let rev = text
         .lines()
         .filter(|line| line.contains("motorsport-telemetry-rs"))
@@ -19,7 +19,10 @@ fn main() {
             let end = line[start..].find('"')? + start;
             Some(line[start..end].to_string())
         })
-        .expect("workspace Cargo.toml pins motorsport-telemetry-rs by rev");
-    assert!(rev.len() >= 12, "pinned rev too short to identify a commit");
+        .ok_or("workspace Cargo.toml must pin motorsport-telemetry-rs by rev")?;
+    if rev.len() < 12 {
+        return Err("pinned rev too short to identify a commit".into());
+    }
     println!("cargo:rustc-env=OMATRACK_UPSTREAM_REV={rev}");
+    Ok(())
 }

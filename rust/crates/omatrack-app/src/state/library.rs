@@ -50,10 +50,11 @@ pub struct RecordingSource {
     pub node: SessionNode,
 }
 
-/// The library entity. Scans run on the background executor with one task
-/// slot (a new scan cancels the running one); results are applied here and
-/// the whole snapshot is swapped. Selection elsewhere is keyed by the
-/// snapshot's stable ids, so a rescan never resets it.
+/// The library entity.
+///
+/// Scans run on the background executor with one task slot (a new scan cancels the
+/// running one); results are applied here and the whole snapshot is swapped. Selection
+/// elsewhere is keyed by the snapshot's stable ids, so a rescan never resets it.
 pub struct Library {
     preferences: Entity<Preferences>,
     jobs: Entity<Jobs>,
@@ -85,7 +86,7 @@ impl Library {
         preferences: Entity<Preferences>,
         jobs: Entity<Jobs>,
         default_dir: Option<PathBuf>,
-        cx: &mut Context<Self>,
+        cx: &mut Context<'_, Self>,
     ) -> Self {
         let cache = IndexCache::new(preferences.read(cx).paths().index_cache_root());
         let locations = locations_from_config(preferences.read(cx).config());
@@ -171,7 +172,7 @@ impl Library {
             .driver(self.driver.clone())
     }
 
-    fn refilter(&mut self, cx: &mut Context<Self>) {
+    fn refilter(&mut self, cx: &mut Context<'_, Self>) {
         self.filtered = if self.filter().is_empty() {
             self.snapshot.clone()
         } else {
@@ -181,7 +182,7 @@ impl Library {
         cx.notify();
     }
 
-    pub fn set_query(&mut self, query: impl Into<String>, cx: &mut Context<Self>) {
+    pub fn set_query(&mut self, query: impl Into<String>, cx: &mut Context<'_, Self>) {
         let query = query.into();
         if query != self.query {
             self.query = query;
@@ -189,21 +190,21 @@ impl Library {
         }
     }
 
-    pub fn set_track_facet(&mut self, slug: Option<String>, cx: &mut Context<Self>) {
+    pub fn set_track_facet(&mut self, slug: Option<String>, cx: &mut Context<'_, Self>) {
         if slug != self.track {
             self.track = slug;
             self.refilter(cx);
         }
     }
 
-    pub fn set_year_facet(&mut self, year: Option<i16>, cx: &mut Context<Self>) {
+    pub fn set_year_facet(&mut self, year: Option<i16>, cx: &mut Context<'_, Self>) {
         if year != self.year {
             self.year = year;
             self.refilter(cx);
         }
     }
 
-    pub fn set_driver_facet(&mut self, driver: Option<String>, cx: &mut Context<Self>) {
+    pub fn set_driver_facet(&mut self, driver: Option<String>, cx: &mut Context<'_, Self>) {
         if driver != self.driver {
             self.driver = driver;
             self.refilter(cx);
@@ -211,7 +212,7 @@ impl Library {
     }
 
     /// Clear the search text and every facet.
-    pub fn clear_filter(&mut self, cx: &mut Context<Self>) {
+    pub fn clear_filter(&mut self, cx: &mut Context<'_, Self>) {
         if self.has_filter() {
             self.query.clear();
             self.track = None;
@@ -222,7 +223,7 @@ impl Library {
     }
 
     /// Replace the snapshot (a scan result, or a prepared catalog in tests).
-    pub fn set_snapshot(&mut self, snapshot: LibrarySnapshot, cx: &mut Context<Self>) {
+    pub fn set_snapshot(&mut self, snapshot: LibrarySnapshot, cx: &mut Context<'_, Self>) {
         self.facets = snapshot.facets();
         self.snapshot = Arc::new(snapshot);
         self.scanned = true;
@@ -246,7 +247,7 @@ impl Library {
 
     /// Scan every enabled location again. A running scan is cancelled; the
     /// current snapshot stays usable until the new one arrives.
-    pub fn rescan(&mut self, cx: &mut Context<Self>) {
+    pub fn rescan(&mut self, cx: &mut Context<'_, Self>) {
         if let Some(cancel) = self.scan_cancel.take() {
             cancel.cancel();
         }
@@ -287,6 +288,7 @@ impl Library {
                 log::warn!("cannot create {}: {error}", dir.display());
             }
             scan_library(&locations, &cache, &config, &cancel, &mut |progress| {
+                #[expect(clippy::let_underscore_must_use, reason = "Progress is best-effort: a full queue already holds a pending refresh, and closing it cancels observation.")]
                 let _ = progress_tx.try_send(progress);
             })
         });
@@ -305,7 +307,7 @@ impl Library {
                     };
                     let jobs = this.jobs.clone();
                     jobs.update(cx, |jobs, cx| {
-                        jobs.set_progress(job_id, progress.summarized, progress.discovered, cx)
+                        jobs.set_progress(job_id, progress.summarized, progress.discovered, cx);
                     });
                     cx.notify();
                 }) else {
@@ -318,6 +320,7 @@ impl Library {
         self.scan_task = Some(cx.spawn(async move |this, cx| {
             let result = scan.await;
             jobs.update(cx, |jobs, cx| jobs.finish(job, cx));
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no deferred result; this weak entity/window handle may already be gone.")]
             let _ = this.update(cx, |this, cx| {
                 if this.scan_generation != generation {
                     return;
@@ -335,7 +338,7 @@ impl Library {
         }));
     }
 
-    fn apply_outcome(&mut self, outcome: ScanOutcome, cx: &mut Context<Self>) {
+    fn apply_outcome(&mut self, outcome: ScanOutcome, cx: &mut Context<'_, Self>) {
         self.status = ScanStatus::Idle;
         let unreadable = outcome.failures.len();
         let location_errors = outcome
@@ -354,7 +357,7 @@ impl Library {
     }
 
     /// Make `directory` a library location and rescan.
-    pub fn add_folder(&mut self, directory: &Path, cx: &mut Context<Self>) {
+    pub fn add_folder(&mut self, directory: &Path, cx: &mut Context<'_, Self>) {
         let directory = directory.to_path_buf();
         self.preferences.update(cx, |preferences, cx| {
             preferences.update(cx, |config| {
@@ -365,7 +368,7 @@ impl Library {
     }
 
     /// Ask for a folder with the platform picker, then add it.
-    pub fn prompt_add_folder(&mut self, cx: &mut Context<Self>) {
+    pub fn prompt_add_folder(&mut self, cx: &mut Context<'_, Self>) {
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -379,6 +382,7 @@ impl Library {
             let Some(directory) = paths.into_iter().next() else {
                 return;
             };
+            #[expect(clippy::let_underscore_must_use, reason = "A dropped view needs no deferred result; this weak entity/window handle may already be gone.")]
             let _ = this.update(cx, |this, cx| this.add_folder(&directory, cx));
         }));
     }

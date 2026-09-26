@@ -34,10 +34,11 @@ use crate::mesh::{TriangleSink, fill_to_baseline, stroke};
 use crate::scale::Viewport;
 use crate::scene::{FractionMap, LaneKind, LaneSeries, LaneStyle, TraceScene, YRange};
 
-/// Vertices per path chunk (1024 triangles, 96 KiB). `Window::paint_path`
-/// copies a path twice (device scale, scene insert); chunks below the
-/// allocator's mmap threshold recycle heap memory instead of page-faulting
-/// fresh mappings on every copy, which dominated full-lap frames.
+/// Vertices per path chunk (1024 triangles, 96 KiB).
+///
+/// `Window::paint_path` copies a path twice (device scale, scene insert); chunks below
+/// the allocator's mmap threshold recycle heap memory instead of page-faulting fresh
+/// mappings on every copy, which dominated full-lap frames.
 pub const CHUNK_VERTICES: usize = 3 * 1024;
 
 /// A GPUI path being filled with triangles, relative to a zero origin, in
@@ -159,7 +160,7 @@ impl TriangleSink for PathBuffer {
                 xy_position: point(px(v[0]), px(v[1])),
                 // Interior coverage: the rasterizer paints the triangle solid.
                 st_position: point(0., 1.),
-                content_mask: Default::default(),
+                content_mask: gpui_kit::ContentMask::default(),
             });
         }
     }
@@ -222,18 +223,21 @@ impl<'a> BuildInput<'a> {
     }
 
     /// Device pixel ratio.
+    #[must_use]
     pub fn with_dpr(mut self, dpr: f32) -> Self {
         self.dpr = dpr;
         self
     }
 
     /// Stroke width in logical pixels.
+    #[must_use]
     pub fn with_stroke_width(mut self, stroke_width: f32) -> Self {
         self.stroke_width = stroke_width;
         self
     }
 
     /// Whether the lane fills to its baseline.
+    #[must_use]
     pub fn with_fill(mut self, fill: bool) -> Self {
         self.fill = fill;
         self
@@ -261,8 +265,8 @@ impl<'a> BuildInput<'a> {
         PlotRect::new(
             0.0,
             1.0,
-            self.width as f64,
-            (self.height as f64 - 2.0).max(1.0),
+            f64::from(self.width),
+            (f64::from(self.height) - 2.0).max(1.0),
         )
     }
 
@@ -318,7 +322,7 @@ pub struct ChannelGeometry {
 
 impl ChannelGeometry {
     /// Rebuild when the inputs changed; true when geometry was rebuilt.
-    pub fn prepare(&mut self, input: &BuildInput, scratch: &mut Scratch) -> bool {
+    pub fn prepare(&mut self, input: &BuildInput<'_>, scratch: &mut Scratch) -> bool {
         let key = input.key();
         if self.key == Some(key) {
             return false;
@@ -346,7 +350,15 @@ impl ChannelGeometry {
         self.buffers().iter().map(|b| b.chunks().len()).sum()
     }
 
-    fn build(&mut self, input: &BuildInput, scratch: &mut Scratch) {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "UI geometry deliberately projects bounded counts and f64 telemetry coordinates into f32 pixels."
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep this declarative layout or paint pass together so element order and geometry remain reviewable."
+    )]
+    fn build(&mut self, input: &BuildInput<'_>, scratch: &mut Scratch) {
         for buffer in [
             &mut self.fill_above,
             &mut self.fill_below,
@@ -361,7 +373,7 @@ impl ChannelGeometry {
         if series.primary.len() < 2 || rect.width < 2.0 {
             return;
         }
-        let dpr = (input.dpr as f64).max(1.0);
+        let dpr = f64::from(input.dpr).max(1.0);
         let params = DecimateParams {
             x_start: input.viewport.start,
             x_span: input.viewport.span(),
@@ -372,7 +384,7 @@ impl ChannelGeometry {
             clip_low: 0.0,
             clip_high: 1.0,
         };
-        let width = input.stroke_width as f64;
+        let width = f64::from(input.stroke_width);
         let step = series.kind == LaneKind::Step;
 
         // Neighbouring laps, when the viewport runs past the lap.
@@ -526,6 +538,10 @@ fn fade(color: Hsla, alpha: f32, above: bool) -> Background {
 }
 
 /// Held values: insert the horizontal run before each change.
+#[expect(
+    clippy::float_cmp,
+    reason = "Exact geometry equality identifies a zero-height segment; epsilon comparisons would discard thin detail."
+)]
 fn stepped<'a>(
     points: &'a [PathPoint],
     step: bool,
@@ -556,17 +572,17 @@ mod tests {
 
     fn series(kind: LaneKind) -> LaneSeries {
         let primary: Arc<[f64]> = (0..4500)
-            .map(|i| ((i as f64) * 0.01).sin() * 100.0)
+            .map(|i| (f64::from(i) * 0.01).sin() * 100.0)
             .collect();
         let reference: Arc<[f64]> = (0..4600)
-            .map(|i| ((i as f64) * 0.0098).sin() * 95.0)
+            .map(|i| (f64::from(i) * 0.0098).sin() * 95.0)
             .collect();
         LaneSeries::new("speed", "Speed", kind, primary).with_reference(Some(reference))
     }
 
     fn scene_of(lane: LaneSeries) -> TraceScene {
-        let distance: Arc<[f64]> = (0..4500).map(|i| i as f64).collect();
-        let time: Arc<[f64]> = (0..4500).map(|i| i as f64 / 50.0).collect();
+        let distance: Arc<[f64]> = (0..4500).map(f64::from).collect();
+        let time: Arc<[f64]> = (0..4500).map(|i| f64::from(i) / 50.0).collect();
         TraceScene::new(distance, time).with_lanes(vec![lane])
     }
 
@@ -623,6 +639,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+    )]
     fn fill_bounds_span_the_fade_range() {
         let lane = scene_of(series(LaneKind::Area));
         let mut geometry = ChannelGeometry::default();
@@ -655,9 +675,15 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Test fixtures use bounded sample counts, indices and pixel coordinates; rounding is intentional."
+    )]
     fn neighbour_laps_draw_past_the_lap_edges() {
         let lane = series(LaneKind::Line);
-        let previous: Arc<[f64]> = (0..4500).map(|i| (i as f64 * 0.02).cos() * 80.0).collect();
+        let previous: Arc<[f64]> = (0..4500)
+            .map(|i| (f64::from(i) * 0.02).cos() * 80.0)
+            .collect();
         let lane = scene_of(lane.with_neighbours(Some(previous), None));
         let mut geometry = ChannelGeometry::default();
         let mut scratch = Scratch::default();

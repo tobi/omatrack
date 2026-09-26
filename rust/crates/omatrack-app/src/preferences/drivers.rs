@@ -44,7 +44,7 @@ pub struct DriverMappingsEditor {
 }
 
 impl DriverMappingsEditor {
-    pub fn new(app: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(app: AppState, window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
         let mappings = app.preferences.read(cx).config().driver_mappings.clone();
         let mut editor = Self {
             app,
@@ -57,7 +57,7 @@ impl DriverMappingsEditor {
         editor
     }
 
-    fn push_row(&mut self, key: &str, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+    fn push_row(&mut self, key: &str, name: &str, window: &mut Window, cx: &mut Context<'_, Self>) {
         let id = self.next_id;
         self.next_id += 1;
         let key_input = cx.new(|cx| {
@@ -70,12 +70,14 @@ impl DriverMappingsEditor {
                 .placeholder("Name")
                 .default_value(name.to_string())
         });
-        let on_change =
-            |this: &mut Self, _: Entity<InputState>, event: &InputEvent, cx: &mut Context<Self>| {
-                if let InputEvent::Change = event {
-                    this.commit(cx);
-                }
-            };
+        let on_change = |this: &mut Self,
+                         _: Entity<InputState>,
+                         event: &InputEvent,
+                         cx: &mut Context<'_, Self>| {
+            if matches!(event, InputEvent::Change) {
+                this.commit(cx);
+            }
+        };
         let subscriptions = [
             cx.subscribe(&key_input, on_change),
             cx.subscribe(&name_input, on_change),
@@ -90,7 +92,7 @@ impl DriverMappingsEditor {
     }
 
     /// Add an empty row and put the caret in its id field.
-    pub fn add_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn add_row(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         self.push_row("", "", window, cx);
         if let Some(row) = self.rows.last() {
             row.key.update(cx, |input, cx| input.focus(window, cx));
@@ -98,13 +100,13 @@ impl DriverMappingsEditor {
         cx.notify();
     }
 
-    fn remove_row(&mut self, id: u64, cx: &mut Context<Self>) {
+    fn remove_row(&mut self, id: u64, cx: &mut Context<'_, Self>) {
         self.rows.retain(|row| row.id != id);
         self.commit(cx);
     }
 
     /// Validate every row and write the mapping the valid rows describe.
-    fn commit(&mut self, cx: &mut Context<Self>) {
+    fn commit(&mut self, cx: &mut Context<'_, Self>) {
         let mut mappings = BTreeMap::new();
         let mut seen = HashSet::new();
         for row in &mut self.rows {
@@ -144,7 +146,7 @@ fn name_input_id(row: u64) -> ElementId {
 }
 
 impl Render for DriverMappingsEditor {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let theme = cx.theme();
         let header = h_flex()
             .gap_2()

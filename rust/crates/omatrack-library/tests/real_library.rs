@@ -1,7 +1,9 @@
-//! The library pipeline on the real AiM recordings (read-only). Ignored by
+//! The library pipeline on the real `AiM` recordings (read-only). Ignored by
 //! default; run with
 //! `OMATRACK_FIXTURES=~/Documents/Telemetry/26T07_PLM cargo test -- --include-ignored real_`.
 //! Every cache write goes to a temporary XDG cache root.
+
+#![cfg(test)]
 
 use omatrack_core::format_lap_time;
 use omatrack_core::session::{Analysis, LoadOptions, StrategyRequest, load_lap};
@@ -55,7 +57,7 @@ fn session<'a>(sessions: &'a [&'a SessionNode], run: &str) -> &'a SessionNode {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requires private telemetry/video fixtures; set OMATRACK_FIXTURES"]
 fn real_scan_builds_the_road_atlanta_library_and_hits_the_cache() {
     let library = library();
     let config = Config::default();
@@ -117,7 +119,7 @@ fn real_scan_builds_the_road_atlanta_library_and_hits_the_cache() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requires private telemetry/video fixtures; set OMATRACK_FIXTURES"]
 fn real_run4_against_run1_analysis_through_the_library() {
     let library = library();
     let config = Config::default();

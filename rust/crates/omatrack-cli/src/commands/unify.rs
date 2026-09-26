@@ -13,7 +13,7 @@ use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-pub fn run(path: &OsStr, output_path: &OsStr) -> i32 {
+pub(crate) fn run(path: &OsStr, output_path: &OsStr) -> i32 {
     let Some(src) = super::open(path) else {
         return 1;
     };
@@ -83,23 +83,21 @@ pub fn run(path: &OsStr, output_path: &OsStr) -> i32 {
             .str("\n");
         return 1;
     }
-    let file = match std::fs::File::create(output) {
-        Ok(file) => file,
-        Err(_) => {
-            out.str("FAIL: cannot write ")
-                .bytes(output_path.as_bytes())
-                .str("\n");
-            return 1;
-        }
-    };
-    let mut writer = std::io::BufWriter::with_capacity(1 << 16, file);
-    let written = write_csv(&mut writer, &u).and_then(|_| writer.flush());
-    drop(writer);
-    if written.is_err() {
-        let _ = std::fs::remove_file(output);
-        out.str("FAIL: incomplete export removed: ")
+    let Ok(file) = std::fs::File::create(output) else {
+        out.str("FAIL: cannot write ")
             .bytes(output_path.as_bytes())
             .str("\n");
+        return 1;
+    };
+    let mut writer = std::io::BufWriter::with_capacity(1 << 16, file);
+    let written = write_csv(&mut writer, &u).and_then(|()| writer.flush());
+    drop(writer);
+    if written.is_err() {
+        let message = match std::fs::remove_file(output) {
+            Ok(()) => "FAIL: incomplete export removed: ",
+            Err(_) => "FAIL: incomplete export could not be removed: ",
+        };
+        out.str(message).bytes(output_path.as_bytes()).str("\n");
         return 1;
     }
     out.str("wrote ").bytes(output_path.as_bytes()).str("\n");
