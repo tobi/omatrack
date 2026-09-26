@@ -45,8 +45,11 @@ bin="$target_dir/release/omatrack2"
 
 work="$target_dir/shot/run.$$"
 rm -rf "$work"
-mkdir -p "$work/cfg/omatrack" "$work/cache" "$work/xdg" "$(dirname "$out")"
-chmod 700 "$work/xdg"
+mkdir -p "$work/cfg/omatrack" "$work/cache" "$(dirname "$out")"
+# The Wayland socket path must stay under 108 bytes, so the runtime
+# directory is a short temporary one, not under a deep target dir.
+xdg="$(mktemp -d "${TMPDIR:-/tmp}/omashot.XXXXXX")"
+chmod 700 "$xdg"
 fixtures="$(cd "${OMATRACK_FIXTURES:-$HOME/Documents/Telemetry/26T07_PLM}" && pwd)"
 if [[ -n ${OMATRACK_SHOT_CONFIG:-} ]]; then
     cp "$OMATRACK_SHOT_CONFIG" "$work/cfg/omatrack/omatrack.yml"
@@ -71,15 +74,15 @@ exec "$bin" >"$work/app.log" 2>&1
 EOF
 chmod +x "$work/app.sh"
 
-export XDG_RUNTIME_DIR="$work/xdg"
+export XDG_RUNTIME_DIR="$xdg"
 unset WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE
 WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 \
     nix shell nixpkgs#cage -c cage -- "$work/app.sh" >"$work/cage.log" 2>&1 &
 cage_pid=$!
-trap 'kill "$cage_pid" 2>/dev/null || true; wait "$cage_pid" 2>/dev/null || true' EXIT
+trap 'kill "$cage_pid" 2>/dev/null || true; wait "$cage_pid" 2>/dev/null || true; rm -rf "$xdg"' EXIT
 
-for _ in $(seq 100); do [[ -S "$work/xdg/wayland-0" ]] && break; sleep 0.1; done
-[[ -S "$work/xdg/wayland-0" ]] || { cat "$work/cage.log" >&2; exit 1; }
+for _ in $(seq 100); do [[ -S "$xdg/wayland-0" ]] && break; sleep 0.1; done
+[[ -S "$xdg/wayland-0" ]] || { cat "$work/cage.log" >&2; exit 1; }
 export WAYLAND_DISPLAY=wayland-0 OUT="$out"
 nix shell nixpkgs#grim nixpkgs#wlr-randr nixpkgs#wtype -c bash -c '
     set -euo pipefail
