@@ -15,12 +15,16 @@
 //! - [`actions`] and `keymap`: every command and its default keys.
 //! - [`commands`]: the command registry and palette.
 //! - [`sync`]: video sync rules (identity, pacing, lap end, timelines).
+//! - [`preferences`] and [`dialogs`]: the Preferences sheet and the
+//!   recording metadata / `TRACK.yml` dialogs.
 
 pub mod actions;
 mod app;
 pub mod commands;
+pub mod dialogs;
 mod keymap;
 pub mod panels;
+pub mod preferences;
 pub mod state;
 pub mod sync;
 pub mod workspace;

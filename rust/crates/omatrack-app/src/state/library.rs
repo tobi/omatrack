@@ -16,17 +16,17 @@ use omatrack_library::{
 use crate::state::jobs::Jobs;
 use crate::state::preferences::Preferences;
 
-/// Where the library is in its scan cycle.
+/// Where the library is in its scan cycle. A scan cannot fail as a
+/// whole: unreadable recordings and locations are reported by
+/// [`LibraryEvent::ScanFinished`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScanStatus {
-    /// Nothing running. `scanned` tells whether a scan ever completed.
+    /// No scan is running.
     Idle,
     Scanning {
         discovered: usize,
         summarized: usize,
     },
-    /// The last scan could not run at all (user-facing message).
-    Failed(String),
 }
 
 /// What changed in the [`Library`].

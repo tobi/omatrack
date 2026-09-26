@@ -9,6 +9,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{TestAppContext, px};
+use omatrack_app::panels::PanelKind;
 use omatrack_app::{Workspace, main_window_options};
 
 #[gpui_kit::test]
@@ -76,10 +77,19 @@ fn notifications_reach_the_screen(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn preferences_open_in_a_sheet_and_escape_closes_it(cx: &mut TestAppContext) {
+fn preferences_open_in_a_sheet_and_escape_closes_it_and_restores_focus(cx: &mut TestAppContext) {
     let sandbox = common::Sandbox::new();
     let test = common::start(cx, sandbox.options());
+    let traces = cx.update(|cx| {
+        test.workspace
+            .read(cx)
+            .panels()
+            .focus_handle(PanelKind::Traces, cx)
+    });
     cx.update_window(test.window.into(), |_, window, cx| {
+        window.focus(&traces, cx);
+        window.render_frame(cx);
+        assert!(traces.is_focused(window));
         window.press("ctrl-,", cx);
     })
     .unwrap();
@@ -88,12 +98,15 @@ fn preferences_open_in_a_sheet_and_escape_closes_it(cx: &mut TestAppContext) {
         window.render_frame(cx);
         assert!(window.find("preferences").visible());
         assert!(window.has_active_sheet(cx));
+        assert!(!traces.is_focused(window), "the sheet takes focus");
         window.press("escape", cx);
     })
     .unwrap();
     cx.run_until_parked();
     cx.update_window(test.window.into(), |_, window, cx| {
+        window.render_frame(cx);
         assert!(!window.has_active_sheet(cx));
+        assert!(traces.is_focused(window), "focus returns to the traces");
     })
     .unwrap();
 }

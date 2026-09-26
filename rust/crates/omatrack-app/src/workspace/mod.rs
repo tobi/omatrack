@@ -14,7 +14,6 @@ use gpui_kit::component::{
     dock::{DockArea, DockEvent, DockPlacement, DockSkin},
     notification::Notification,
     select::{SelectEvent, SelectState},
-    v_flex,
 };
 use gpui_kit::{
     AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
@@ -299,32 +298,9 @@ impl Workspace {
         self.palette.toggle(&keys, window, cx);
     }
 
-    /// Preferences open in a sheet.
+    /// Preferences open in a sheet ([`crate::preferences::open`]).
     pub(crate) fn open_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let config_path = self
-            .app
-            .preferences
-            .read(cx)
-            .paths()
-            .config_file()
-            .display()
-            .to_string();
-        window.open_sheet(cx, move |sheet, _, cx| {
-            sheet.title("Preferences").child(
-                v_flex()
-                    .id("preferences")
-                    .test_support()
-                    .gap_2()
-                    .text_sm()
-                    .child("Settings are stored in omatrack.yml and can be edited by hand.")
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(config_path.clone()),
-                    ),
-            )
-        });
+        crate::preferences::open(window, cx);
     }
 
     fn focus_panel(&mut self, kind: PanelKind, window: &mut Window, cx: &mut Context<Self>) {
