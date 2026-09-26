@@ -88,6 +88,12 @@ fn single_keys_type_into_the_library_search(cx: &mut TestAppContext) {
     let test = common::start(cx, sandbox.options());
     let (primary, reference) = select_pair(&test, cx);
 
+    // The Library is the tab behind the Laps sidebar: bring it forward.
+    cx.update_window(test.window.into(), |_, window, cx| {
+        window.press("ctrl-1", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
     cx.update_window(test.window.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click("library-search", cx);

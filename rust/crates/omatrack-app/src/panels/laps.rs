@@ -1,76 +1,97 @@
-//! Laps: every lap of the primary recording, for picking the next lap to
-//! study or compare.
+//! Laps: the loaded event's laps, one group per recording, for picking
+//! the next lap to study or compare.
 //!
-//! A [`DataTable`] over the library's lap nodes of the primary's recording
-//! (so it fills in as soon as a lap is selected, before the lap loads).
-//! Best and representative laps read at a glance; the loaded primary and
-//! reference carry their role marker.
+//! The default left surface (the Library tree is the tab beside it, for
+//! other events). Scope is the primary's event, its track and day: every
+//! recording of that day becomes a group (plus the reference's recording
+//! when it comes from another day). A group reads as its driver, `9 timed
+//! laps, best 1:16.091` and a lap-time trend line; its timed laps
+//! (`counts_for_best`) follow in recording order with a bar that grows
+//! with the gap to that driver's best (scaled per group) and the gap
+//! itself; out, in, pit and partial laps wait behind a `Show out and in
+//! laps (N)` disclosure. The laps holding a role are filled and carry the
+//! role badge; groups without a role start collapsed.
 //!
-//! Commands are the library's: Enter sets the selected lap as primary,
-//! Alt+Enter as reference, a double-click sets the primary, and the context
-//! menu offers both. Every path dispatches [`SelectLap`].
+//! Commands are the library's and the filmstrip's: Enter sets the lap
+//! under the keyboard cursor as primary, Alt+Enter as reference (Enter on
+//! a group or disclosure row opens or closes it); a click selects the lap
+//! for the group's role (the reference when the group holds only the
+//! reference, else the primary), a right click or Alt+click sets the
+//! reference. Every path dispatches [`SelectLap`].
 
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use gpui_kit::base::actions::{SelectDown, SelectUp};
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Sizable as _, h_flex,
-    menu::PopupMenu,
-    table::{Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState},
-    tag::Tag,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
+    button::{Button, ButtonVariants as _},
+    h_flex,
+    kbd::Kbd,
+    list::ListItem,
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, Context, Div, ElementId, Entity, FocusHandle, InteractiveElement as _,
-    IntoElement, KeyBinding, ParentElement as _, Pixels, Render, SharedString, Stateful,
-    StatefulInteractiveElement as _, Styled as _, Subscription, TestSupportExt as _, Window, div,
+    App, Bounds, Context, FocusHandle, Hsla, InteractiveElement as _, IntoElement, KeyBinding,
+    MouseButton, ParentElement as _, Pixels, Rems, Render, RenderOnce, Role as AccessRole,
+    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
+    TestSupportExt as _, Window, canvas, div, fill, point, px, relative, rems, size,
 };
 use omatrack_core::format_lap_time;
-use omatrack_core::session::LapStripKind;
-use omatrack_library::catalog::LapNode;
+use omatrack_library::{LibrarySnapshot, SessionNode};
+use omatrack_trace::decimate::PathPoint;
+use omatrack_trace::lanes::PathBuffer;
 use omatrack_ui::TypeScale as _;
-use omatrack_ui::{DeltaSense, LapRole, MISSING_VALUE, Swatch, format_delta};
+use omatrack_ui::{DeltaSense, LapRole, MISSING_VALUE, format_delta};
 
-use crate::actions::{Role, SelectLap, SetPrimary, SetReference};
-use crate::panels::{PanelKind, SELECT_A_LAP, empty_state, panel_body};
-use crate::state::AppState;
+use crate::actions::{FocusPanel1, Role, SelectLap, SetPrimary, SetReference};
+use crate::panels::{PanelKind, SELECT_A_LAP, empty_state};
+use crate::state::{AppState, LapRef};
 
-/// The panel's key context: Enter / Alt+Enter set the selected lap.
+/// The panel's key context: Up / Down move the cursor, Enter / Alt+Enter
+/// set the lap under it.
 pub const LAPS_CONTEXT: &str = "Laps";
 
-/// One lap as the table shows it (plain data).
+/// The lane before a row's label: a group's chevron, a lap's role badge.
+const LEAD_LANE: Rems = Rems(1.5);
+/// The lap label column (`L10`, `Out`).
+const LABEL_COLUMN: Rems = Rems(2.25);
+/// The lap time column: fits `11:49.212` in tabular figures.
+const TIME_COLUMN: Rems = Rems(4.25);
+/// The gap column: `+11.440` or `Best`.
+const DELTA_COLUMN: Rems = Rems(3.25);
+/// The gap bar's thickness, and its shortest fill (the best lap's tick).
+const BAR_HEIGHT: Rems = Rems(0.25);
+const BAR_MIN: Rems = Rems(0.1875);
+/// The lap-time trend line beside a group's heading.
+const TREND_WIDTH: Rems = Rems(4.5);
+const TREND_HEIGHT: Rems = Rems(1.25);
+/// Space above every group after the first.
+const GROUP_GAP: Rems = Rems(0.75);
+
+/// One lap as the sidebar shows it (plain data, formatted once per sync).
 #[derive(Debug, Clone, PartialEq)]
 pub struct LapLine {
-    /// Position in recording order.
-    order: usize,
+    /// The catalog lap id (`<session>/l:<lap>`): the row's identity.
+    id: SharedString,
     lap: i32,
+    /// `L8`; `Out`, `In`, `Pit`, `Frag` for a lap that is not timed.
     label: SharedString,
-    time_ms: f64,
-    delta_to_best_ms: Option<f64>,
+    time: SharedString,
+    /// The gap to the group's best (`+0.911`), for a timed lap.
+    delta: Option<SharedString>,
     best: bool,
-    representative: bool,
-    complete: bool,
-    kind: LapStripKind,
+    /// Counts for best: a comparable lap time, listed without disclosure.
+    timed: bool,
+    /// The gap as a share of the group's largest gap, `0..=1`.
+    bar: Option<f32>,
     role: Option<LapRole>,
 }
 
 impl LapLine {
-    fn new(order: usize, node: &LapNode, roles: &[(LapRole, i32)]) -> Self {
-        Self {
-            order,
-            lap: node.lap_id,
-            label: node.label.clone().into(),
-            time_ms: node.time_ms,
-            delta_to_best_ms: node.delta_to_best_ms,
-            best: node.best,
-            representative: node.representative,
-            complete: node.complete,
-            kind: node.kind,
-            role: roles
-                .iter()
-                .find(|(_, lap)| *lap == node.lap_id)
-                .map(|(role, _)| *role),
-        }
-    }
-
     pub fn lap(&self) -> i32 {
         self.lap
     }
@@ -78,367 +99,290 @@ impl LapLine {
     pub fn label(&self) -> &SharedString {
         &self.label
     }
-}
 
-fn kind_label(kind: LapStripKind) -> &'static str {
-    match kind {
-        LapStripKind::Flying => "Flying",
-        LapStripKind::Out => "Out",
-        LapStripKind::In => "In",
-        LapStripKind::Fragment => "Fragment",
-        LapStripKind::PitStop => "Pit stop",
+    pub fn is_timed(&self) -> bool {
+        self.timed
+    }
+
+    pub fn is_best(&self) -> bool {
+        self.best
+    }
+
+    /// The bar's share of the row's bar lane (`None` for untimed laps).
+    pub fn bar(&self) -> Option<f32> {
+        self.bar
+    }
+
+    pub fn role(&self) -> Option<LapRole> {
+        self.role
+    }
+
+    /// The row's accessible name: `L8, 1:13.644, best lap, reference`.
+    fn spoken(&self) -> SharedString {
+        [
+            Some(self.label.to_string()),
+            Some(self.time.to_string()),
+            self.delta.as_ref().map(|delta| format!("{delta} to best")),
+            self.best.then(|| "best lap".to_string()),
+            self.role.map(|role| role.label().to_lowercase()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(", ")
+        .into()
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Col {
-    Lap,
-    Time,
-    Delta,
-    Kind,
-    Complete,
+/// One recording of the event (plain data).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LapGroup {
+    session: SharedString,
+    /// The driver, else the recording's session name or file.
+    title: SharedString,
+    /// `9 timed laps, best 1:16.091` (prefixed by the session name when
+    /// another group has the same title).
+    summary: SharedString,
+    laps: Vec<LapLine>,
+    /// Timed lap times in recording order, as `0..=1` where 1 is the best
+    /// (the trend line), and the best's position among them.
+    trend: Arc<[f32]>,
+    trend_best: Option<usize>,
+    roles: Vec<LapRole>,
 }
 
-impl Col {
-    const ALL: [Self; 5] = [
-        Self::Lap,
-        Self::Time,
-        Self::Delta,
-        Self::Kind,
-        Self::Complete,
-    ];
-
-    fn key(self) -> &'static str {
-        match self {
-            Self::Lap => "lap",
-            Self::Time => "time",
-            Self::Delta => "delta",
-            Self::Kind => "kind",
-            Self::Complete => "complete",
-        }
+impl LapGroup {
+    pub fn session(&self) -> &SharedString {
+        &self.session
     }
 
-    fn title(self) -> &'static str {
-        match self {
-            Self::Lap => "Lap",
-            Self::Time => "Time",
-            Self::Delta => "Δ best",
-            Self::Kind => "Kind",
-            Self::Complete => "Complete",
-        }
+    pub fn title(&self) -> &SharedString {
+        &self.title
     }
 
-    /// Width in rems.
-    fn width(self) -> f32 {
-        match self {
-            Self::Lap => 4.5,
-            Self::Time => 5.5,
-            Self::Delta => 5.0,
-            Self::Kind => 5.5,
-            Self::Complete => 5.0,
-        }
+    pub fn summary(&self) -> &SharedString {
+        &self.summary
     }
 
-    fn is_numeric(self) -> bool {
-        matches!(self, Self::Time | Self::Delta)
-    }
-}
-
-/// The [`TableDelegate`] of the laps table.
-pub struct LapTable {
-    lines: Vec<LapLine>,
-    /// The selected lap, by id.
-    selected: Option<i32>,
-    sort: (Col, ColumnSort),
-    /// The window's rem size when built (column widths are pixels).
-    rem: Pixels,
-}
-
-impl LapTable {
-    fn new(rem: Pixels) -> Self {
-        Self {
-            lines: Vec::new(),
-            selected: None,
-            sort: (Col::Lap, ColumnSort::Default),
-            rem,
-        }
+    /// Every lap, in recording order.
+    pub fn laps(&self) -> &[LapLine] {
+        &self.laps
     }
 
-    pub fn lines(&self) -> &[LapLine] {
-        &self.lines
+    pub fn lap(&self, lap: i32) -> Option<&LapLine> {
+        self.laps.iter().find(|line| line.lap == lap)
     }
 
-    /// The selected lap id.
-    pub fn selected(&self) -> Option<i32> {
-        self.selected
+    /// Laps behind the disclosure: not timed.
+    pub fn untimed(&self) -> usize {
+        self.laps.iter().filter(|line| !line.timed).count()
     }
 
-    fn position(&self, lap: i32) -> Option<usize> {
-        self.lines.iter().position(|line| line.lap == lap)
+    pub fn timed(&self) -> usize {
+        self.laps.len() - self.untimed()
     }
 
-    fn set_lines(&mut self, lines: Vec<LapLine>) {
-        self.lines = lines;
-        self.apply_sort();
+    /// The roles this recording's laps hold.
+    pub fn roles(&self) -> &[LapRole] {
+        &self.roles
     }
 
-    fn apply_sort(&mut self) {
-        let (col, sort) = self.sort;
-        let descending = sort == ColumnSort::Descending;
-        let key = |line: &LapLine| -> f64 {
-            match (sort, col) {
-                (ColumnSort::Default, _) | (_, Col::Lap) => line.order as f64,
-                (_, Col::Time) if line.time_ms > 0.0 => line.time_ms,
-                (_, Col::Delta) => line.delta_to_best_ms.unwrap_or(f64::NAN),
-                _ => f64::NAN,
-            }
-        };
-        self.lines.sort_by(|a, b| {
-            let (x, y) = (key(a), key(b));
-            match (x.is_nan(), y.is_nan()) {
-                (true, true) => a.order.cmp(&b.order),
-                (true, false) => std::cmp::Ordering::Greater,
-                (false, true) => std::cmp::Ordering::Less,
-                (false, false) => {
-                    let ordering = x.total_cmp(&y);
-                    let ordering = if descending {
-                        ordering.reverse()
-                    } else {
-                        ordering
-                    };
-                    ordering.then(a.order.cmp(&b.order))
-                }
-            }
-        });
-    }
-
-    /// The selected lap's row, else the first primary-role row, else none.
-    fn selection_target(&mut self) -> Option<usize> {
-        let ix = self
-            .selected
-            .and_then(|lap| self.position(lap))
-            .or_else(|| {
-                self.lines
-                    .iter()
-                    .position(|line| line.role == Some(LapRole::Primary))
-            });
-        self.selected = ix.map(|ix| self.lines[ix].lap);
-        ix
-    }
-}
-
-impl TableDelegate for LapTable {
-    fn columns_count(&self, _: &App) -> usize {
-        Col::ALL.len()
-    }
-
-    fn rows_count(&self, _: &App) -> usize {
-        self.lines.len()
-    }
-
-    fn column(&self, col_ix: usize, _: &App) -> Column {
-        let col = Col::ALL[col_ix];
-        let column = Column::new(col.key(), col.title())
-            .width(self.rem * col.width())
-            .movable(false)
-            .when(col.is_numeric(), Column::text_right);
-        match col {
-            Col::Lap | Col::Time | Col::Delta => match self.sort {
-                (sorted, ColumnSort::Ascending) if sorted == col => column.ascending(),
-                (sorted, ColumnSort::Descending) if sorted == col => column.descending(),
-                _ => column.sortable(),
-            },
-            Col::Kind | Col::Complete => column,
-        }
-    }
-
-    fn perform_sort(
-        &mut self,
-        col_ix: usize,
-        sort: ColumnSort,
-        window: &mut Window,
-        cx: &mut Context<TableState<Self>>,
-    ) {
-        self.sort = (Col::ALL[col_ix], sort);
-        self.apply_sort();
-        if let Some(ix) = self.selection_target() {
-            cx.defer_in(window, move |table, _, cx| {
-                if table.selected_row() != Some(ix) {
-                    table.set_selected_row(ix, cx);
-                }
-            });
-        }
-    }
-
-    fn render_th(
-        &mut self,
-        col_ix: usize,
-        _: &mut Window,
-        cx: &mut Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        let col = Col::ALL[col_ix];
-        div()
-            .size_full()
-            .flex()
-            .items_center()
-            .when(col.is_numeric(), |this| this.justify_end())
-            .text_color(cx.theme().muted_foreground)
-            .child(col.title())
-    }
-
-    fn render_tr(
-        &mut self,
-        row_ix: usize,
-        _: &mut Window,
-        _: &mut Context<TableState<Self>>,
-    ) -> Stateful<Div> {
-        let lap = self.lines.get(row_ix).map_or(-1, |line| line.lap);
-        div().id(ElementId::Name(format!("lap:{lap}").into()))
-    }
-
-    fn render_td(
-        &mut self,
-        row_ix: usize,
-        col_ix: usize,
-        _: &mut Window,
-        cx: &mut Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        let Some(line) = self.lines.get(row_ix) else {
-            return div().into_any_element();
-        };
-        let theme = cx.theme();
-        // Out, in, pit and partial laps are context, not candidates.
-        let text = if line.representative {
-            theme.foreground
+    /// The role a plain click on one of its laps asks for (the filmstrip's
+    /// rule): the reference when the group holds only the reference.
+    pub fn click_role(&self) -> Role {
+        if self.roles == [LapRole::Reference] {
+            Role::Reference
         } else {
-            theme.muted_foreground
+            Role::Primary
+        }
+    }
+}
+
+/// The groups of the event holding `primary`: every recording of its track
+/// and day in catalog order, then the reference's recording when it comes
+/// from elsewhere. Empty without a primary in the snapshot.
+pub fn event_groups(
+    snapshot: &LibrarySnapshot,
+    primary: Option<&LapRef>,
+    reference: Option<&LapRef>,
+) -> Vec<LapGroup> {
+    let Some(primary) = primary else {
+        return Vec::new();
+    };
+    let Some(day) = snapshot
+        .tracks()
+        .iter()
+        .flat_map(|track| track.dates.iter())
+        .find(|day| {
+            day.sessions
+                .iter()
+                .any(|node| node.id == primary.session().as_ref())
+        })
+    else {
+        return Vec::new();
+    };
+    let mut nodes: Vec<&SessionNode> = day.sessions.iter().collect();
+    if let Some(node) = reference
+        .filter(|reference| {
+            !nodes
+                .iter()
+                .any(|node| node.id == reference.session().as_ref())
+        })
+        .and_then(|reference| snapshot.session(reference.session()))
+    {
+        nodes.push(node);
+    }
+    let titles: Vec<SharedString> = nodes.iter().map(|node| group_title(node)).collect();
+    nodes
+        .iter()
+        .zip(&titles)
+        .map(|(node, title)| {
+            let shared = titles.iter().filter(|other| *other == title).count() > 1;
+            build_group(node, title.clone(), shared, primary, reference)
+        })
+        .collect()
+}
+
+fn group_title(node: &SessionNode) -> SharedString {
+    match crate::panels::library::driver_of(node) {
+        Some(driver) => driver.name,
+        None => node
+            .session_name
+            .clone()
+            .map(SharedString::from)
+            .unwrap_or_else(|| node.title.clone().into()),
+    }
+}
+
+fn build_group(
+    node: &SessionNode,
+    title: SharedString,
+    shared_title: bool,
+    primary: &LapRef,
+    reference: Option<&LapRef>,
+) -> LapGroup {
+    let role_of = |lap: i32| {
+        let holds = |slot: Option<&LapRef>| {
+            slot.is_some_and(|slot| slot.session().as_ref() == node.id && slot.lap() == lap)
         };
-        match Col::ALL[col_ix] {
-            Col::Lap => h_flex()
-                .w_full()
-                .gap_1()
-                .child(h_flex().flex_shrink_0().w_7().gap_0p5().when_some(
-                    line.role,
-                    |this, role| {
-                        this.child(Swatch::new(role.color(theme)).xsmall()).child(
-                            div()
-                                .text_label()
-                                .numeric()
-                                .text_color(theme.muted_foreground)
-                                .child(role.marker()),
-                        )
-                    },
-                ))
-                .child(div().text_color(text).child(line.label.clone()))
-                .into_any_element(),
-            Col::Time => h_flex()
-                .w_full()
-                .justify_end()
-                .numeric()
-                .text_color(text)
-                .child(if line.time_ms > 0.0 {
-                    SharedString::from(format_lap_time(line.time_ms))
+        if holds(Some(primary)) {
+            Some(LapRole::Primary)
+        } else if holds(reference) {
+            Some(LapRole::Reference)
+        } else {
+            None
+        }
+    };
+    let timed: Vec<f64> = node
+        .laps
+        .iter()
+        .filter(|lap| lap.representative && lap.time_ms > 0.0)
+        .map(|lap| lap.time_ms)
+        .collect();
+    let best = timed.iter().copied().fold(f64::INFINITY, f64::min);
+    let worst = timed.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let spread = worst - best;
+    let laps: Vec<LapLine> = node
+        .laps
+        .iter()
+        .map(|lap| {
+            let is_timed = lap.representative && lap.time_ms > 0.0;
+            let gap = lap.delta_to_best_ms.filter(|_| is_timed);
+            LapLine {
+                id: lap.id.clone().into(),
+                lap: lap.lap_id,
+                label: lap.label.clone().into(),
+                time: if lap.time_ms > 0.0 {
+                    format_lap_time(lap.time_ms).into()
                 } else {
                     MISSING_VALUE.into()
-                })
-                .into_any_element(),
-            Col::Delta => h_flex()
-                .w_full()
-                .justify_end()
-                .map(|this| {
-                    if line.best {
-                        this.child(Tag::secondary().xsmall().child("Best"))
+                },
+                delta: gap
+                    .filter(|_| !lap.best)
+                    .map(|ms| format_delta(Some(ms / 1000.0), 3, DeltaSense::LowerIsBetter).0),
+                best: lap.best,
+                timed: is_timed,
+                bar: is_timed.then(|| {
+                    if spread > 0.0 {
+                        ((lap.time_ms - best) / spread).clamp(0.0, 1.0) as f32
                     } else {
-                        // Every other lap is slower by definition: the gap is
-                        // metadata, not a gain or loss, so it stays neutral.
-                        let delta = line.delta_to_best_ms.map(|ms| ms / 1000.0);
-                        this.numeric()
-                            .text_color(theme.muted_foreground)
-                            .child(format_delta(delta, 3, DeltaSense::LowerIsBetter).0)
+                        0.0
                     }
-                })
-                .into_any_element(),
-            Col::Kind => div()
-                .text_color(text)
-                .child(kind_label(line.kind))
-                .into_any_element(),
-            Col::Complete => div()
-                .text_color(theme.muted_foreground)
-                .child(if line.complete { "Yes" } else { "No" })
-                .into_any_element(),
-        }
+                }),
+                role: role_of(lap.lap_id),
+            }
+        })
+        .collect();
+    let trend: Arc<[f32]> = timed
+        .iter()
+        .map(|time| {
+            if spread > 0.0 {
+                (1.0 - (time - best) / spread) as f32
+            } else {
+                0.5
+            }
+        })
+        .collect();
+    let trend_best = timed.iter().position(|time| *time == best);
+    let mut roles: Vec<LapRole> = laps.iter().filter_map(|line| line.role).collect();
+    roles.sort_by_key(|role| *role == LapRole::Reference);
+    let count = timed.len();
+    let mut summary = match node.best_time_ms.filter(|_| count > 0) {
+        Some(best) => format!(
+            "{count} timed {}, best {}",
+            if count == 1 { "lap" } else { "laps" },
+            format_lap_time(best)
+        ),
+        None => "No timed laps".to_string(),
+    };
+    if shared_title && let Some(session) = &node.session_name {
+        summary = format!("{session} \u{b7} {summary}");
     }
+    LapGroup {
+        session: node.id.clone().into(),
+        title,
+        summary: summary.into(),
+        laps,
+        trend,
+        trend_best,
+        roles,
+    }
+}
 
-    fn context_menu(
-        &mut self,
-        row_ix: usize,
-        menu: PopupMenu,
-        _: &mut Window,
-        cx: &mut Context<TableState<Self>>,
-    ) -> PopupMenu {
-        let Some(line) = self.lines.get(row_ix) else {
-            return menu;
-        };
-        let Some(session) = AppState::try_global(cx)
-            .and_then(|app| app.session.read(cx).primary())
-            .map(|slot| slot.lap_ref().session().clone())
-        else {
-            return menu;
-        };
-        menu.menu(
-            format!("Set {} as primary", line.label),
-            Box::new(SelectLap {
-                session: session.clone(),
-                lap: line.lap,
-                role: Role::Primary,
-            }),
-        )
-        .menu(
-            format!("Set {} as reference", line.label),
-            Box::new(SelectLap {
-                session,
-                lap: line.lap,
-                role: Role::Reference,
-            }),
-        )
-    }
+/// A keyboard-cursor position, by domain id (never an index).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum LapsCursor {
+    /// A group's heading row.
+    Group(SharedString),
+    /// A lap row: the session and lap id.
+    Lap(SharedString, i32),
+    /// A group's `Show out and in laps` row.
+    Disclosure(SharedString),
+}
 
-    fn render_empty(
-        &mut self,
-        _: &mut Window,
-        _: &mut Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        empty_state(IconName::Inbox, "No laps", "This recording has no laps.")
-    }
-
-    fn cell_text(&self, row_ix: usize, col_ix: usize, _: &App) -> String {
-        let Some(line) = self.lines.get(row_ix) else {
-            return String::new();
-        };
-        match Col::ALL[col_ix] {
-            Col::Lap => line.label.to_string(),
-            Col::Time => format_lap_time(line.time_ms),
-            Col::Delta if line.best => "Best".to_string(),
-            Col::Delta => format_delta(
-                line.delta_to_best_ms.map(|ms| ms / 1000.0),
-                3,
-                DeltaSense::LowerIsBetter,
-            )
-            .0
-            .to_string(),
-            Col::Kind => kind_label(line.kind).to_string(),
-            Col::Complete => if line.complete { "Yes" } else { "No" }.to_string(),
-        }
-    }
+/// Reused geometry of one trend line (no allocation once warm).
+#[derive(Default)]
+struct TrendBuffers {
+    points: Vec<PathPoint>,
+    path: PathBuffer,
 }
 
 pub struct LapsPanel {
     app: AppState,
     focus_handle: FocusHandle,
-    /// Built on the first render (the table state needs the window).
-    table: Option<Entity<TableState<LapTable>>>,
-    /// The catalog session the table lists.
-    session: Option<SharedString>,
+    groups: Rc<[LapGroup]>,
+    /// One trend buffer per group, in group order.
+    trends: Vec<Rc<RefCell<TrendBuffers>>>,
+    /// Groups the user opened or closed, against their default (open when
+    /// it holds a role).
+    opened: HashSet<SharedString>,
+    closed: HashSet<SharedString>,
+    /// Groups whose untimed laps are shown.
+    disclosed: HashSet<SharedString>,
+    cursor: Option<LapsCursor>,
+    /// The primary last synced (the cursor follows a new primary).
+    primary: Option<LapRef>,
+    scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -451,144 +395,602 @@ impl LapsPanel {
         let mut panel = Self {
             app,
             focus_handle: cx.focus_handle(),
-            table: None,
-            session: None,
+            groups: Rc::from(Vec::new()),
+            trends: Vec::new(),
+            opened: HashSet::new(),
+            closed: HashSet::new(),
+            disclosed: HashSet::new(),
+            cursor: None,
+            primary: None,
+            scroll: ScrollHandle::new(),
             _subscriptions: subscriptions,
         };
         panel.sync(cx);
         panel
     }
 
-    /// The table state, once the panel has rendered.
-    pub fn table(&self) -> Option<&Entity<TableState<LapTable>>> {
-        self.table.as_ref()
+    /// The event's groups, in display order.
+    pub fn groups(&self) -> &[LapGroup] {
+        &self.groups
     }
 
-    /// The lap on the table's selected row.
-    pub fn selected(&self, cx: &App) -> Option<i32> {
-        let table = self.table.as_ref()?.read(cx);
-        let ix = table.selected_row()?;
-        table.delegate().lines().get(ix).map(LapLine::lap)
+    pub fn group(&self, session: &str) -> Option<&LapGroup> {
+        self.groups
+            .iter()
+            .find(|group| group.session.as_ref() == session)
     }
 
-    /// Rebuild the rows from the library and the session's roles.
+    pub fn cursor(&self) -> Option<&LapsCursor> {
+        self.cursor.as_ref()
+    }
+
+    /// The lap under the keyboard cursor.
+    pub fn cursor_lap(&self) -> Option<(SharedString, i32)> {
+        match &self.cursor {
+            Some(LapsCursor::Lap(session, lap)) => Some((session.clone(), *lap)),
+            _ => None,
+        }
+    }
+
+    pub fn is_expanded(&self, session: &str) -> bool {
+        let Some(group) = self.group(session) else {
+            return false;
+        };
+        if group.roles.is_empty() {
+            self.opened.contains(session)
+        } else {
+            !self.closed.contains(session)
+        }
+    }
+
+    pub fn is_disclosed(&self, session: &str) -> bool {
+        self.disclosed.contains(session)
+    }
+
+    /// The laps a group lists now: timed laps, laps holding a role, and
+    /// the rest once disclosed (none while collapsed).
+    pub fn visible_laps<'a>(&'a self, group: &'a LapGroup) -> impl Iterator<Item = &'a LapLine> {
+        let expanded = self.is_expanded(&group.session);
+        let disclosed = self.is_disclosed(&group.session);
+        group
+            .laps
+            .iter()
+            .filter(move |line| expanded && (line.timed || disclosed || line.role.is_some()))
+    }
+
+    /// Every row in display order (the cursor's path).
+    pub fn rows(&self) -> Vec<LapsCursor> {
+        let mut rows = Vec::new();
+        for group in self.groups.iter() {
+            rows.push(LapsCursor::Group(group.session.clone()));
+            rows.extend(
+                self.visible_laps(group)
+                    .map(|line| LapsCursor::Lap(group.session.clone(), line.lap)),
+            );
+            if self.is_expanded(&group.session) && group.untimed() > 0 {
+                rows.push(LapsCursor::Disclosure(group.session.clone()));
+            }
+        }
+        rows
+    }
+
+    /// Rebuild the groups from the library and the session's roles.
     fn sync(&mut self, cx: &mut Context<Self>) {
         let session = self.app.session.read(cx);
         let primary = session.primary().map(|slot| slot.lap_ref().clone());
         let reference = session.reference().map(|slot| slot.lap_ref().clone());
-        let session_id = primary.as_ref().map(|lap| lap.session().clone());
-        let previous = std::mem::replace(&mut self.session, session_id.clone());
-        let Some(table) = self.table.clone() else {
-            cx.notify();
-            return;
-        };
-        let lines = session_id
+        let groups = event_groups(
+            self.app.library.read(cx).snapshot(),
+            primary.as_ref(),
+            reference.as_ref(),
+        );
+        if *groups != *self.groups {
+            self.trends.resize_with(groups.len(), || {
+                Rc::new(RefCell::new(TrendBuffers::default()))
+            });
+            self.groups = groups.into();
+        }
+        if primary != self.primary {
+            self.primary = primary.clone();
+            if let Some(primary) = &primary {
+                self.cursor = Some(LapsCursor::Lap(primary.session().clone(), primary.lap()));
+                self.scroll_to_cursor();
+            }
+        }
+        let rows = self.rows();
+        if self
+            .cursor
             .as_ref()
-            .and_then(|id| {
-                let library = self.app.library.read(cx);
-                let node = library.snapshot().session(id)?;
-                let mut roles = Vec::new();
-                if let Some(primary) = &primary {
-                    roles.push((LapRole::Primary, primary.lap()));
-                }
-                if let Some(reference) = reference.as_ref().filter(|r| r.session() == id) {
-                    roles.push((LapRole::Reference, reference.lap()));
-                }
-                Some(
-                    node.laps
-                        .iter()
-                        .enumerate()
-                        .map(|(order, lap)| LapLine::new(order, lap, &roles))
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .unwrap_or_default();
-        let new_recording = previous != session_id;
-        let primary_lap = primary.as_ref().map(|lap| lap.lap());
-        table.update(cx, |table, cx| {
-            let delegate = table.delegate_mut();
-            if new_recording {
-                delegate.selected = primary_lap;
-            }
-            delegate.set_lines(lines);
-            let target = delegate.selection_target();
-            table.refresh(cx);
-            match target {
-                Some(ix) if table.selected_row() != Some(ix) => table.set_selected_row(ix, cx),
-                Some(_) => {}
-                None if table.selected_row().is_some() => table.clear_selection(cx),
-                None => {}
-            }
-            cx.notify();
-        });
+            .is_some_and(|cursor| !rows.contains(cursor))
+        {
+            self.cursor = rows.first().cloned();
+        }
         cx.notify();
     }
 
-    /// Move keyboard focus from the panel onto its table.
-    fn focus_table(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(table) = &self.table {
-            let handle = gpui_kit::Focusable::focus_handle(table.read(cx), cx);
-            window.focus(&handle, cx);
-        }
-    }
-
-    fn ensure_table(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.table.is_some() {
-            return;
-        }
-        let rem = window.rem_size();
-        let table = cx.new(|cx| {
-            TableState::new(LapTable::new(rem), window, cx)
-                .col_movable(false)
-                .col_selectable(false)
-                .loop_selection(false)
-        });
-        self._subscriptions
-            .push(cx.subscribe_in(&table, window, Self::on_table_event));
-        self.table = Some(table);
-        // Ctrl+N may have focused the panel before its table existed;
-        // keyboard focus belongs on the rows.
-        let own = self.focus_handle.clone();
-        self._subscriptions
-            .push(cx.on_focus(&own, window, |this, window, cx| {
-                this.focus_table(window, cx)
-            }));
-        if own.is_focused(window) {
-            cx.defer_in(window, |this, window, cx| this.focus_table(window, cx));
-        }
-        self.session = None;
-        self.sync(cx);
-    }
-
-    fn on_table_event(
-        &mut self,
-        table: &Entity<TableState<LapTable>>,
-        event: &TableEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match event {
-            TableEvent::SelectRow(ix) => {
-                let ix = *ix;
-                table.update(cx, |table, _| {
-                    let delegate = table.delegate_mut();
-                    if let Some(line) = delegate.lines.get(ix) {
-                        delegate.selected = Some(line.lap);
-                    }
-                });
-            }
-            TableEvent::DoubleClickedRow(_) => self.select_lap(Role::Primary, window, cx),
-            _ => {}
-        }
-    }
-
-    /// Load the selected lap into `role` (the same action as the library
-    /// and the palette).
-    fn select_lap(&mut self, role: Role, window: &mut Window, cx: &mut App) {
-        let (Some(session), Some(lap)) = (self.session.clone(), self.selected(cx)) else {
+    fn scroll_to_cursor(&self) {
+        let Some(cursor) = &self.cursor else {
             return;
         };
-        window.dispatch_action(Box::new(SelectLap { session, lap, role }), cx);
+        if let Some(ix) = self.rows().iter().position(|row| row == cursor) {
+            self.scroll.scroll_to_item(ix);
+        }
+    }
+
+    fn move_cursor(&mut self, step: isize, cx: &mut Context<Self>) {
+        let rows = self.rows();
+        if rows.is_empty() {
+            return;
+        }
+        let ix = match self
+            .cursor
+            .as_ref()
+            .and_then(|cursor| rows.iter().position(|row| row == cursor))
+        {
+            Some(ix) => ix.saturating_add_signed(step).min(rows.len() - 1),
+            None => 0,
+        };
+        self.cursor = Some(rows[ix].clone());
+        self.scroll.scroll_to_item(ix);
+        cx.notify();
+    }
+
+    /// Open or close a group.
+    pub fn toggle_group(&mut self, session: &SharedString, cx: &mut Context<Self>) {
+        let Some(group) = self.group(session) else {
+            return;
+        };
+        // Record the choice against the group's default (open with a role).
+        let toggled = if group.roles.is_empty() {
+            &mut self.opened
+        } else {
+            &mut self.closed
+        };
+        if !toggled.remove(session) {
+            toggled.insert(session.clone());
+        }
+        cx.notify();
+    }
+
+    /// Show or hide a group's untimed laps.
+    pub fn toggle_disclosure(&mut self, session: &SharedString, cx: &mut Context<Self>) {
+        if !self.disclosed.remove(session) {
+            self.disclosed.insert(session.clone());
+        }
+        cx.notify();
+    }
+
+    /// Enter: set the cursor's lap as primary, or open/close its row.
+    fn on_set_primary(&mut self, _: &SetPrimary, window: &mut Window, cx: &mut Context<Self>) {
+        match self.cursor.clone() {
+            Some(LapsCursor::Lap(session, lap)) => select(session, lap, Role::Primary, window, cx),
+            Some(LapsCursor::Group(session)) => self.toggle_group(&session, cx),
+            Some(LapsCursor::Disclosure(session)) => self.toggle_disclosure(&session, cx),
+            None => {}
+        }
+    }
+
+    /// Alt+Enter: set the cursor's lap as reference.
+    fn on_set_reference(&mut self, _: &SetReference, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((session, lap)) = self.cursor_lap() {
+            select(session, lap, Role::Reference, window, cx);
+        }
+    }
+
+    /// A pointer press on a row: it takes the cursor and the focus.
+    fn point_at(&mut self, cursor: LapsCursor, window: &mut Window, cx: &mut Context<Self>) {
+        self.cursor = Some(cursor);
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
+    }
+
+    fn render_group(
+        &self,
+        ix: usize,
+        group: &LapGroup,
+        focused: bool,
+        cx: &mut Context<Self>,
+    ) -> ListItem {
+        let theme = cx.theme();
+        let session = group.session.clone();
+        let expanded = self.is_expanded(&session);
+        let cursor = LapsCursor::Group(session.clone());
+        let at_cursor = focused && self.cursor.as_ref() == Some(&cursor);
+        row(
+            SharedString::from(format!("laps-group:{session}")),
+            at_cursor,
+            theme.ring,
+        )
+        .py_1()
+        .when(ix > 0, |this| this.mt(GROUP_GAP))
+        .role(AccessRole::Button)
+        .aria_expanded(expanded)
+        .aria_label(SharedString::from(format!(
+            "{}, {}",
+            group.title, group.summary
+        )))
+        .on_click(cx.listener(move |this, _, window, cx| {
+            this.point_at(cursor.clone(), window, cx);
+            this.toggle_group(&session, cx);
+        }))
+        .child(
+            h_flex()
+                .w_full()
+                .gap_2()
+                .child(
+                    h_flex().flex_shrink_0().w(LEAD_LANE).child(
+                        Icon::new(if expanded {
+                            IconName::ChevronDown
+                        } else {
+                            IconName::ChevronRight
+                        })
+                        .xsmall()
+                        .text_color(theme.muted_foreground),
+                    ),
+                )
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .truncate()
+                                .text_title()
+                                .font_medium()
+                                .text_color(theme.sidebar_foreground)
+                                .child(group.title.clone()),
+                        )
+                        .child(
+                            div()
+                                .truncate()
+                                .text_label()
+                                .numeric()
+                                .text_color(theme.muted_foreground)
+                                .child(group.summary.clone()),
+                        ),
+                )
+                .when(group.trend.len() > 1, |this| {
+                    this.child(Trend {
+                        values: group.trend.clone(),
+                        best: group.trend_best,
+                        buffers: self.trends[ix].clone(),
+                        color: theme.muted_foreground,
+                        mark: theme.sidebar_foreground,
+                    })
+                }),
+        )
+    }
+
+    fn render_lap(
+        &self,
+        group: &LapGroup,
+        line: &LapLine,
+        focused: bool,
+        cx: &mut Context<Self>,
+    ) -> ListItem {
+        let theme = cx.theme();
+        let session = group.session.clone();
+        let lap = line.lap;
+        let cursor = LapsCursor::Lap(session.clone(), lap);
+        let at_cursor = focused && self.cursor.as_ref() == Some(&cursor);
+        let click_role = group.click_role();
+        let muted = !line.timed;
+        let bar_color = match line.role {
+            Some(role) => role.color(theme),
+            None => theme.muted_foreground.opacity(0.55),
+        };
+        let right_cursor = cursor.clone();
+        let right_session = session.clone();
+        row(line.id.clone(), at_cursor, theme.ring)
+            .selected(line.role.is_some())
+            .role(AccessRole::ListItem)
+            .aria_selected(line.role.is_some())
+            .aria_label(line.spoken())
+            .on_click(
+                cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                    this.point_at(cursor.clone(), window, cx);
+                    let role = if event.modifiers().alt {
+                        Role::Reference
+                    } else {
+                        click_role
+                    };
+                    select(session.clone(), lap, role, window, cx);
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, _, window, cx| {
+                    this.point_at(right_cursor.clone(), window, cx);
+                    select(right_session.clone(), lap, Role::Reference, window, cx);
+                }),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .text_body()
+                    .child(
+                        h_flex()
+                            .flex_shrink_0()
+                            .w(LEAD_LANE)
+                            .when_some(line.role, |this, role| this.child(RoleBadge { role })),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .w(LABEL_COLUMN)
+                            .numeric()
+                            .whitespace_nowrap()
+                            .text_color(if line.role.is_some() {
+                                theme.sidebar_foreground
+                            } else {
+                                theme.muted_foreground
+                            })
+                            .child(line.label.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .w(TIME_COLUMN)
+                            .numeric()
+                            .whitespace_nowrap()
+                            .text_color(if muted {
+                                theme.muted_foreground
+                            } else {
+                                theme.sidebar_foreground
+                            })
+                            .child(line.time.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h(BAR_HEIGHT)
+                            .rounded_full()
+                            .when(line.bar.is_some(), |this| this.bg(theme.muted))
+                            .when_some(line.bar, |this, share| {
+                                this.child(
+                                    div()
+                                        .h_full()
+                                        .rounded_full()
+                                        .min_w(BAR_MIN)
+                                        .w(relative(share))
+                                        .bg(bar_color),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .w(DELTA_COLUMN)
+                            .text_right()
+                            .numeric()
+                            .whitespace_nowrap()
+                            .map(|this| {
+                                if line.best {
+                                    this.text_color(theme.sidebar_foreground).child("Best")
+                                } else {
+                                    // Every other lap is slower by definition:
+                                    // the gap is metadata, not a gain or loss.
+                                    this.text_color(theme.muted_foreground)
+                                        .children(line.delta.clone())
+                                }
+                            }),
+                    ),
+            )
+    }
+
+    fn render_disclosure(
+        &self,
+        group: &LapGroup,
+        focused: bool,
+        cx: &mut Context<Self>,
+    ) -> ListItem {
+        let theme = cx.theme();
+        let session = group.session.clone();
+        let cursor = LapsCursor::Disclosure(session.clone());
+        let at_cursor = focused && self.cursor.as_ref() == Some(&cursor);
+        let disclosed = self.is_disclosed(&session);
+        let label: SharedString = if disclosed {
+            "Hide out and in laps".into()
+        } else {
+            format!("Show out and in laps ({})", group.untimed()).into()
+        };
+        row(
+            SharedString::from(format!("laps-disclose:{session}")),
+            at_cursor,
+            theme.ring,
+        )
+        .role(AccessRole::Button)
+        .aria_expanded(disclosed)
+        .aria_label(label.clone())
+        .on_click(cx.listener(move |this, _, window, cx| {
+            this.point_at(cursor.clone(), window, cx);
+            this.toggle_disclosure(&session, cx);
+        }))
+        .child(
+            h_flex()
+                .w_full()
+                .gap_2()
+                .child(div().flex_shrink_0().w(LEAD_LANE))
+                .child(
+                    div()
+                        .truncate()
+                        .text_label()
+                        .text_color(theme.muted_foreground)
+                        .child(label),
+                ),
+        )
+    }
+
+    /// The two load commands with their keys, acting on the cursor's lap.
+    fn render_footer(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let enabled = self.cursor_lap().is_some();
+        let button = |id: &'static str, label: &'static str, role: Role| {
+            let action: &dyn gpui_kit::Action = match role {
+                Role::Primary => &SetPrimary,
+                Role::Reference => &SetReference,
+            };
+            Button::new(id)
+                .ghost()
+                .xsmall()
+                .accessibility_label(label)
+                .children(Kbd::binding_for_action(action, Some(LAPS_CONTEXT), window))
+                .child(label)
+                .disabled(!enabled)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if let Some((session, lap)) = this.cursor_lap() {
+                        select(session, lap, role, window, cx);
+                    }
+                }))
+        };
+        h_flex()
+            .id("laps-footer")
+            .test_support()
+            .flex_shrink_0()
+            .gap_1()
+            .px_2()
+            .py_1()
+            .border_t_1()
+            .border_color(cx.theme().sidebar_border)
+            .child(button("laps-set-primary", "Set primary", Role::Primary))
+            .child(button(
+                "laps-set-reference",
+                "Set reference",
+                Role::Reference,
+            ))
+    }
+
+    fn render_empty(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        v_flex()
+            .id("laps-empty")
+            .test_support()
+            .aria_label(SharedString::from(format!(
+                "No lap selected. {SELECT_A_LAP}"
+            )))
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .p_4()
+            .child(empty_state(
+                IconName::Inbox,
+                "No lap selected",
+                SELECT_A_LAP,
+            ))
+            .child(
+                Button::new("laps-browse-library")
+                    .outline()
+                    .small()
+                    .label("Browse library")
+                    .on_click(cx.listener(|_, _, window, cx| {
+                        window.dispatch_action(Box::new(FocusPanel1), cx)
+                    })),
+            )
+    }
+}
+
+/// Dispatch the one lap-selection action.
+fn select(session: SharedString, lap: i32, role: Role, window: &mut Window, cx: &mut App) {
+    window.dispatch_action(Box::new(SelectLap { session, lap, role }), cx);
+}
+
+/// A sidebar row: one fixed geometry for groups, laps and disclosures, with
+/// the keyboard cursor drawn as a ring (the role fill is the selection).
+fn row(id: SharedString, at_cursor: bool, ring: Hsla) -> ListItem {
+    ListItem::new(id)
+        .min_h_7()
+        .py_0()
+        .px_2()
+        .rounded_md()
+        .border_1()
+        .border_color(if at_cursor { ring } else { ring.opacity(0.) })
+}
+
+/// The circled role letter of a lap holding a role.
+#[derive(IntoElement)]
+struct RoleBadge {
+    role: LapRole,
+}
+
+impl RenderOnce for RoleBadge {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.theme();
+        div()
+            .flex()
+            .flex_shrink_0()
+            .size(rems(1.125))
+            .rounded_full()
+            .items_center()
+            .justify_center()
+            .bg(self.role.color(theme))
+            .text_color(theme.background)
+            .text_caption()
+            .font_medium()
+            .child(self.role.marker())
+    }
+}
+
+/// A group's lap-time trend: timed laps left to right, faster higher, the
+/// best marked with a dot. Painted with the trace mesh into reused buffers.
+#[derive(IntoElement)]
+struct Trend {
+    values: Arc<[f32]>,
+    best: Option<usize>,
+    buffers: Rc<RefCell<TrendBuffers>>,
+    color: Hsla,
+    mark: Hsla,
+}
+
+impl RenderOnce for Trend {
+    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        let Self {
+            values,
+            best,
+            buffers,
+            color,
+            mark,
+        } = self;
+        div().flex_shrink_0().w(TREND_WIDTH).h(TREND_HEIGHT).child(
+            canvas(
+                |_, _, _| {},
+                move |bounds: Bounds<Pixels>, _, window, _| {
+                    let dot = px(4.);
+                    let inset = f32::from(dot) / 2.0 + 0.5;
+                    let width = f32::from(bounds.size.width) - 2.0 * inset;
+                    let height = f32::from(bounds.size.height) - 2.0 * inset;
+                    let last = (values.len().max(2) - 1) as f32;
+                    let at = |ix: usize| {
+                        (
+                            inset + width * ix as f32 / last,
+                            inset + height * (1.0 - values[ix].clamp(0.0, 1.0)),
+                        )
+                    };
+                    let mut buffers = buffers.borrow_mut();
+                    let TrendBuffers { points, path } = &mut *buffers;
+                    points.clear();
+                    points.extend((0..values.len()).map(|ix| {
+                        let (x, y) = at(ix);
+                        PathPoint::new(f64::from(x), f64::from(y))
+                    }));
+                    path.clear();
+                    omatrack_trace::mesh::stroke(points, 1.0, path);
+                    path.finish();
+                    for chunk in path.translated(bounds.origin) {
+                        window.paint_path(chunk, color);
+                    }
+                    if let Some(ix) = best {
+                        let (x, y) = at(ix);
+                        let center = bounds.origin + point(px(x), px(y));
+                        window.paint_quad(
+                            fill(Bounds::centered_at(center, size(dot, dot)), mark)
+                                .corner_radii(dot / 2.0),
+                        );
+                    }
+                },
+            )
+            .size_full(),
+        )
     }
 }
 
@@ -598,6 +1000,10 @@ impl gpui_kit::component::dock::BasePanel for LapsPanel {
     }
 
     fn closable(&self, _: &App) -> bool {
+        false
+    }
+
+    fn zoomable(&self, _: &App) -> bool {
         false
     }
 }
@@ -615,79 +1021,96 @@ impl gpui_kit::component::dock::Panel for LapsPanel {
 impl gpui_kit::EventEmitter<gpui_kit::component::dock::PanelEvent> for LapsPanel {}
 
 impl gpui_kit::Focusable for LapsPanel {
-    /// The table takes keyboard focus once it exists (Ctrl+5 lands on the
-    /// rows).
-    fn focus_handle(&self, cx: &App) -> FocusHandle {
-        match &self.table {
-            Some(table) => gpui_kit::Focusable::focus_handle(table.read(cx), cx),
-            None => self.focus_handle.clone(),
-        }
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
     }
 }
 
 impl Render for LapsPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.ensure_table(window, cx);
-        let root = div()
+        let theme = cx.theme();
+        let root = v_flex()
             .id("laps-panel")
             .test_support()
             .key_context(LAPS_CONTEXT)
             .track_focus(&self.focus_handle)
-            .on_action(cx.listener(|this, _: &SetPrimary, window, cx| {
-                this.select_lap(Role::Primary, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &SetReference, window, cx| {
-                this.select_lap(Role::Reference, window, cx)
-            }))
-            .size_full();
-        let (Some(table), Some(session)) = (self.table.clone(), self.session.clone()) else {
-            return root.child(panel_body(
-                "laps-summary",
-                format!("No lap selected. {SELECT_A_LAP}"),
-                empty_state(IconName::Inbox, "No lap selected", SELECT_A_LAP),
-                cx,
-            ));
-        };
-        let library = self.app.library.read(cx);
-        let title: SharedString = library
-            .snapshot()
-            .session(&session)
-            .map(|node| node.title.clone().into())
-            .unwrap_or_default();
-        let count = table.read(cx).delegate().lines().len();
+            .on_action(cx.listener(Self::on_set_primary))
+            .on_action(cx.listener(Self::on_set_reference))
+            .on_action(cx.listener(|this, _: &SelectUp, _, cx| this.move_cursor(-1, cx)))
+            .on_action(cx.listener(|this, _: &SelectDown, _, cx| this.move_cursor(1, cx)))
+            .size_full()
+            .bg(theme.sidebar)
+            .text_color(theme.sidebar_foreground);
+        if self.groups.is_empty() {
+            return root.child(self.render_empty(cx));
+        }
+        let focused = self.focus_handle.is_focused(window);
+        let groups = self.groups.clone();
+        let mut rows: Vec<gpui_kit::AnyElement> = Vec::new();
+        for (ix, group) in groups.iter().enumerate() {
+            rows.push(self.render_group(ix, group, focused, cx).into_any_element());
+            for line in self.visible_laps(group) {
+                rows.push(self.render_lap(group, line, focused, cx).into_any_element());
+            }
+            if self.is_expanded(&group.session) && group.untimed() > 0 {
+                rows.push(
+                    self.render_disclosure(group, focused, cx)
+                        .into_any_element(),
+                );
+            }
+        }
+        let laps: usize = groups.iter().map(LapGroup::timed).sum();
         root.child(
-            v_flex()
-                .id("laps-table")
+            div()
+                .id("laps-list")
                 .test_support()
-                .aria_label(SharedString::from(format!("{count} laps of {title}")))
-                .size_full()
-                .child(
-                    div()
-                        .px_2()
-                        .py_1()
-                        .text_label()
-                        .truncate()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(title),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_h_0()
-                        .child(DataTable::new(&table).small().bordered(false)),
-                ),
+                .role(AccessRole::List)
+                .aria_label(SharedString::from(format!(
+                    "{} recordings, {laps} timed laps",
+                    groups.len()
+                )))
+                .flex_1()
+                .min_h_0()
+                .px_1()
+                .py_2()
+                .overflow_y_scroll()
+                .track_scroll(&self.scroll)
+                .children(rows),
         )
+        .child(self.render_footer(window, cx))
     }
 }
 
 /// This panel's app-wide setup: its dock registration (saved layouts
-/// rebuild it by name) and its key bindings (the library's Set primary /
-/// Set reference commands, on the selected lap). Called once from
+/// rebuild it by name) and its key bindings. Called once from
 /// [`crate::panels::init`].
 pub fn init(cx: &mut App) {
     crate::panels::register(PanelKind::Laps, cx);
     cx.bind_keys([
+        KeyBinding::new("up", SelectUp, Some(LAPS_CONTEXT)),
+        KeyBinding::new("down", SelectDown, Some(LAPS_CONTEXT)),
         KeyBinding::new("enter", SetPrimary, Some(LAPS_CONTEXT)),
         KeyBinding::new("alt-enter", SetReference, Some(LAPS_CONTEXT)),
     ]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rows_announce_lap_time_gap_and_role() {
+        let line = LapLine {
+            id: "s/l:8".into(),
+            lap: 8,
+            label: "L8".into(),
+            time: "1:13.644".into(),
+            delta: None,
+            best: true,
+            timed: true,
+            bar: Some(0.0),
+            role: Some(LapRole::Reference),
+        };
+        assert_eq!(line.spoken(), "L8, 1:13.644, best lap, reference");
+    }
 }

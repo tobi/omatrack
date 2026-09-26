@@ -197,8 +197,8 @@ enum Row {
 
 /// A driver as the library shows them.
 #[derive(Debug, Clone, PartialEq)]
-struct Driver {
-    name: SharedString,
+pub(crate) struct Driver {
+    pub(crate) name: SharedString,
     /// Only the logger's driver id is known (no metadata layer names it):
     /// shown as `Driver 1` and set apart from real names.
     unnamed: bool,
@@ -215,7 +215,7 @@ impl Row {
 
 /// A recording's driver: the resolved name, or for a bare logger id
 /// `Driver 1` flagged unnamed (never a made-up name).
-fn driver_of(node: &SessionNode) -> Option<Driver> {
+pub(crate) fn driver_of(node: &SessionNode) -> Option<Driver> {
     let sourced = node.metadata.driver.as_ref()?;
     match node.summary.driver_id() {
         Some(id) if sourced.layer == MetadataLayer::Recording => Some(Driver {

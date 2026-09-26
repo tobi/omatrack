@@ -35,15 +35,16 @@ fn the_default_dock_holds_every_panel(cx: &mut TestAppContext) {
     });
     cx.update_window(test.window.into(), |_, window, cx| {
         window.render_frame(cx);
-        // Active tabs are on screen: video over traces, library left,
-        // Where the time goes right (the other right panels are its tabs).
+        // Active tabs are on screen: video over traces, the laps sidebar left
+        // (the library is its second tab), Where the time goes right (the
+        // other right panels are its tabs).
         let video = window.find("video-panel");
         let traces = window.find("traces-panel");
         assert!(video.bounds().bottom() <= traces.bounds().top());
         assert!(traces.bounds().size.height > video.bounds().size.height);
-        let library = window.find("library-panel");
+        let laps = window.find("laps-panel");
         let time_goes = window.find("time-goes-panel");
-        assert!(library.bounds().right() <= video.bounds().left());
+        assert!(laps.bounds().right() <= video.bounds().left());
         assert!(time_goes.bounds().left() >= traces.bounds().right());
     })
     .unwrap();
@@ -71,8 +72,8 @@ fn ctrl_b_and_ctrl_j_toggle_the_docks(cx: &mut TestAppContext) {
         window.render_frame(cx);
         assert!(
             window
-                .try_find("library-panel")
-                .is_none_or(|library| !library.visible())
+                .try_find("laps-panel")
+                .is_none_or(|laps| !laps.visible())
         );
         window.press("ctrl-b", cx);
     })

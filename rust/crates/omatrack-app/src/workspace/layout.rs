@@ -15,8 +15,9 @@ pub const DOCK_AREA_ID: &str = "omatrack.workspace";
 /// inspector.
 /// 4: the inspector is a tab beside the map (the trace gutter already reads
 /// the cursor), so the right dock holds two surfaces, not three.
-/// 5: the right dock is one tab group led by Time lost ("Where the time
-/// goes": heat map, loss table, corner card); Corners, Laps, Channels, Map
+/// 5: the Laps sidebar leads the left dock with the Library tree the tab
+/// beside it; the right dock is one tab group led by Time lost ("Where the
+/// time goes": heat map, loss table, corner card); Corners, Channels, Map
 /// and Inspector are tabs behind it.
 pub const LAYOUT_VERSION: usize = 5;
 
@@ -57,18 +58,17 @@ pub enum LayoutOrigin {
 /// Where a panel lives in the default layout.
 pub(crate) fn default_placement(kind: PanelKind) -> DockPlacement {
     match kind {
-        PanelKind::Library => DockPlacement::Left,
+        PanelKind::Laps | PanelKind::Library => DockPlacement::Left,
         PanelKind::Traces | PanelKind::Video => DockPlacement::Center,
         PanelKind::TimeGoes
         | PanelKind::Corners
-        | PanelKind::Laps
         | PanelKind::Channels
         | PanelKind::Inspector
         | PanelKind::Map => DockPlacement::Right,
     }
 }
 
-/// Library on the left; video over traces in the center;
+/// [Laps | Library] on the left; video over traces in the center;
 /// one tab group on the right led by Time lost, the whole dock height for
 /// its map, table and card; the tables, the plain map and the inspector are
 /// tabs behind it (the trace gutter carries the cursor readouts).
@@ -91,12 +91,11 @@ pub(crate) fn apply_default(
     let center = DockLayout::v_split()
         .child(tabs(&[PanelKind::Video], cx), Some(rem * VIDEO_REMS))
         .child(tabs(&[PanelKind::Traces], cx), None);
-    let left = tabs(&[PanelKind::Library], cx);
+    let left = tabs(&[PanelKind::Laps, PanelKind::Library], cx);
     let right = tabs(
         &[
             PanelKind::TimeGoes,
             PanelKind::Corners,
-            PanelKind::Laps,
             PanelKind::Channels,
             PanelKind::Map,
             PanelKind::Inspector,

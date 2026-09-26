@@ -39,9 +39,9 @@ fn main_window_shows_title_dock_and_status_with_the_built_in_theme(cx: &mut Test
         assert!(window.try_find("filmstrip-primary").is_none());
         assert!(window.try_find("filmstrip-swap").is_none());
         assert_eq!(window.find("status-cursor").label(), Some("No lap loaded"));
-        let library = window.find("library-panel");
-        assert!(library.visible());
-        assert!(library.bounds().right() <= window.find("traces-panel").bounds().left());
+        let laps = window.find("laps-panel");
+        assert!(laps.visible());
+        assert!(laps.bounds().right() <= window.find("traces-panel").bounds().left());
 
         // The right dock is one surface, Where the time goes, the whole
         // dock tall; the tables, the plain map and the inspector are tabs

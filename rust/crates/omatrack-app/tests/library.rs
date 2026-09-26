@@ -8,10 +8,21 @@ use gpui_kit::TestAppContext;
 use gpui_kit::test::TestWindowExt as _;
 use omatrack_app::state::LapRef;
 
+/// The Library is the tab behind the Laps sidebar: Ctrl+1 brings it
+/// forward (and focuses its tree).
+fn show_library(test: &common::TestApp, cx: &mut TestAppContext) {
+    cx.update_window(test.window.into(), |_, window, cx| {
+        window.press("ctrl-1", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
 #[gpui_kit::test]
 fn arrows_and_enter_set_the_primary_and_alt_enter_the_reference(cx: &mut TestAppContext) {
     let sandbox = common::Sandbox::new();
     let test = common::start(cx, sandbox.options());
+    show_library(&test, cx);
     let snapshot = common::load_synthetic_library(&test, cx);
     let first = snapshot.sessions().next().unwrap().id.clone();
 
@@ -56,6 +67,7 @@ fn arrows_and_enter_set_the_primary_and_alt_enter_the_reference(cx: &mut TestApp
 fn an_empty_library_offers_to_add_a_folder(cx: &mut TestAppContext) {
     let sandbox = common::Sandbox::new();
     let test = common::start(cx, sandbox.options());
+    show_library(&test, cx);
     cx.update_window(test.window.into(), |_, window, cx| {
         window.render_frame(cx);
         let empty = window.find("library-empty");
@@ -75,6 +87,7 @@ fn an_empty_library_offers_to_add_a_folder(cx: &mut TestAppContext) {
 fn search_filters_the_tree(cx: &mut TestAppContext) {
     let sandbox = common::Sandbox::new();
     let test = common::start(cx, sandbox.options());
+    show_library(&test, cx);
     common::load_synthetic_library(&test, cx);
     cx.update_window(test.window.into(), |_, window, cx| {
         window.render_frame(cx);
@@ -112,6 +125,7 @@ fn search_filters_the_tree(cx: &mut TestAppContext) {
 fn double_clicking_a_lap_sets_the_primary(cx: &mut TestAppContext) {
     let sandbox = common::Sandbox::new();
     let test = common::start(cx, sandbox.options());
+    show_library(&test, cx);
     let snapshot = common::load_synthetic_library(&test, cx);
     let second = snapshot.sessions().nth(1).unwrap().id.clone();
     let row = LapRef::new(second.clone(), 4).row_id();
@@ -156,6 +170,7 @@ fn row_label(test: &common::TestApp, cx: &mut TestAppContext, id: &str) -> Strin
 fn laps_read_as_number_kind_time_and_gap_to_best(cx: &mut TestAppContext) {
     let sandbox = common::Sandbox::new();
     let test = common::start(cx, sandbox.options());
+    show_library(&test, cx);
     // The recording numbers its laps: out and in laps keep their number.
     let snapshot = common::install_snapshot(&test, cx, common::synthetic_snapshot_numbered(true));
     let first = snapshot.sessions().next().unwrap().id.clone();
@@ -190,6 +205,7 @@ fn laps_read_as_number_kind_time_and_gap_to_best(cx: &mut TestAppContext) {
 fn the_footer_loads_the_selected_row_and_is_disabled_without_one(cx: &mut TestAppContext) {
     let sandbox = common::Sandbox::new();
     let test = common::start(cx, sandbox.options());
+    show_library(&test, cx);
     let snapshot = common::load_synthetic_library(&test, cx);
     let first = snapshot.sessions().next().unwrap().id.clone();
     let roles = |cx: &mut TestAppContext| {
@@ -245,6 +261,7 @@ fn the_footer_loads_the_selected_row_and_is_disabled_without_one(cx: &mut TestAp
 fn a_filter_says_what_it_hides_and_clears_in_one_click(cx: &mut TestAppContext) {
     let sandbox = common::Sandbox::new();
     let test = common::start(cx, sandbox.options());
+    show_library(&test, cx);
     common::load_synthetic_library(&test, cx);
     cx.update_window(test.window.into(), |_, window, cx| {
         window.render_frame(cx);

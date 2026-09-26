@@ -210,7 +210,8 @@ pub(crate) fn init(cx: &mut App) {
             ToggleInspector,
         )
         .keywords(["dock", "corners", "laps"]),
-        CommandSpec::new("focus-library", "Focus library", Panels, FocusPanel1),
+        CommandSpec::new("focus-library", "Browse library", Panels, FocusPanel1)
+            .keywords(["focus", "library", "sessions", "events", "tree"]),
         CommandSpec::new("focus-traces", "Focus traces", Panels, FocusPanel2),
         CommandSpec::new("focus-video", "Focus video", Panels, FocusPanel3),
         CommandSpec::new("focus-corners", "Focus corners", Panels, FocusPanel4),
