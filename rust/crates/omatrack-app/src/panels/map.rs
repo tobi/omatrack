@@ -63,7 +63,8 @@ pub fn map_data(analysis: &Analysis) -> TrackMapData {
                 .iter()
                 .enumerate()
                 .filter_map(|(ix, zone)| {
-                    let position = track.position_at((zone.start + zone.end) * 0.5)?;
+                    let middle = (zone.start + zone.end) * 0.5;
+                    let position = track.position_near(middle, zone.start, zone.end)?;
                     Some(MapCorner::new(corner_id(ix), zone.name.clone(), position))
                 })
                 .collect()

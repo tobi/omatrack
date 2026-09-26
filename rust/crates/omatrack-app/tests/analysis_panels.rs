@@ -844,3 +844,37 @@ async fn the_sync_confidence_sits_beside_the_selector_with_its_basis(cx: &mut Te
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+async fn a_focused_corner_is_emphasised_on_the_map(cx: &mut TestAppContext) {
+    let scene = analysed(cx).await;
+    show_panel(&scene.test, PanelKind::Map, cx);
+    let map = scene
+        .test
+        .workspace
+        .read_with(cx, |w, _| w.panels().map.clone());
+    assert_eq!(
+        cx.update(|cx| map.read(cx).map().read(cx).focused_corner()),
+        None
+    );
+    cx.update_window(scene.handle, |_, window, cx| {
+        let traces = scene
+            .test
+            .workspace
+            .read(cx)
+            .panels()
+            .focus_handle(PanelKind::Traces, cx);
+        window.focus(&traces, cx);
+        window.press("j", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let ix = cx
+        .update(|cx| scene.test.workspace.read(cx).focused_corner())
+        .expect("J focused a corner");
+    assert_eq!(
+        cx.update(|cx| map.read(cx).map().read(cx).focused_corner()),
+        Some(u32::try_from(ix + 1).unwrap()),
+        "the map follows the corner focus"
+    );
+}

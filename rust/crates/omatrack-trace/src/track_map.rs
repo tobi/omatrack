@@ -133,6 +133,34 @@ impl GpsTrack {
         );
         point.is_valid().then_some(point)
     }
+
+    /// The position at `fraction`, else the valid fix nearest to it within
+    /// `start..=end` (a corner's zone): a GPS gap at a corner's midpoint
+    /// places it on the nearest real fix instead of dropping it. `None` when
+    /// the zone has no fix at all.
+    pub fn position_near(&self, fraction: f64, start: f64, end: f64) -> Option<GeoPoint> {
+        if let Some(point) = self.position_at(fraction) {
+            return Some(point);
+        }
+        let n = self.len();
+        if n < 2 {
+            return None;
+        }
+        let last = (n - 1) as f64;
+        let index = |f: f64| (f.clamp(0.0, 1.0) * last).round() as usize;
+        let (lo, mid, hi) = (
+            index(start.min(end)),
+            index(fraction),
+            index(start.max(end)),
+        );
+        let mid = mid.clamp(lo, hi);
+        (0..=(hi - lo))
+            .flat_map(|step| [mid.checked_sub(step), mid.checked_add(step)])
+            .flatten()
+            .filter(|i| (lo..=hi).contains(i))
+            .map(|i| self.at(i))
+            .find(GeoPoint::is_valid)
+    }
 }
 
 /// A corner label placed on the map.
@@ -1351,6 +1379,22 @@ mod tests {
         let edge = point(px(190.), px(50.));
         let placed = place_label(edge, px(2.), label, area, &[]).unwrap();
         assert!(placed.bottom_right().x < edge.x);
+    }
+
+    #[test]
+    fn a_gps_gap_at_the_midpoint_uses_the_nearest_fix_in_the_zone() {
+        let n = 101;
+        let mut lat: Vec<f64> = (0..n).map(|i| 34.15 + i as f64 * 1e-5).collect();
+        let lon: Arc<[f64]> = (0..n).map(|_| -83.81).collect();
+        for value in &mut lat[45..=52] {
+            *value = f64::NAN;
+        }
+        let track = GpsTrack::new(lat.into(), lon);
+        assert_eq!(track.position_at(0.5), None);
+        let near = track.position_near(0.5, 0.40, 0.60).unwrap();
+        assert!((near.lat - (34.15 + 53.0 * 1e-5)).abs() < 1e-9, "{near:?}");
+        // Nothing valid inside the zone: no fabricated position.
+        assert_eq!(track.position_near(0.5, 0.46, 0.51), None);
     }
 
     #[test]
