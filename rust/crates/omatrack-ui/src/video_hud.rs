@@ -170,6 +170,7 @@ pub struct VideoHud {
     speed: Option<f64>,
     gear: Option<i32>,
     delta: Option<f64>,
+    approximate: bool,
     gap: Option<f64>,
     position: HudPosition,
     variant: HudVariant,
@@ -185,6 +186,7 @@ impl VideoHud {
             speed: None,
             gear: None,
             delta: None,
+            approximate: false,
             gap: None,
             position: HudPosition::DEFAULT,
             variant: HudVariant::Compact,
@@ -206,6 +208,13 @@ impl VideoHud {
     /// Cumulative Δt at the cursor, seconds (negative: primary ahead).
     pub fn delta(mut self, seconds: Option<f64>) -> Self {
         self.delta = seconds.filter(|v| v.is_finite());
+        self
+    }
+
+    /// The Δt is a LOW-confidence estimate: `≈`, two decimals, no gain/loss
+    /// colour.
+    pub fn approximate(mut self, approximate: bool) -> Self {
+        self.approximate = approximate;
         self
     }
 
@@ -247,7 +256,11 @@ impl VideoHud {
         };
         text.push_str(&format!(", gear {}", format_gear(self.gear)));
         if let Some(delta) = self.delta {
-            text.push_str(&format!(", delta {delta:+.3} s"));
+            if self.approximate {
+                text.push_str(&format!(", delta approximately {delta:+.2} s"));
+            } else {
+                text.push_str(&format!(", delta {delta:+.3} s"));
+            }
         }
         if let Some(gap) = self.gap {
             text.push_str(&format!(", gap {}", format_gap(gap)));
@@ -326,7 +339,12 @@ impl RenderOnce for VideoHud {
             .child(
                 div()
                     .map(|d| if fullscreen { d.text_lg() } else { d.text_sm() })
-                    .child(DeltaText::new(self.delta).unit("s")),
+                    .child(
+                        DeltaText::new(self.delta)
+                            .decimals(if self.approximate { 2 } else { 3 })
+                            .approximate(self.approximate)
+                            .unit("s"),
+                    ),
             );
 
         let gap_bar = self.gap.map(|gap| {

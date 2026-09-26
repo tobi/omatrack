@@ -121,6 +121,8 @@ pub struct DeltaText {
     decimals: usize,
     sense: DeltaSense,
     unit: Option<SharedString>,
+    approximate: bool,
+    muted: bool,
 }
 
 impl DeltaText {
@@ -131,7 +133,23 @@ impl DeltaText {
             decimals: 3,
             sense: DeltaSense::default(),
             unit: None,
+            approximate: false,
+            muted: false,
         }
+    }
+
+    /// Muted, without the gain/loss colour (the caller marks it approximate
+    /// itself, e.g. with a `Δ≈` label).
+    pub fn muted(mut self, muted: bool) -> Self {
+        self.muted = muted;
+        self
+    }
+
+    /// An estimate, not a measurement (a LOW-confidence alignment): prefixed
+    /// with `≈` and muted, since gain/loss colour would overstate it.
+    pub fn approximate(mut self, approximate: bool) -> Self {
+        self.approximate = approximate;
+        self
     }
 
     pub fn decimals(mut self, decimals: usize) -> Self {
@@ -155,9 +173,15 @@ impl RenderOnce for DeltaText {
         let theme = cx.theme();
         let (text, trend) = format_delta(self.value, self.decimals, self.sense);
         let color = match trend {
+            _ if self.approximate || self.muted => theme.muted_foreground,
             DeltaTrend::Gain => theme.success,
             DeltaTrend::Loss => theme.danger,
             DeltaTrend::Even => theme.muted_foreground,
+        };
+        let text: SharedString = if self.approximate && self.value.is_some() {
+            format!("≈{text}").into()
+        } else {
+            text
         };
         h_flex()
             .items_baseline()
