@@ -5,8 +5,8 @@
 //! other cursor observers), never the workspace or the static traces.
 
 use gpui_kit::component::{
-    ActiveTheme as _, Sizable as _, Theme, h_flex, separator::Separator, spinner::Spinner,
-    status_bar::StatusBar, tooltip::Tooltip,
+    ActiveTheme as _, Icon, IconName, Sizable as _, Theme, h_flex, separator::Separator,
+    spinner::Spinner, status_bar::StatusBar, tag::Tag, tooltip::Tooltip,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -14,6 +14,7 @@ use gpui_kit::{
     Role, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
     TestSupportExt as _, Window, div,
 };
+use omatrack_core::alignment::Strategy;
 use omatrack_core::format_lap_time;
 use omatrack_core::session::Analysis;
 use omatrack_trace::scale::value_at_fraction;
@@ -90,9 +91,110 @@ pub fn approximate(confidence: &str) -> bool {
     matches!(confidence, "LOW" | "NONE")
 }
 
+/// Whether an analysis's deltas are approximate (LOW or no alignment).
+/// The one rule every delta surface uses (status bar, header, inspector,
+/// traces, corners, HUD, map).
+pub fn analysis_approximate(analysis: &Analysis) -> bool {
+    analysis
+        .comparison()
+        .is_some_and(|comparison| approximate(comparison.confidence()))
+}
+
+/// Why GPS alignment was not used although both laps carry GPS: the
+/// fixes of the two laps never agreed in position, speed and heading.
+pub fn gps_rejection(analysis: &Analysis) -> Option<SharedString> {
+    let comparison = analysis.comparison()?;
+    let offered = analysis.available_strategies().contains(&Strategy::Gps);
+    let alignment = comparison.alignment();
+    (offered && comparison.strategy() == Strategy::Gps && alignment.gps_anchors == 0).then(|| {
+        match alignment.gps_rejected {
+            0 => "GPS rejected: no fix of one lap lies near a fix of the other.".into(),
+            1 => {
+                "GPS rejected: 1 matched fix failed the position, speed and heading checks.".into()
+            }
+            n => format!(
+                "GPS rejected: {n} matched fixes failed the position, speed and heading checks."
+            )
+            .into(),
+        }
+    })
+}
+
+/// The caution shown beside approximate deltas (corners notes, focus
+/// card): `Alignment LOW (Lap time %): deltas are approximate.`
+pub fn alignment_caution(analysis: &Analysis) -> Option<SharedString> {
+    let comparison = analysis.comparison()?;
+    let confidence = comparison.confidence();
+    if !approximate(confidence) {
+        return None;
+    }
+    let basis = comparison.basis();
+    let time_share = if basis == omatrack_core::alignment::BASIS_LAP_TIME {
+        " a time-share estimate, not a station alignment"
+    } else {
+        " approximate"
+    };
+    Some(format!("Alignment {confidence} ({basis}): deltas are{time_share}.").into())
+}
+
+/// `Low confidence`, for the confidence badge.
+fn confidence_words(confidence: &str) -> &'static str {
+    match confidence {
+        "HIGH" => "High confidence",
+        "MED" => "Medium confidence",
+        "LOW" => "Low confidence",
+        _ => "Not aligned",
+    }
+}
+
+/// The sync confidence badge of the title bar and the status bar: a
+/// neutral outline tag (never the reference lap's warning hue), with an
+/// alert icon when deltas are approximate, its tooltip naming the basis.
+pub fn confidence_badge(
+    id: &'static str,
+    confidence: &str,
+    summary: SharedString,
+    cx: &App,
+) -> AnyElement {
+    let muted = cx.theme().muted_foreground;
+    let low = approximate(confidence);
+    let spoken = SharedString::from(format!("Sync confidence: {summary}"));
+    div()
+        .id(id)
+        .role(Role::Status)
+        .test_support()
+        .aria_label(spoken)
+        .tooltip(move |window, cx| Tooltip::new(summary.clone()).build(window, cx))
+        .child(
+            Tag::secondary().outline().xsmall().child(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .when(low, |this| {
+                        this.child(
+                            Icon::new(IconName::TriangleAlert)
+                                .xsmall()
+                                .text_color(muted),
+                        )
+                    })
+                    .child(confidence_words(confidence)),
+            ),
+        )
+        .into_any_element()
+}
+
 /// `Δ`, or `Δ≈` for an approximate delta.
 fn delta_mark(approximate: bool) -> &'static str {
     if approximate { "Δ≈" } else { "Δ" }
+}
+
+/// A Δt readout: three decimals and gain/loss colour, or two muted decimals
+/// when approximate (the `Δ≈` mark precedes it).
+fn approx_delta(value: Option<f64>, approximate: bool) -> DeltaText {
+    DeltaText::new(value)
+        .decimals(if approximate { 2 } else { 3 })
+        .muted(approximate)
+        .unit("s")
 }
 
 fn item(id: &'static str, label: SharedString, content: impl IntoElement) -> AnyElement {
@@ -152,7 +254,7 @@ impl StatusView {
                 h_flex()
                     .gap_1()
                     .child(delta_mark(approximate))
-                    .child(DeltaText::new(finite).unit("s")),
+                    .child(approx_delta(finite, approximate)),
             ));
             if let Some(selection) = cursor.selection() {
                 let range = comparison.time_delta_at(selection.end)
@@ -183,7 +285,7 @@ impl StatusView {
                         .gap_1()
                         .child("Range")
                         .child(delta_mark(approximate))
-                        .child(DeltaText::new(finite).unit("s"))
+                        .child(approx_delta(finite, approximate))
                         .child(div().text_color(cx.theme().muted_foreground).child(speeds)),
                 ));
             }
@@ -202,26 +304,26 @@ impl StatusView {
             comparison.basis().to_owned()
         }
         .into();
-        let spoken = super::header::sync_summary(comparison.basis(), anchors, confidence);
+        let spoken = super::header::sync_summary(
+            comparison.basis(),
+            anchors,
+            confidence,
+            gps_rejection(session.analysis()?).as_deref(),
+        );
         Some(
-            div()
+            h_flex()
                 .id("status-sync")
                 .role(Role::Status)
                 .test_support()
                 .aria_label(spoken.clone())
-                .tooltip(move |window, cx| Tooltip::new(spoken.clone()).build(window, cx))
-                .child(
-                    h_flex()
-                        .gap_1()
-                        .child(div().text_color(cx.theme().muted_foreground).child(text))
-                        .child(
-                            div()
-                                .when(approximate(confidence), |this| {
-                                    this.text_color(cx.theme().warning)
-                                })
-                                .child(confidence),
-                        ),
-                )
+                .gap_1()
+                .child(div().text_color(cx.theme().muted_foreground).child(text))
+                .child(confidence_badge(
+                    "status-confidence",
+                    confidence,
+                    spoken,
+                    cx,
+                ))
                 .into_any_element(),
         )
     }

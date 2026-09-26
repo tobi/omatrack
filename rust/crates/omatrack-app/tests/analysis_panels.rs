@@ -820,7 +820,8 @@ async fn the_sync_confidence_sits_beside_the_selector_with_its_basis(cx: &mut Te
             comparison.confidence().to_owned(),
         )
     });
-    let expected = omatrack_app::workspace::header::sync_summary(&basis, anchors, &confidence);
+    let expected =
+        omatrack_app::workspace::header::sync_summary(&basis, anchors, &confidence, None);
     assert!(expected.contains(basis.as_str()) && expected.contains(confidence.as_str()));
     cx.update_window(scene.handle, |_, window, _| {
         let select = window.find("header-sync");

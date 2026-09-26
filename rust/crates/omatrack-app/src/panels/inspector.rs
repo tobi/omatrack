@@ -252,9 +252,14 @@ impl InspectorPanel {
                                     div()
                                         .text_xs()
                                         .text_color(theme.muted_foreground)
-                                        .child(if approximate { "Δt≈" } else { "Δt" }),
+                                        .child("Δt"),
                                 )
-                                .child(DeltaText::new(delta).unit("s")),
+                                .child(
+                                    DeltaText::new(delta)
+                                        .decimals(if approximate { 2 } else { 3 })
+                                        .approximate(approximate)
+                                        .unit("s"),
+                                ),
                         )
                     }),
             )

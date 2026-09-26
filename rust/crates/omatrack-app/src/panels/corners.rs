@@ -244,6 +244,8 @@ pub struct CornerTable {
     /// it through sorting and rebuilds.
     selected: Option<SharedString>,
     has_reference: bool,
+    /// The alignment is LOW confidence: Δt reads `≈`, two decimals, muted.
+    approximate: bool,
     /// The sorted column and direction (`Default` is lap order).
     sort: (Col, ColumnSort),
     /// The window's rem size when the table was built: the table API sizes
@@ -257,6 +259,7 @@ impl CornerTable {
             lines: Vec::new(),
             selected: None,
             has_reference: false,
+            approximate: false,
             sort: (Col::Order, ColumnSort::Default),
             rem,
         }
@@ -297,7 +300,8 @@ impl CornerTable {
 
     /// Replace the rows. The first analysis with a reference sorts by Δt
     /// descending; after that the user's sort is kept.
-    fn set_lines(&mut self, lines: Vec<CornerLine>, has_reference: bool) {
+    fn set_lines(&mut self, lines: Vec<CornerLine>, has_reference: bool, approximate: bool) {
+        self.approximate = approximate;
         if has_reference && !self.has_reference && self.sort == (Col::Order, ColumnSort::Default) {
             self.sort = (Col::Dt, ColumnSort::Descending);
         }
@@ -501,7 +505,11 @@ impl TableDelegate for CornerTable {
             Col::Dt => h_flex()
                 .w_full()
                 .justify_end()
-                .child(DeltaText::new(Some(line.dt)).decimals(3))
+                .child(
+                    DeltaText::new(Some(line.dt))
+                        .decimals(if self.approximate { 2 } else { 3 })
+                        .approximate(self.approximate),
+                )
                 .into_any_element(),
             Col::Entry => self.render_speed(line.speeds[0], cx).into_any_element(),
             Col::Min => self.render_speed(line.speeds[1], cx).into_any_element(),
@@ -723,6 +731,10 @@ impl CornersPanel {
         let Some(table) = self.table.clone() else {
             return;
         };
+        let approximate = self
+            .shown
+            .as_ref()
+            .is_some_and(|analysis| crate::workspace::status::analysis_approximate(analysis));
         let (lines, has_reference) = match &self.shown {
             Some(analysis) => (
                 analysis
@@ -746,7 +758,7 @@ impl CornersPanel {
             .map(|result| &result.values);
         table.update(cx, |table, cx| {
             let delegate = table.delegate_mut();
-            delegate.set_lines(lines, has_reference);
+            delegate.set_lines(lines, has_reference, approximate);
             if let Some(values) = consistency {
                 delegate.set_consistency(values);
             }
@@ -970,6 +982,16 @@ impl CornersPanel {
             .shown
             .as_ref()
             .is_some_and(|analysis| analysis.reference().is_some());
+        let caution = self
+            .shown
+            .as_ref()
+            .and_then(|analysis| crate::workspace::status::alignment_caution(analysis));
+        let approximate = caution.is_some();
+        let dt = move |value: f64| {
+            DeltaText::new(Some(value))
+                .decimals(if approximate { 2 } else { 3 })
+                .approximate(approximate)
+        };
         let body = match self.selected_line(cx) {
             None => div()
                 .text_color(theme.muted_foreground)
@@ -1001,17 +1023,39 @@ impl CornersPanel {
                             .gap_2()
                             .child(div().font_semibold().child(line.name.clone()))
                             .when(has_reference, |this| {
-                                this.child(DeltaText::new(Some(line.dt)).unit("s")).child(
+                                this.child(dt(line.dt).unit("s")).child(
                                     h_flex()
                                         .gap_1()
                                         .text_xs()
                                         .text_color(theme.muted_foreground)
                                         .child("entry")
-                                        .child(DeltaText::new(Some(line.entry_dt)))
+                                        .child(dt(line.entry_dt))
                                         .child("exit")
-                                        .child(DeltaText::new(Some(line.exit_dt))),
+                                        .child(dt(line.exit_dt)),
                                 )
                             }),
+                    )
+                    .when_some(
+                        caution.clone().filter(|_| has_reference),
+                        |this, caution| {
+                            this.child(
+                                h_flex()
+                                    .id("corner-alignment-caution")
+                                    .test_support()
+                                    .aria_label(caution.clone())
+                                    .items_start()
+                                    .gap_1()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child(
+                                        Icon::new(IconName::TriangleAlert)
+                                            .xsmall()
+                                            .flex_shrink_0()
+                                            .mt_0p5(),
+                                    )
+                                    .child(div().flex_1().min_w_0().child(caution)),
+                            )
+                        },
                     )
                     .children(line.notes.iter().map(|(severity, text)| {
                         h_flex()
@@ -1232,6 +1276,7 @@ mod tests {
         table.set_lines(
             vec![line(0, 0.1), line(1, f64::NAN), line(2, 0.3), line(3, -0.2)],
             true,
+            false,
         );
         assert_eq!(ids(&table), ["t3", "t1", "t4", "t2"]);
     }
@@ -1239,11 +1284,11 @@ mod tests {
     #[test]
     fn a_single_lap_keeps_lap_order_and_the_user_sort_survives_a_rebuild() {
         let mut table = CornerTable::new(gpui_kit::px(16.));
-        table.set_lines(vec![line(1, f64::NAN), line(0, f64::NAN)], false);
+        table.set_lines(vec![line(1, f64::NAN), line(0, f64::NAN)], false, false);
         assert_eq!(ids(&table), ["t1", "t2"]);
         table.sort = (Col::Order, ColumnSort::Descending);
         table.apply_sort();
-        table.set_lines(vec![line(0, 0.2), line(1, 0.1)], true);
+        table.set_lines(vec![line(0, 0.2), line(1, 0.1)], true, false);
         assert_eq!(ids(&table), ["t2", "t1"], "the user's sort is kept");
     }
 }

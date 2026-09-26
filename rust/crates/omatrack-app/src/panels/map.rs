@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, Styled as _, Subscription, TestSupportExt as _,
@@ -70,7 +71,11 @@ pub fn map_data(analysis: &Analysis) -> TrackMapData {
                 .collect()
         })
         .unwrap_or_default();
-    let delta = (!analysis.delta().is_empty()).then(|| Arc::<[f64]>::from(analysis.delta()));
+    // Under a LOW-confidence alignment the gain/loss colouring would claim a
+    // station-by-station verdict the time share cannot support.
+    let delta = (!analysis.delta().is_empty()
+        && !crate::workspace::status::analysis_approximate(analysis))
+    .then(|| Arc::<[f64]>::from(analysis.delta()));
     let map = analysis
         .comparison()
         .map(|comparison| comparison.clone() as Arc<dyn FractionMap>);
@@ -201,6 +206,8 @@ impl MapPanel {
             None => "GPS only · no Track Atlas layout".into(),
         };
         let comparing = analysis.reference().is_some() && !analysis.delta().is_empty();
+        let approximate = crate::workspace::status::analysis_approximate(analysis);
+        let shaded = comparing && !approximate;
         v_flex()
             .flex_shrink_0()
             .gap_1()
@@ -221,8 +228,16 @@ impl MapPanel {
                             .reference()
                             .map(|_| entry(LapRole::Reference.color(theme), "Reference")),
                     )
-                    .children(comparing.then(|| entry(theme.success, "Gaining")))
-                    .children(comparing.then(|| entry(theme.danger, "Losing"))),
+                    .children(shaded.then(|| entry(theme.success, "Gaining")))
+                    .children(shaded.then(|| entry(theme.danger, "Losing")))
+                    .when(comparing && approximate, |this| {
+                        this.child(
+                            div()
+                                .id("map-gain-loss-off")
+                                .test_support()
+                                .child("Gain/loss off: low-confidence sync"),
+                        )
+                    }),
             )
     }
 }

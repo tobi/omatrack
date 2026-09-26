@@ -9,8 +9,6 @@ use gpui_kit::component::{
     searchable_list::SearchableListItem,
     select::Select,
     separator::Separator,
-    tag::Tag,
-    tooltip::Tooltip,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -73,9 +71,15 @@ impl SearchableListItem for SyncOption {
     }
 }
 
-/// `Lap time % · 0 anchors · LOW confidence.`, plus a caution under LOW:
-/// the sync badge's tooltip and accessible name.
-pub fn sync_summary(basis: &str, anchors: i32, confidence: &str) -> SharedString {
+/// `Lap time % · 0 anchors · LOW confidence.`, plus a caution under LOW
+/// and why GPS was rejected, when it was: the sync badge's tooltip and
+/// accessible name.
+pub fn sync_summary(
+    basis: &str,
+    anchors: i32,
+    confidence: &str,
+    gps_rejection: Option<&str>,
+) -> SharedString {
     let basis = if basis.is_empty() {
         "No alignment"
     } else {
@@ -90,7 +94,10 @@ pub fn sync_summary(basis: &str, anchors: i32, confidence: &str) -> SharedString
         "NONE" => " The reference cannot be aligned.",
         _ => "",
     };
-    format!("{basis} · {anchors} · {confidence} confidence.{caution}").into()
+    let rejection = gps_rejection
+        .map(|text| format!(" {text}"))
+        .unwrap_or_default();
+    format!("{basis} · {anchors} · {confidence} confidence.{caution}{rejection}").into()
 }
 
 /// `Primary lap L8 1:13.644 · TL`, for the chip's accessible name.
@@ -165,12 +172,14 @@ impl Workspace {
         });
         let analysis = session.analysis();
         let comparison = analysis.and_then(|analysis| analysis.comparison());
+        let rejection = analysis.and_then(|analysis| super::status::gps_rejection(analysis));
         let sync = comparison.map(|comparison| {
             let confidence = comparison.confidence();
             let summary = sync_summary(
                 comparison.basis(),
                 comparison.alignment().gps_anchors,
                 confidence,
+                rejection.as_deref(),
             );
             (confidence, summary)
         });
@@ -250,24 +259,12 @@ impl Workspace {
                                     ),
                                 )
                                 .when_some(sync, |this, (confidence, summary)| {
-                                    let tag = if super::status::approximate(confidence) {
-                                        Tag::warning().outline()
-                                    } else {
-                                        Tag::secondary()
-                                    };
-                                    let tooltip = summary.clone();
-                                    this.child(
-                                        div()
-                                            .id("header-confidence")
-                                            .test_support()
-                                            .aria_label(SharedString::from(format!(
-                                                "Sync confidence: {summary}"
-                                            )))
-                                            .tooltip(move |window, cx| {
-                                                Tooltip::new(tooltip.clone()).build(window, cx)
-                                            })
-                                            .child(tag.xsmall().child(confidence)),
-                                    )
+                                    this.child(super::status::confidence_badge(
+                                        "header-confidence",
+                                        confidence,
+                                        summary,
+                                        cx,
+                                    ))
                                 }),
                         ),
                 )

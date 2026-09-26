@@ -159,7 +159,8 @@ pub fn build(analysis: Arc<Analysis>, neighbours: Option<Arc<Neighbours>>) -> Bu
     .with_neighbour_labels(
         neighbours.previous.as_ref().map(|lap| lap.label.clone()),
         neighbours.next.as_ref().map(|lap| lap.label.clone()),
-    );
+    )
+    .with_approximate_delta(crate::workspace::status::analysis_approximate(&analysis));
     BuiltScene {
         analysis,
         scene: Arc::new(scene),

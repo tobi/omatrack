@@ -6,12 +6,11 @@
 //! string built here; severity reads from an icon as well as its colour.
 
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _,
-    description_list::DescriptionList, h_flex, v_flex,
+    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement as _, Role,
+    AnyElement, App, Context, Div, InteractiveElement as _, IntoElement, ParentElement as _, Role,
     SharedString, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, div,
 };
 use omatrack_core::corners::NoteSeverity;
@@ -20,21 +19,39 @@ use omatrack_ui::{DeltaSense, DeltaText};
 
 use super::TracesPanel;
 
-fn speeds(speeds: &CornerSpeeds) -> SharedString {
-    let value = |v: f64| {
-        if v.is_finite() {
-            format!("{v:.0}")
-        } else {
-            omatrack_ui::MISSING_VALUE.to_string()
-        }
-    };
-    format!(
-        "{} · {} · {}",
-        value(speeds.entry),
-        value(speeds.apex),
-        value(speeds.exit)
-    )
-    .into()
+fn speed(v: f64) -> SharedString {
+    if v.is_finite() {
+        format!("{v:.0}").into()
+    } else {
+        omatrack_ui::MISSING_VALUE.into()
+    }
+}
+
+/// One row of the entry / min / exit speed grid: a role label and three
+/// right-aligned mono cells.
+fn speed_row(label: SharedString, cells: [SharedString; 3], muted: bool, cx: &App) -> Div {
+    let theme = cx.theme();
+    h_flex()
+        .gap_2()
+        .child(
+            div()
+                .w_16()
+                .flex_shrink_0()
+                .text_color(theme.muted_foreground)
+                .child(label),
+        )
+        .children(cells.into_iter().map(|cell| {
+            div()
+                .flex_1()
+                .text_right()
+                .font_family(theme.mono_font_family.clone())
+                .when(muted, |d| d.text_color(theme.muted_foreground))
+                .child(cell)
+        }))
+}
+
+fn speed_cells(speeds: &CornerSpeeds) -> [SharedString; 3] {
+    [speed(speeds.entry), speed(speeds.apex), speed(speeds.exit)]
 }
 
 impl TracesPanel {
@@ -45,14 +62,31 @@ impl TracesPanel {
         let theme = cx.theme();
         let name = SharedString::from(row.zone.name.clone());
         let comparing = row.reference.is_some();
-        let mut facts = DescriptionList::horizontal().small().columns(1).item(
-            "Speeds km/h",
-            speeds(&row.speeds),
-            1,
-        );
-        if let Some(reference) = &row.reference_speeds {
-            facts = facts.item("Reference", speeds(reference), 1);
-        }
+        let approximate = crate::workspace::status::analysis_approximate(analysis);
+        let facts = v_flex()
+            .id("trace-corner-speeds")
+            .test_support()
+            .gap_0p5()
+            .child(speed_row(
+                "km/h".into(),
+                ["Entry".into(), "Min".into(), "Exit".into()],
+                true,
+                cx,
+            ))
+            .child(speed_row(
+                "Primary".into(),
+                speed_cells(&row.speeds),
+                false,
+                cx,
+            ))
+            .when_some(row.reference_speeds.as_ref(), |el, reference| {
+                el.child(speed_row(
+                    "Reference".into(),
+                    speed_cells(reference),
+                    false,
+                    cx,
+                ))
+            });
         let spoken = format!(
             "{name}: {} notes",
             if row.notes.is_empty() {
@@ -105,7 +139,8 @@ impl TracesPanel {
                         .when(comparing, |el| {
                             el.child(
                                 DeltaText::new(Some(row.dt))
-                                    .decimals(3)
+                                    .decimals(if approximate { 2 } else { 3 })
+                                    .approximate(approximate)
                                     .sense(DeltaSense::LowerIsBetter)
                                     .unit("s"),
                             )

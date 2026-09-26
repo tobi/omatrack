@@ -200,6 +200,12 @@ pub fn countdown(app: &AppState, window: &Window, cx: &App) -> Option<AnyElement
 impl Render for VideoOverlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let readout = self.readout(cx);
+        let approximate = self
+            .app
+            .session
+            .read(cx)
+            .analysis()
+            .is_some_and(|analysis| crate::workspace::status::analysis_approximate(analysis));
         let position = self
             .app
             .video
@@ -222,6 +228,7 @@ impl Render for VideoOverlay {
                         .speed(readout.speed)
                         .gear(readout.gear)
                         .delta(readout.delta)
+                        .approximate(approximate)
                         .gap(readout.gap)
                         .position(position)
                         .variant(variant)
