@@ -2,15 +2,19 @@
 //! cursor, and the gap bar when both GPS fixes are better than 1 m) and the
 //! 3-2-1 countdown into the next lap.
 //!
-//! A separate entity on purpose: it observes `CursorState`, so a playing
-//! video re-renders this layer once per frame and nothing else in the panel.
+//! The HUD layer is a separate entity on purpose: it observes `CursorState`,
+//! so a playing video re-renders this layer once per frame and nothing else
+//! in the panel. The panel places it inside one video pane (the large one),
+//! so the card never straddles the seam between two videos. The countdown
+//! changes only with the controller, so the panel draws it over the whole
+//! stage with [`countdown`].
 
-use gpui_kit::component::{ActiveTheme as _, v_flex};
+use gpui_kit::component::{ActiveTheme as _, StyledExt as _, h_flex, kbd::Kbd, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, Context, InteractiveElement as _, IntoElement, ParentElement as _, Render, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, TestSupportExt as _,
-    Window, div,
+    AnyElement, App, Context, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    Role, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
+    TestSupportExt as _, Window, div,
 };
 use omatrack_core::Comparison;
 use omatrack_core::alignment::relative_along_track_meters;
@@ -115,22 +119,32 @@ impl VideoOverlay {
             .map(|comparison| comparison.as_ref());
         Some(HudReadout::at(timeline.unified(), comparison, fraction))
     }
+}
 
-    fn render_countdown(&self, count: u8, cx: &App) -> impl IntoElement {
-        let video = self.app.video.read(cx);
-        let next = video
-            .advancing_to()
-            .and_then(|id| {
-                video
-                    .lap(crate::actions::Role::Primary)
-                    .and_then(|lap| lap.lap_by_id(id))
-            })
-            .map(|lap| format!("L{}", lap.source_number.unwrap_or(lap.id)));
-        let label: SharedString = match &next {
-            Some(next) => format!("{next} in {count}").into(),
-            None => format!("Next lap in {count}").into(),
-        };
-        let theme = cx.theme();
+/// The 3-2-1 card counting into the next lap, centred over the stage; `None`
+/// when no countdown runs.
+pub fn countdown(app: &AppState, window: &Window, cx: &App) -> Option<AnyElement> {
+    let video = app.video.read(cx);
+    let count = video.countdown()?;
+    let next = video
+        .advancing_to()
+        .and_then(|id| {
+            video
+                .lap(crate::actions::Role::Primary)
+                .and_then(|lap| lap.lap_by_id(id))
+        })
+        .map(|lap| format!("L{}", lap.source_number.unwrap_or(lap.id)));
+    let label: SharedString = match &next {
+        Some(next) => format!("{next} in {count}").into(),
+        None => format!("Next lap in {count}").into(),
+    };
+    let cancel = Kbd::binding_for_action(
+        &crate::actions::TogglePlay,
+        Some(crate::keymap::WORKSPACE_CONTEXT),
+        window,
+    );
+    let theme = cx.theme();
+    Some(
         div()
             .absolute()
             .inset_0()
@@ -145,37 +159,46 @@ impl VideoOverlay {
                     .test_support()
                     .items_center()
                     .gap_1()
+                    .min_w(gpui_kit::rems(10.))
                     .px_6()
                     .py_3()
                     .rounded(theme.radius_lg)
                     .border_1()
                     .border_color(theme.border)
-                    .bg(theme.popover.opacity(0.9))
+                    .bg(theme.popover.opacity(0.92))
                     .text_color(theme.popover_foreground)
-                    .child(
-                        div()
-                            .font_family(theme.mono_font_family.clone())
-                            .text_3xl()
-                            .child(SharedString::from(count.to_string())),
-                    )
+                    .shadow_lg()
                     .child(
                         div()
                             .text_xs()
                             .text_color(theme.muted_foreground)
-                            .child(match next {
-                                Some(next) => {
-                                    SharedString::from(format!("Next: {next} · Space cancels"))
-                                }
-                                None => "Space cancels".into(),
+                            .child(match &next {
+                                Some(next) => SharedString::from(format!("{next} starts in")),
+                                None => "Next lap starts in".into(),
                             }),
+                    )
+                    .child(
+                        div()
+                            .font_family(theme.mono_font_family.clone())
+                            .font_semibold()
+                            .text_3xl()
+                            .child(SharedString::from(count.to_string())),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .children(cancel)
+                            .child("Cancel"),
                     ),
             )
-    }
+            .into_any_element(),
+    )
 }
 
 impl Render for VideoOverlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let countdown = self.app.video.read(cx).countdown();
         let readout = self.readout(cx);
         let position = self
             .app
@@ -207,9 +230,6 @@ impl Render for VideoOverlay {
                             video.update(cx, |video, cx| video.set_hud_position(x, y, cx));
                         }),
                 )
-            })
-            .when_some(countdown, |this, count| {
-                this.child(self.render_countdown(count, cx))
             })
     }
 }

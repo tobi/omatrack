@@ -493,16 +493,31 @@ fn the_cursor_follows_the_mock_clock_and_leaves_the_static_traces_alone(cx: &mut
     // Dragging the HUD persists its placement (`video.hud_position`) once,
     // at drag end.
     assert_eq!(cx.update(|cx| mock.video().read(cx).hud_position(cx)), None);
-    let (card, stage) = cx
+    let (card, frame) = cx
         .update_window(mock.handle, |_, window, _| {
             (
                 window.find("video-hud-card").bounds(),
-                window.find("video-stage").bounds(),
+                window.find("primary-video-frame").bounds(),
             )
         })
         .unwrap();
+    // By default the card sits on the primary picture's bottom-left corner,
+    // wholly inside it (never across a seam).
+    assert!(frame.contains(&card.origin), "{card:?} in {frame:?}");
+    assert!(
+        frame.contains(&card.bottom_right()),
+        "{card:?} in {frame:?}"
+    );
+    assert!(
+        card.left() - frame.left() < px(20.),
+        "{card:?} in {frame:?}"
+    );
+    assert!(
+        frame.bottom() - card.bottom() < px(20.),
+        "{card:?} in {frame:?}"
+    );
     let grab = card.center();
-    let target = point(stage.center().x, stage.top() + card.size.height);
+    let target = point(frame.center().x, frame.top() + card.size.height);
     pointer(
         cx,
         mock.handle,
@@ -658,6 +673,64 @@ fn keys_compose_layouts_and_f_escape_zoom_and_restore_the_dock(cx: &mut TestAppC
         assert!(!workspace.is_video_fullscreen());
         assert!(!workspace.dock_area().read(cx).is_zoomed());
         assert!(!window.is_fullscreen());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_transport_bar_sets_rate_and_playback_mode_and_shows_the_composition(
+    cx: &mut TestAppContext,
+) {
+    let mock = mock(cx, 2);
+    let video = mock.video();
+    let slow = |cx: &mut TestAppContext| cx.update(|cx| video.read(cx).is_slow_motion());
+    let continuous = |cx: &mut TestAppContext| cx.update(|cx| video.read(cx).is_continuous(cx));
+    let click = |id: &'static str, cx: &mut TestAppContext| {
+        cx.update_window(mock.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click(id, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    assert!(!slow(cx));
+    click("video-slow-motion", cx);
+    assert!(slow(cx), "0.25x selects slow motion");
+    click("video-slow-motion", cx);
+    assert!(slow(cx), "the selected segment stays selected");
+    click("video-rate-normal", cx);
+    assert!(!slow(cx), "1x leaves slow motion");
+
+    let before = continuous(cx);
+    click(
+        if before {
+            "video-per-lap"
+        } else {
+            "video-continuous"
+        },
+        cx,
+    );
+    assert_eq!(continuous(cx), !before);
+    click(
+        if before {
+            "video-continuous"
+        } else {
+            "video-per-lap"
+        },
+        cx,
+    );
+    assert_eq!(continuous(cx), before);
+
+    // One video: the primary alone, with the HUD on its picture.
+    cx.update_window(mock.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("video-stage").label(),
+            Some("Video, Primary only")
+        );
+        let frame = window.find("primary-video-frame").bounds();
+        let card = window.find("video-hud-card").bounds();
+        assert!(frame.contains(&card.origin) && frame.contains(&card.bottom_right()));
     })
     .unwrap();
 }
