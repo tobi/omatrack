@@ -326,7 +326,7 @@ fn build_group(
         .map(|lap| {
             let is_timed = lap.representative && lap.time_ms > 0.0;
             let event_best = is_timed && lap.time_ms == event.best;
-            let gap = is_timed.then(|| lap.time_ms - event.best);
+            let gap = is_timed.then_some(lap.time_ms - event.best);
             LapLine {
                 id: lap.id.clone().into(),
                 lap: lap.lap_id,
