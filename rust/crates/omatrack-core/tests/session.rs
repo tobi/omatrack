@@ -239,6 +239,7 @@ fn single_lap_analysis_generates_corners_without_deltas() {
     .unwrap();
     assert!(analysis.comparison().is_none());
     assert!(analysis.delta().is_empty());
+    assert_eq!(analysis.lap_time_delta(), None);
     assert_eq!(analysis.corner_source(), CornerSource::Generated);
     assert_eq!(analysis.corners().len(), 2);
     assert_eq!(analysis.rows().len(), 2);
@@ -363,6 +364,11 @@ fn swapping_twice_restores_the_analysis() {
     assert_eq!(comparison.manual_offset(), 0.001);
 
     let swapped = analysis.swapped(&cancel).unwrap();
+    // The lap-time difference is the laps' own times, inverted by a swap.
+    let expected =
+        (analysis.primary().lap().time_ms - analysis.reference().unwrap().lap().time_ms) / 1000.0;
+    assert_eq!(analysis.lap_time_delta(), Some(expected));
+    assert_eq!(swapped.lap_time_delta(), Some(-expected));
     assert_eq!(swapped.primary().lap_id(), 2);
     assert_eq!(swapped.reference().unwrap().lap_id(), 3);
     assert_eq!(swapped.comparison().unwrap().manual_offset(), -0.001);

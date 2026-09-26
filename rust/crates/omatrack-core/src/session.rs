@@ -1385,6 +1385,15 @@ impl Analysis {
     pub fn available_strategies(&self) -> &[Strategy] {
         &self.available
     }
+    /// Primary lap time minus reference lap time (s), from the laps' own
+    /// times: exact whatever the alignment confidence, since no station
+    /// map is involved. Positive means the primary is slower. `None`
+    /// without a reference or when either time is unknown.
+    pub fn lap_time_delta(&self) -> Option<f64> {
+        let reference = self.reference.as_ref()?;
+        let delta = (self.primary.lap().time_ms - reference.lap().time_ms) / 1000.0;
+        delta.is_finite().then_some(delta)
+    }
     /// Cumulative delta (s) on the primary grid; empty without one.
     pub fn delta(&self) -> &[f64] {
         self.comparison.as_ref().map(|c| c.delta()).unwrap_or(&[])
