@@ -258,3 +258,58 @@ fn focusing_a_moved_panel_opens_its_current_dock(cx: &mut TestAppContext) {
         );
     });
 }
+
+#[gpui_kit::test]
+fn a_narrow_window_closes_the_library_so_the_traces_keep_half_the_width(
+    cx: &mut TestAppContext,
+) {
+    let sandbox = common::Sandbox::new();
+    let test = common::start(cx, sandbox.options());
+    let size = gpui_kit::size(gpui_kit::px(1280.), gpui_kit::px(800.));
+    cx.simulate_window_resize(test.window.into(), size);
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let area = test.workspace.read(cx).dock_area().read(cx);
+        assert!(!area.is_dock_open(DockPlacement::Left), "Library closed");
+        assert!(area.is_dock_open(DockPlacement::Right));
+    });
+    cx.update_window(test.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let traces = window.find("traces-panel");
+        assert!(
+            traces.bounds().size.width >= gpui_kit::px(640.),
+            "traces take at least half of 1280 px: {:?}",
+            traces.bounds().size.width
+        );
+    })
+    .unwrap();
+
+    // Back to a wide window: the default layout opens it again.
+    let size = gpui_kit::size(gpui_kit::px(1920.), gpui_kit::px(1080.));
+    cx.simulate_window_resize(test.window.into(), size);
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let area = test.workspace.read(cx).dock_area().read(cx);
+        assert!(area.is_dock_open(DockPlacement::Left));
+    });
+
+    // Once the user toggles a dock the layout is theirs.
+    cx.update_window(test.window.into(), |_, window, cx| {
+        window.press("ctrl-b", cx)
+    })
+    .unwrap();
+    let size = gpui_kit::size(gpui_kit::px(1300.), gpui_kit::px(800.));
+    cx.simulate_window_resize(test.window.into(), size);
+    cx.run_until_parked();
+    cx.update_window(test.window.into(), |_, window, cx| {
+        window.press("ctrl-b", cx)
+    })
+    .unwrap();
+    let size = gpui_kit::size(gpui_kit::px(1280.), gpui_kit::px(800.));
+    cx.simulate_window_resize(test.window.into(), size);
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let area = test.workspace.read(cx).dock_area().read(cx);
+        assert!(area.is_dock_open(DockPlacement::Left), "the user's choice stays");
+    });
+}

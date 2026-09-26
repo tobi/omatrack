@@ -17,8 +17,8 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, TestSupportExt as _,
-    Window, div,
+    ParentElement as _, Pixels, Render, SharedString, Styled as _, Subscription, Task,
+    TestSupportExt as _, Window, div,
 };
 use omatrack_trace::{Selection, Viewport};
 use omatrack_ui::theme::ThemeStatus;
@@ -59,6 +59,10 @@ pub struct Workspace {
     pre_focus_viewport: Option<Viewport>,
     /// The cursor before the corner focus, restored with the viewport.
     pre_focus_cursor: Option<f64>,
+    /// The default layout follows the window's width until the user
+    /// toggles a dock (a restored layout is the user's and never refits).
+    fit_docks: bool,
+    last_fit_width: Option<Pixels>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -89,6 +93,9 @@ impl Workspace {
         });
 
         let subscriptions = vec![
+            cx.observe_window_bounds(window, |this: &mut Self, window, cx| {
+                this.fit_docks(window, cx);
+            }),
             cx.observe_global::<Theme>(|_, cx| cx.notify()),
             cx.observe_global::<ThemeStatus>(|_, cx| cx.notify()),
             cx.observe(&app.session, |_, _, cx| cx.notify()),
@@ -143,6 +150,7 @@ impl Workspace {
         let traces = panels.focus_handle(PanelKind::Traces, cx);
         window.focus(&traces, cx);
 
+        let layout_origin_is_default = layout_origin != LayoutOrigin::Restored;
         let mut workspace = Self {
             app,
             focus_handle: cx.focus_handle(),
@@ -158,6 +166,8 @@ impl Workspace {
             focused_corner: None,
             pre_focus_viewport: None,
             pre_focus_cursor: None,
+            fit_docks: layout_origin_is_default,
+            last_fit_width: None,
             _subscriptions: subscriptions,
         };
         workspace.sync_strategies(window, cx);
@@ -350,12 +360,24 @@ impl Workspace {
         }
     }
 
+    /// Keep the default layout's docks fitted to the window width (the
+    /// traces keep at least half of it). Stops once the user toggles a dock.
+    fn fit_docks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let width = window.viewport_size().width;
+        if !self.fit_docks || self.last_fit_width == Some(width) {
+            return;
+        }
+        self.last_fit_width = Some(width);
+        layout::fit_default_docks(&self.dock_area, window, cx);
+    }
+
     fn toggle_dock(
         &mut self,
         placement: DockPlacement,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.fit_docks = false;
         self.dock_area
             .update(cx, |area, cx| area.toggle_dock(placement, window, cx));
     }
@@ -515,6 +537,8 @@ impl Workspace {
         .on_action(cx.listener(|this, _: &ResetLayout, window, cx| {
             layout::apply_default(&this.dock_area, &this.panels, window, cx);
             this.layout_origin = LayoutOrigin::Default;
+            this.fit_docks = true;
+            this.last_fit_width = None;
             window.push_notification(
                 Notification::info("The default layout is restored.").id::<LayoutNotice>(),
                 cx,

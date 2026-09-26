@@ -2,7 +2,7 @@
 //! `omatrack.yml` under `workspace.layout`.
 
 use gpui_kit::component::dock::{DockArea, DockAreaState, DockLayout, DockPlacement};
-use gpui_kit::{App, Context, Entity, Window};
+use gpui_kit::{App, Context, Entity, Pixels, Window};
 
 use crate::panels::{PanelKind, WorkspacePanels, provide, withdraw};
 
@@ -26,6 +26,21 @@ pub(crate) const MAP_REMS: f32 = 13.75;
 /// Inspector pane height in the right dock, in rems (240 px at the default
 /// base); the tables above take the rest.
 pub(crate) const INSPECTOR_REMS: f32 = 15.0;
+
+/// Narrowest window, in rems (1440 px at the default base), whose default
+/// layout opens the Library dock too: below it the traces would get less
+/// than half the width, so the Library starts closed (ctrl-b opens it).
+pub(crate) const LIBRARY_OPEN_MIN_REMS: f32 = 90.0;
+/// The right dock never takes more than this share of the window.
+pub(crate) const RIGHT_DOCK_MAX_SHARE: f32 = 0.3;
+
+/// Default dock widths for a window `width` wide: (library open, library
+/// width, right dock width).
+pub(crate) fn default_dock_widths(width: Pixels, rem: Pixels) -> (bool, Pixels, Pixels) {
+    let library = width >= rem * LIBRARY_OPEN_MIN_REMS;
+    let right = (rem * RIGHT_DOCK_REMS).min(width * RIGHT_DOCK_MAX_SHARE);
+    (library, rem * LEFT_DOCK_REMS, right)
+}
 
 /// How a layout came to be on screen.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +79,8 @@ pub(crate) fn apply_default(
     // The dock stores pixels; derive them from the rem scale so the default
     // layout follows the theme's base font.
     let rem = window.rem_size();
+    let (library_open, left_width, right_width) =
+        default_dock_widths(window.viewport_size().width, rem);
     let tabs = |kinds: &[PanelKind], cx: &App| {
         kinds.iter().fold(DockLayout::tabs(), |layout, kind| {
             layout.panel_view(panels.handle(*kind), cx)
@@ -91,13 +108,30 @@ pub(crate) fn apply_default(
         area.set_center(center, window, cx);
         area.set_dock(DockPlacement::Left, left, window, cx);
         area.set_dock(DockPlacement::Right, right, window, cx);
-        area.set_dock_size(DockPlacement::Left, rem * LEFT_DOCK_REMS, window, cx);
-        area.set_dock_size(DockPlacement::Right, rem * RIGHT_DOCK_REMS, window, cx);
-        if !area.is_dock_open(DockPlacement::Left) {
+        area.set_dock_size(DockPlacement::Left, left_width, window, cx);
+        area.set_dock_size(DockPlacement::Right, right_width, window, cx);
+        if area.is_dock_open(DockPlacement::Left) != library_open {
             area.toggle_dock(DockPlacement::Left, window, cx);
         }
         if !area.is_dock_open(DockPlacement::Right) {
             area.toggle_dock(DockPlacement::Right, window, cx);
+        }
+    });
+}
+
+/// Re-fit the default layout's docks to the window's width (see
+/// [`default_dock_widths`]): the window may open at one size and settle at
+/// another before the user has touched a dock.
+pub(crate) fn fit_default_docks(area: &Entity<DockArea>, window: &mut Window, cx: &mut App) {
+    let (library_open, left_width, right_width) =
+        default_dock_widths(window.viewport_size().width, window.rem_size());
+    area.update(cx, |area, cx| {
+        area.set_dock_size(DockPlacement::Left, left_width, window, cx);
+        area.set_dock_size(DockPlacement::Right, right_width, window, cx);
+        if area.has_dock(DockPlacement::Left)
+            && area.is_dock_open(DockPlacement::Left) != library_open
+        {
+            area.toggle_dock(DockPlacement::Left, window, cx);
         }
     });
 }
@@ -192,5 +226,34 @@ pub(crate) fn reveal_dock(
         && !area.is_dock_open(placement)
     {
         area.toggle_dock(placement, window, cx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui_kit::px;
+
+    #[test]
+    fn narrow_windows_keep_at_least_half_the_width_for_the_center() {
+        let rem = px(16.);
+        for width in [1024., 1280., 1366., 1440., 1920., 2560.] {
+            let width = px(width);
+            let (library, left, right) = default_dock_widths(width, rem);
+            let docks = right + if library { left } else { px(0.) };
+            assert!(
+                width - docks >= width * 0.5,
+                "{width:?}: the center keeps half the window"
+            );
+        }
+        assert!(
+            !default_dock_widths(px(1280.), rem).0,
+            "Library closed at 1280"
+        );
+        assert!(
+            default_dock_widths(px(1920.), rem).0,
+            "Library open at 1920"
+        );
+        assert_eq!(default_dock_widths(px(1920.), rem).2, rem * RIGHT_DOCK_REMS);
     }
 }
