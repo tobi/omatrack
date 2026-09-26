@@ -8,10 +8,11 @@
 //! folder, the folder's `TRACK.yml`.
 //!
 //! Rows share right-aligned columns: a lap's time and a recording's best sit
-//! in one mono column, the gap to the best (or a count) in the one after it.
+//! in one tabular-figure column, the gap to the best (or a count) in the one after it.
 //! Cells never wrap: the tree is a uniform list, so every row keeps one
 //! fixed height.
 
+use omatrack_ui::TypeScale as _;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -49,7 +50,7 @@ use crate::keymap::{LIBRARY_CONTEXT, WORKSPACE_CONTEXT};
 use crate::panels::{PanelKind, empty_state};
 use crate::state::{AppState, LibraryEvent, ScanStatus, SessionEvent};
 
-/// The time column: fits `11:49.212` in the mono face at `text_sm`.
+/// The time column: fits `11:49.212` in tabular figures at `text_sm`.
 const TIME_COLUMN: Rems = Rems(4.75);
 /// The trailing column: the gap to the best (`+12.345`), the Best tag, a
 /// recording's lap count or a folder's recording count.
@@ -1161,7 +1162,6 @@ fn context_menu_entries(index: &RowIndex, id: &SharedString) -> Vec<MenuEntry> {
 fn render_row(entry: &TreeEntry, index: &RowIndex, cx: &App) -> ListItem {
     let id = entry.item().id.clone();
     let theme = cx.theme();
-    let mono = theme.mono_font_family.clone();
     // Laps sit one level in from their recording's chevron, so their role
     // lane lines up under it and their label under the recording's title.
     let depth = match index.rows.get(&id) {
@@ -1200,14 +1200,14 @@ fn render_row(entry: &TreeEntry, index: &RowIndex, cx: &App) -> ListItem {
         })
     };
     let label = || h_flex().flex_1().min_w_0().gap_1p5().overflow_hidden();
-    // The time column: mono, right-aligned, never wrapping or shrinking.
+    // The time column: tabular figures, right-aligned, never wrapping or shrinking.
     let time_cell = |time: Option<SharedString>, muted: bool| {
         div()
             .flex_shrink_0()
             .min_w(TIME_COLUMN)
             .whitespace_nowrap()
             .text_right()
-            .font_family(mono.clone())
+            .numeric()
             .when(muted, |this| this.text_color(theme.muted_foreground))
             .children(time)
     };
@@ -1329,7 +1329,7 @@ fn render_row(entry: &TreeEntry, index: &RowIndex, cx: &App) -> ListItem {
                                 this.child(Swatch::new(role.color(theme)).xsmall()).child(
                                     div()
                                         .text_xs()
-                                        .font_family(mono.clone())
+                                        .numeric()
                                         .text_color(role.color(theme))
                                         .child(role.marker()),
                                 )
@@ -1366,7 +1366,7 @@ fn render_row(entry: &TreeEntry, index: &RowIndex, cx: &App) -> ListItem {
                             // definition: the gap is metadata, not a
                             // gain/loss signal, so it stays muted.
                             .when_some(delta, |this, delta| {
-                                this.child(div().font_family(mono.clone()).child(delta))
+                                this.child(div().numeric().child(delta))
                             }),
                     ),
             ),

@@ -20,6 +20,7 @@ use omatrack_core::Comparison;
 use omatrack_core::alignment::relative_along_track_meters;
 use omatrack_core::monotonic::interpolate_fraction;
 use omatrack_core::unify::UnifiedLap;
+use omatrack_ui::TypeScale as _;
 use omatrack_ui::{HudPosition, HudVariant, VideoHud};
 
 use crate::state::AppState;
@@ -179,7 +180,7 @@ pub fn countdown(app: &AppState, window: &Window, cx: &App) -> Option<AnyElement
                     )
                     .child(
                         div()
-                            .font_family(theme.mono_font_family.clone())
+                            .numeric()
                             .font_semibold()
                             .text_3xl()
                             .child(SharedString::from(count.to_string())),

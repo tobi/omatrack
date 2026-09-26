@@ -26,6 +26,7 @@ use gpui_kit::{
 use omatrack_core::format_lap_time;
 use omatrack_core::session::LapStripKind;
 use omatrack_library::catalog::LapNode;
+use omatrack_ui::TypeScale as _;
 use omatrack_ui::{DeltaSense, LapRole, MISSING_VALUE, Swatch, format_delta};
 
 use crate::actions::{Role, SelectLap, SetPrimary, SetReference};
@@ -312,7 +313,6 @@ impl TableDelegate for LapTable {
         } else {
             theme.muted_foreground
         };
-        let mono = theme.mono_font_family.clone();
         match Col::ALL[col_ix] {
             Col::Lap => h_flex()
                 .w_full()
@@ -322,8 +322,8 @@ impl TableDelegate for LapTable {
                     |this, role| {
                         this.child(Swatch::new(role.color(theme)).xsmall()).child(
                             div()
-                                .text_xs()
-                                .font_family(mono.clone())
+                                .text_label()
+                                .numeric()
                                 .text_color(theme.muted_foreground)
                                 .child(role.marker()),
                         )
@@ -334,7 +334,7 @@ impl TableDelegate for LapTable {
             Col::Time => h_flex()
                 .w_full()
                 .justify_end()
-                .font_family(mono)
+                .numeric()
                 .text_color(text)
                 .child(if line.time_ms > 0.0 {
                     SharedString::from(format_lap_time(line.time_ms))
@@ -352,7 +352,7 @@ impl TableDelegate for LapTable {
                         // Every other lap is slower by definition: the gap is
                         // metadata, not a gain or loss, so it stays neutral.
                         let delta = line.delta_to_best_ms.map(|ms| ms / 1000.0);
-                        this.font_family(mono)
+                        this.numeric()
                             .text_color(theme.muted_foreground)
                             .child(format_delta(delta, 3, DeltaSense::LowerIsBetter).0)
                     }
@@ -665,7 +665,7 @@ impl Render for LapsPanel {
                     div()
                         .px_2()
                         .py_1()
-                        .text_xs()
+                        .text_label()
                         .truncate()
                         .text_color(cx.theme().muted_foreground)
                         .child(title),

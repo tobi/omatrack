@@ -10,6 +10,7 @@
 //! The panel observes [`CursorState`](omatrack_trace::CursorState) for its
 //! readouts; nothing it does notifies the session or any other panel.
 
+use omatrack_ui::TypeScale as _;
 use std::sync::Arc;
 
 use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, h_flex, v_flex};
@@ -241,7 +242,7 @@ impl InspectorPanel {
                             .id("inspector-position")
                             .test_support()
                             .aria_label(position.clone())
-                            .font_family(theme.mono_font_family.clone())
+                            .numeric()
                             .child(position),
                     )
                     .when(has_reference, |this| {
@@ -250,7 +251,7 @@ impl InspectorPanel {
                                 .gap_1()
                                 .child(
                                     div()
-                                        .text_xs()
+                                        .text_label()
                                         .text_color(theme.muted_foreground)
                                         .child("Δt"),
                                 )
@@ -278,7 +279,7 @@ impl InspectorPanel {
                 .child(role.marker())
         };
         h_flex()
-            .text_xs()
+            .text_label()
             .text_color(theme.muted_foreground)
             .gap_1()
             .child(div().flex_1().min_w_0().child("Channel"))
@@ -381,7 +382,7 @@ impl Render for InspectorPanel {
                             .flex_shrink_0()
                             .text_right()
                             .whitespace_nowrap()
-                            .font_family(theme.mono_font_family.clone())
+                            .numeric()
                             .when(finite.is_none(), |this| {
                                 this.text_color(theme.muted_foreground)
                             })
@@ -400,6 +401,7 @@ impl Render for InspectorPanel {
                         .id(ElementIdFor::channel(&channel.key))
                         .test_support()
                         .aria_label(spoken)
+                        .w_full()
                         .h_7()
                         .px_2()
                         .gap_1()
@@ -426,7 +428,7 @@ impl Render for InspectorPanel {
                                     this.child(
                                         div()
                                             .flex_shrink_0()
-                                            .text_xs()
+                                            .text_label()
                                             .text_color(theme.muted_foreground)
                                             .child(channel.unit.clone()),
                                     )
@@ -435,7 +437,7 @@ impl Render for InspectorPanel {
                                     this.child(
                                         div()
                                             .flex_shrink_0()
-                                            .text_xs()
+                                            .text_label()
                                             .italic()
                                             .text_color(theme.muted_foreground)
                                             .child("No data"),
@@ -459,7 +461,7 @@ impl Render for InspectorPanel {
                                         )
                                         .0,
                                     )
-                                    .font_family(theme.mono_font_family.clone())
+                                    .numeric()
                                     .into_any_element(),
                             };
                             this.child(value(reference)).child(
@@ -479,7 +481,7 @@ impl Render for InspectorPanel {
         root.child(
             v_flex()
                 .size_full()
-                .text_sm()
+                .text_body()
                 .child(self.render_header(&analysis, probe, cx))
                 .child(list)
                 .when(probe.is_none(), |this| {
@@ -487,7 +489,7 @@ impl Render for InspectorPanel {
                         div()
                             .flex_shrink_0()
                             .p_2()
-                            .text_xs()
+                            .text_label()
                             .text_color(cx.theme().muted_foreground)
                             .child("Move the cursor over the traces to read values."),
                     )

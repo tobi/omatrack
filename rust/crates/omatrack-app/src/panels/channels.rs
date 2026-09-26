@@ -41,6 +41,7 @@ use omatrack_library::Config;
 use omatrack_trace::LaneStyle;
 use omatrack_trace::palette::TracePalette;
 use omatrack_ui::Swatch;
+use omatrack_ui::TypeScale as _;
 
 use crate::commands::{self, CommandCategory, CommandSpec};
 use crate::panels::{PanelKind, empty_state};
@@ -369,7 +370,7 @@ impl TableDelegate for ChannelTable {
             Col::Rate => h_flex()
                 .w_full()
                 .justify_end()
-                .font_family(theme.mono_font_family.clone())
+                .numeric()
                 .text_color(theme.muted_foreground)
                 .child(match entry.rate {
                     Some(rate) if rate > 0.0 => format!("{rate:.0}"),

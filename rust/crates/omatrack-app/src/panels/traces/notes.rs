@@ -15,6 +15,7 @@ use gpui_kit::{
 };
 use omatrack_core::corners::NoteSeverity;
 use omatrack_core::session::CornerSpeeds;
+use omatrack_ui::TypeScale as _;
 use omatrack_ui::{DeltaSense, DeltaText};
 
 use super::TracesPanel;
@@ -28,7 +29,7 @@ fn speed(v: f64) -> SharedString {
 }
 
 /// One row of the entry / min / exit speed grid: a role label and three
-/// right-aligned mono cells.
+/// right-aligned tabular cells.
 fn speed_row(label: SharedString, cells: [SharedString; 3], muted: bool, cx: &App) -> Div {
     let theme = cx.theme();
     h_flex()
@@ -44,7 +45,7 @@ fn speed_row(label: SharedString, cells: [SharedString; 3], muted: bool, cx: &Ap
             div()
                 .flex_1()
                 .text_right()
-                .font_family(theme.mono_font_family.clone())
+                .numeric()
                 .when(muted, |d| d.text_color(theme.muted_foreground))
                 .child(cell)
         }))

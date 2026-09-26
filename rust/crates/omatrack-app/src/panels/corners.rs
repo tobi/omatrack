@@ -21,6 +21,7 @@
 //! Keyboard: the table owns arrow/Home/End/Page navigation; Enter (or a
 //! double-click) dispatches [`FocusCorner`] for the selected row.
 
+use omatrack_ui::TypeScale as _;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -352,15 +353,11 @@ impl CornerTable {
         });
     }
 
-    fn render_number(&self, text: SharedString, cx: &App) -> Div {
-        h_flex()
-            .w_full()
-            .justify_end()
-            .font_family(cx.theme().mono_font_family.clone())
-            .child(text)
+    fn render_number(&self, text: SharedString) -> Div {
+        h_flex().w_full().justify_end().numeric().child(text)
     }
 
-    /// Width of a speed cell's delta slot, rems ("+12.3" in small mono).
+    /// Width of a speed cell's delta slot, rems ("+12.3" in small tabular figures).
     const SUB_DELTA_REMS: f32 = 2.75;
 
     fn render_speed(&self, (primary, reference): (f64, f64), cx: &App) -> Div {
@@ -378,7 +375,7 @@ impl CornerTable {
                         .w(rems(Self::SUB_DELTA_REMS))
                         .flex_shrink_0()
                         .justify_end()
-                        .text_xs()
+                        .text_label()
                         .child(
                             DeltaText::new(Some(primary - reference))
                                 .decimals(1)
@@ -391,9 +388,9 @@ impl CornerTable {
 
     /// A signed position delta (metres, + = the primary's event is later).
     /// Later is not better or worse by itself, so it stays uncoloured.
-    fn render_metres(&self, value: f64, cx: &App) -> Div {
+    fn render_metres(&self, value: f64) -> Div {
         let (text, _) = format_delta(Some(value), 0, DeltaSense::LowerIsBetter);
-        self.render_number(text, cx)
+        self.render_number(text)
     }
 }
 
@@ -493,7 +490,7 @@ impl TableDelegate for CornerTable {
         let theme = cx.theme();
         match Col::ALL[col_ix] {
             Col::Order => self
-                .render_number((line.order + 1).to_string().into(), cx)
+                .render_number((line.order + 1).to_string().into())
                 .text_color(theme.muted_foreground)
                 .into_any_element(),
             Col::Corner => div()
@@ -514,15 +511,15 @@ impl TableDelegate for CornerTable {
             Col::Entry => self.render_speed(line.speeds[0], cx).into_any_element(),
             Col::Min => self.render_speed(line.speeds[1], cx).into_any_element(),
             Col::Exit => self.render_speed(line.speeds[2], cx).into_any_element(),
-            Col::Brake => self.render_metres(line.brake, cx).into_any_element(),
-            Col::TurnIn => self.render_metres(line.turn_in, cx).into_any_element(),
-            Col::Throttle => self.render_metres(line.throttle, cx).into_any_element(),
+            Col::Brake => self.render_metres(line.brake).into_any_element(),
+            Col::TurnIn => self.render_metres(line.turn_in).into_any_element(),
+            Col::Throttle => self.render_metres(line.throttle).into_any_element(),
             Col::Consistency => {
                 let text: SharedString = match line.consistency {
                     Some(spread) => format!("±{spread:.1}").into(),
                     None => MISSING_VALUE.into(),
                 };
-                self.render_number(text, cx).into_any_element()
+                self.render_number(text).into_any_element()
             }
             Col::Notes => {
                 let count = line.notes.len();
@@ -533,11 +530,7 @@ impl TableDelegate for CornerTable {
                     .when_some(line.worst_severity(), |this, severity| {
                         this.child(severity_icon(severity, cx).xsmall())
                     })
-                    .child(
-                        div()
-                            .font_family(theme.mono_font_family.clone())
-                            .child(count.to_string()),
-                    )
+                    .child(div().numeric().child(count.to_string()))
                     .into_any_element()
             }
         }
@@ -1026,7 +1019,7 @@ impl CornersPanel {
                                 this.child(dt(line.dt).unit("s")).child(
                                     h_flex()
                                         .gap_1()
-                                        .text_xs()
+                                        .text_label()
                                         .text_color(theme.muted_foreground)
                                         .child("entry")
                                         .child(dt(line.entry_dt))
@@ -1045,7 +1038,7 @@ impl CornersPanel {
                                     .aria_label(caution.clone())
                                     .items_start()
                                     .gap_1()
-                                    .text_xs()
+                                    .text_label()
                                     .text_color(theme.muted_foreground)
                                     .child(
                                         Icon::new(IconName::TriangleAlert)
@@ -1082,7 +1075,7 @@ impl CornersPanel {
             .border_t_1()
             .border_color(theme.border)
             .p_2()
-            .text_sm()
+            .text_body()
             .child(body)
     }
 
@@ -1098,7 +1091,7 @@ impl CornersPanel {
             div()
                 .px_2()
                 .py_1()
-                .text_xs()
+                .text_label()
                 .text_color(cx.theme().muted_foreground)
                 .child(text),
         )

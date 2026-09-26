@@ -21,6 +21,7 @@
 mod icons;
 pub mod overlay;
 
+use omatrack_ui::TypeScale as _;
 use std::time::Instant;
 
 use gpui_kit::component::{
@@ -696,7 +697,6 @@ impl VideoPanel {
             Some(driver) => format!("{} {driver} {caption}", lap_role.label()),
             None => format!("{} {caption}", lap_role.label()),
         });
-        let mono = theme.mono_font_family.clone();
         let place = lap.and_then(|lap| {
             let ix = lap.laps().iter().position(|l| l.id == lap.lap_id())?;
             Some(SharedString::from(format!(
@@ -734,7 +734,7 @@ impl VideoPanel {
                         .rounded(theme.radius_tokens().sm)
                         .bg(color)
                         .text_color(on_color)
-                        .font_family(mono.clone())
+                        .numeric()
                         .font_semibold()
                         .child(lap_role.marker()),
                 )
@@ -744,23 +744,18 @@ impl VideoPanel {
                 .child(
                     div()
                         .flex_shrink_0()
-                        .font_family(mono.clone())
+                        .numeric()
                         .font_semibold()
                         .child(info.label.clone()),
                 )
                 .when(!compact && !info.time.is_empty(), |this| {
-                    this.child(
-                        div()
-                            .flex_shrink_0()
-                            .font_family(mono.clone())
-                            .child(info.time.clone()),
-                    )
+                    this.child(div().flex_shrink_0().numeric().child(info.time.clone()))
                 })
                 .when_some(place.filter(|_| !compact), |this, place| {
                     this.child(
                         div()
                             .flex_shrink_0()
-                            .font_family(mono)
+                            .numeric()
                             .text_color(theme.muted_foreground)
                             .child(place),
                     )

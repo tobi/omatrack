@@ -21,6 +21,7 @@ use gpui_kit::{
 };
 use omatrack_core::session::CornerSource;
 use omatrack_trace::XAxis;
+use omatrack_ui::TypeScale as _;
 use omatrack_ui::{LapRole, LapSelect, LapStrip};
 
 use super::{TraceMode, TracesPanel};
@@ -203,7 +204,7 @@ impl TracesPanel {
                                 .min_w_0()
                                 .truncate()
                                 .text_xs()
-                                .font_family(theme.mono_font_family.clone())
+                                .numeric()
                                 .text_color(theme.foreground)
                                 .child(summary),
                         )
@@ -407,7 +408,7 @@ fn row(
         .border_color(theme.border)
         .child(
             div()
-                .w_40()
+                .w(gpui_kit::rems(omatrack_trace::CHROME_REMS))
                 .flex_shrink_0()
                 .flex()
                 .items_center()

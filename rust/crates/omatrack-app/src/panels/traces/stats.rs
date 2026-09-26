@@ -58,7 +58,9 @@ impl RangeStats {
             parts.push(format!("{:.0} m", self.length_m));
         }
         if let Some(dt) = self.dt {
-            parts.push(format!("Δt {dt:+.3} s"));
+            let (dt, _) =
+                omatrack_ui::format_delta(Some(dt), 3, omatrack_ui::DeltaSense::LowerIsBetter);
+            parts.push(format!("Δt {dt} s"));
         }
         let span = |(low, high): (f64, f64)| format!("{low:.0}–{high:.0}");
         match (self.primary_speed, self.reference_speed) {

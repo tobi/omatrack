@@ -18,6 +18,7 @@ use omatrack_core::alignment::Strategy;
 use omatrack_core::format_lap_time;
 use omatrack_core::session::Analysis;
 use omatrack_trace::scale::value_at_fraction;
+use omatrack_ui::TypeScale as _;
 use omatrack_ui::theme::{ThemeFonts, ThemeStatus};
 use omatrack_ui::{DeltaSense, DeltaText};
 
@@ -54,7 +55,11 @@ fn thousands(value: f64) -> String {
         }
         out.push(ch);
     }
-    if value < 0.0 { format!("-{out}") } else { out }
+    if value < 0.0 {
+        format!("{}{out}", omatrack_ui::MINUS)
+    } else {
+        out
+    }
 }
 
 /// `1,234 m · 0:42.310` at a primary lap fraction.
@@ -229,12 +234,11 @@ impl StatusView {
                     .child("No cursor"),
             )];
         };
-        let mono = cx.theme().mono_font_family.clone();
         let text = cursor_text(analysis, fraction);
         let mut items = vec![item(
             "status-cursor",
             text.clone(),
-            div().font_family(mono.clone()).child(text),
+            div().numeric().child(text),
         )];
         if let Some(comparison) = analysis.comparison() {
             let delta = comparison.time_delta_at(fraction);
@@ -357,7 +361,7 @@ impl Render for StatusView {
             None => theme_label,
         };
         let separator = || Separator::vertical().h_3().into_any_element();
-        let mut bar = StatusBar::new().text_xs();
+        let mut bar = StatusBar::new().text_label();
         for (ix, element) in self.render_cursor(cx).into_iter().enumerate() {
             if ix > 0 {
                 bar = bar.left(separator());
