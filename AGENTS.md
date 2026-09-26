@@ -318,7 +318,23 @@ so a pin bump regenerates every cache.
   the playhead holds at 33% of the viewport, unclamped; prefetch past 70%.
 - HUD gap bar (±8 m along-track) only when both GPS fixes report < 1 m
   accuracy. `video.muted`, `video.hud_position` (normalized, written at drag
-  end) persist. Opening a video docks it; nothing enters fullscreen by itself.
+  end, shared by the docked card and the stage band) persist. Opening a video
+  docks it; nothing enters fullscreen by itself.
+- **Fullscreen stage** (F or the toolbar button): the video panel renders
+  over the whole window on black in place of the title bar, filmstrip row,
+  docks and status bar. The dock layout is never touched (no dock zoom); the
+  window enters fullscreen best effort. Pictures are aspect-fit and
+  vertically centred per layout (1–5, Qt geometry, PiP 30% width, 16 px
+  margin) above a reserved lane (Qt `reservedHeight`) holding the same
+  `Filmstrip` entity. Floating controls hide after `CONTROLS_HIDE_AFTER`
+  (2 s) idle unless hovered and return on pointer motion or any keystroke.
+  Escape leaves it and restores focus. Stage-only overlays: the telemetry
+  band (`omatrack_trace::TelemetryHud`, 1000:210, 10% lap window with the
+  playhead at 86% / 33% continuous, throttle and brake with the reference
+  through the shared map, pedals, steering dial with P/R notches, gear and
+  speed with their deltas, gap bar gated as above, draggable, HUD toggle) and
+  the delta bar (P/R driver and lap labels, centred Δ, `≈` under LOW
+  confidence). Docked, only the slim HUD card shows.
 
 ## 7. UI architecture rules (GPUI)
 
@@ -436,7 +452,8 @@ dependency.
   stride, rendered at display size (≈ 2560 px cap); every replaced image is
   dropped from the atlas; the reference may cap at 30 fps when CPU-bound. A
   1080p SW cost above ~8 ms is reported with an EGL/PBO follow-up.
-- `VideoView` paints aspect-fit on a caller-supplied letterbox token, themed
+- `VideoView` paints aspect-fit on a caller-supplied letterbox token (the
+  theme background docked, black on the fullscreen stage), themed
   loading/error states, animation frames only while playing, draws only while
   visible (`set_visible`).
 - `Follower::step(target, rate, policy) -> FollowAction {None, SetSpeed,
@@ -493,7 +510,7 @@ palette items. See [action.md](.agents/skills/gpui-kit/references/gpui/action.md
 | ctrl-1 … ctrl-6 | Focus Library / Traces / Video / Corners / Laps / Map |
 | space; left / right | Play/pause; ±2 s |
 | m / s / p | Mute / 0.25x / continuous playback |
-| f / escape | Video fullscreen / exit (escape also closes overlays) |
+| f / escape | Fullscreen video stage / exit, focus restored (escape also closes overlays) |
 | 1–5 | Split, primary+PiP, reference+PiP, primary only, reference only |
 | x / a | Swap roles / edit corners |
 | h / j | Previous / next corner (no wrap) |
