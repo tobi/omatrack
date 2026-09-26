@@ -22,6 +22,7 @@ use omatrack_core::session::StrategyRequest;
 use crate::actions::{OpenPreferences, TogglePalette};
 use crate::keymap::WORKSPACE_CONTEXT;
 use crate::workspace::Workspace;
+use omatrack_ui::TypeScale as _;
 
 /// One entry of the sync strategy select; `None` is the automatic choice.
 #[derive(Debug, Clone, PartialEq)]
@@ -144,11 +145,11 @@ impl Workspace {
                         .aria_label(track.clone())
                         .gap_2()
                         .min_w_0()
-                        .child(div().text_sm().font_semibold().truncate().child(track))
+                        .child(div().text_title().font_semibold().truncate().child(track))
                         .when_some(event, |this, event| {
                             this.child(
                                 div()
-                                    .text_xs()
+                                    .text_label()
                                     .text_color(theme.muted_foreground)
                                     .truncate()
                                     .child(event),

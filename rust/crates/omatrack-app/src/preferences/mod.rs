@@ -61,6 +61,7 @@ use crate::actions::{ClosePreferences, NextPreferencesSection, PrevPreferencesSe
 use crate::keymap::{PREFERENCES_CONTEXT, PREFERENCES_NAV_CONTEXT};
 use crate::state::{AppState, PreferencesEvent};
 use crate::workspace::SyncOption;
+use omatrack_ui::TypeScale as _;
 
 /// The readable width of the settings column.
 const CONTENT_MAX_WIDTH: f32 = 46.;
@@ -392,7 +393,7 @@ impl PreferencesView {
             .test_support()
             .w_full()
             .gap_1()
-            .text_xs()
+            .text_label()
             .text_color(theme.muted_foreground)
             .child("Changes save automatically to")
             .child(
@@ -499,7 +500,7 @@ pub(crate) fn title_bar(
                     .id("preferences-title")
                     .test_support()
                     .aria_label("Preferences")
-                    .text_sm()
+                    .text_body()
                     .font_semibold()
                     .text_color(theme.foreground)
                     .child("Preferences"),

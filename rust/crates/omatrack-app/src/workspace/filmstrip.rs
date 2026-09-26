@@ -43,7 +43,7 @@ use gpui_kit::{
     Render, Role as AccessRole, SharedString, StatefulInteractiveElement as _, Styled as _,
     Subscription, TestSupportExt as _, Window, div,
 };
-use omatrack_ui::{LapRole, LapSelect, LapStrip, LapStripItem, Swatch};
+use omatrack_ui::{LapRole, LapSelect, LapStrip, LapStripItem, Swatch, TypeScale as _};
 
 use crate::actions::{Role, SwapRoles};
 use crate::keymap::WORKSPACE_CONTEXT;
@@ -285,7 +285,7 @@ impl Filmstrip {
             .w_full()
             .min_w_0()
             .gap_1p5()
-            .text_xs()
+            .text_label()
             .whitespace_nowrap()
             .children(row.laps.iter().map(|lap| {
                 h_flex()
@@ -294,8 +294,7 @@ impl Filmstrip {
                     .child(Swatch::new(lap.role.color(theme)))
                     .child(
                         div()
-                            .font_family(theme.mono_font_family.clone())
-                            .font_semibold()
+                            .font_medium()
                             .text_color(lap.role.color(theme))
                             .child(lap.role.marker()),
                     )
@@ -332,7 +331,7 @@ impl Filmstrip {
                 h_flex()
                     .flex_shrink_0()
                     .gap_1()
-                    .font_family(theme.mono_font_family.clone())
+                    .numeric()
                     .child(
                         div()
                             .text_color(theme.muted_foreground)
@@ -356,7 +355,7 @@ impl Filmstrip {
                 .flex()
                 .items_center()
                 .px_2()
-                .text_xs()
+                .text_label()
                 .text_color(theme.muted_foreground)
                 .child(if loading {
                     "Loading laps…"

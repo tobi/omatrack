@@ -20,6 +20,7 @@ use omatrack_ui::theme::{FontOrigin, ThemeFonts, ThemeOrigin, ThemeStatus};
 use super::layout::{card, control, note, page, row, row_with, value};
 use super::{PreferencesSection, PreferencesView};
 use crate::state::AppState;
+use omatrack_ui::TypeScale as _;
 
 impl PreferencesView {
     pub(super) fn render_library(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -115,7 +116,7 @@ impl PreferencesView {
             [
                 card("prefs-folders", "Folders", rows, cx),
                 v_flex()
-                    .text_sm()
+                    .text_body()
                     .text_color(cx.theme().muted_foreground)
                     .child(
                         "Recordings are never modified. The only files Omatrack writes into a \
@@ -286,7 +287,7 @@ impl PreferencesView {
             [
                 card("prefs-driver-names", "Driver names", [editor], cx),
                 div()
-                    .text_sm()
+                    .text_body()
                     .text_color(cx.theme().muted_foreground)
                     .child(
                         "* names every id without its own entry. A TRACK.yml or a \
@@ -359,7 +360,7 @@ impl PreferencesView {
             .aria_label("Track Atlas attribution")
             .px_4()
             .py_3()
-            .text_sm()
+            .text_body()
             .text_color(cx.theme().muted_foreground)
             .child(TextView::markdown("atlas-attribution-text", attribution))
             .into_any_element();

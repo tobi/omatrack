@@ -24,6 +24,7 @@ use gpui_kit::{
 use omatrack_library::track_yml::normalized_driver_mapping_key;
 
 use crate::state::AppState;
+use omatrack_ui::TypeScale as _;
 
 /// One table row. `id` is the row's identity for its whole life (element
 /// ids, removal), independent of its position and of the text in it.
@@ -147,7 +148,7 @@ impl Render for DriverMappingsEditor {
         let theme = cx.theme();
         let header = h_flex()
             .gap_2()
-            .text_xs()
+            .text_label()
             .text_color(theme.muted_foreground)
             .child(div().w(rems(7.)).child("Driver id"))
             .child(div().flex_1().child("Name"));
@@ -195,7 +196,7 @@ impl Render for DriverMappingsEditor {
                             .id(ElementId::Name(format!("driver-error-{id}").into()))
                             .test_support()
                             .aria_label(error.clone())
-                            .text_xs()
+                            .text_label()
                             .text_color(theme.danger)
                             .child(error),
                     )
@@ -210,7 +211,7 @@ impl Render for DriverMappingsEditor {
             .when(self.rows.is_empty(), |this| {
                 this.child(
                     div()
-                        .text_sm()
+                        .text_body()
                         .text_color(theme.muted_foreground)
                         .child("No driver names yet."),
                 )

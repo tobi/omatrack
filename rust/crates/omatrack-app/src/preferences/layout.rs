@@ -14,6 +14,7 @@ use gpui_kit::{
 };
 
 use super::PreferencesSection;
+use omatrack_ui::TypeScale as _;
 
 /// The width of a row's select or text control, so the controls of a card
 /// line up on one right edge.
@@ -36,14 +37,14 @@ pub(super) fn page(
                 .gap_1()
                 .child(
                     div()
-                        .text_xl()
+                        .text_heading()
                         .font_semibold()
                         .text_color(theme.foreground)
                         .child(section.title()),
                 )
                 .child(
                     div()
-                        .text_sm()
+                        .text_body()
                         .text_color(theme.muted_foreground)
                         .child(section.description()),
                 ),
@@ -65,7 +66,7 @@ pub(super) fn card(
         .fill()
         .gap_2()
         .title(title)
-        .title_style(StyleRefinement::default().text_sm().font_medium())
+        .title_style(StyleRefinement::default().text_body().font_medium())
         .content_style(
             StyleRefinement::default()
                 .p_0()
@@ -118,7 +119,7 @@ pub(super) fn row_with(
                 .gap_0p5()
                 .child(
                     div()
-                        .text_sm()
+                        .text_body()
                         .font_medium()
                         .text_color(theme.foreground)
                         .child(title),
@@ -126,7 +127,7 @@ pub(super) fn row_with(
                 .when_some(description, |this, description| {
                     this.child(
                         div()
-                            .text_sm()
+                            .text_body()
                             .text_color(theme.muted_foreground)
                             .child(description),
                     )
@@ -145,7 +146,7 @@ pub(super) fn value(text: impl Into<SharedString>, mono: bool, cx: &App) -> Div 
     let theme = cx.theme();
     div()
         .max_w(rems(24.))
-        .text_sm()
+        .text_body()
         .text_color(theme.muted_foreground)
         .truncate()
         .when(mono, |this| {
@@ -160,7 +161,7 @@ pub(super) fn note(id: impl Into<ElementId>, text: &'static str, cx: &App) -> An
         .id(id.into())
         .px_4()
         .py_3()
-        .text_sm()
+        .text_body()
         .text_color(cx.theme().muted_foreground)
         .child(text)
         .into_any_element()
