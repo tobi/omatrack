@@ -130,19 +130,43 @@ fn the_event_groups_every_recording_with_its_timed_laps(cx: &mut TestAppContext)
 }
 
 #[gpui_kit::test]
-fn gap_bars_scale_to_each_drivers_own_spread(cx: &mut TestAppContext) {
+fn gaps_and_bars_measure_from_the_events_best_lap(cx: &mut TestAppContext) {
     let event = event(cx);
     cx.update(|cx| {
         let laps = event.laps.read(cx);
         let bar = |group: usize, lap: i32| laps.groups()[group].lap(lap).unwrap().bar();
-        // Ada: 76.5 / 75.25 / 75.75, a 1.25 s spread.
-        assert_eq!(bar(0, 3), Some(0.0), "the best lap has no gap");
-        assert_eq!(bar(0, 2), Some(1.0), "the slowest fills the lane");
-        assert!((bar(0, 4).unwrap() - 0.4).abs() < 1e-6);
-        // Grace: 77 / 76 / 76.5, a 1 s spread: her own scale.
-        assert_eq!(bar(1, 2), Some(1.0));
-        assert!((bar(1, 4).unwrap() - 0.5).abs() < 1e-6);
+        // Ada 76.5 / 75.25 / 75.75, Grace 77 / 76 / 76.5: one 1.75 s scale
+        // from the event's best (Ada's 75.25).
+        assert_eq!(bar(0, 3), Some(0.0), "the event's best has no gap");
+        assert_eq!(bar(1, 2), Some(1.0), "the event's slowest fills the lane");
+        assert!((bar(0, 2).unwrap() - 1.25 / 1.75).abs() < 1e-6);
+        assert!((bar(0, 4).unwrap() - 0.5 / 1.75).abs() < 1e-6);
+        assert!((bar(1, 4).unwrap() - 1.25 / 1.75).abs() < 1e-6);
         assert_eq!(bar(0, 1), None, "untimed laps carry no bar");
+        // Only the event's best reads Best; Grace's own best is a gap.
+        let grace = &laps.groups()[1];
+        assert!(grace.laps().iter().all(|line| !line.is_best()));
+        assert_eq!(
+            grace.lap(3).unwrap().spoken().as_ref(),
+            "L2, 1:16.000, +0.750 to best",
+            "gaps are to the event's best"
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn the_primarys_group_leads_then_the_references(cx: &mut TestAppContext) {
+    let event = event(cx);
+    select(event.handle, &event.grace, 3, Role::Primary, cx);
+    select(event.handle, &event.ada, 3, Role::Reference, cx);
+    cx.update(|cx| {
+        let laps = event.laps.read(cx);
+        let titles: Vec<_> = laps
+            .groups()
+            .iter()
+            .map(|g| g.title().to_string())
+            .collect();
+        assert_eq!(titles, ["Grace", "Ada"]);
     });
 }
 

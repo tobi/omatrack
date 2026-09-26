@@ -7,10 +7,12 @@
 //! when it comes from another day). A group reads as its driver, `9 timed
 //! laps, best 1:16.091` and a lap-time trend line; its timed laps
 //! (`counts_for_best`) follow in recording order with a bar that grows
-//! with the gap to that driver's best (scaled per group) and the gap
-//! itself; out, in, pit and partial laps wait behind a `Show out and in
-//! laps (N)` disclosure. The laps holding a role are filled and carry the
-//! role badge; groups without a role start collapsed.
+//! with the gap to the event's best lap (one scale for the event) and the
+//! gap itself; only the event's best reads `Best`. Out, in, pit and
+//! partial laps wait behind a `Show out and in laps (N)` disclosure. The
+//! primary's group comes first, then the reference's, then the rest by
+//! their best time. The laps holding a role are filled and carry the role
+//! badge; groups without a role start collapsed.
 //!
 //! Commands are the library's and the filmstrip's: Enter sets the lap
 //! under the keyboard cursor as primary, Alt+Enter as reference (Enter on
@@ -118,7 +120,7 @@ impl LapLine {
     }
 
     /// The row's accessible name: `L8, 1:13.644, best lap, reference`.
-    fn spoken(&self) -> SharedString {
+    pub fn spoken(&self) -> SharedString {
         [
             Some(self.label.to_string()),
             Some(self.time.to_string()),
@@ -199,8 +201,9 @@ impl LapGroup {
 }
 
 /// The groups of the event holding `primary`: every recording of its track
-/// and day in catalog order, then the reference's recording when it comes
-/// from elsewhere. Empty without a primary in the snapshot.
+/// and day, plus the reference's recording when it comes from elsewhere;
+/// the primary's first, then the reference's, then the rest by best lap
+/// time. Empty without a primary in the snapshot.
 pub fn event_groups(
     snapshot: &LibrarySnapshot,
     primary: Option<&LapRef>,
@@ -232,15 +235,53 @@ pub fn event_groups(
     {
         nodes.push(node);
     }
+    let holds = |node: &SessionNode, slot: Option<&LapRef>| {
+        slot.is_some_and(|slot| slot.session().as_ref() == node.id)
+    };
+    // Stable: equal keys keep catalog order.
+    nodes.sort_by(|a, b| {
+        let rank = |node: &SessionNode| {
+            if holds(node, Some(primary)) {
+                0
+            } else if holds(node, reference) {
+                1
+            } else {
+                2
+            }
+        };
+        let best = |node: &SessionNode| timed_times(node).fold(f64::INFINITY, f64::min);
+        rank(a).cmp(&rank(b)).then(best(a).total_cmp(&best(b)))
+    });
+    let times = || nodes.iter().flat_map(|node| timed_times(node));
+    let event = EventBest {
+        best: times().fold(f64::INFINITY, f64::min),
+        worst: times().fold(f64::NEG_INFINITY, f64::max),
+    };
     let titles: Vec<SharedString> = nodes.iter().map(|node| group_title(node)).collect();
     nodes
         .iter()
         .zip(&titles)
         .map(|(node, title)| {
             let shared = titles.iter().filter(|other| *other == title).count() > 1;
-            build_group(node, title.clone(), shared, primary, reference)
+            build_group(node, title.clone(), shared, event, primary, reference)
         })
         .collect()
+}
+
+/// The event's fastest and slowest timed laps (ms): the gap column's zero
+/// and the gap bars' shared scale.
+#[derive(Clone, Copy)]
+struct EventBest {
+    best: f64,
+    worst: f64,
+}
+
+/// A recording's timed lap times (ms): laps that count for best.
+fn timed_times(node: &SessionNode) -> impl Iterator<Item = f64> + '_ {
+    node.laps
+        .iter()
+        .filter(|lap| lap.representative && lap.time_ms > 0.0)
+        .map(|lap| lap.time_ms)
 }
 
 fn group_title(node: &SessionNode) -> SharedString {
@@ -258,6 +299,7 @@ fn build_group(
     node: &SessionNode,
     title: SharedString,
     shared_title: bool,
+    event: EventBest,
     primary: &LapRef,
     reference: Option<&LapRef>,
 ) -> LapGroup {
@@ -273,21 +315,18 @@ fn build_group(
             None
         }
     };
-    let timed: Vec<f64> = node
-        .laps
-        .iter()
-        .filter(|lap| lap.representative && lap.time_ms > 0.0)
-        .map(|lap| lap.time_ms)
-        .collect();
+    let timed: Vec<f64> = timed_times(node).collect();
     let best = timed.iter().copied().fold(f64::INFINITY, f64::min);
     let worst = timed.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let spread = worst - best;
+    let event_spread = event.worst - event.best;
     let laps: Vec<LapLine> = node
         .laps
         .iter()
         .map(|lap| {
             let is_timed = lap.representative && lap.time_ms > 0.0;
-            let gap = lap.delta_to_best_ms.filter(|_| is_timed);
+            let event_best = is_timed && lap.time_ms == event.best;
+            let gap = is_timed.then(|| lap.time_ms - event.best);
             LapLine {
                 id: lap.id.clone().into(),
                 lap: lap.lap_id,
@@ -298,13 +337,13 @@ fn build_group(
                     MISSING_VALUE.into()
                 },
                 delta: gap
-                    .filter(|_| !lap.best)
+                    .filter(|_| !event_best)
                     .map(|ms| format_delta(Some(ms / 1000.0), 3, DeltaSense::LowerIsBetter).0),
-                best: lap.best,
+                best: event_best,
                 timed: is_timed,
                 bar: is_timed.then(|| {
-                    if spread > 0.0 {
-                        ((lap.time_ms - best) / spread).clamp(0.0, 1.0) as f32
+                    if event_spread > 0.0 {
+                        ((lap.time_ms - event.best) / event_spread).clamp(0.0, 1.0) as f32
                     } else {
                         0.0
                     }
