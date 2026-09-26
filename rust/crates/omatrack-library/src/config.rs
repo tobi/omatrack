@@ -417,8 +417,9 @@ pub enum XAxis {
     Time,
 }
 
-/// `trace.color_mode`: what a trace's colour says. `lap` (default): the lap
-/// role, primary and reference, in every lane; `channel`: each channel its
+/// `trace.color_mode`: what a trace's colour says.
+///
+/// `lap` (default): the lap role, primary and reference, in every lane; `channel`: each channel its
 /// own hue (speed blue, throttle green, brake red, steering yellow), the
 /// reference the same hue, quieter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]

@@ -157,6 +157,7 @@ pub trait TypeScale: Styled + Sized {
     /// Geist Mono) with [`trace_figures`]. Only inside the trace area
     /// (legends, value axes, the distance axis, callouts); everywhere else
     /// numbers are [`Self::numeric`].
+    #[must_use]
     fn trace_numeric(self, cx: &App) -> Self {
         self.font_family(cx.theme().mono_font_family.clone())
             .font_features(trace_figures())
