@@ -20,16 +20,13 @@ fn main_window_shows_title_dock_and_status_with_the_built_in_theme(cx: &mut Test
     cx.update_window(test.window.into(), |_, window, cx| {
         window.render_frame(cx);
 
-        let status = window.find("theme-status");
-        assert!(status.visible());
-        // The theme status names the palette and the interface fonts.
-        assert_eq!(status.label(), Some("Built-in dark · Inter · Geist Mono"));
-
-        // The dock area fills the space between title bar and status bar.
+        // Idle, the status bar takes no space (the theme is stated in
+        // Preferences); the dock area fills the window below the title bar.
+        assert!(window.try_find("status-bar").is_none());
+        assert!(window.try_find("theme-status").is_none());
         let dock = window.find("workspace-dock");
         assert!(dock.visible());
         assert!(dock.bounds().size.height > px(0.));
-        assert!(status.bounds().top() >= dock.bounds().bottom());
         let track = window.find("header-track");
         assert!(track.bounds().bottom() <= dock.bounds().top());
         assert_eq!(track.label(), Some("Omatrack"));

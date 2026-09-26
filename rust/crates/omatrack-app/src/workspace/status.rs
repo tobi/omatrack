@@ -1,14 +1,14 @@
-//! The status bar: background jobs and the range readout on the left,
-//! the palette name on the right; what no other surface already says.
+//! The status bar: background jobs and the range readout, what no other
+//! surface already says. Idle (no job, no range) it takes no space; the
+//! theme and fonts are stated in Preferences > Appearance.
 //!
 //! It is its own entity so a cursor move re-renders only this bar (and the
 //! other cursor observers), never the workspace or the static traces.
 
 use gpui_kit::component::{
     ActiveTheme as _, Sizable as _, Theme, h_flex, separator::Separator, spinner::Spinner,
-    status_bar::StatusBar, tooltip::Tooltip,
+    status_bar::StatusBar,
 };
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, Context, InteractiveElement as _, IntoElement, ParentElement as _, Render,
     Role, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
@@ -19,7 +19,6 @@ use omatrack_core::format_lap_time;
 use omatrack_core::session::Analysis;
 use omatrack_trace::scale::value_at_fraction;
 use omatrack_ui::TypeScale as _;
-use omatrack_ui::theme::{ThemeFonts, ThemeStatus};
 use omatrack_ui::{DeltaSense, DeltaText};
 
 use crate::state::AppState;
@@ -36,7 +35,6 @@ impl StatusView {
             cx.observe(&app.session, |_, _, cx| cx.notify()),
             cx.observe(&app.jobs, |_, _, cx| cx.notify()),
             cx.observe_global::<Theme>(|_, cx| cx.notify()),
-            cx.observe_global::<ThemeStatus>(|_, cx| cx.notify()),
         ];
         Self {
             app,
@@ -239,44 +237,29 @@ impl StatusView {
 
 impl Render for StatusView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme_label = ThemeStatus::global(cx)
-            .map(ThemeStatus::label)
-            .unwrap_or_default();
-        let fonts = ThemeFonts::global(cx).cloned();
-        let appearance: SharedString = match &fonts {
-            Some(fonts) => format!("{theme_label} · {}", fonts.label()).into(),
-            None => theme_label.clone(),
-        };
         // Only what no other surface says: background work and the range
-        // readout on the left, the palette name on the right. The cursor
-        // and its Δ live in the traces and the video bar, the sync basis
-        // and confidence in the title bar.
-        let mut bar = StatusBar::new().text_label();
-        let left = self
+        // readout. The cursor and its Δ live in the traces and the video
+        // bar, the sync basis and confidence in the title bar, the theme in
+        // Preferences.
+        let left: Vec<AnyElement> = self
             .render_jobs(cx)
             .into_iter()
-            .chain(self.render_selection(cx));
-        for (ix, element) in left.enumerate() {
+            .chain(self.render_selection(cx))
+            .collect();
+        if left.is_empty() {
+            return div().id("status-idle").into_any_element();
+        }
+        let mut bar = StatusBar::new().text_label();
+        for (ix, element) in left.into_iter().enumerate() {
             if ix > 0 {
                 bar = bar.left(Separator::vertical().h_3().into_any_element());
             }
             bar = bar.left(element);
         }
-        bar.right(
-            div()
-                .id("theme-status")
-                .role(Role::Status)
-                .test_support()
-                .aria_label(appearance.clone())
-                .when_some(fonts, |this, fonts| {
-                    let description = fonts.description();
-                    this.tooltip(move |window, cx| {
-                        Tooltip::new(description.clone()).build(window, cx)
-                    })
-                })
-                .text_color(cx.theme().muted_foreground)
-                // The palette name only; the fonts are in the tooltip.
-                .child(theme_label),
-        )
+        div()
+            .id("status-bar")
+            .test_support()
+            .child(bar)
+            .into_any_element()
     }
 }

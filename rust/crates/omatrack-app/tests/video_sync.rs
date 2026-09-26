@@ -605,7 +605,7 @@ fn keys_compose_layouts_and_f_escape_open_and_close_the_stage(cx: &mut TestAppCo
         );
         // Best effort: the test window accepts it.
         assert!(window.is_fullscreen());
-        for chrome in ["workspace-dock", "theme-status"] {
+        for chrome in ["workspace-dock", "status-bar"] {
             assert!(window.try_find(chrome).is_none(), "{chrome} is hidden");
         }
         assert!(window.try_find("video-fullscreen").is_some());

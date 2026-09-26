@@ -1173,7 +1173,10 @@ async fn the_title_bar_states_the_pair_its_gap_and_its_sync(cx: &mut TestAppCont
         for gone in ["status-sync", "status-cursor", "status-delta"] {
             assert!(window.try_find(gone).is_none(), "{gone}");
         }
-        assert!(window.find("theme-status").visible());
+        assert!(
+            window.try_find("theme-status").is_none(),
+            "the theme is in Preferences"
+        );
     })
     .unwrap();
 

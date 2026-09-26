@@ -231,7 +231,7 @@ bug.
 - **Default**: GPS when both laps carry it; else lap % on a distance base,
   dampers on a time base. Persisted in `video.reference_sync`.
 - Every result reports basis, anchor count and confidence (HIGH/MED/LOW),
-  shown by the Sync selector and in the status bar. Deltas under LOW confidence
+  shown by the Sync selector (button and menu). Deltas under LOW confidence
   (e.g. 12–15 m turn-in) are presented as approximate.
 - Swap inverts the manual offset; cursor and viewport fractions stay put.
 
@@ -390,8 +390,9 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   Preferences. Below 90 rem it drops the event, the Δ words, the sync verb
   and the Commands label. Then the **filmstrip** (`workspace::Filmstrip`,
   one full-width `Entity` above the docks), the `DockArea`, the
-  `StatusBar`, kept minimal: jobs and the range readout left, the palette
-  name right; the cursor, its Δ and the sync live elsewhere, never twice.
+  `StatusBar`, only while it has something to say: jobs and the range
+  readout; idle it takes no space. The cursor, its Δ, the sync and the
+  theme live elsewhere, never twice.
   The filmstrip has one
   row per role recording (the primary's, then the reference's; two laps of
   one recording share a row with both roles marked): a fixed gutter (role
@@ -554,10 +555,10 @@ dependency.
   `~/.config/omarchy/current`), accepts ANSI `color0..15` and semantic keys,
   maps onto the gpui-component `Theme`, and hot-reloads via a `notify` watcher.
   No palette: built-in gpui-component dark. `ThemeStatus {name, source}` shows
-  in the status bar.
+  in Preferences > Appearance.
 - Fonts: the desktop fontconfig choice when one is configured and installed,
   else the bundled Inter (UI) and Geist Mono (code), OFL, registered by
-  `theme::install`; the active families show next to the theme status.
+  `theme::install`; the active families show beside it in Preferences.
 - Type ([`omatrack_ui::typography`](rust/crates/omatrack-ui/src/typography.rs)):
   one interface family. Every number is `.numeric()` (Inter `tnum`, tabular
   figures), never the monospace family, which is kept for paths, file

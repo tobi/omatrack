@@ -197,7 +197,7 @@ fn ctrl_comma_opens_the_preferences_screen_and_escape_returns_focus(cx: &mut Tes
         assert!(window.find("preferences").visible());
         assert!(window.find("preferences-title").visible());
         assert!(window.try_find("workspace-dock").is_none());
-        assert!(window.try_find("theme-status").is_none());
+        assert!(window.try_find("status-bar").is_none());
         assert!(!traces.is_focused(window), "the screen takes focus");
     })
     .unwrap();
