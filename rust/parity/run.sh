@@ -1,24 +1,33 @@
 #!/usr/bin/env bash
-# Byte parity of the Rust headless CLI against the C++ oracle.
+# Regression harness: the Rust headless CLI against a frozen baseline.
 #
-# Runs every case through both binaries (same argv[0], same cwd layout) into
-# $out/{cpp,rust}/ and compares stdout, stderr, exported CSVs and exit codes
-# with `diff -r`. Any difference fails. Outputs contain GPS positions.
+# The baseline (parity/baseline/, gitignored: it holds GPS) is the output of
+# the retired C++ oracle, captured on 2026-09-26 from a run where the Rust
+# CLI and the oracle were byte-identical (89 cases). Its .telemetry inputs
+# were written by the oracle's companion writer; Rust does not write
+# .telemetry, so they are kept with the baseline.
+#
+# Every case runs into $out/rust/; absolute paths are rewritten to tokens
+# (@FIXTURES@, @TELEMETRY@, @OUT@) and the tree is compared with `diff -r`
+# against parity/baseline/expected/: stdout, stderr, CSVs, exit codes. Any
+# difference fails.
+#
+#   parity/run.sh               compare
+#   parity/run.sh --rebaseline  accept the current output as the baseline
+#                               (a deliberate behaviour change: give the
+#                               reason in the commit)
 #
 # $out is $PARITY_OUT when set, else `parity-out/` inside a private
-# CARGO_TARGET_DIR, else the gitignored rust/parity/out/. Runners with their
-# own CARGO_TARGET_DIR therefore never share (and wipe) each other's outputs,
-# and runs that do share a directory are serialized by a lock on it.
+# CARGO_TARGET_DIR, else the gitignored rust/parity/out/. Runs sharing a
+# directory are serialized by a lock on it. Fixtures: $OMATRACK_FIXTURES
+# (default ~/Documents/Telemetry/26T07_PLM), read-only.
 #
-# Prerequisites: parity/build-oracle.sh (the oracle and the .telemetry
-# writer). Fixtures: $OMATRACK_FIXTURES (default ~/Documents/Telemetry/26T07_PLM),
-# read-only; .telemetry companions are written under out/telemetry/ only.
-#
-# Excluded on purpose: `--version` (the oracle prints its build tag) and
-# non-numeric --lap/--zone values (std::stoi/stod abort the C++ process;
-# the port prints usage and exits 2 — the documented deviation).
+# Excluded on purpose: `--version` and non-numeric --lap/--zone values (the
+# oracle aborted on them; the port prints usage and exits 2).
 set -euo pipefail
 rust_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+rebaseline=0
+[[ ${1:-} == --rebaseline ]] && rebaseline=1
 # Cargo resolves a relative CARGO_TARGET_DIR against its working directory,
 # which is $rust_dir below; resolve it the same way here.
 target_dir="${CARGO_TARGET_DIR:-$rust_dir/target}"
@@ -31,49 +40,43 @@ else
     out="$rust_dir/parity/out"
 fi
 [[ $out == /* ]] || out="$PWD/$out"
-oracle="$rust_dir/target/oracle/omatrack-cli"
-writer="$rust_dir/target/oracle/write-telemetry"
-fixtures="${OMATRACK_FIXTURES:-$HOME/Documents/Telemetry/26T07_PLM}"
+baseline="$rust_dir/parity/baseline"
+fixtures="$(cd "${OMATRACK_FIXTURES:-$HOME/Documents/Telemetry/26T07_PLM}" && pwd)"
 
-[[ -x "$oracle" && -x "$writer" ]] || { echo "run parity/build-oracle.sh first" >&2; exit 2; }
+[[ -d "$baseline/expected" && -d "$baseline/telemetry" ]] ||
+    { echo "no baseline at $baseline (expected/ and telemetry/)" >&2; exit 2; }
 (cd "$rust_dir" && CARGO_TARGET_DIR="$target_dir" cargo build --quiet --release --locked -p omatrack-cli)
-# A private CARGO_TARGET_DIR builds (and runs) its own CLI; the oracle stays
-# under rust/target/oracle either way.
 port="$target_dir/release/omatrack-cli"
 
 mapfile -t mp4s < <(find "$fixtures" -type f -iname '*.mp4' | sort)
 ((${#mp4s[@]} >= 2)) || { echo "need at least two MP4 fixtures under $fixtures" >&2; exit 2; }
 
-mkdir -p "$out/telemetry"
-# One run per output directory at a time: a second run waits instead of
-# deleting the first one's outputs mid-comparison.
+mkdir -p "$out"
+# One run per output directory at a time.
 exec 9>"$out/.lock"
 flock 9
-rm -rf "$out/cpp" "$out/rust"
-mkdir -p "$out/cpp" "$out/rust"
+rm -rf "$out/rust" "$out/normalized"
+mkdir -p "$out/rust"
 
 telemetry=()
 for f in "${mp4s[@]}"; do
-    t="$out/telemetry/$(basename "${f%.*}").telemetry"
-    [[ -s "$t" ]] || "$writer" "$f" "$t"
+    t="$baseline/telemetry/$(basename "${f%.*}").telemetry"
+    [[ -s "$t" ]] || { echo "baseline lacks $(basename "$t")" >&2; exit 2; }
     telemetry+=("$t")
 done
 
 cases=0
-# run_case NAME ARGS...: both binaries, argv[0] "omatrack-cli", cwd = side dir.
+# run_case NAME ARGS...: argv[0] "omatrack-cli", cwd = $out/rust.
 run_case() {
     local name="$1"
     shift
     cases=$((cases + 1))
-    local side bin code
-    for side in cpp rust; do
-        [[ $side == cpp ]] && bin="$oracle" || bin="$port"
-        set +e
-        (cd "$out/$side" && exec -a omatrack-cli "$bin" "$@" >"$name.stdout" 2>"$name.stderr")
-        code=$?
-        set -e
-        echo "$code" >"$out/$side/$name.code"
-    done
+    local code
+    set +e
+    (cd "$out/rust" && exec -a omatrack-cli "$port" "$@" >"$name.stdout" 2>"$name.stderr")
+    code=$?
+    set -e
+    echo "$code" >"$out/rust/$name.code"
 }
 
 zones_a=(--zone 0.0726:0.1265 --zone 0.17:0.23 --zone 0.45:0.52)
@@ -134,8 +137,17 @@ run_case "err-zone-last" corners "${mp4s[0]}" --zone
 run_case "err-compare-missing" compare "${mp4s[0]}" "$out/missing.telemetry"
 run_case "err-unify-bad-source" unify "$out/whatever.xyz" --output x.csv
 
-if diff -r "$out/cpp" "$out/rust" >"$out/diff.txt"; then
-    echo "parity: $cases cases, 0 diffs (stdout, stderr, CSV, exit codes identical)"
+# Paths differ between machines and output directories; compare tokens.
+cp -r "$out/rust" "$out/normalized"
+find "$out/normalized" -type f -exec sed -i -e "s#$baseline/telemetry#@TELEMETRY@#g" \
+    -e "s#$out#@OUT@#g" -e "s#$fixtures#@FIXTURES@#g" {} +
+
+if ((rebaseline)); then
+    rm -rf "$baseline/expected"
+    cp -r "$out/normalized" "$baseline/expected"
+    echo "parity: baseline replaced ($cases cases)"
+elif diff -r -x '.*' "$baseline/expected" "$out/normalized" >"$out/diff.txt"; then
+    echo "parity: $cases cases, 0 diffs against the baseline (stdout, stderr, CSV, exit codes)"
 else
     echo "parity: DIFFERENCES in $(grep -c '^diff\|^Only' "$out/diff.txt" || true) files ($cases cases); see $out/diff.txt" >&2
     head -n 60 "$out/diff.txt" >&2

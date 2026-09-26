@@ -2,9 +2,9 @@
 # The Rust workspace gate. Run from anywhere; every step must pass.
 #   1. rustfmt        2. clippy -D warnings        3. unit/integration tests
 #   4. real-file tests (`real_*`, #[ignore]) against copied AiM MP4s
-#   5. byte parity against the C++ oracle CLI, when it has been built
+#   5. CLI regression against the frozen parity baseline, when present
 # An exported CARGO_TARGET_DIR is honoured throughout (parity/run.sh runs the
-# CLI from it); the oracle always lives in rust/target/oracle.
+# CLI from it).
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -30,11 +30,11 @@ else
     step "real-file tests skipped (no OMATRACK_FIXTURES)"
 fi
 
-if [[ -x target/oracle/omatrack-cli ]]; then
-    step "parity against the C++ oracle"
+if [[ -d parity/baseline/expected ]]; then
+    step "CLI regression against the parity baseline"
     parity/run.sh
 else
-    step "parity skipped (run parity/build-oracle.sh first)"
+    step "CLI regression skipped (no parity/baseline; see parity/run.sh)"
 fi
 
 printf '\ncheck: OK\n'
