@@ -272,9 +272,43 @@ fn event_marks(analysis: &Analysis) -> Vec<EventMark> {
                 };
                 format!("{role} · {}{at}", event.label)
             };
+            let tag = event_tag(&event, kind, reference);
             EventMark::new(kind, event.kind.channel(), reference, event.fraction, label)
+                .with_tag(tag)
         })
         .collect()
+}
+
+/// The short label drawn beside a primary event's tick: a note's corner
+/// (`T5`), a brake point's offset from the reference's (`+12 m`, later
+/// along the track), a shift's new gear (`↓3`). Lifts and the reference's
+/// ticks carry none.
+fn event_tag(
+    event: &omatrack_core::events::LapEvent,
+    kind: EventMarkKind,
+    reference: bool,
+) -> Option<SharedString> {
+    if reference {
+        return None;
+    }
+    match kind {
+        EventMarkKind::Note => {
+            let (name, _) = event.label.split_once(':')?;
+            Some(
+                omatrack_trace::corner_ruler::short_label(name)
+                    .unwrap_or_else(|| SharedString::from(name.to_string())),
+            )
+        }
+        EventMarkKind::BrakeOnset => {
+            let offset = event.brake_offset?;
+            let (text, _) =
+                omatrack_ui::format_delta(Some(offset), 0, omatrack_ui::DeltaSense::HigherIsBetter);
+            Some(format!("{text} m").into())
+        }
+        EventMarkKind::Downshift => event.gear.map(|gear| format!("↓{gear}").into()),
+        EventMarkKind::Upshift => event.gear.map(|gear| format!("↑{gear}").into()),
+        _ => None,
+    }
 }
 
 /// `trace.color_mode` as the trace crate's colour mode.
