@@ -8,13 +8,13 @@
 //! display-frame pull that drives the cursor while the primary plays.
 //!
 //! Docked, the panel has no dock title bar; the pictures lead and one
-//! control row sits under them, serving the video and the traces below it
-//! (see [`VideoPanel::render_bar`]): round play/pause, the `0.25×` toggle,
-//! `Per lap | Continuous`, `Distance | Time`, then where the cursor is
-//! (`Cursor at 368 m, Turn 1`), chips that need attention (a degraded
-//! reference sync, identity checks, a missing reference video), and small
-//! icon buttons: mute, composition (layouts 1-5 plus reference pacing),
-//! fullscreen and the traces' tools menu.
+//! control row sits directly under them (see [`VideoPanel::render_bar`]):
+//! round play/pause, the `0.25×` toggle, `Per lap | Continuous`,
+//! `Distance | Time`, then where the cursor is (`Cursor at 368 m, Turn 1`),
+//! chips that need attention (a degraded reference sync, identity checks, a
+//! missing reference video), and small icon buttons: mute, composition
+//! (layouts 1-5 plus reference pacing) and fullscreen. The traces' zoom,
+//! FIT, sizing and corner editing live in the trace toolbar.
 //!
 //! `F` (or the bar's fullscreen button) puts this panel on the fullscreen
 //! stage: the workspace renders it alone over the whole window (no title
@@ -33,6 +33,8 @@ pub mod overlay;
 pub mod stage;
 
 use omatrack_ui::TypeScale as _;
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::{
@@ -50,10 +52,11 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Action, AnyElement, App, AppContext as _, Context, CursorHideMode, Entity, EventEmitter,
-    FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    Role as AccessRole, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
-    Task, TestSupportExt as _, WeakEntity, Window, div, px, relative,
+    Action, AnyElement, App, AppContext as _, Context, CursorHideMode, Entity, EntityId,
+    EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement as _,
+    Pixels, Render, Role as AccessRole, SharedString, Size, StatefulInteractiveElement as _,
+    Styled as _, Subscription, Task, TestSupportExt as _, WeakEntity, Window, canvas, div, px,
+    relative, size,
 };
 use mpv_player::{VideoView, VideoViewEvent};
 use omatrack_core::playback::{ReferencePlayback, SyncState};
@@ -61,9 +64,8 @@ use omatrack_ui::LapRole;
 
 use crate::actions::{
     ComposeLayout1, ComposeLayout2, ComposeLayout3, ComposeLayout4, ComposeLayout5, ExitFullscreen,
-    ResizeLanes, Role, SeekBack, SeekForward, ToggleContinuous, ToggleCornerEdit, ToggleFit,
-    ToggleMute, TogglePlay, ToggleSlowMotion, ToggleVideoFullscreen, ToggleXAxis, ZoomIn, ZoomOut,
-    ZoomReset,
+    Role, SeekBack, SeekForward, ToggleContinuous, ToggleMute, TogglePlay, ToggleSlowMotion,
+    ToggleVideoFullscreen, ToggleXAxis,
 };
 use crate::commands::{self, CommandCategory, CommandSpec};
 use crate::keymap::WORKSPACE_CONTEXT;
@@ -110,6 +112,12 @@ pub fn layout_short_label(layout: ComposeLayout) -> &'static str {
 }
 
 /// The action that selects `layout` (keys 1-5).
+/// The largest picture of `aspect` (width / height) inside `area`.
+fn fit_picture(area: Size<Pixels>, aspect: f32) -> Size<Pixels> {
+    let width = area.width.min(area.height * aspect);
+    size(width, width / aspect)
+}
+
 fn layout_action(layout: ComposeLayout) -> Box<dyn Action> {
     match layout {
         ComposeLayout::Split => Box::new(ComposeLayout1),
@@ -131,8 +139,12 @@ enum PaneAlign {
 /// A pane's role in the composition.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PanePlace {
-    /// A pane filling its part of the stage.
-    Main { align: PaneAlign },
+    /// A pane filling its part of the stage; its picture is `fit` (known
+    /// once the stage has been measured) and sits on the pane's bottom.
+    Main {
+        align: PaneAlign,
+        fit: Option<Size<Pixels>>,
+    },
     /// The small picture-in-picture pane.
     Inset,
 }
@@ -144,6 +156,9 @@ pub struct VideoPanel {
     reference_view: Option<Entity<VideoView>>,
     overlay: Entity<VideoOverlay>,
     icons: VideoIcons,
+    /// The docked stage's size at the last paint: the pictures are sized
+    /// from it, so they fit both ways and sit on the control row.
+    stage_area: Rc<Cell<Size<Pixels>>>,
     group: Option<WeakEntity<TabGroup>>,
     active: bool,
     /// A display-frame pull is scheduled.
@@ -200,6 +215,7 @@ impl VideoPanel {
             reference_view: None,
             overlay,
             icons: VideoIcons::new(),
+            stage_area: Rc::default(),
             group: None,
             active: true,
             pumping: false,
@@ -620,11 +636,10 @@ impl VideoPanel {
     /// play/pause, the `0.25×` toggle, `Per lap | Continuous`, the traces'
     /// `Distance | Time` axis, then where the cursor is, the chips that need
     /// attention (a degraded sync, identity checks, a missing reference
-    /// video) and small icon buttons: mute, composition, fullscreen and the
-    /// traces' overflow menu (fit, lane sizing, corner editing, zoom). One
-    /// row serves the video and the traces, so the centre carries no
-    /// toolbars of its own. Every control dispatches the action of its key
-    /// and names that key in its tooltip.
+    /// video) and small icon buttons: mute, composition and fullscreen. Zoom,
+    /// FIT, lane sizing and corner editing are the trace toolbar's (one home
+    /// per control). Every control dispatches the action of its key and
+    /// names that key in its tooltip.
     fn render_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dual = self.app.video.read(cx).is_dual();
         let layout = self.app.video.read(cx).layout().effective(dual);
@@ -633,7 +648,6 @@ impl VideoPanel {
         let mode = self.render_mode(cx).small();
         let axis = self.render_axis(cx);
         let mute = self.render_mute(cx);
-        let traces = self.render_traces_menu(cx);
         let theme = cx.theme();
         // The row's one strong control: a filled disc in the foreground.
         let play = play
@@ -733,8 +747,7 @@ impl VideoPanel {
                     .gap_0p5()
                     .child(mute)
                     .child(compose)
-                    .child(self.render_fullscreen_button().small())
-                    .child(traces),
+                    .child(self.render_fullscreen_button().small()),
             )
     }
 
@@ -795,32 +808,6 @@ impl VideoPanel {
                 if wanted != axis {
                     keys.dispatch_action(&ToggleXAxis, window, cx);
                 }
-            })
-    }
-
-    /// The traces' less frequent tools, behind one icon: fit, lane sizing,
-    /// corner editing and zoom (each also on its key and in the palette).
-    fn render_traces_menu(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let has_data = self.app.session.read(cx).analysis().is_some();
-        let focus = self.focus_handle.clone();
-        let preferences = self.app.preferences.clone();
-        Button::new("trace-tools")
-            .ghost()
-            .small()
-            .icon(IconName::Ellipsis)
-            .accessibility_label("Trace tools")
-            .tooltip("Trace tools")
-            .disabled(!has_data)
-            .dropdown_menu(move |menu, _, cx| {
-                let fit = preferences.read(cx).config().trace.is_fitting_channels();
-                menu.action_context(focus.clone())
-                    .menu_with_check("Fit lanes to the height", fit, Box::new(ToggleFit))
-                    .menu("Resize lanes…", Box::new(ResizeLanes))
-                    .menu("Edit corners…", Box::new(ToggleCornerEdit))
-                    .separator()
-                    .menu("Zoom in", Box::new(ZoomIn))
-                    .menu("Zoom out", Box::new(ZoomOut))
-                    .menu("Whole lap", Box::new(ZoomReset))
             })
     }
 
@@ -1115,8 +1102,8 @@ impl VideoPanel {
         };
         let theme = cx.theme();
         let aspect = self.picture_aspect(role, cx);
-        let align = match place {
-            PanePlace::Main { align } => align,
+        let (align, fit) = match place {
+            PanePlace::Main { align, fit } => (align, fit),
             PanePlace::Inset => {
                 return div()
                     .id(id)
@@ -1143,9 +1130,10 @@ impl VideoPanel {
             .test_support()
             .relative()
             .flex_shrink_0()
-            .h_full()
-            .max_w_full()
-            .aspect_ratio(aspect)
+            .map(|this| match fit {
+                Some(fit) => this.w(fit.width).h(fit.height),
+                None => this.h_full().max_w_full().aspect_ratio(aspect),
+            })
             .when_some(view, |this, view| this.child(view))
             .children(self.render_caption(role, false, cx))
             .children(inset);
@@ -1154,6 +1142,8 @@ impl VideoPanel {
             .test_support()
             .flex()
             .flex_row()
+            // The picture sits on the control row; spare height stays above.
+            .items_end()
             .size_full()
             .overflow_hidden()
             .bg(theme.background)
@@ -1169,10 +1159,15 @@ impl VideoPanel {
     /// The composed video panes. Split pictures meet at the seam; an inset
     /// sits on the large picture's bottom-right corner, clear of the HUD's
     /// default bottom-left place.
-    fn render_stage(&self, window: &Window, cx: &App) -> AnyElement {
+    fn render_stage(&self, entity: EntityId, window: &Window, cx: &App) -> AnyElement {
         let video = self.app.video.read(cx);
         let layout = video.layout().effective(video.is_dual());
         let theme = cx.theme();
+        // Pictures are sized from the stage measured at the last paint, so
+        // they fit its width and height and meet the control row; the first
+        // frame (nothing measured yet) falls back to the pane's height.
+        let area = Some(self.stage_area.get())
+            .filter(|area| area.width > Pixels::ZERO && area.height > Pixels::ZERO);
         let single = |role: Role, inset: Option<Role>| {
             let inset = inset.map(|inset| {
                 self.render_pane(inset, PanePlace::Inset, None, cx)
@@ -1180,13 +1175,18 @@ impl VideoPanel {
             });
             let place = PanePlace::Main {
                 align: PaneAlign::Center,
+                fit: area.map(|area| fit_picture(area, self.picture_aspect(role, cx))),
             };
             div()
                 .size_full()
                 .child(self.render_pane(role, place, inset, cx))
         };
         let split_half = |role: Role, align: PaneAlign| {
-            let place = PanePlace::Main { align };
+            let fit = area.map(|area| {
+                let half = size(((area.width - px(1.)) / 2.).max(Pixels::ZERO), area.height);
+                fit_picture(half, self.picture_aspect(role, cx))
+            });
+            let place = PanePlace::Main { align, fit };
             div()
                 .flex_1()
                 .min_w_0()
@@ -1210,6 +1210,19 @@ impl VideoPanel {
             ComposeLayout::ReferenceOnly => single(Role::Reference, None),
         };
         let label = SharedString::from(format!("Video, {}", layout.label()));
+        let measured = self.stage_area.clone();
+        let measure = canvas(
+            move |bounds, window, _| {
+                if measured.get() != bounds.size {
+                    measured.set(bounds.size);
+                    // Size the pictures for the new stage on the next frame.
+                    window.on_next_frame(move |_, cx| cx.notify(entity));
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full();
         div()
             .id("video-stage")
             .role(AccessRole::Group)
@@ -1217,6 +1230,7 @@ impl VideoPanel {
             .test_support()
             .relative()
             .size_full()
+            .child(measure)
             .child(stage)
             .children(overlay::countdown(&self.app, window, cx))
             .into_any_element()
@@ -1573,7 +1587,7 @@ impl Render for VideoPanel {
             self.primary_view.is_some() || video.clock(Role::Primary).is_some()
         };
         let content = if shows_video {
-            self.render_stage(window, cx)
+            self.render_stage(cx.entity_id(), window, cx)
         } else {
             self.render_placeholder(cx)
         };

@@ -77,6 +77,10 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("[", PrevLap, key),
         KeyBinding::new("]", NextLap, key),
         KeyBinding::new("t", ToggleXAxis, key),
+        KeyBinding::new("alt-1", ViewLap, key),
+        KeyBinding::new("alt-2", ViewCorners, key),
+        KeyBinding::new("alt-3", ViewConsistency, key),
+        KeyBinding::new("alt-4", ViewEvents, key),
         // Library rows.
         KeyBinding::new("enter", SetPrimary, Some(LIBRARY_CONTEXT)),
         KeyBinding::new("alt-enter", SetReference, Some(LIBRARY_CONTEXT)),

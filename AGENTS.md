@@ -421,14 +421,33 @@ and [design-guides.md](.agents/skills/gpui-kit-design-guides/references/design-g
   re-homeable: a fullscreen surface renders the same entity
   (`Workspace::filmstrip()`), never a second strip.
 - **The centre** (video over traces) has no panel title bars
-  (`PanelKind::has_title_bar`) and **one control row**, under the
-  pictures: a filled play disc, `0.25×`, `Per lap | Continuous`,
-  `Distance | Time`, then right-aligned the cursor place and the chips that
-  need attention (a degraded sync, identity), and small icon buttons: mute,
-  video layout (and reference pacing), fullscreen and a `…` tools menu (FIT,
-  Resize lanes, Edit corners, zoom). Every control dispatches the action of
-  its key. The traces carry no toolbar; a range selection's statistics
-  float at the top right of the lanes.
+  (`PanelKind::has_title_bar`). The video's **control row** sits directly
+  under the pictures (they are fitted to the pane and sit on the row; the
+  default pane height, `layout::default_video_height`, holds two split
+  16:9 pictures plus the row): a filled play disc, `0.25×`,
+  `Per lap | Continuous`, `Distance | Time`, then right-aligned the cursor
+  place and the chips that need attention (a degraded sync, identity), and
+  small icon buttons: mute, video layout (and reference pacing) and
+  fullscreen. The **trace toolbar** heads the traces
+  (`panels::traces::toolbar`): `[zoom out | zoom in | fit]`, the view mode
+  `Lap | Corners | Consistency | Events` (`trace.view_mode`), `☰ Channels`
+  (lane visibility checks, `channels.<key>.visible`), the colour-mode
+  toggle (`trace.color_mode`), and right-aligned a `…` lane-tools menu
+  (FIT, Resize lanes, Edit corners). Each control has one home and
+  dispatches the action of its key. A range selection's statistics float
+  at the top right of the lanes.
+- **Trace view modes** (`workspace::view_mode`): **Lap** is the whole-lap
+  view. **Corners** frames the focused corner, else the first, with its
+  approach and exit (`Viewport::frame_corner`) through the 140 ms focus
+  motion and neighbour-lap masks; `h`/`j` step, fit fits the corner, a new
+  analysis keeps the same corner (by zone id); leaving it (another mode or
+  Escape) restores the viewport and cursor from before the mode.
+  **Consistency** and **Events** keep the lap framing: Consistency draws
+  the primary's session laps behind it, Events marks brake onsets, lifts,
+  shifts and corner notes (both below, `state::TraceView`). Apex callouts
+  show in Lap and Corners only; event marks only in Events. The segmented
+  control, `alt-1`..`alt-4` and the palette all set `TraceView::set_mode`,
+  the one source of the mode.
 - **Corner ruler**: labels only, centred over their zones on two staggered
   rows by corner index (T1 T3 T5 above, T2 T4 below), in the short form
   (`T10A`, as on the map and in the tables) at every width, never
@@ -643,6 +662,10 @@ dependency.
   Legend and inspector values always carry the lap role colour. success /
   danger mean only Δ, never a pedal. With no Omarchy palette the built-in
   dark theme's primary is `blue-400` (its own primary is white).
+- Colour mode (`trace.color_mode`, the trace toolbar's `Channel colours`
+  toggle and the palette): `lap` (default) draws lanes in the lap roles as
+  above; `channel` draws each channel in its own hue (section 7). Either
+  way it is a repaint over the same geometry, never a rebuild.
 - Heat ramp (`TracePalette::heat`, "less — more"): a quiet tone
   (`muted_foreground` at 28%) blended to `danger` in `HEAT_LEVELS` steps,
   losing stations spread from their 25% to their 95% quantile; gains stay
@@ -671,14 +694,16 @@ palette items. See [action.md](.agents/skills/gpui-kit/references/gpui/action.md
 | 1–5 | Split, primary+PiP, reference+PiP, primary only, reference only |
 | x / a | Swap roles / edit corners |
 | h / j | Previous / next corner (no wrap) |
+| alt-1 … alt-4 | Trace view: Lap / Corners / Consistency / Events (escape leaves Corners for the lap view) |
 | = / - / ctrl-0 (ctrl-= / ctrl--) | Zoom in / out / reset |
 | [ / ] / t | Previous / next lap / toggle Distance-Time axis |
 | up / down; enter / alt-enter (Library, Laps) | Move; set primary / reference (Laps: enter on a group or disclosure opens it) |
 | ctrl-s / escape (resize, corner edit) | Save / cancel |
 | escape; up / down (Preferences) | Back to the workspace (focus restored); previous / next section |
 
-Palette only (no key): `Toggle lap and channel colours`
-(`ToggleTraceColorMode`, persisted as `trace.color_mode`).
+No key: `Toggle lap and channel colours` (`ToggleTraceColorMode`, the
+trace toolbar's `Channel colours` toggle and the palette, persisted as
+`trace.color_mode`).
 
 Pointer: left-drag selects, middle-drag and horizontal scroll pan, wheel (also
 shift/ctrl) zooms about the pointer, vertical wheel scrolls overflowing lanes,

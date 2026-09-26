@@ -6,6 +6,7 @@ pub mod filmstrip;
 pub mod header;
 pub mod layout;
 pub mod status;
+mod view_mode;
 
 use std::rc::Rc;
 use std::time::Duration;
@@ -20,6 +21,7 @@ use gpui_kit::{
     ParentElement as _, Pixels, Render, SharedString, Styled as _, Subscription, Task,
     TestSupportExt as _, Window, div,
 };
+use omatrack_library::config::TraceViewMode;
 use omatrack_trace::{Selection, Viewport};
 use omatrack_ui::theme::ThemeStatus;
 
@@ -68,6 +70,11 @@ pub struct Workspace {
     pre_focus_viewport: Option<Viewport>,
     /// The cursor before the corner focus, restored with the viewport.
     pre_focus_cursor: Option<f64>,
+    /// The viewport and cursor from before the Corners view, restored when
+    /// it is left.
+    corners_return: Option<(Viewport, Option<f64>)>,
+    /// The Corners view's corner (zone id) across a lap change.
+    corners_resume: Option<String>,
     /// The default layout follows the window's width until the user
     /// toggles a dock (a restored layout is the user's and never refits).
     fit_docks: bool,
@@ -179,6 +186,8 @@ impl Workspace {
             focused_corner: None,
             pre_focus_viewport: None,
             pre_focus_cursor: None,
+            corners_return: None,
+            corners_resume: None,
             fit_docks: layout_origin_is_default,
             last_fit_width: None,
             preferences: None,
@@ -246,11 +255,16 @@ impl Workspace {
                 );
             }
             SessionEvent::AnalysisReady => {
+                let previous = self.focused_zone_id(cx).or(self.corners_resume.take());
                 self.forget_corner_focus(cx);
+                self.refit_view_mode(previous, cx);
                 self.sync_strategies(cx);
                 self.place_initial_cursor(cx);
             }
-            SessionEvent::PrimaryChanged => self.forget_corner_focus(cx),
+            SessionEvent::PrimaryChanged => {
+                self.corners_resume = self.focused_zone_id(cx);
+                self.forget_corner_focus(cx);
+            }
             SessionEvent::ReferenceChanged | SessionEvent::Swapped => {}
         }
     }
@@ -465,8 +479,13 @@ impl Workspace {
             self.pre_focus_viewport = Some(self.app.viewport.read(cx).viewport());
             self.pre_focus_cursor = self.app.cursor.read(cx).fraction();
         }
+        let frame = self.frames_corners(cx);
         self.app.viewport.update(cx, |viewport, cx| {
-            viewport.focus(zone.start, zone.end, true, cx)
+            if frame {
+                viewport.frame_corner(zone.start, zone.end, true, cx)
+            } else {
+                viewport.focus(zone.start, zone.end, true, cx)
+            }
         });
         // The cursor moves to the corner so every readout (legends,
         // inspector, HUD, video) describes the corner being looked at.
@@ -527,6 +546,14 @@ impl Workspace {
     }
 
     fn zoom(&mut self, factor: Option<f64>, cx: &mut Context<Self>) {
+        // Fit in the Corners view is the corner's own frame.
+        if factor.is_none()
+            && self.frames_corners(cx)
+            && let Some(ix) = self.focused_corner
+        {
+            self.focus_corner(ix, cx);
+            return;
+        }
         let anchor = self.app.cursor.read(cx).fraction();
         self.app.viewport.update(cx, |viewport, cx| match factor {
             Some(factor) if factor < 1.0 => viewport.zoom_in(anchor, cx),
@@ -710,7 +737,7 @@ impl Workspace {
                 this.close_preferences(window, cx);
             } else if this.stage.is_some() || window.is_fullscreen() {
                 this.exit_video_fullscreen(window, cx);
-            } else if !this.unfocus_corner(cx) {
+            } else if !this.escape_view_mode(cx) && !this.unfocus_corner(cx) {
                 cx.propagate();
             }
         }))
@@ -793,23 +820,29 @@ impl Workspace {
                 });
             });
         }))
-        .on_action(cx.listener(|this, _: &ToggleTraceColorMode, _, cx| {
-            use omatrack_library::config::TraceColorMode;
-            this.app.preferences.update(cx, |preferences, cx| {
-                preferences.update(cx, |config| {
-                    config.trace.color_mode = Some(match config.trace.color_mode() {
-                        TraceColorMode::Lap => TraceColorMode::Channel,
-                        TraceColorMode::Channel => TraceColorMode::Lap,
-                    });
-                });
-            });
-        }))
+        .on_action(
+            cx.listener(|this, _: &ToggleTraceColorMode, _, cx| this.toggle_trace_color_mode(cx)),
+        )
         .on_action(cx.listener(|this, _: &ResizeLanes, window, cx| {
             this.set_trace_mode(TraceMode::ResizingLanes, window, cx)
         }))
         .on_action(cx.listener(|this, _: &ToggleCornerEdit, window, cx| {
             this.set_trace_mode(TraceMode::EditingCorners, window, cx)
         }))
+        .on_action(
+            cx.listener(|this, _: &ViewLap, _, cx| this.set_view_mode(TraceViewMode::Lap, cx)),
+        )
+        .on_action(cx.listener(|this, _: &ViewCorners, _, cx| {
+            this.set_view_mode(TraceViewMode::Corners, cx)
+        }))
+        .on_action(cx.listener(|this, _: &ViewConsistency, _, cx| {
+            this.set_view_mode(TraceViewMode::Consistency, cx)
+        }))
+        .on_action(
+            cx.listener(|this, _: &ViewEvents, _, cx| {
+                this.set_view_mode(TraceViewMode::Events, cx)
+            }),
+        )
     }
 
     fn set_compose(&mut self, layout: ComposeLayout, cx: &mut Context<Self>) {

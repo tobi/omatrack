@@ -1,25 +1,53 @@
-//! The chrome of the trace workspace that is not the stack: the statistics
-//! chip of a range selection, the modal editors' bar, and the corner row
-//! above the lanes. (The laps are in the workspace filmstrip, above every
-//! panel; the axis, fit, sizing, corner editing and zoom controls are in the
-//! control row under the video and on their keys.)
+//! The chrome of the trace workspace that is not the stack: the trace
+//! toolbar, the statistics chip of a range selection, the modal editors'
+//! bar, and the corner row above the lanes. (The laps are in the workspace
+//! filmstrip, above every panel; playback and the Distance | Time axis are
+//! in the control row under the video.)
 
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, IconName, Sizable as _, StyledExt as _,
-    button::{Button, ButtonVariants as _},
+    ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, StyledExt as _,
+    button::{Button, ButtonGroup, ButtonVariants as _},
     h_flex,
+    menu::DropdownMenu as _,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, Context, InteractiveElement as _, IntoElement, ParentElement as _, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, div,
+    Action, Anchor, App, Context, InteractiveElement as _, IntoElement, ParentElement as _, Role,
+    SharedString, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, div,
 };
 use omatrack_core::session::CornerSource;
+use omatrack_library::config::{TraceColorMode, TraceViewMode};
 use omatrack_ui::TypeScale as _;
 
-use super::{TraceMode, TracesPanel};
-use crate::actions::{CancelEdit, SaveEdit};
-use crate::keymap::TRACE_EDIT_CONTEXT;
+use super::{ToggleLane, TraceMode, TracesPanel, scene_build};
+use crate::actions::{
+    CancelEdit, ResizeLanes, SaveEdit, ShowChannels, ToggleCornerEdit, ToggleFit,
+    ToggleTraceColorMode, ViewConsistency, ViewCorners, ViewEvents, ViewLap, ZoomIn, ZoomOut,
+    ZoomReset,
+};
+use crate::keymap::{TRACE_EDIT_CONTEXT, WORKSPACE_CONTEXT};
+
+/// A view mode's segment label, tooltip and action.
+fn view_mode_segment(mode: TraceViewMode) -> (&'static str, &'static str, Box<dyn Action>) {
+    match mode {
+        TraceViewMode::Lap => ("Lap", "The whole lap", Box::new(ViewLap)),
+        TraceViewMode::Corners => (
+            "Corners",
+            "One corner at a time, with its approach and exit (h / j step)",
+            Box::new(ViewCorners),
+        ),
+        TraceViewMode::Consistency => (
+            "Consistency",
+            "The session’s timed laps behind the primary, with their spread",
+            Box::new(ViewConsistency),
+        ),
+        TraceViewMode::Events => (
+            "Events",
+            "Brake points, shifts, lifts and corner notes on the traces",
+            Box::new(ViewEvents),
+        ),
+    }
+}
 
 impl TracesPanel {
     /// Why the Consistency view shows no session behind the lap (too few
@@ -53,6 +81,182 @@ impl TracesPanel {
                 .truncate()
                 .child(notice),
         )
+    }
+
+    /// The trace toolbar at the top of the trace area: zoom out, zoom in
+    /// and fit; the view mode (`Lap | Corners | Consistency | Events`);
+    /// the Channels menu (lane visibility); the colour mode; and, right
+    /// aligned, the less frequent lane tools (fit lanes to the height,
+    /// resize, edit corners). Every control dispatches the action of its
+    /// key and names that key in its tooltip.
+    pub(super) fn render_toolbar(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let config = self.app.preferences.read(cx).config();
+        let view_mode = self.app.trace_view.read(cx).mode();
+        let channel_colours = config.trace.color_mode() == TraceColorMode::Channel;
+        let keys = self.focus_handle.clone();
+
+        let fit_tooltip = if view_mode == TraceViewMode::Corners {
+            "Fit the corner"
+        } else {
+            "Whole lap"
+        };
+        let zoom_keys = keys.clone();
+        let zoom = ButtonGroup::new("trace-zoom")
+            .small()
+            .outline()
+            .child(
+                Button::new("trace-zoom-out")
+                    .icon(self.icons.zoom_out.clone())
+                    .accessibility_label("Zoom out")
+                    .tooltip_with_action("Zoom out", &ZoomOut, Some(WORKSPACE_CONTEXT)),
+            )
+            .child(
+                Button::new("trace-zoom-in")
+                    .icon(self.icons.zoom_in.clone())
+                    .accessibility_label("Zoom in")
+                    .tooltip_with_action("Zoom in", &ZoomIn, Some(WORKSPACE_CONTEXT)),
+            )
+            .child(
+                Button::new("trace-zoom-fit")
+                    .icon(self.icons.fit.clone())
+                    .accessibility_label(fit_tooltip)
+                    .tooltip_with_action(fit_tooltip, &ZoomReset, Some(WORKSPACE_CONTEXT)),
+            )
+            .on_click(move |clicked: &Vec<usize>, window, cx| {
+                let action: Box<dyn Action> = match clicked.first() {
+                    Some(0) => Box::new(ZoomOut),
+                    Some(1) => Box::new(ZoomIn),
+                    Some(2) => Box::new(ZoomReset),
+                    _ => return,
+                };
+                zoom_keys.dispatch_action(action.as_ref(), window, cx);
+            });
+
+        let mode_keys = keys.clone();
+        let modes = ButtonGroup::new("trace-view-mode")
+            .small()
+            .outline()
+            .children(TraceViewMode::ALL.map(|mode| {
+                let (label, tooltip, action) = view_mode_segment(mode);
+                Button::new(SharedString::from(format!(
+                    "trace-view-{}",
+                    label.to_ascii_lowercase()
+                )))
+                .label(label)
+                .selected(mode == view_mode)
+                .toggled(mode == view_mode)
+                .tooltip_with_action(
+                    tooltip,
+                    action.as_ref(),
+                    Some(WORKSPACE_CONTEXT),
+                )
+            }))
+            .on_click(move |clicked: &Vec<usize>, window, cx| {
+                let Some(mode) = clicked.first().and_then(|ix| TraceViewMode::ALL.get(*ix)) else {
+                    return;
+                };
+                let (_, _, action) = view_mode_segment(*mode);
+                mode_keys.dispatch_action(action.as_ref(), window, cx);
+            });
+
+        let lanes: Vec<(SharedString, SharedString)> = self
+            .scene
+            .lanes()
+            .iter()
+            .map(|lane| (lane.key.clone(), lane.title.clone()))
+            .collect();
+        let preferences = self.app.preferences.clone();
+        let menu_focus = keys.clone();
+        let menu_height = window.rem_size() * 24.;
+        let channels = Button::new("trace-channels")
+            .small()
+            .outline()
+            .icon(IconName::Menu)
+            .label("Channels")
+            .accessibility_label("Channels: show or hide lanes")
+            .tooltip("Show or hide lanes")
+            .dropdown_menu(move |menu, _, cx| {
+                let config = preferences.read(cx).config();
+                let mut menu = menu
+                    .action_context(menu_focus.clone())
+                    .max_h(menu_height)
+                    .scrollable(true);
+                for (key, title) in &lanes {
+                    menu = menu.menu_with_check(
+                        title.clone(),
+                        scene_build::is_lane_visible(config, key),
+                        Box::new(ToggleLane { key: key.clone() }),
+                    );
+                }
+                menu.separator()
+                    .menu("Channel settings…", Box::new(ShowChannels))
+            });
+
+        let colour_keys = keys.clone();
+        let colours = Button::new("trace-color-mode")
+            .small()
+            .outline()
+            .icon(IconName::Palette)
+            .label("Channel colours")
+            .selected(channel_colours)
+            .toggled(channel_colours)
+            .accessibility_label("Channel colours")
+            .tooltip_with_action(
+                if channel_colours {
+                    "Each channel in its own hue; off shows lap colours"
+                } else {
+                    "Lap colours; on draws each channel in its own hue"
+                },
+                &ToggleTraceColorMode,
+                Some(WORKSPACE_CONTEXT),
+            )
+            .on_click(move |_, window, cx| {
+                colour_keys.dispatch_action(&ToggleTraceColorMode, window, cx)
+            });
+
+        let tools_preferences = self.app.preferences.clone();
+        let tools_focus = keys;
+        let tools = Button::new("trace-tools")
+            .ghost()
+            .small()
+            .icon(IconName::Ellipsis)
+            .accessibility_label("Lane tools")
+            .tooltip("Lane tools")
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
+                let fit = tools_preferences
+                    .read(cx)
+                    .config()
+                    .trace
+                    .is_fitting_channels();
+                menu.action_context(tools_focus.clone())
+                    .menu_with_check("Fit lanes to the height", fit, Box::new(ToggleFit))
+                    .menu("Resize lanes…", Box::new(ResizeLanes))
+                    .menu("Edit corners…", Box::new(ToggleCornerEdit))
+            });
+
+        h_flex()
+            .id("trace-toolbar")
+            .role(Role::Toolbar)
+            .aria_label("Traces")
+            .test_support()
+            .w_full()
+            .flex_shrink_0()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py_1p5()
+            .overflow_hidden()
+            .text_label()
+            .child(div().flex_shrink_0().child(zoom))
+            .child(div().flex_shrink_0().child(modes))
+            .child(div().flex_shrink_0().child(channels))
+            .child(div().flex_shrink_0().child(colours))
+            .child(div().flex_1())
+            .child(div().flex_shrink_0().child(tools))
     }
 
     /// The statistics of the range selection, floating at the top right of

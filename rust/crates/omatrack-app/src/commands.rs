@@ -181,9 +181,39 @@ pub(crate) fn init(cx: &mut App) {
             Commands,
             ToggleTraceColorMode,
         )
-        .keywords(["traces", "colour", "color", "hue"]),
+        .keywords([
+            "traces",
+            "colour",
+            "color",
+            "colors",
+            "hue",
+            "channel colours",
+        ]),
         CommandSpec::new("resize-lanes", "Resize lanes…", Commands, ResizeLanes),
         CommandSpec::new("edit-corners", "Edit corners…", Commands, ToggleCornerEdit),
+        CommandSpec::new("view-lap", "View: Lap", Commands, ViewLap).keywords([
+            "traces",
+            "whole lap",
+            "mode",
+        ]),
+        CommandSpec::new("view-corners", "View: Corners", Commands, ViewCorners).keywords([
+            "traces",
+            "corner by corner",
+            "mode",
+        ]),
+        CommandSpec::new(
+            "view-consistency",
+            "View: Consistency",
+            Commands,
+            ViewConsistency,
+        )
+        .keywords(["traces", "laps", "spread", "mode"]),
+        CommandSpec::new("view-events", "View: Events", Commands, ViewEvents).keywords([
+            "traces",
+            "brake points",
+            "shifts",
+            "mode",
+        ]),
         CommandSpec::new("play", "Play or pause", Commands, TogglePlay).keywords(["video"]),
         CommandSpec::new("seek-back", "Back 2 seconds", Commands, SeekBack),
         CommandSpec::new("seek-forward", "Forward 2 seconds", Commands, SeekForward),

@@ -60,6 +60,11 @@ gpui_kit::actions!(
         ToggleFit,
         ToggleTraceColorMode,
         ResizeLanes,
+        // Trace view modes (`trace.view_mode`).
+        ViewLap,
+        ViewCorners,
+        ViewConsistency,
+        ViewEvents,
         SaveEdit,
         CancelEdit,
         // Library rows.

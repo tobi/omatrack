@@ -1,13 +1,15 @@
 //! Traces: the synchronized channel lanes of the primary and reference laps.
 //!
-//! Top to bottom, with no title bar or toolbar of its own: the corner ruler
-//! (two staggered label rows, the cursor's corner as a chip, complex
-//! brackets), the damper strip while manual damper alignment is in effect,
-//! then the [`TraceStack`] (pinned gap lane, scrollable channel lanes,
-//! shared x-axis). The range statistics of a selection float at the top
-//! right of the lanes. The axis, FIT, lane sizing, corner editing and zoom
-//! controls live in the control row under the video, on their keys and in
-//! the palette.
+//! Top to bottom, with no title bar: the trace toolbar (zoom out / in /
+//! fit, the view mode `Lap | Corners | Consistency | Events`, the Channels
+//! menu, the colour mode and the lane tools: FIT, resize, edit corners),
+//! the corner ruler (two staggered label rows, the cursor's corner as a
+//! chip, complex brackets), the damper strip while manual damper alignment
+//! is in effect, then the [`TraceStack`] (pinned gap lane, scrollable
+//! channel lanes, shared x-axis). The range statistics of a selection float
+//! at the top right of the lanes. Playback and the Distance | Time axis live
+//! in the control row under the video; every control has one home and its
+//! key and palette entry.
 //!
 //! State ownership:
 //! - the application owns the analysis (`Session`), the viewport and the
@@ -28,6 +30,7 @@
 //! only moves the shared cursor.
 
 mod edit;
+mod icons;
 pub(crate) mod scene_build;
 mod stats;
 mod toolbar;
@@ -110,6 +113,7 @@ struct LaneMenu {
 pub struct TracesPanel {
     app: AppState,
     focus_handle: FocusHandle,
+    icons: icons::TraceIcons,
     mode: TraceMode,
     /// Built on the first render: the stack needs a window.
     stack: Option<Entity<TraceStack>>,
@@ -164,6 +168,7 @@ impl TracesPanel {
         let mut panel = Self {
             app,
             focus_handle: cx.focus_handle().tab_stop(true),
+            icons: icons::TraceIcons::new(),
             mode: TraceMode::default(),
             stack: None,
             ruler,
@@ -478,11 +483,12 @@ impl TracesPanel {
             if let Some(stack) = self.stack.clone() {
                 let current = stack.read(cx).focused_corner();
                 match band {
-                    // Focused elsewhere (keys, palette): the stack marks it.
-                    // The viewport is already easing there; this only
-                    // retargets it to the same place.
+                    // Focused elsewhere (keys, palette, the Corners view):
+                    // the stack marks it. The workspace already frames it
+                    // (left half, or approach and exit), so the viewport
+                    // is left alone.
                     Some(band) if current != Some(band) => {
-                        stack.update(cx, |stack, cx| stack.focus_corner(band, true, cx))
+                        stack.update(cx, |stack, cx| stack.mark_focused_corner(band, cx))
                     }
                     None if current.is_some() => {
                         stack.update(cx, |stack, cx| stack.clear_corner_focus(cx))
@@ -845,7 +851,7 @@ impl TracesPanel {
 
     // ---- rendering ----------------------------------------------------------
 
-    fn render_body(&mut self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+    fn render_body(&mut self, window: &Window, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         if self.built.is_none() || self.scene.is_empty() {
             let preparing = self.app.session.read(cx).analysis().is_some();
             if preparing {
@@ -885,11 +891,12 @@ impl TracesPanel {
                     .children(self.render_consistency_notice(cx))
                     .children(self.render_range_stats(cx)),
             );
-        div()
+        // The toolbar sits above the card, on the panel's own ground.
+        v_flex()
             .size_full()
             .min_h_0()
-            .p_2()
-            .child(card)
+            .child(self.render_toolbar(window, cx))
+            .child(div().flex_1().min_h_0().px_2().pb_2().child(card))
             .into_any_element()
     }
 }
@@ -967,7 +974,7 @@ impl Render for TracesPanel {
             .size_full()
             .bg(cx.theme().background)
             .when(editing, |this| this.child(self.render_mode_bar(cx)))
-            .child(div().flex_1().min_h_0().child(self.render_body(cx)))
+            .child(div().flex_1().min_h_0().child(self.render_body(window, cx)))
             .children(menu)
     }
 }
