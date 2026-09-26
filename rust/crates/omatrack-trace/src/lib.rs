@@ -28,6 +28,8 @@
 //! - [`track_map`]: [`TrackMap`], the atlas centerline and both GPS laps,
 //!   the primary coloured by the delta's slope, with cursor dots.
 //! - [`damper_strip`]: [`DamperStrip`], the manual damper alignment tool.
+//! - [`telemetry_hud`]: [`TelemetryHud`], the fullscreen video telemetry band
+//!   (progress window, pedals, steering dial, gear, speed, gap).
 //! - [`synthetic`]: deterministic laps for tests and `examples/trace_bench`.
 //!
 //! # Rendering contract (docs/TRACE_RENDERING.md)
@@ -109,6 +111,7 @@ pub mod stack;
 pub mod state;
 pub mod static_layer;
 pub mod synthetic;
+pub mod telemetry_hud;
 pub mod track_map;
 
 pub use corner_ruler::{CornerRuler, CornerRulerEvent};
@@ -121,4 +124,5 @@ pub use scene::{
 pub use stack::{CHROME_REMS, TraceEvent, TraceStack};
 pub use state::{CursorState, Selection, ViewportState};
 pub use static_layer::{StaticStats, TraceStaticView};
+pub use telemetry_hud::{TelemetryHud, TelemetryHudBuffers, TelemetryHudColors, TelemetryHudData};
 pub use track_map::{GeoPoint, GpsTrack, MapCorner, TrackMap, TrackMapData, TrackMapEvent};
