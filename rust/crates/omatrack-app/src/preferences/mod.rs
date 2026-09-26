@@ -378,6 +378,7 @@ impl PreferencesView {
                 .icon(section.icon())
                 .active(active)
                 .h_8()
+                .when(active, |item| item.bg(theme.list_active))
                 .border_1()
                 .border_color(gpui_kit::transparent_black())
                 .when(active && focused, |item| item.border_color(ring))
@@ -386,7 +387,20 @@ impl PreferencesView {
                 }))
         });
         let preferences = self.app.preferences.read(cx);
-        let path = preferences.paths().config_file().display().to_string();
+        let file = preferences.paths().config_file();
+        let full = SharedString::from(file.display().to_string());
+        // The directory, home as `~`, truncated; the file name in full.
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let directory = file.parent().map(|dir| match &home {
+            Some(home) if dir.starts_with(home) => {
+                format!("~/{}", dir.strip_prefix(home).unwrap_or(dir).display())
+            }
+            _ => dir.display().to_string(),
+        });
+        let name = file
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let error = preferences.last_error().map(SharedString::from);
         let footer = v_flex()
             .id("preferences-saved-to")
@@ -397,11 +411,18 @@ impl PreferencesView {
             .text_color(theme.muted_foreground)
             .child("Changes save automatically to")
             .child(
-                div()
+                v_flex()
+                    .id("preferences-config-path")
+                    .aria_label(full.clone())
+                    .tooltip(move |window, cx| {
+                        gpui_kit::component::tooltip::Tooltip::new(full.clone()).build(window, cx)
+                    })
+                    .w_full()
+                    .min_w_0()
+                    .text_caption()
                     .font_family(theme.mono_font_family.clone())
-                    .text_color(theme.foreground)
-                    .line_clamp(3)
-                    .child(path),
+                    .children(directory.map(|dir| div().w_full().truncate().child(dir)))
+                    .child(div().text_color(theme.foreground).truncate().child(name)),
             )
             .when_some(error, |this, error| {
                 this.child(
@@ -472,7 +493,6 @@ impl Render for PreferencesView {
                         v_flex()
                             .w_full()
                             .max_w(rems(CONTENT_MAX_WIDTH))
-                            .mx_auto()
                             .px_10()
                             .pt_8()
                             .pb_12()

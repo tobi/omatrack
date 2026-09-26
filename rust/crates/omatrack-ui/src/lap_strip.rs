@@ -219,12 +219,17 @@ impl LapStripItem {
     }
 
     /// What fits a cell `width` logical pixels wide when one tabular
-    /// character takes `char_width`: the time, else the label (`In`, `L3`),
+    /// character takes `char_width`: the label and time (`L3  1:21.004`),
+    /// else the time, else the label (`In`, `L3`),
     /// else nothing (the cell keeps its spoken label and tooltip). Never a
     /// clipped or ellipsized fragment.
     pub fn text_for_width(&self, width: f32, char_width: f32) -> Option<SharedString> {
         let fits = |text: &str| text.chars().count() as f32 * char_width + CELL_TEXT_INSET <= width;
-        [self.time.as_ref(), Some(&self.label)]
+        let labelled = self
+            .time
+            .as_ref()
+            .map(|time| SharedString::from(format!("{}  {time}", self.label)));
+        [labelled.as_ref(), self.time.as_ref(), Some(&self.label)]
             .into_iter()
             .flatten()
             .find(|text| fits(text))
@@ -581,14 +586,16 @@ impl StripCellsElement {
                         .bg(theme.success),
                 )
             })
+            // The playhead is progress along the cell's top edge, never a
+            // line through the text.
             .when_some(playhead, |b, fraction| {
                 b.child(
                     div()
                         .absolute()
-                        .top_0p5()
-                        .bottom_0p5()
-                        .left(relative(fraction.clamp(0.0, 1.0) as f32))
-                        .w_0p5()
+                        .top_0()
+                        .left_0()
+                        .h_0p5()
+                        .w(relative(fraction.clamp(0.0, 1.0) as f32))
                         .bg(playhead_color),
                 )
             })
@@ -632,7 +639,11 @@ mod tests {
     #[test]
     fn cell_text_is_the_time_the_label_or_nothing_never_a_fragment() {
         let lap = lap(3, 90.0).time("1:21.004");
-        assert_eq!(lap.text_for_width(120.0, 7.0).as_deref(), Some("1:21.004"));
+        assert_eq!(
+            lap.text_for_width(120.0, 7.0).as_deref(),
+            Some("L3  1:21.004")
+        );
+        assert_eq!(lap.text_for_width(80.0, 7.0).as_deref(), Some("1:21.004"));
         assert_eq!(lap.text_for_width(30.0, 7.0).as_deref(), Some("L3"));
         assert_eq!(lap.text_for_width(12.0, 7.0), None);
         // A trailing in-lap at the 12 px floor shows nothing, not "I…".

@@ -11,7 +11,6 @@
 use std::sync::Arc;
 
 use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, h_flex, v_flex};
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, Styled as _, Subscription, TestSupportExt as _,
@@ -229,15 +228,7 @@ impl MapPanel {
                             .map(|_| entry(LapRole::Reference.color(theme), "Reference")),
                     )
                     .children(shaded.then(|| entry(theme.success, "Gaining")))
-                    .children(shaded.then(|| entry(theme.danger, "Losing")))
-                    .when(comparing && approximate, |this| {
-                        this.child(
-                            div()
-                                .id("map-gain-loss-off")
-                                .test_support()
-                                .child("Gain/loss off: low-confidence sync"),
-                        )
-                    }),
+                    .children(shaded.then(|| entry(theme.danger, "Losing"))),
             )
     }
 }

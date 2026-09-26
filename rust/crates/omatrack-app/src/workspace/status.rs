@@ -331,13 +331,9 @@ impl StatusView {
                 .test_support()
                 .aria_label(spoken.clone())
                 .gap_1()
+                // The confidence badge lives once, in the title bar; the
+                // status bar names the basis and speaks the full summary.
                 .child(div().text_color(cx.theme().muted_foreground).child(text))
-                .child(confidence_badge(
-                    "status-confidence",
-                    confidence,
-                    spoken,
-                    cx,
-                ))
                 .into_any_element(),
         )
     }
@@ -365,6 +361,7 @@ impl Render for StatusView {
         let theme_label = ThemeStatus::global(cx)
             .map(ThemeStatus::label)
             .unwrap_or_default();
+        let theme_name = theme_label.clone();
         let fonts = ThemeFonts::global(cx).cloned();
         let appearance: SharedString = match &fonts {
             Some(fonts) => format!("{theme_label} · {}", fonts.label()).into(),
@@ -397,7 +394,8 @@ impl Render for StatusView {
                     })
                 })
                 .text_color(cx.theme().muted_foreground)
-                .child(appearance),
+                // The palette name only; the fonts are in the tooltip.
+                .child(theme_name),
         )
     }
 }
